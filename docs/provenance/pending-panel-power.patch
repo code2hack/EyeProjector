@@ -1,0 +1,464 @@
+From 152fc5826585cba934eba3e6321c3fc1047c3ad3 Mon Sep 17 00:00:00 2001
+From: code2hack <code2hack4ever@gmail.com>
+Date: Mon, 19 Oct 2026 13:43:16 +0800
+Subject: [PATCH 1/2] Worker: Worker-#78 - add authenticated stock scrcpy panel
+ power experiment
+
+Add fixed OFF/ON host requests and serialize them with local scrcpy input.
+Retain host lifetime and stock server behavior; record incomplete device evidence.
+
+Codex-Host: spark
+Codex-Thread-ID: 01a152a1-56b5-7811-9d48-74688c04cdd9
+---
+ .../panel-power-results.md                    | 42 ++++++++++++++++
+ .../projector/directhost/ShellMain.kt         | 49 +++++++++++++++++--
+ .../projector/directhost/ScrcpyControlTest.kt | 41 ++++++++++++++++
+ .../eyebrowse/projector/protocol/Wire.kt      |  7 ++-
+ .../eyebrowse/projector/protocol/TlsTest.kt   | 27 ++++++++--
+ .../eyebrowse/projector/protocol/WireTest.kt  | 14 ++++++
+ 6 files changed, 170 insertions(+), 10 deletions(-)
+ create mode 100644 docs/experiments/fold6-rg-projector-av/panel-power-results.md
+ create mode 100644 experiments/fold6-rg-projector/directhost/src/test/kotlin/com/code2hack/eyebrowse/projector/directhost/ScrcpyControlTest.kt
+
+diff --git a/docs/experiments/fold6-rg-projector-av/panel-power-results.md b/docs/experiments/fold6-rg-projector-av/panel-power-results.md
+new file mode 100644
+index 0000000..eb62d91
+--- /dev/null
++++ b/docs/experiments/fold6-rg-projector-av/panel-power-results.md
+@@ -0,0 +1,42 @@
++# PAV-PWR-01 stock physical-panel control investigation
++
++Worker: Worker-#78. Canonical issue: [#78](https://github.com/code2hack/EyeBrowse/issues/78). Contract: [PAV-PWR-1](panel-power-followup.md). This report is **in progress, not candidate acceptance or demonstrated panel-off support**.
++
++## Source and mechanism
++
++Assigned baseline `b3c9aa95f344dd5be8601baa8efd2d4bec40dc02` adds only Planner Markdown over accepted product `ecb5b59ca152360ecaa6014ab1f815b58b62c6cd`. Main governance was refreshed at `8929241f348bae9005b9b6bc1a93fbabd47145c1`; the four protected articles match the worktree and remain unchanged.
++
++The existing mTLS listener admits two fixed diagnostic requests after the TLS handshake: operation 3 is PANEL_OFF and operation 4 is PANEL_ON, behind the existing PAV1/version-2 request header. They act only on the active session. `PanelPowerMain <existing-peer-directory> off|on` is the explicit shell experiment client. It consumes the already trusted peer identity opaquely; there is no new trust, network listener, RG menu, or arbitrary shell/power endpoint.
++
++The host writes exactly `0A 00` / `0A 01` on its existing local scrcpy control stream. Tap, scroll, navigation and panel writes share one synchronized writer. A response byte of 1 and the fixed SUBMITTED telemetry indicate only a completed local write. They cannot establish stock-handler success, panel darkness or media continuity. Closure rejects later control writes and retains upstream cleanup. No host lifetime timer was added; `keep_active=true`, `power_on=false`, mandatory output Opus, direct media routing and existing startup/write/audio safeguards remain.
++
++Pinned unmodified scrcpy 5.0.1 source is `a60891aea193d92e7e5c3942700eca63f9d19a5f`; source checkout is clean. Verified master JAR SHA-256: `764eb6f79811d5211fe9df341120882ba9994c7a61b897d7bf3fb662e53bc536`. The stock [Controller](https://github.com/Genymobile/scrcpy/blob/a60891aea193d92e7e5c3942700eca63f9d19a5f/server/src/main/java/com/genymobile/scrcpy/control/Controller.java) selects physical display 0 for new-display capture and registers restoration after a successful OFF. Its [Device helper](https://github.com/Genymobile/scrcpy/blob/a60891aea193d92e7e5c3942700eca63f9d19a5f/server/src/main/java/com/genymobile/scrcpy/device/Device.java) selects physical display tokens and SurfaceControl. Source behavior is distinct from the Samsung runtime result.
++
++## Checks and artifacts
++
++On spark, the assigned build flock and two-worker/2 GiB JVM limits were used. Baseline protocol/host tests passed. The added encoding test first failed on the missing implementation. JDK17 affected checks then passed: 21 protocol/host unit tests, host debug assembly, host/protocol lint, and 36 receiver compatibility tests plus receiver debug assembly/lint. The no-overall-lifetime regression, per-session JAR preservation and exception categories remain covered. TLS tests exercise trusted and rogue identities for both fixed panel requests; the control-writer test proves a panel command cannot split a tap message and rejects writes after closure.
++
++Host APK SHA-256: `6e83df5d9c8a6598721ccb9882aac86e8aa622e3086dd9d26731ebe0fb8d2dce`, 2,728,235 bytes. Debug signer SHA-256: `e372f80243affb0fd2462d4c90f8aede64a9ffb683cebad6c517d73eacc6a963`. Installed predecessor host hash matched `9dcc5388f78ace697552d9a3057420e2a76ad9aea9b7c60288390b80ac5cc44b`. Installed unchanged RG hash matched `e805103f4d445101439626a1ae678166a7f23bb79feca97cc7cfbe16f861b9c3`; no receiver update is required for the fixed host requests.
++
++## Current device binding and cases
++
++The assigned selected ADB server is `127.0.0.1:15037` via the retained Manager SSH forward to the unchanged u4090 server. The first Phone primary check returned device-not-found; the Manager restored its missing LAN entry with one bounded connect. That original failure remains in evidence. No Worker connect, reset, trust change or route switch occurred. Subsequent exact Phone identity matched.
++
++Phone: Fold6 `R3CX70NHTHK`, SM-F956N, Android 16/API36, One UI property 80500, build `samsung/q6qksx/q6q:16/BP4A.251205.006/F956NKSS4DZH5:user/release-keys`, user0/shell2000. RG: `1906092617103125`, RG-glasses/API32, user0/shell2000. Current direct media addresses remain Phone `10.199.167.157` and RG `10.199.167.154`; debug uses Phone LAN5555 and RG USB.
++
++Before any preview transition, inherited bridge PID6480/start234763921 was alive but DISCONNECTED. Its last session400927e9 ended CONTROL_IO after96 seconds; RG's matching status was STOPPED. The old preview was therefore not claimed to be continuously live. Phone was Awake, DeviceIdle ACTIVE/light ACTIVE, secure=true but showing=false/inputRestricted=false/deviceLocked0. The Worker performed no credential action. Owner was asked once to lock normally for the locked-state case. RG music was0; historical original4 custody is retained.
++
++| Case | Mechanism | Panel / keyguard | AV / native input | Restoration |
++| --- | --- | --- | --- | --- |
++| A reference | Pending matched current session | Current inherited state was unlocked; locked case pending | Pending | Not yet changed |
++| B stock OFF | Pending | Unmeasured | Unmeasured | Pending stock ON |
++| C reverse/repeat | Pending | Unmeasured | Unmeasured | Pending |
++| D ten-minute interval | Conditional on viable B | Unmeasured | Unmeasured | No measurement-end shutdown |
++| E blanked-Awake start vs sleep | Pending | Unmeasured | Unmeasured | Pending |
++| Stop / Disconnect / peer loss | Pending | Unmeasured | Unmeasured | Pending |
++
++## Limits and retained evidence
++
++Physical darkness and audible playback are not observed yet. Software frame/audio counters, source state, compositor power evidence, logical wakefulness, DeviceIdle, secure/showing keyguard and native target effects will be reported separately. No screenshot, black frame, successful write or prior stock log is promoted to physical PASS. No PIN/unlock, deliberate sleep substitution, wake loop, global power/Doze setting, wake lock, display-flag change or capture-server fork is authorized.
++
++Original [#66 feasibility](fold6-feasibility.md), [#70 results](results.md) and accepted [#76 lifetime/startup record](https://github.com/code2hack/EyeBrowse/issues/76) retain their original scope and failures. The mission-owned raw evidence root is `/home/code2hack/.local/state/eyebrowse/experiments/fold6-rg-projector-av/runs/run-001/issue-78/worker-78-001/evidence`; private provisioning contents are excluded from reports and Git. Final preview custody and exact pushed candidate remain pending. Independent exact-head review and acceptance belong to the Manager.
+diff --git a/experiments/fold6-rg-projector/directhost/src/main/kotlin/com/code2hack/eyebrowse/projector/directhost/ShellMain.kt b/experiments/fold6-rg-projector/directhost/src/main/kotlin/com/code2hack/eyebrowse/projector/directhost/ShellMain.kt
+index 573fb14..bca086b 100644
+--- a/experiments/fold6-rg-projector/directhost/src/main/kotlin/com/code2hack/eyebrowse/projector/directhost/ShellMain.kt
++++ b/experiments/fold6-rg-projector/directhost/src/main/kotlin/com/code2hack/eyebrowse/projector/directhost/ShellMain.kt
+@@ -12,6 +12,7 @@ import java.io.DataOutputStream
+ import java.io.EOFException
+ import java.io.File
+ import java.io.IOException
++import java.io.OutputStream
+ import java.net.InetAddress
+ import java.net.InetSocketAddress
+ import java.net.SocketTimeoutException
+@@ -75,6 +76,29 @@ object ShellMain {
+     }
+ }
+ 
++/** Explicit experiment command using the already trusted peer identity, without a new listener/UI. */
++object PanelPowerMain {
++    @JvmStatic fun main(args: Array<String>) {
++        require(Process.myUid() == 2000 && args.size == 2 && args[1] in listOf("off", "on"))
++        val operation = if (args[1] == "on") Wire.PANEL_ON else Wire.PANEL_OFF
++        Tls.connect(File(args[0])).use { socket ->
++            Wire.writeRequest(DataOutputStream(socket.outputStream), operation)
++            require(socket.inputStream.read() == 1 && socket.inputStream.read() == -1) { "Panel submission unconfirmed" }
++        }
++        println("STOCK_PANEL_${args[1].uppercase()}_SUBMITTED")
++    }
++}
++
++/** One local stream: a panel command must not split a touch down/up or navigation message. */
++internal class ScrcpyControl(private val output: OutputStream) : Closeable {
++    private val closed = AtomicBoolean()
++    @Synchronized fun write(message: ByteArray) {
++        check(!closed.get())
++        output.write(message); output.flush()
++    }
++    override fun close() { if (closed.compareAndSet(false, true)) output.close() }
++}
++
+ internal class Bridge(
+     private val directory: File,
+     private val jar: File,
+@@ -135,8 +159,13 @@ internal class Bridge(
+             socket.startHandshake() // No scrcpy process, display, media or input exists before mTLS.
+             authenticated = true
+             val input = DataInputStream(socket.inputStream)
+-            when (Wire.readRequest(input)) {
++            when (val operation = Wire.readRequest(input)) {
+                 Wire.STOP_HOST -> { status("HOST_STOPPING"); close(SessionStopReason.HOST_STOP) }
++                Wire.PANEL_OFF, Wire.PANEL_ON -> {
++                    checkNotNull(active.get()).setDisplayPower(operation == Wire.PANEL_ON)
++                    // Acknowledge only the local write; stock handler and hardware need separate evidence.
++                    socket.outputStream.write(1); socket.outputStream.flush()
++                }
+                 Wire.STREAM -> {
+                     session = Session(socket, input, directory, jar, timer)
+                     if (!active.compareAndSet(null, session)) return
+@@ -183,6 +212,7 @@ private class Session(
+     private val audioPackets = AtomicLong()
+     private val lastAudio = AtomicLong(System.nanoTime())
+     private var control: LocalSocket? = null
++    @Volatile private var controlWriter: ScrcpyControl? = null
+     private var server: java.lang.Process? = null
+     private var inputThread: Thread? = null
+     private var watchdog: java.util.concurrent.ScheduledFuture<*>? = null
+@@ -233,6 +263,8 @@ private class Session(
+         audio = localListener!!.accept().also { if (!running.get()) { it.close(); error("Session stopped") } }
+         startupStage.set(StartupStage.ACCEPT_CONTROL)
+         control = localListener!!.accept().also { if (!running.get()) { it.close(); error("Session stopped") } }
++        controlWriter = ScrcpyControl(control!!.outputStream)
++        if (!running.get()) { controlWriter!!.close(); error("Session stopped") }
+         localListener!!.close(); localListener = null; startup.cancel(false)
+         lastAudio.set(System.nanoTime())
+         watchdog = timer.scheduleWithFixedDelay({
+@@ -270,17 +302,17 @@ private class Session(
+                         Wire.TAP -> {
+                             val tap = Tap.from(frame.payload)
+                             require(tap.geometry == geometry.get())
+-                            control!!.outputStream.write(Scrcpy.tap(tap)); touches.incrementAndGet()
++                            controlWriter!!.write(Scrcpy.tap(tap)); touches.incrementAndGet()
+                         }
+                         Wire.SCROLL -> {
+                             val scroll = Scroll.from(frame.payload)
+                             require(scroll.target.geometry == geometry.get())
+-                            control!!.outputStream.write(Scrcpy.scroll(scroll))
++                            controlWriter!!.write(Scrcpy.scroll(scroll))
+                         }
+                         Wire.NAVIGATE -> {
+                             val navigate = Navigate.from(frame.payload)
+                             require(navigate.geometry == geometry.get())
+-                            control!!.outputStream.write(Scrcpy.navigate(navigate))
++                            controlWriter!!.write(Scrcpy.navigate(navigate))
+                         }
+                         Wire.END -> break
+                         else -> error("Unsupported control")
+@@ -314,13 +346,20 @@ private class Session(
+ 
+     override fun close() = close(SessionStopReason.OWNER_CLOSE)
+ 
++    fun setDisplayPower(on: Boolean) {
++        check(running.get())
++        checkNotNull(controlWriter).write(Scrcpy.displayPower(on))
++        println(JSONObject().put("event", "PANEL_POWER_SUBMITTED").put("on", on).put("scid", "%08x".format(scid)))
++    }
++
+     fun close(reason: SessionStopReason) {
+         if (!running.compareAndSet(true, false)) return
+         val stopStartedMs = (System.nanoTime() - begin) / 1_000_000
+         val lastStartupStage = startupStage.get()
+         watchdog?.cancel(false)
+         runCatching { peer.close() }; runCatching { localListener?.close() }
+-        runCatching { video?.close() }; runCatching { audio?.close() }; runCatching { control?.close() }
++        runCatching { video?.close() }; runCatching { audio?.close() }
++        runCatching { controlWriter?.close() }; runCatching { control?.close() }
+         server?.let { process ->
+             runCatching {
+                 if (!process.waitFor(2, TimeUnit.SECONDS)) {
+diff --git a/experiments/fold6-rg-projector/directhost/src/test/kotlin/com/code2hack/eyebrowse/projector/directhost/ScrcpyControlTest.kt b/experiments/fold6-rg-projector/directhost/src/test/kotlin/com/code2hack/eyebrowse/projector/directhost/ScrcpyControlTest.kt
+new file mode 100644
+index 0000000..08da654
+--- /dev/null
++++ b/experiments/fold6-rg-projector/directhost/src/test/kotlin/com/code2hack/eyebrowse/projector/directhost/ScrcpyControlTest.kt
+@@ -0,0 +1,41 @@
++package com.code2hack.eyebrowse.projector.directhost
++
++import com.code2hack.eyebrowse.projector.protocol.*
++import java.io.ByteArrayOutputStream
++import java.io.OutputStream
++import java.util.concurrent.CountDownLatch
++import java.util.concurrent.TimeUnit
++import kotlin.concurrent.thread
++import org.junit.Assert.*
++import org.junit.Test
++
++class ScrcpyControlTest {
++    @Test fun panelPowerCannotSplitAnInputMessageAndClosedControlRejectsFurtherWrites() {
++        val entered = CountDownLatch(1)
++        val release = CountDownLatch(1)
++        val buffer = ByteArrayOutputStream()
++        val output = object : OutputStream() {
++            override fun write(value: Int) { buffer.write(value) }
++            override fun write(data: ByteArray) {
++                if (data.size > 2) {
++                    buffer.write(data[0].toInt()); entered.countDown()
++                    check(release.await(2, TimeUnit.SECONDS))
++                    buffer.write(data, 1, data.size - 1)
++                } else buffer.write(data)
++            }
++        }
++        val control = ScrcpyControl(output)
++        val tap = Scrcpy.tap(Tap(10, 20, Geometry(480, 640)))
++        val input = thread { control.write(tap) }
++        assertTrue(entered.await(2, TimeUnit.SECONDS))
++        val panel = thread { control.write(Scrcpy.displayPower(false)) }
++        release.countDown()
++        input.join(2000); panel.join(2000)
++        assertFalse(input.isAlive); assertFalse(panel.isAlive)
++        assertArrayEquals(tap + byteArrayOf(10, 0), buffer.toByteArray())
++        control.write(Scrcpy.displayPower(true))
++        control.close()
++        assertThrows(IllegalStateException::class.java) { control.write(Scrcpy.displayPower(false)) }
++        assertArrayEquals(tap + byteArrayOf(10, 0, 10, 1), buffer.toByteArray())
++    }
++}
+diff --git a/experiments/fold6-rg-projector/protocol/src/main/kotlin/com/code2hack/eyebrowse/projector/protocol/Wire.kt b/experiments/fold6-rg-projector/protocol/src/main/kotlin/com/code2hack/eyebrowse/projector/protocol/Wire.kt
+index 328b8dc..b108272 100644
+--- a/experiments/fold6-rg-projector/protocol/src/main/kotlin/com/code2hack/eyebrowse/projector/protocol/Wire.kt
++++ b/experiments/fold6-rg-projector/protocol/src/main/kotlin/com/code2hack/eyebrowse/projector/protocol/Wire.kt
+@@ -94,14 +94,16 @@ object Wire {
+     const val NAVIGATE = 9
+     const val STREAM = 1
+     const val STOP_HOST = 2
++    const val PANEL_OFF = 3 // Fixed authenticated host requests, never raw scrcpy frames.
++    const val PANEL_ON = 4
+ 
+     fun writeRequest(output: DataOutputStream, operation: Int) {
+-        require(operation == STREAM || operation == STOP_HOST)
++        require(operation in STREAM..PANEL_ON)
+         output.writeInt(MAGIC); output.writeInt(VERSION); output.writeByte(operation); output.flush()
+     }
+     fun readRequest(input: DataInputStream): Int {
+         require(input.readInt() == MAGIC && input.readInt() == VERSION)
+-        return input.readUnsignedByte().also { require(it == STREAM || it == STOP_HOST) }
++        return input.readUnsignedByte().also { require(it in STREAM..PANEL_ON) }
+     }
+     fun writeWelcome(output: DataOutputStream) {
+         output.writeInt(MAGIC); output.writeInt(VERSION); output.writeUTF(SCRCPY_VERSION)
+@@ -149,6 +151,7 @@ sealed interface ScrcpyRecord {
+ object Scrcpy {
+     const val CONFIG = 1L shl 62
+     const val KEY_FRAME = 1L shl 61
++    fun displayPower(on: Boolean): ByteArray = byteArrayOf(10, if (on) 1 else 0)
+     fun readRecord(input: DataInputStream): ScrcpyRecord {
+         val stamp = input.readLong(); val last = input.readInt()
+         if (stamp < 0) {
+diff --git a/experiments/fold6-rg-projector/protocol/src/test/kotlin/com/code2hack/eyebrowse/projector/protocol/TlsTest.kt b/experiments/fold6-rg-projector/protocol/src/test/kotlin/com/code2hack/eyebrowse/projector/protocol/TlsTest.kt
+index 9220470..e4cd8f8 100644
+--- a/experiments/fold6-rg-projector/protocol/src/test/kotlin/com/code2hack/eyebrowse/projector/protocol/TlsTest.kt
++++ b/experiments/fold6-rg-projector/protocol/src/test/kotlin/com/code2hack/eyebrowse/projector/protocol/TlsTest.kt
+@@ -44,7 +44,7 @@ class TlsTest {
+         }
+     }
+ 
+-    private fun exchange(client: (Int) -> Unit): Int {
++    private fun exchange(operation: Int = Wire.STREAM, client: (Int) -> Unit): Int {
+         val listener = Tls.context(File(root, "host")).serverSocketFactory.createServerSocket(0, 2, InetAddress.getLoopbackAddress()) as SSLServerSocket
+         listener.needClientAuth = true; listener.soTimeout = 5000
+         val accepted = AtomicInteger()
+@@ -53,8 +53,10 @@ class TlsTest {
+             try {
+                 (listener.accept() as SSLSocket).use { socket ->
+                     socket.soTimeout = 3000; socket.startHandshake()
+-                    if (Wire.readRequest(DataInputStream(socket.inputStream)) == Wire.STREAM) {
+-                        accepted.incrementAndGet(); Wire.writeWelcome(DataOutputStream(socket.outputStream))
++                    if (Wire.readRequest(DataInputStream(socket.inputStream)) == operation) {
++                        accepted.incrementAndGet()
++                        if (operation == Wire.STREAM) Wire.writeWelcome(DataOutputStream(socket.outputStream))
++                        else { socket.outputStream.write(1); socket.outputStream.flush() }
+                     }
+                 }
+             } catch (_: Exception) { /* Rejected peers must never reach media/control admission. */ }
+@@ -77,6 +79,25 @@ class TlsTest {
+         })
+     }
+ 
++    @Test fun fixedPanelRequestsRequireTheSameTrustedClientIdentity() {
++        for (operation in listOf(Wire.PANEL_OFF, Wire.PANEL_ON)) {
++            assertEquals(1, exchange(operation) { port ->
++                Tls.connect(endpoint("receiver", port)).use { socket ->
++                    Wire.writeRequest(DataOutputStream(socket.outputStream), operation)
++                    assertEquals(1, socket.inputStream.read())
++                }
++            })
++            assertEquals(0, exchange(operation) { port ->
++                assertThrows(Exception::class.java) {
++                    Tls.connect(endpoint("rogue", port)).use { socket ->
++                        Wire.writeRequest(DataOutputStream(socket.outputStream), operation)
++                        check(socket.inputStream.read() == 1)
++                    }
++                }
++            })
++        }
++    }
++
+     @Test fun untrustedClientGetsNoWelcome() {
+         assertEquals(0, exchange { port ->
+             assertThrows(Exception::class.java) {
+diff --git a/experiments/fold6-rg-projector/protocol/src/test/kotlin/com/code2hack/eyebrowse/projector/protocol/WireTest.kt b/experiments/fold6-rg-projector/protocol/src/test/kotlin/com/code2hack/eyebrowse/projector/protocol/WireTest.kt
+index 1b4d536..f80a548 100644
+--- a/experiments/fold6-rg-projector/protocol/src/test/kotlin/com/code2hack/eyebrowse/projector/protocol/WireTest.kt
++++ b/experiments/fold6-rg-projector/protocol/src/test/kotlin/com/code2hack/eyebrowse/projector/protocol/WireTest.kt
+@@ -8,6 +8,20 @@ import org.junit.Assert.*
+ import org.junit.Test
+ 
+ class WireTest {
++    @Test fun panelPowerUsesFixedHostRequestsAndStockLocalBooleanMessages() {
++        assertArrayEquals(byteArrayOf(10, 0), Scrcpy.displayPower(false))
++        assertArrayEquals(byteArrayOf(10, 1), Scrcpy.displayPower(true))
++        for (operation in listOf(Wire.PANEL_OFF, Wire.PANEL_ON)) {
++            val request = input { Wire.writeRequest(this, operation) }
++            assertEquals(operation, Wire.readRequest(request))
++            assertEquals(-1, request.read())
++        }
++        // Raw scrcpy bytes cannot be submitted as a host request or media/control frame.
++        assertThrows(Exception::class.java) { Wire.readRequest(DataInputStream(Scrcpy.displayPower(false).inputStream())) }
++        assertThrows(Exception::class.java) { Wire.writeRequest(DataOutputStream(ByteArrayOutputStream()), 10) }
++        assertThrows(Exception::class.java) { Wire.writeFrame(DataOutputStream(ByteArrayOutputStream()), Frame(10)) }
++    }
++
+     private fun input(block: DataOutputStream.() -> Unit): DataInputStream {
+         val bytes = ByteArrayOutputStream()
+         DataOutputStream(bytes).use(block)
+
+From 4c4fc400f713cbff295cbd10280fd14e37939f22 Mon Sep 17 00:00:00 2001
+From: code2hack <code2hack4ever@gmail.com>
+Date: Mon, 19 Oct 2026 14:17:39 +0800
+Subject: [PATCH 2/2] Worker: Worker-#78 - record panel-power findings and
+ retained preview
+
+Record locked stock-panel AV/input and restoration evidence, the failed
+600-second decoder trial, historical probe attribution, and retained preview.
+
+Codex-Host: spark
+Codex-Thread-ID: 01a152a1-56b5-7811-9d48-74688c04cdd9
+---
+ .../panel-power-results.md                    | 84 +++++++++++++------
+ 1 file changed, 59 insertions(+), 25 deletions(-)
+
+diff --git a/docs/experiments/fold6-rg-projector-av/panel-power-results.md b/docs/experiments/fold6-rg-projector-av/panel-power-results.md
+index eb62d91..d7ebeb1 100644
+--- a/docs/experiments/fold6-rg-projector-av/panel-power-results.md
++++ b/docs/experiments/fold6-rg-projector-av/panel-power-results.md
+@@ -1,42 +1,76 @@
+-# PAV-PWR-01 stock physical-panel control investigation
++# PAV-PWR-01: stock panel power on the locked Fold6
+ 
+-Worker: Worker-#78. Canonical issue: [#78](https://github.com/code2hack/EyeBrowse/issues/78). Contract: [PAV-PWR-1](panel-power-followup.md). This report is **in progress, not candidate acceptance or demonstrated panel-off support**.
++Worker: Worker-#78. Contract: [#78](https://github.com/code2hack/EyeBrowse/issues/78) / [PAV-PWR-1](panel-power-followup.md). PR target: `spike/fold6-rg-projector-av`. **Investigative candidate; independent review and acceptance pending.**
+ 
+-## Source and mechanism
++Stock panel OFF demonstrated a useful distinction from Android sleep: the active cover panel was visually dark, the existing keyguard stayed locked, Android remained Awake, and the direct RG projection continued with changing video and the owned decoded audio signal. Native tap/scroll effects were also demonstrated while locked with both compositor panel modes OFF. Explicit ON, Disconnect, receiver process loss and Host Stop restored software panel modes ON.
+ 
+-Assigned baseline `b3c9aa95f344dd5be8601baa8efd2d4bec40dc02` adds only Planner Markdown over accepted product `ecb5b59ca152360ecaa6014ab1f815b58b62c6cd`. Main governance was refreshed at `8929241f348bae9005b9b6bc1a93fbabd47145c1`; the four protected articles match the worktree and remain unchanged.
++**The declared ten-minute operating case did not pass.** The unchanged RG video decoder stalled before collection completed. This is a bounded mechanism result with a retained endurance failure, not a production screen-off fix. Acoustic playback, continuous optical observation and a fresh capture session started with panels already blanked remain unqualified.
+ 
+-The existing mTLS listener admits two fixed diagnostic requests after the TLS handshake: operation 3 is PANEL_OFF and operation 4 is PANEL_ON, behind the existing PAV1/version-2 request header. They act only on the active session. `PanelPowerMain <existing-peer-directory> off|on` is the explicit shell experiment client. It consumes the already trusted peer identity opaquely; there is no new trust, network listener, RG menu, or arbitrary shell/power endpoint.
++## Exact source, artifacts and devices
+ 
+-The host writes exactly `0A 00` / `0A 01` on its existing local scrcpy control stream. Tap, scroll, navigation and panel writes share one synchronized writer. A response byte of 1 and the fixed SUBMITTED telemetry indicate only a completed local write. They cannot establish stock-handler success, panel darkness or media continuity. Closure rejects later control writes and retains upstream cleanup. No host lifetime timer was added; `keep_active=true`, `power_on=false`, mandatory output Opus, direct media routing and existing startup/write/audio safeguards remain.
++- Assigned baseline: `b3c9aa95f344dd5be8601baa8efd2d4bec40dc02`, containing only Planner Markdown additions over accepted product `ecb5b59ca152360ecaa6014ab1f815b58b62c6cd`. Refreshed main: `8929241f348bae9005b9b6bc1a93fbabd47145c1`. Its four protected articles match this worktree and remain unchanged.
++- Implemented code checkpoint: `152fc5826585cba934eba3e6321c3fc1047c3ad3`, tree `6589588615867c80b4fe988ef8924c0431f3db7b`. Subsequent report completion changes documentation only. Source/artifact bindings and the exact final pushed head/tree are retained in the mission evidence and Manager handback.
++- Host: `com.code2hack.eyebrowse.projector.directhost.r5`, APK SHA-256 `6e83df5d9c8a6598721ccb9882aac86e8aa622e3086dd9d26731ebe0fb8d2dce` (2,728,235 bytes), installed and read back. Debug signer SHA-256 `e372f80243affb0fd2462d4c90f8aede64a9ffb683cebad6c517d73eacc6a963`, matching the accepted host.
++- Frozen installed receiver: `com.code2hack.eyebrowse.projector.directrg.r3`, SHA-256 `e805103f4d445101439626a1ae678166a7f23bb79feca97cc7cfbe16f861b9c3`. Its APK, data, controls and settings were not replaced or cleared.
++- Unmodified scrcpy 5.0.1: clean source `a60891aea193d92e7e5c3942700eca63f9d19a5f`; verified master JAR SHA-256 `764eb6f79811d5211fe9df341120882ba9994c7a61b897d7bf3fb662e53bc536`. Each session retains the existing verified-copy/stock-cleanup behavior.
++- Phone: Fold6 `R3CX70NHTHK`, SM-F956N, Android 16/API36, One UI property `80500`, fingerprint `samsung/q6qksx/q6q:16/BP4A.251205.006/F956NKSS4DZH5:user/release-keys`.
++- RG: `1906092617103125`, RG-glasses, Android 12/API32, fingerprint `Rokid/glasses/glasses:12/SKQ1.240613.001/1.26.011-20260929-150201:user/release-keys`. Both devices were verified as user0/shell2000.
++- Physical inner panel: `4630946165277524611`, HWC0, 1856×2160. Active cover panel: `4630947194243491972`, HWC3, 968×2376. The Owner observed the active panel; the other panel's compositor state was recorded separately.
+ 
+-Pinned unmodified scrcpy 5.0.1 source is `a60891aea193d92e7e5c3942700eca63f9d19a5f`; source checkout is clean. Verified master JAR SHA-256: `764eb6f79811d5211fe9df341120882ba9994c7a61b897d7bf3fb662e53bc536`. The stock [Controller](https://github.com/Genymobile/scrcpy/blob/a60891aea193d92e7e5c3942700eca63f9d19a5f/server/src/main/java/com/genymobile/scrcpy/control/Controller.java) selects physical display 0 for new-display capture and registers restoration after a successful OFF. Its [Device helper](https://github.com/Genymobile/scrcpy/blob/a60891aea193d92e7e5c3942700eca63f9d19a5f/server/src/main/java/com/genymobile/scrcpy/device/Device.java) selects physical display tokens and SurfaceControl. Source behavior is distinct from the Samsung runtime result.
++Direct media/control remained Phone `10.199.167.157:44378` ↔ RG `10.199.167.154`, TLS1.3, H.264 480×640/160 dpi and required output Opus decoded as 48 kHz stereo. No computer media/control relay or competing capture client was introduced. Debug used the assigned `127.0.0.1:15037` server, Phone LAN5555 and RG USB. The first Phone LAN identity call returned device-not-found; Manager route269 restored its missing server entry with one bounded connect. No Worker connect, reset, trust or route change occurred.
+ 
+-## Checks and artifacts
++## Minimal mechanism and checks
+ 
+-On spark, the assigned build flock and two-worker/2 GiB JVM limits were used. Baseline protocol/host tests passed. The added encoding test first failed on the missing implementation. JDK17 affected checks then passed: 21 protocol/host unit tests, host debug assembly, host/protocol lint, and 36 receiver compatibility tests plus receiver debug assembly/lint. The no-overall-lifetime regression, per-session JAR preservation and exception categories remain covered. TLS tests exercise trusted and rogue identities for both fixed panel requests; the control-writer test proves a panel command cannot split a tap message and rejects writes after closure.
++The existing mTLS host admits fixed `PANEL_OFF=3` / `PANEL_ON=4` requests after its PAV1/version-2 header and TLS handshake. `PanelPowerMain <existing-peer-directory> off|on` is an explicit shell diagnostic client using existing trusted material opaquely. The requests target only an active session; no new listener, generic power/shell API, RG menu or gesture was added.
+ 
+-Host APK SHA-256: `6e83df5d9c8a6598721ccb9882aac86e8aa622e3086dd9d26731ebe0fb8d2dce`, 2,728,235 bytes. Debug signer SHA-256: `e372f80243affb0fd2462d4c90f8aede64a9ffb683cebad6c517d73eacc6a963`. Installed predecessor host hash matched `9dcc5388f78ace697552d9a3057420e2a76ad9aea9b7c60288390b80ac5cc44b`. Installed unchanged RG hash matched `e805103f4d445101439626a1ae678166a7f23bb79feca97cc7cfbe16f861b9c3`; no receiver update is required for the fixed host requests.
++The host writes exactly `0A 00` / `0A 01` to its existing local scrcpy socket. One synchronized writer serializes these with whole tap, scroll and navigation messages. Closed control rejects later writes. The response byte `1` and SUBMITTED telemetry mean **local submission only**; actual stock handler logs, compositor states, media/input effects and Owner observations supply separate evidence.
+ 
+-## Current device binding and cases
++The pinned [Controller](https://github.com/Genymobile/scrcpy/blob/a60891aea193d92e7e5c3942700eca63f9d19a5f/server/src/main/java/com/genymobile/scrcpy/control/Controller.java) selects physical display0 for new-display capture and registers restoration after successful OFF. Its [Device helper](https://github.com/Genymobile/scrcpy/blob/a60891aea193d92e7e5c3942700eca63f9d19a5f/server/src/main/java/com/genymobile/scrcpy/device/Device.java) uses physical display tokens and SurfaceControl. Neither server nor framework was patched. No overall host lifetime cap was added; `keep_active=true`, `power_on=false`, startup/write/audio/clock safeguards and required audio remain.
+ 
+-The assigned selected ADB server is `127.0.0.1:15037` via the retained Manager SSH forward to the unchanged u4090 server. The first Phone primary check returned device-not-found; the Manager restored its missing LAN entry with one bounded connect. That original failure remains in evidence. No Worker connect, reset, trust change or route switch occurred. Subsequent exact Phone identity matched.
++Baseline protocol/host tests passed; the added encoding test first failed before implementation. On spark with JDK17, the assigned build flock, two workers and 2 GiB Gradle JVM limit, all **57 affected JVM tests** passed: 21 protocol/host and 36 receiver compatibility tests. Host/receiver debug builds and affected lint passed; each application retained its existing single OldTargetApi warning, with zero lint errors. The unchanged current probe4 instrumentation also assembled. Tests cover fixed encoding, real trusted/rogue TLS identities, message serialization/closed writes, no-overall-lifetime behavior, verified session JAR copies and stop categories. A live on-RG unauthenticated handshake probe passed; the host counted its rejection without admitting a display.
+ 
+-Phone: Fold6 `R3CX70NHTHK`, SM-F956N, Android 16/API36, One UI property 80500, build `samsung/q6qksx/q6q:16/BP4A.251205.006/F956NKSS4DZH5:user/release-keys`, user0/shell2000. RG: `1906092617103125`, RG-glasses/API32, user0/shell2000. Current direct media addresses remain Phone `10.199.167.157` and RG `10.199.167.154`; debug uses Phone LAN5555 and RG USB.
++## Cases and actual findings
+ 
+-Before any preview transition, inherited bridge PID6480/start234763921 was alive but DISCONNECTED. Its last session400927e9 ended CONTROL_IO after96 seconds; RG's matching status was STOPPED. The old preview was therefore not claimed to be continuously live. Phone was Awake, DeviceIdle ACTIVE/light ACTIVE, secure=true but showing=false/inputRestricted=false/deviceLocked0. The Worker performed no credential action. Owner was asked once to lock normally for the locked-state case. RG music was0; historical original4 custody is retained.
++The Owner-retained predecessor was inspected first: bridge6480/start234763921 was alive but DISCONNECTED, its last session400927e9 had stopped CONTROL_IO, and RG status was STOPPED. Its installed host hash matched `9dcc5388f78ace697552d9a3057420e2a76ad9aea9b7c60288390b80ac5cc44b`. Only the explicitly transferred predecessor bridge was stopped before installing this candidate. No continuing-preview claim was made from the stale status.
+ 
+-| Case | Mechanism | Panel / keyguard | AV / native input | Restoration |
+-| --- | --- | --- | --- | --- |
+-| A reference | Pending matched current session | Current inherited state was unlocked; locked case pending | Pending | Not yet changed |
+-| B stock OFF | Pending | Unmeasured | Unmeasured | Pending stock ON |
+-| C reverse/repeat | Pending | Unmeasured | Unmeasured | Pending |
+-| D ten-minute interval | Conditional on viable B | Unmeasured | Unmeasured | No measurement-end shutdown |
+-| E blanked-Awake start vs sleep | Pending | Unmeasured | Unmeasured | Pending |
+-| Stop / Disconnect / peer loss | Pending | Unmeasured | Unmeasured | Pending |
++Initial Phone state was Awake, secure=true but showing=false/deviceLocked0. The first two OFF/ON comparisons and native tap/scroll were therefore **unlocked evidence**. The Owner then answered “Locked; continue”. Actual state became Dozing/showing=true/secure=true/deviceLocked1 with the target inactive. One authorized credential-free WAKEUP restored Awake while keyguard remained locked; the owned AV target was explicitly relaunched. This was not automatic continuation through sleep.
+ 
+-## Limits and retained evidence
++| Case | Actual result | Boundary |
++| --- | --- | --- |
++| A: locked Awake reference | SCID0e400c7d / VD105; owned clip playing, advancing RG video and decoded 1 kHz signal; secure/showing keyguard and deviceLocked1 | Acoustics unobserved; RG music0 |
++| B: stock OFF | Both physical SurfaceFlinger modes OFF, VD mode ON, Android Awake, keyguard still locked, source playing; Owner answered **“Phone panel dark; RG moving”** | Active cover observed at one concurrent point; inner-panel optical state and continuous optical monitoring unavailable |
++| C: reverse/repeat | Two unlocked OFF/ON pairs, subsequent locked OFF cases, and final locked explicit OFF→ON on SCID3c8d36ba/VD109 reached stock handlers and matched software power readings | Stock ON sets both physical compositor modes ON; it does not reproduce the initial inactive-inner OFF state exactly |
++| Native input under locked OFF | SCID48292008/VD106: real RG touch injection produced target taps1 and mainScrollY134, while both physical compositor modes were OFF, Android Awake and secure/showing/deviceLocked1 | No Phone-IME qualification; owned input target replaced the AV target during this separate segment |
++| D: declared 600 s operating interval | Last sampled STREAMING at collection334.32 s; failed by363.65 s. RG rendered18315 at the last streaming sample and19098 at failure; meaningful 1 kHz signal persisted up to the stopped snapshot | **NOT_PASSED**, not an uninterrupted ten-minute result |
++| E: start/recovery | Owned Input/AV Activities could launch on VD106 while panels were blanked and Android Awake/locked | Target-app launch is not fresh capture startup. Normal session cleanup restored ON before all fresh capture sessions; a fresh capture started already blanked was not established |
++| Normal Disconnect | Current probe4 directly called the existing Disconnect method after an 8.086 s measurement; passed, server ended, bridge remained DISCONNECTED, both physical software modes ON, keyguard secure/showing | Method invocation qualifies API behavior, not a new physical pad-gesture test |
++| Peer process loss | SCID5aff11c2/VD107: real AV/tone under OFF, then force-stop of **only assigned r3 receiver**; host CONTROL_IO, server dead, both physical software modes ON, Awake/secure/showing | Historical target and test package were not stopped |
++| Host Stop | SCID744ba2b1/VD108: tap through RG activated the existing HostActivity Stop button on the owned VD while panels were OFF; HOST_STOP recorded, bridge7324 absent, server dead, both physical software modes ON | Current listener inspection limitations below remain explicit |
+ 
+-Physical darkness and audible playback are not observed yet. Software frame/audio counters, source state, compositor power evidence, logical wakefulness, DeviceIdle, secure/showing keyguard and native target effects will be reported separately. No screenshot, black frame, successful write or prior stock log is promoted to physical PASS. No PIN/unlock, deliberate sleep substitution, wake loop, global power/Doze setting, wake lock, display-flag change or capture-server fork is authorized.
++The 600 s trial's own RG log at `13:58:06.959+08` identifies `IllegalStateException: Decoder input stalled`, from existing `SurfaceDecoder.enqueue:95`'s 50 ms input-buffer check. Host observed CONTROL_EOF and completed stock cleanup; bridge7324 stayed available. Its total session elapsed752.026 s includes the earlier unlocked/reference work and is **not** the duration of the locked-OFF trial. An inherited log at12:51:27 has the same decoder category. These observations do not prove panel OFF caused the stall. No receiver/decoder repair, watchdog relaxation or run-until-green replacement trial was performed. The read-only collector was terminated after recording the failure; it never stopped or restored the projector by a measurement timer.
+ 
+-Original [#66 feasibility](fold6-feasibility.md), [#70 results](results.md) and accepted [#76 lifetime/startup record](https://github.com/code2hack/EyeBrowse/issues/76) retain their original scope and failures. The mission-owned raw evidence root is `/home/code2hack/.local/state/eyebrowse/experiments/fold6-rg-projector-av/runs/run-001/issue-78/worker-78-001/evidence`; private provisioning contents are excluded from reports and Git. Final preview custody and exact pushed candidate remain pending. Independent exact-head review and acceptance belong to the Manager.
++Read-only display diagnosis found effective group0 for physical and virtual displays despite the pinned server's own-group/always-unlocked/own-focus flags. Logical DisplayManager still reported the cover/VD ON while compositor physical modes were OFF and the Owner saw darkness. No Samsung root cause, independent group fix or deep DeviceIdle Doze result is inferred. Sampled DeviceIdle remained ACTIVE/light ACTIVE. Original [#66](fold6-feasibility.md), [#70](results.md) and [#76](https://github.com/code2hack/EyeBrowse/issues/76) failures and acceptance boundaries remain unchanged.
++
++## Retained operational failures and attribution
++
++- The first APK push timed out with unknown outcome. Readback established an empty target; it remains retained. A distinct `host-shell.apk` was transferred over the **same** ADB shell route and verified against the public APK digest before installation. No reset or unqualified retry was used.
++- The first lifecycle invocation incorrectly selected a historical instrumentation package and returned **Process crashed / instrumentation code0**. It is a failed invocation, never a lifecycle PASS. Exact retained public manifests map as follows; both classes are `com.code2hack.eyebrowse.projector.directrg.ProjectionInstrumentation`:
++
++| Public test APK SHA-256 | Package | instrumentation targetPackage |
++| --- | --- | --- |
++| `977ab800f0064849990be31ac372fe038971872f5eeeee294ab05d693aced1f8` | `com.code2hack.eyebrowse.projector.directrg.test` | `com.code2hack.eyebrowse.projector.directrg` |
++| `6851a68e375463f6dab899958979e2a16dffb99847e1b4962703c3b8fe19ecb3` | `com.code2hack.eyebrowse.projector.directrg.r3.probe4` | `com.code2hack.eyebrowse.projector.directrg.r3` |
++
++The rebuilt approved probe4 was not a replacement of the historical `.test` APK. The earlier same-ID attribution was corrected through Manager disposition280. No new assigned-namespace stream or current-r3 probe report was observed from the wrong invocation; effects on the historical target's private state/process history remain **UNKNOWN**. Preserved APK bytes and an empty crash-category read do not prove no side effects. Narrow exact pidof reads found neither historical target nor `.test` process at06:07:12Z, a point observation only. They were not re-invoked, removed, cleared, force-stopped or otherwise repaired; no historical private stores were read.
++
++- A later `am start -W` for assigned r3 timed out. Read-only reconciliation found its actual PID15864, resumed ReceiverActivity and Awake state; work continued from fresh owned UI without replaying that launch.
++- A pre-final-bootstrap `ss` check failed with **Cannot open netlink socket: Permission denied**. Its stdout absence marker is not a valid listener-absence PASS. Prior bridge7324's absence after HOST_STOP was separately verified; the subsequent new bridge successfully bound the exact endpoint with reuseAddress=false, and current authenticated OFF/ON requests succeeded. No global/network permission repair was attempted.
++- The stock server retains its pre-existing “Unknown server option: send_codec_meta” warning. This experiment does not silently remove it or claim a warning-free baseline.
++
++## Retained preview and handback
++
++The final installed candidate remains running: Phone bridge18520/start235258476, namespace `/data/local/tmp/pav78-01a152a1`, SCID3c8d36ba, VD109, direct RG peer, owned moving AV clip. The final explicit stock ON reached the handler and both physical compositor modes were ON while Android stayed Awake and secure/showing/deviceLocked1. RG music remains0; original4 custody is retained rather than forcing a historical level. Final source/video/audio progress and installed-byte readbacks are retained in the final handoff record: RG rendered510→2959, changing packets519→2970 and decoded audio buffers2794→7063 across85.38 s; the expected 1 kHz peak remained about0.025. These are point samples, not an indefinite-uptime guarantee. The Owner then confirmed **“Phone panel lit; RG moving”**, independently establishing active-panel restoration and concurrent RG movement at that observation. Separate inner-panel optical and acoustic observations remain unavailable.
++
++There is no measurement-end shutdown/revert/uninstall or scheduled host lifetime limit. No PIN, keyguard dismissal, global power/Doze/plugged-in setting, wake lock, framework/display-flag patch, server fork, unrelated IME/BT/camera/microphone work, shared ADB reset or discretionary cleanup occurred. The Worker did not read historical/private original stores; the wrong historical instrumentation invocation retains the explicit unknown-effects boundary above. Required test teardown and the explicit preview handoff are separate from deferred file/workspace cleanup.
++
++Raw command intents/results, original failures, APKs/signatures, both test manifests, Owner observations, source hashes and final custody records remain under `/home/code2hack/.local/state/eyebrowse/experiments/fold6-rg-projector-av/runs/run-001/issue-78/worker-78-001/evidence`. Private provisioning contents are excluded from model output and Git. The Manager owns the exact-head review, PR, acceptance and any further disposition of the incomplete ten-minute/startup/acoustic evidence. No main/v0.0.4 merge, release or production approval is claimed.

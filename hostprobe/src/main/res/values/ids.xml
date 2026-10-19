@@ -1,0 +1,6 @@
+<resources>
+    <item name="owned_text" type="id" />
+    <item name="owned_video" type="id" />
+    <item name="play_owned_clip" type="id" />
+    <item name="stop_owned_clip" type="id" />
+</resources>

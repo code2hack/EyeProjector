@@ -1,0 +1,48 @@
+{
+  "base": "b3c9aa95f344dd5be8601baa8efd2d4bec40dc02",
+  "head": "4c4fc400f713cbff295cbd10280fd14e37939f22",
+  "files": [
+    {
+      "additions": 76,
+      "deletions": 0,
+      "filename": "docs/experiments/fold6-rg-projector-av/panel-power-results.md",
+      "sha": "d7ebeb1c902a9bc50646d0f7513c6403d304510c",
+      "status": "added"
+    },
+    {
+      "additions": 44,
+      "deletions": 5,
+      "filename": "experiments/fold6-rg-projector/directhost/src/main/kotlin/com/code2hack/eyebrowse/projector/directhost/ShellMain.kt",
+      "sha": "bca086bb1086b7fcbb0ae13ddf08069036e19708",
+      "status": "modified"
+    },
+    {
+      "additions": 41,
+      "deletions": 0,
+      "filename": "experiments/fold6-rg-projector/directhost/src/test/kotlin/com/code2hack/eyebrowse/projector/directhost/ScrcpyControlTest.kt",
+      "sha": "08da654e6ee8407a3eb2e91067994d24ebc4077b",
+      "status": "added"
+    },
+    {
+      "additions": 5,
+      "deletions": 2,
+      "filename": "experiments/fold6-rg-projector/protocol/src/main/kotlin/com/code2hack/eyebrowse/projector/protocol/Wire.kt",
+      "sha": "b1082724097308b28814955ffa20fe57bf50d437",
+      "status": "modified"
+    },
+    {
+      "additions": 24,
+      "deletions": 3,
+      "filename": "experiments/fold6-rg-projector/protocol/src/test/kotlin/com/code2hack/eyebrowse/projector/protocol/TlsTest.kt",
+      "sha": "e4cd8f870dfb0fc91c65a06fdb9cf2e5200a1c2f",
+      "status": "modified"
+    },
+    {
+      "additions": 14,
+      "deletions": 0,
+      "filename": "experiments/fold6-rg-projector/protocol/src/test/kotlin/com/code2hack/eyebrowse/projector/protocol/WireTest.kt",
+      "sha": "f80a5483f8b5164c29e88972519a361c4f1418c6",
+      "status": "modified"
+    }
+  ]
+}

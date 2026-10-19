@@ -1,0 +1,21 @@
+# Qualified installed contract
+
+Inspected on 2026-10-19. Reinspect installation and consumers before changing commands for another host/version.
+
+- `~/bin/manager-watchdog` invokes `/usr/bin/node "$HOME/.local/lib/manager-watchdog/main.mjs"`.
+- Implementation SHA-256: `eb1c3b454997347a17de4a43acbc2b0c7852bc76cb7b0310776353fe9282bce4`.
+- Existing host: Spark. User units: `manager-watchdog.timer` and `manager-watchdog.service`. Configuration: `~/.config/manager-watchdog/config.json`.
+- Supported flags: `--config ABSOLUTE_PATH`, `--check` (read-only), `--run` (guarded notifications), `--write-units`. Internal `--locked` belongs to the existing live-tick implementation.
+- Config: positive integer `intervalSeconds`, nonempty `managers` array of `{paseoId, runtimeFile}`. IDs and normalized runtime paths are unique. Runtime paths support absolute paths and `~/`; helpers accept explicit absolute target paths and preserve compatible existing entries. Shared interval was 600 seconds at inspection.
+- Units are rendered from this config. Service timeout is `20 + managers.length * 75` seconds; timer uses `intervalSeconds`. A target-count change requires rerender/reload as well as JSON update. Existing Spark timer was enabled/active, service's last result was success.
+
+The installed runtime validator requires `schemaVersion: 1`, positive integer `revision`, `project.paseoId`, `project.root` equal to the runtime-file parent, and unique `agents`. Keep `updatedAt`, `settings` and `currentRun` as the established registry contract. Project metadata names the repository/root and its actual Paseo project. Participant fields are `role`, `scope`, `host`, `runtime`, native `id`, `name` and expected `status`. A local entry also has `paseo`, `workspace`, absolute `cwd`, effective model/effort/mode and assignment reference; ChatGPT entries can have no Paseo binding. Names are unique within each role; `(host,runtime,id)` and local Paseo bindings are unique. Status is `running`, `idle` or `waiting`; a case-insensitive `lifecycle` field is rejected. Exactly one `role: Manager` must match the monitor's Paseo ID. Historical participants belong in run records.
+
+The watchdog observes its **local** Paseo daemon through installed SDK `connectToDaemon({timeout:10000})`, `fetchAgent({agentId})` and `fetchWorkspaces({page:{limit:200}})`. It compares `runtimeInfo.sessionId` or `persistence.sessionId` to native `id`, plus agent ID, project key, workspace/cwd, model, effective thinking option, mode and archive state. For local qualification the helper also checks the workspace's project root. Client modules were qualified at these actual installations (discover the current one rather than hardcoding these examples):
+
+- u4090: `/home/code2hack/.nvm/versions/node/v24.20.0/lib/node_modules/@getpaseo/cli/dist/utils/client.js`.
+- Spark: `/home/code2hack/.npm-global/lib/node_modules/@getpaseo/cli/dist/utils/client.js`.
+
+`--check` observes expected versus actual states without sending, restarting, changing assignments or overwriting expectations. At `2026-10-19T09:09:20.933Z` it returned `checkOnly:true`, both existing projects `quiet`, no anomalies. A live guarded tick may send only to a verified available Manager, retains stable event/message records and does not imply recipient receipt or work acceptance.
+
+At inspection EyeProjector's checkout was on u4090. Spark had neither that directory nor its runtime, and Spark's watchdog uses a different local Paseo daemon. Activating monitoring therefore requires a deliberate compatible deployment/access arrangement that makes both the exact runtime and participant daemon identities observable from the watchdog host. File synchronization or a mount by itself is insufficient. The bootstrap prepared the skill and fixtures; it did not assign/register a live Manager or modify existing monitoring.
