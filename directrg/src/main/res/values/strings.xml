@@ -1,0 +1,7 @@
+<resources>
+    <string name="disconnected">Disconnected</string>
+    <string name="connecting">Connecting</string>
+    <string name="connected">Connected</string>
+    <string name="connect">Connect</string>
+    <string name="display_unavailable">Display unavailable</string>
+</resources>

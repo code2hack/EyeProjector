@@ -1,12 +1,15 @@
 # EyeProjector
 
-EyeProjector projects an Android phone's applications to smart glasses through a direct, authenticated video/audio connection, with responsive glasses-native input.
+EyeProjector projects supported Android applications from a Phone-hosted virtual display onto smart glasses, with direct authenticated video/audio transport and glasses-native input.
 
 ## Project documents
 
 - [SPEC.md](SPEC.md): product goals, behavior and acceptance.
 - [AGENTS.md](AGENTS.md): multi-agent roles, orchestration, communication and review.
 - [RUNBOOK.md](RUNBOOK.md): toolchains, builds, lint and device debugging.
-- [Manager runtime skill](.agents/skills/manager-runtime/SKILL.md): initialize the local participant registry and register the assigned Manager with the installed watchdog.
+- [Manager runtime skill](.agents/skills/manager-runtime/SKILL.md): maintain the local version runtime and register its Manager with the shared watchdog for that version.
+- [Initialization audit](docs/migration/initialization-audit.md): imported source, renamed identities, verification and remaining handoffs.
 
-The repository is being initialized. Implementation and runtime verification results are recorded separately from the product requirements. Live participant identities, device addresses and credentials stay in local configuration.
+The build contains `directhost` (Phone host), `directrg` (Glasses receiver), `protocol` (transport/backend parsing), and `hostprobe` (controlled fixtures). Build and test commands are in the runbook.
+
+This repository bootstrap is not a product release. Physical acceptance of the independently named applications remains separate from host builds and historical observations. Live participant identities, device addresses and credentials stay in local configuration.

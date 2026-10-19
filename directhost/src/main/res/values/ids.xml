@@ -1,0 +1,5 @@
+<resources>
+    <item name="input_field" type="id" />
+    <item name="main_scroll" type="id" />
+    <item name="nested_list" type="id" />
+</resources>

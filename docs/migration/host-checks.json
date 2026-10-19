@@ -1,0 +1,373 @@
+{
+  "host": "u4090",
+  "date": "2026-10-19",
+  "sourceInputs": [
+    {
+      "path": "directhost/build.gradle.kts",
+      "sha256": "90f4e2368dd3b1e71315d84ee868b2f3975d0f3c26aa3c60201a7e5006b9262a"
+    },
+    {
+      "path": "directhost/src/main/AndroidManifest.xml",
+      "sha256": "5d91294c6fd399c23924e9534b55bc3a5a5905eaa13275481e5b9ae7a201ecfd"
+    },
+    {
+      "path": "directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost/AvFixtureActivity.kt",
+      "sha256": "3027346c32cfa7ab27a20ef454d2be9780ec82c2c5d85898853e57997298205b"
+    },
+    {
+      "path": "directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost/FixtureActivity.kt",
+      "sha256": "690b15bd5ed78fde41d830b8dff2bc3b7d66c4f677a0e031fc6b56a9af6fdb35"
+    },
+    {
+      "path": "directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost/HostActivity.kt",
+      "sha256": "a9005d397e279136a08021a2ba9b87454bd3375635f652d1f45fa9f3febf9325"
+    },
+    {
+      "path": "directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost/InputFixtureActivity.kt",
+      "sha256": "627819bd8b974b4ab07e9e8ec4f39a3e318cac994b36d38d6620c48c8f23ac8c"
+    },
+    {
+      "path": "directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost/ShellMain.kt",
+      "sha256": "18fb65fe4fc3e1af8e6c25f2931b5f28735ead4cc973c66fa0e0464a6a57efa5"
+    },
+    {
+      "path": "directhost/src/main/res/raw/owned_flash_beep.mp4",
+      "sha256": "fa5f9fc73da052322b929b1e10a1d77765becbdb735a23d157617e965b28076a"
+    },
+    {
+      "path": "directhost/src/main/res/values/ids.xml",
+      "sha256": "01772677fa55ca09e25f4f69a4a53b10af8c2ada7367bf88684a928f482747f0"
+    },
+    {
+      "path": "directhost/src/main/res/values/strings.xml",
+      "sha256": "61f5d7736a596ae2191a7bdb29dcffe168ee94db37acbf7e525c273c9706a80a"
+    },
+    {
+      "path": "directhost/src/main/res/xml/no_backup.xml",
+      "sha256": "4fb44914d317d8badcea48574f45c90ad0dcc65ba15d986fa32afdd9d29919b7"
+    },
+    {
+      "path": "directhost/src/test/kotlin/com/code2hack/eyeprojector/directhost/HostLifetimeTest.kt",
+      "sha256": "4706321771bcb2456a496e0b11d8f1df53244b0c3207eca76d0451ae0ccaaeab"
+    },
+    {
+      "path": "directhost/src/test/kotlin/com/code2hack/eyeprojector/directhost/SessionJarTest.kt",
+      "sha256": "f02530429a509715865568ee6862abdc5ceb2f7d5cfbc151d4de7f5085b68463"
+    },
+    {
+      "path": "directhost/src/test/kotlin/com/code2hack/eyeprojector/directhost/SessionReasonTest.kt",
+      "sha256": "0924c1a792727652654fb803e54069d121cfc6c94c9d5b86f557157398102919"
+    },
+    {
+      "path": "directrg/build.gradle.kts",
+      "sha256": "785d861fca8cd1c6a07104075f6dffa26dae3f5e602e2c87b97a60cb04251638"
+    },
+    {
+      "path": "directrg/src/androidTest/kotlin/com/code2hack/eyeprojector/directrg/ProjectionInstrumentation.kt",
+      "sha256": "e33d9308351e59abfce660f08df6d4afab896944db731b9fa589e5b516b1b749"
+    },
+    {
+      "path": "directrg/src/main/AndroidManifest.xml",
+      "sha256": "6e0304adcc6755a1fd5ed407f9914df6f8777a4eab36caaee023406bc00dbf24"
+    },
+    {
+      "path": "directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/AudioDecoder.kt",
+      "sha256": "1c0eecbdba93d84b69cbdc2d0e62fff7b3f35cd975031e83f1425de740f97edf"
+    },
+    {
+      "path": "directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/EdgeScrollMotion.kt",
+      "sha256": "6f4705f312f179ff84536458e42f4ac34e0f5aa09aabc08cf9db83be82411062"
+    },
+    {
+      "path": "directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/HeadOrientation.kt",
+      "sha256": "a40a1da6a1e9d552372769d157f65f4c6f87c3cb484bf7a8b708895e28a09441"
+    },
+    {
+      "path": "directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/HeadPointerModel.kt",
+      "sha256": "d9fb80237ac3ef872f86fa253c07eb2505e6c6da4ba14f0f831f75763b9b60d4"
+    },
+    {
+      "path": "directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/HeadPoseSource.kt",
+      "sha256": "fdf5b6bf8fce9ca7f0c1cf08ee18d0088b3c111267cc434c175098dad73c453f"
+    },
+    {
+      "path": "directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/KnownTones.kt",
+      "sha256": "c8e100d4a0bc5dc2b9ba7d4d67e1e887cfd518b065225dffd721cac8cf64af5d"
+    },
+    {
+      "path": "directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/LocalInputSettings.kt",
+      "sha256": "21786da45020ea220b8777e86bb886d4c10e3107b281b35089e1f1fb593ace14"
+    },
+    {
+      "path": "directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/PadGestureRecognizer.kt",
+      "sha256": "f1827db74a1c9b8b3c0ca427b94d40773d3c378c09259b4581fd7c9b6a502b1c"
+    },
+    {
+      "path": "directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/PlaybackClock.kt",
+      "sha256": "5ff6c0abc7539ffcf4577a4eade8ba8c453c9aba1373af7f63231e3b51b2b453"
+    },
+    {
+      "path": "directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/PointerOverlay.kt",
+      "sha256": "bec63b7ab49ee826c47b6d3b3167d3989426b4cc7b0aa557879614b7e70846ba"
+    },
+    {
+      "path": "directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/ProjectionSession.kt",
+      "sha256": "0729eaf97503abcc7ff5427bddcf9326a96ad208d371a3ca9dc668629a334051"
+    },
+    {
+      "path": "directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/ReceiverActivity.kt",
+      "sha256": "98d9cac8064759101ab542fdf609ac4e153a9a2f28cf2167ed03885b46803875"
+    },
+    {
+      "path": "directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/SurfaceDecoder.kt",
+      "sha256": "f1a9651df2c68d87e3baf4dd243d022bb7d137e3562900efc77bda0c172bf507"
+    },
+    {
+      "path": "directrg/src/main/res/values/strings.xml",
+      "sha256": "9e0de38772cddbf8dedfb6f03559ef503e23435d3c81298f943d741148564cec"
+    },
+    {
+      "path": "directrg/src/main/res/xml/no_backup.xml",
+      "sha256": "4fb44914d317d8badcea48574f45c90ad0dcc65ba15d986fa32afdd9d29919b7"
+    },
+    {
+      "path": "directrg/src/test/kotlin/android/media/MediaCodec.kt",
+      "sha256": "097ef811343f9ded6f43cdd6c41d94262c93f250a3be7284b6b55cf65c819f13"
+    },
+    {
+      "path": "directrg/src/test/kotlin/android/media/MediaFormat.kt",
+      "sha256": "571817590ca8cb87d4fa0914ef79aff0bfc6b9b2aefb0cabd69f44d5cb278d89"
+    },
+    {
+      "path": "directrg/src/test/kotlin/android/os/Handler.kt",
+      "sha256": "d729e840567259f6fa4a99cbb20396ff0daca3354486848c4eec9ca7be6688f8"
+    },
+    {
+      "path": "directrg/src/test/kotlin/android/util/AtomicFile.kt",
+      "sha256": "f6b92c296e2fef32bc73e80c925da6d082b1a7ab1b43b13e5bd604741d645d86"
+    },
+    {
+      "path": "directrg/src/test/kotlin/android/util/Log.kt",
+      "sha256": "bff601eaaad0c847926f9c42b14200dff121ee6a85b0fa1ae0e933f00e376b0a"
+    },
+    {
+      "path": "directrg/src/test/kotlin/android/view/Surface.kt",
+      "sha256": "328209b71807a2630282a46391f9e4a74305957aa8bb7378c303d05d8896bcac"
+    },
+    {
+      "path": "directrg/src/test/kotlin/com/code2hack/eyeprojector/directrg/DecoderLifetimeTest.kt",
+      "sha256": "5b4cfdff0cd8f65470ecaa3c427dbaa30879f37b5eb61df1d2949ca6fdce056f"
+    },
+    {
+      "path": "directrg/src/test/kotlin/com/code2hack/eyeprojector/directrg/KnownTonesTest.kt",
+      "sha256": "ca9ac77462ba059cbfa1a0dc7acc68a664b5a594e077e1a3b6ec36fd1e52ae47"
+    },
+    {
+      "path": "directrg/src/test/kotlin/com/code2hack/eyeprojector/directrg/PlaybackClockTest.kt",
+      "sha256": "69dec42a7882e7ffa409bfef0b3d467a0bcac7843fe3a1eed51702969b6c466a"
+    },
+    {
+      "path": "directrg/src/test/kotlin/com/code2hack/eyeprojector/directrg/ProjectorInputTest.kt",
+      "sha256": "d53e686b3ddcba732fd26ca51952815d52f13eaadb08876e2d538ed78cc78c4c"
+    },
+    {
+      "path": "directrg/src/test/kotlin/org/json/JSONObject.kt",
+      "sha256": "65d4cf7815701bd263ae1e4c7664d0c8eed1d6852f987ad9d95dd09ff9feafee"
+    },
+    {
+      "path": "protocol/build.gradle.kts",
+      "sha256": "e63a3eed4f7a03031ce64aff2799c6e409933710f8a79f61987517cacce4badd"
+    },
+    {
+      "path": "protocol/src/main/AndroidManifest.xml",
+      "sha256": "571f2735faf5e857752ee057ac8ef63425576a721616c60b86ee5d4c0a2d682f"
+    },
+    {
+      "path": "protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol/Tls.kt",
+      "sha256": "c3ba5a0254327f82590ff2c6881e397460bd704ada0635970e516aa6856fd0c6"
+    },
+    {
+      "path": "protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol/Wire.kt",
+      "sha256": "3385cbb236f19d2d0bcd426f1bc58d68fe0858fd33716264239b71bca882124c"
+    },
+    {
+      "path": "protocol/src/test/kotlin/com/code2hack/eyeprojector/protocol/TlsTest.kt",
+      "sha256": "e40f892f36c40a8e398af6a59b6455394e6b17be7e8c185101b1bd0f7f2c024d"
+    },
+    {
+      "path": "protocol/src/test/kotlin/com/code2hack/eyeprojector/protocol/WireTest.kt",
+      "sha256": "aa2202e38838f6cf1d274fcb645bfc8662aed86726d1432632e5ebf5dfe9f440"
+    },
+    {
+      "path": "hostprobe/build.gradle.kts",
+      "sha256": "7b8ae61a883a7767c4a64ba0d83ac46307efb44e8f509294d04624136eb55c84"
+    },
+    {
+      "path": "hostprobe/src/main/AndroidManifest.xml",
+      "sha256": "e95a8e9cb744b5fd0b5ee20f20a3b3bd4909f79c518bc56ecb4bb56970791adb"
+    },
+    {
+      "path": "hostprobe/src/main/kotlin/com/code2hack/eyeprojector/hostprobe/FixtureActivity.kt",
+      "sha256": "a27e4cc32b2a153e7e2da67b3edec41567c4c628080db89c4864270e1bdd1cb8"
+    },
+    {
+      "path": "hostprobe/src/main/kotlin/com/code2hack/eyeprojector/hostprobe/ToneActivity.kt",
+      "sha256": "91e157167090bdbf690a9aa72322c6c3db09c0107857fe172818d2fde0efedaa"
+    },
+    {
+      "path": "hostprobe/src/main/res/raw/owned_flash_beep.mp4",
+      "sha256": "fa5f9fc73da052322b929b1e10a1d77765becbdb735a23d157617e965b28076a"
+    },
+    {
+      "path": "hostprobe/src/main/res/values/ids.xml",
+      "sha256": "56d06e95b1d4b1c5362da9bb874aa124d1cedec00b03e631b37f1ddc41610a9b"
+    },
+    {
+      "path": "gradlew",
+      "sha256": "a3648413b47ef77af21d5ebc36c687c7d103aaef3e17f33de7d4f080a6f300a3"
+    },
+    {
+      "path": "gradlew.bat",
+      "sha256": "57931b17dd228e5c24dac90e815d0bf82477e831a4618dfab4136f5446b42a9f"
+    },
+    {
+      "path": "settings.gradle.kts",
+      "sha256": "b388a736cbaacabc22fee0fdbd723862c7cd760b491418bd3c24989607921ac4"
+    },
+    {
+      "path": "build.gradle.kts",
+      "sha256": "d4b00ef167bc58e0f4cc76fcc1fc61c2a8303235bc4069178f2e08c5df82a76c"
+    },
+    {
+      "path": "gradle.properties",
+      "sha256": "d41f7afa44c78eadd7bdda8cfac539cbb072208a200fac97d12ff4fa0ef6ac97"
+    },
+    {
+      "path": "gradle/wrapper/gradle-wrapper.properties",
+      "sha256": "fe90ff0d9944879f591a8c37b6dbaf5046d1051ccbb6b26b22081692c321f432"
+    },
+    {
+      "path": "gradle/wrapper/gradle-wrapper.jar",
+      "sha256": "2db75c40782f5e8ba1fc278a5574bab070adccb2d21ca5a6e5ed840888448046"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "directhost/build/outputs/apk/debug/directhost-debug.apk",
+      "applicationId": "com.code2hack.eyeprojector.directhost",
+      "sha256": "c2f289767c54e6e0c76af940a678ba4d569029aea8522a4f720086b36b7bda7b",
+      "bytes": 2723475
+    },
+    {
+      "path": "directrg/build/outputs/apk/debug/directrg-debug.apk",
+      "applicationId": "com.code2hack.eyeprojector.directrg",
+      "sha256": "4617bb21edef2ff6dd81a77ca9bef4ff02c87b7706b8cc5ff4bd8d1101c3ed74",
+      "bytes": 2789894
+    },
+    {
+      "path": "hostprobe/build/outputs/apk/debug/hostprobe-debug.apk",
+      "applicationId": "com.code2hack.eyeprojector.hostprobe",
+      "sha256": "f59c1dc85c59fbc45092366c787afa2bc230197ce57fb0c0204fa8b4cefb93de",
+      "bytes": 2636714
+    },
+    {
+      "path": "directrg/build/outputs/apk/androidTest/debug/directrg-debug-androidTest.apk",
+      "applicationId": "com.code2hack.eyeprojector.directrg.test",
+      "sha256": "027e8b3498969dd15b67bb9eff0708683edb30af16e741ff7d365b99107564a0",
+      "bytes": 52690
+    }
+  ],
+  "jvmTests": {
+    "total": 54,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "suites": [
+      {
+        "suite": "com.code2hack.eyeprojector.directhost.HostLifetimeTest",
+        "tests": 1,
+        "sha256": "2949ad3fe85db36d858a637682ae7d200e48273ee244ce5b8aca1d63da80b21b"
+      },
+      {
+        "suite": "com.code2hack.eyeprojector.directhost.SessionJarTest",
+        "tests": 3,
+        "sha256": "06ca245040e5d90ab6ee88742a46a59a658ffbcb024bf33a16bc20c28b7f95cc"
+      },
+      {
+        "suite": "com.code2hack.eyeprojector.directhost.SessionReasonTest",
+        "tests": 1,
+        "sha256": "6e346497150670ad18105546eaf6ad52c4a467d1d5b7e987f53f0a2f4b71a324"
+      },
+      {
+        "suite": "com.code2hack.eyeprojector.directrg.DecoderLifetimeTest",
+        "tests": 7,
+        "sha256": "5193c18cde7a5c18c5923fdf0caaf57af0a1b181736e60d7c43917efd45b32fe"
+      },
+      {
+        "suite": "com.code2hack.eyeprojector.directrg.KnownTonesTest",
+        "tests": 1,
+        "sha256": "1accb5a08abe56aef0aac70dc74b43805d0a89552f945a9ce40166a10edd1c3e"
+      },
+      {
+        "suite": "com.code2hack.eyeprojector.directrg.PlaybackClockTest",
+        "tests": 3,
+        "sha256": "30550c4975e051b199d4adf9cf10a5b1c3aa3d6673149eb61183e94ce363cc85"
+      },
+      {
+        "suite": "com.code2hack.eyeprojector.directrg.ProjectorInputTest",
+        "tests": 25,
+        "sha256": "b4f9a573d4f72ed6a3f5084342992445e83ef0692d96f5ba20a7e0dce97e7e79"
+      },
+      {
+        "suite": "com.code2hack.eyeprojector.protocol.TlsTest",
+        "tests": 4,
+        "sha256": "2378df46000b98434a05b8e3dee57171db117181c826278bd9590583ba0233d0"
+      },
+      {
+        "suite": "com.code2hack.eyeprojector.protocol.WireTest",
+        "tests": 9,
+        "sha256": "41fcbf4e7e2fb987386077c4dd23ffe66008cebf8a4f4105d9943a708685d499"
+      }
+    ]
+  },
+  "lint": [
+    {
+      "module": "directhost",
+      "warnings": [
+        "OldTargetApi"
+      ],
+      "sha256": "69c0ac8fe2a867ab184ec8aa95cbc27180b0d2f37ed265eb73c1237d34e28521"
+    },
+    {
+      "module": "directrg",
+      "warnings": [
+        "OldTargetApi"
+      ],
+      "sha256": "e66900eca1180f45c6a94eaa241746e8007e9da6bc31e40592cde249bc78f253"
+    },
+    {
+      "module": "hostprobe",
+      "warnings": [
+        "OldTargetApi",
+        "DataExtractionRules",
+        "MissingApplicationIcon"
+      ],
+      "sha256": "b458d4aec07c97ba99d4dc4fee4d9306daf5d0b215d00a8a102451c444245625"
+    },
+    {
+      "module": "protocol",
+      "warnings": [],
+      "sha256": "c7a2290ec2f47fc454842b002f672d72342d094edd15317604457fa9bd748c89"
+    }
+  ],
+  "buildLogSha256": "98fcd6407562f250070cbfa9d95dcca222116f7baf4d08bfa600700a1ccf89ab",
+  "buildResult": "BUILD SUCCESSFUL in 31s; 216 tasks, 44 executed, 172 up-to-date",
+  "physicalTestsRun": false,
+  "manifestAndDexIdentityChecks": "passed including instrumentation target and app_process ShellMain",
+  "fixture": {
+    "sha256": "fa5f9fc73da052322b929b1e10a1d77765becbdb735a23d157617e965b28076a",
+    "durationSeconds": 12,
+    "video": "h264 480x640 30fps",
+    "audio": "aac 48000Hz mono"
+  }
+}
