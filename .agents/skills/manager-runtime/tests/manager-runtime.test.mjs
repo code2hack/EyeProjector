@@ -20,6 +20,31 @@ const initial = () => reconcileRuntime(null, binding, options);
 const monitor = {paseoId: 'paseo-1', runtimeFile: root + '/runtime.json'};
 const other = {paseoId: 'other-manager', runtimeFile: '/tmp/other/runtime.json'};
 
+function writeClientFixture(dir) {
+  const client = path.join(dir, 'fake-client.mjs');
+  fs.writeFileSync(client, `
+    import fs from 'node:fs';
+    export const getDaemonHost = () => process.env.PASEO_HOST || 'localhost:6767';
+    export function resolveDaemonTarget(host) {
+      if (host.startsWith('unix://') || host.startsWith('pipe://') || host.startsWith('/')) {
+        return {type:'ipc', socketPath:host.replace(/^(unix|pipe):\\/\\//, ''), url:'ws://localhost/ws'};
+      }
+      return {type:'tcp', url:host.startsWith('tcp://') ? host.replace(/^tcp:/, 'ws:') : 'ws://' + host + '/ws'};
+    }
+    export async function connectToDaemon(options) {
+      if (options.host !== getDaemonHost() || options.timeout !== 10000) throw Error('Endpoint not pinned');
+      fs.writeFileSync('connected', 'explicit selected endpoint');
+      const root=process.cwd();
+      return {
+        fetchAgent: async () => ({agent:{id:'fixture-paseo',provider:'codex',cwd:root,workspaceId:'fixture-ws',model:'fixture-model',effectiveThinkingOptionId:'high',runtimeInfo:{sessionId:'fixture-native',modeId:'full-access'}},project:{projectKey:'fixture-project',projectName:'Fixture'}}),
+        fetchWorkspaces: async () => ({entries:[{id:'fixture-ws',workspaceDirectory:root,projectRootPath:root,projectId:'fixture-project'}],pageInfo:{nextCursor:null}}),
+        close: async () => {},
+      };
+    }
+  `);
+  return client;
+}
+
 test('initialization, exact identities, private schema and idempotent reconciliation', () => {
   const value = initial();
   assert.equal(value.schemaVersion, 1);
@@ -159,17 +184,10 @@ test('CLI initializes an isolated ignored registry and qualifies/registers an is
     fs.writeFileSync(settings, JSON.stringify(options.settings));
     const currentRun = path.join(dir, 'current-run.json');
     fs.writeFileSync(currentRun, JSON.stringify({...options.currentRun, record: assignment}));
-    const client = path.join(dir, 'fake-client.mjs');
-    fs.writeFileSync(client, `export async function connectToDaemon() {
-      const root=process.cwd();
-      return {
-        fetchAgent: async () => ({agent:{id:'fixture-paseo',provider:'codex',cwd:root,workspaceId:'fixture-ws',model:'fixture-model',effectiveThinkingOptionId:'high',runtimeInfo:{sessionId:'fixture-native',modeId:'full-access'}},project:{projectKey:'fixture-project',projectName:'Fixture'}}),
-        fetchWorkspaces: async () => ({entries:[{id:'fixture-ws',workspaceDirectory:root,projectRootPath:root,projectId:'fixture-project'}],pageInfo:{nextCursor:null}}),
-        close: async () => {},
-      };
-    }`);
+    const client = writeClientFixture(dir);
     const common = ['--client', client, '--paseo-id', 'fixture-paseo', '--native-id', 'fixture-native'];
-    const run = argv => JSON.parse(execFileSync(process.execPath, [script, ...argv], {cwd: dir, encoding: 'utf8'}));
+    const env = {...process.env, PASEO_HOST: ''};
+    const run = argv => JSON.parse(execFileSync(process.execPath, [script, ...argv], {cwd: dir, encoding: 'utf8', env}));
     const inspected = run(['inspect', ...common]);
     assert.equal(inspected.agent.id, 'fixture-native');
     assert.equal(inspected.agent.role, undefined);
@@ -179,7 +197,7 @@ test('CLI initializes an isolated ignored registry and qualifies/registers an is
     const runtimeFile = path.join(dir, 'runtime.json');
     assert.equal(fs.statSync(runtimeFile).mode & 0o777, 0o600);
     const before = fs.readFileSync(runtimeFile, 'utf8');
-    const rejected = spawnSync(process.execPath, [script, 'register', ...common, '--name', 'Manager', '--assignment', assignment, '--status', 'retired'], {cwd: dir, encoding: 'utf8'});
+    const rejected = spawnSync(process.execPath, [script, 'register', ...common, '--name', 'Manager', '--assignment', assignment, '--status', 'retired'], {cwd: dir, encoding: 'utf8', env});
     assert.notEqual(rejected.status, 0);
     assert.equal(fs.readFileSync(runtimeFile, 'utf8'), before);
     const watchdog = path.join(dir, 'fake-watchdog.mjs');
@@ -195,5 +213,47 @@ test('CLI initializes an isolated ignored registry and qualifies/registers an is
     assert.equal(run(['unmonitor', '--config', config, '--runtime', runtimeFile, '--paseo-id', 'fixture-paseo']).changed, true);
     assert.deepEqual(JSON.parse(fs.readFileSync(config)).managers, [other]);
     assert.equal(fs.readdirSync(dir).some(name => name.endsWith('.lock') || name.endsWith('.tmp')), false);
+  } finally { fs.rmSync(dir, {recursive: true}); }
+});
+
+test('daemon selection rejects remote routes before connection or writes and pins supported local endpoints', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'manager-runtime-endpoint-'));
+  const script = fileURLToPath(new URL('../scripts/manager-runtime.mjs', import.meta.url));
+  try {
+    execFileSync('git', ['init', '--quiet', dir]);
+    const client = writeClientFixture(dir);
+    const common = ['--client', client, '--paseo-id', 'fixture-paseo', '--native-id', 'fixture-native'];
+    const config = path.join(dir, 'config.json');
+    const originalConfig = JSON.stringify({intervalSeconds: 600, managers: [other]});
+    fs.writeFileSync(config, originalConfig);
+    const run = (command, host) => spawnSync(process.execPath,
+      [script, command, ...common, '--config', config],
+      {cwd: dir, encoding: 'utf8', env: {...process.env, PASEO_HOST: host}, timeout: 10000});
+    const remoteHosts = ['ssh://fixture-remote', 'https://relay.example/offer?token=fixture-secret',
+      'tcp://198.51.100.8:6767?password=fixture-secret', 'fixture-remote:6767',
+      '0.0.0.0:6767', '[::]:6767', String.raw`pipe://\\fixture-remote\pipe\daemon`];
+    for (const host of remoteHosts) {
+      for (const command of ['register', 'monitor']) {
+        const result = run(command, host);
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /local IPC or loopback/);
+        assert.equal(result.stderr.includes(host), false);
+        assert.equal(result.stderr.includes('fixture-secret'), false);
+        assert.equal(fs.existsSync(path.join(dir, 'connected')), false);
+        assert.equal(fs.existsSync(path.join(dir, 'runtime.json')), false);
+        assert.equal(fs.readFileSync(config, 'utf8'), originalConfig);
+        assert.equal(fs.readdirSync(dir).some(name => name.endsWith('.lock') || name.endsWith('.tmp')), false);
+      }
+    }
+    const localHosts = ['', 'localhost:6767', '127.0.0.1:6767', '127.9.8.7:6767', '[::1]:6767',
+      'tcp://127.0.0.1:6767?ssl=true&password=fixture-secret', 'unix:///tmp/fixture.sock',
+      '/tmp/fixture.sock', String.raw`pipe://\\.\pipe\daemon`];
+    for (const host of localHosts) {
+      const result = run('inspect', host);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(JSON.parse(result.stdout).agent.id, 'fixture-native');
+      assert.equal(fs.readFileSync(path.join(dir, 'connected'), 'utf8'), 'explicit selected endpoint');
+      fs.unlinkSync(path.join(dir, 'connected'));
+    }
   } finally { fs.rmSync(dir, {recursive: true}); }
 });

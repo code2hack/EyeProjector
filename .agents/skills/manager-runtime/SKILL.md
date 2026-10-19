@@ -10,7 +10,7 @@ Use this skill after the Owner or authorized project governance actually assigns
 ## Discover and qualify
 
 1. Run `pwd -P`, `git rev-parse --show-toplevel`, and `git remote get-url origin`; retain the permanent checkout's physical root. Confirm the actual host, native session, Paseo agent, project and workspace. A role/name is separate from both native identity and Paseo transport identity. Collaboration children can inherit a parent's `PASEO_AGENT_ID`; an inherited value alone does not establish a binding.
-2. Inspect the installed Paseo CLI/SDK before using it. Resolve `command -v paseo` with `readlink -f`, then locate its installed `dist/utils/client.js` exporting `connectToDaemon`. The helper accepts that verified absolute module path through `--client`; it does not guess installation directories or install a daemon. `paseo inspect`, `paseo project ls --json` and `paseo workspace ls --json` provide useful corroboration, but CLI inspect alone omits the native session binding.
+2. Inspect the installed Paseo CLI/SDK before using it. Resolve `command -v paseo` with `readlink -f`, then locate its installed `dist/utils/client.js` exporting `getDaemonHost`, `resolveDaemonTarget` and `connectToDaemon`. The helper accepts that verified absolute module path through `--client`; it does not guess installation directories or install a daemon. `paseo inspect`, `paseo project ls --json` and `paseo workspace ls --json` provide useful corroboration, but CLI inspect alone omits the native session binding.
 3. From the assigned Manager's actual session, run the read-only helper:
 
    ```sh
@@ -18,7 +18,7 @@ Use this skill after the Owner or authorized project governance actually assigns
    node "$SKILL_DIR/scripts/manager-runtime.mjs" inspect --client "$PASEO_CLIENT"
    ```
 
-   Defaults read `PASEO_AGENT_ID` and `CODEX_THREAD_ID`. For another native runtime, pass its verified session ID with `--native-id "$NATIVE_ID"`. The helper checks raw SDK native persistence, effective profile, project/workspace/root and archive/permission state against the local daemon. It rejects mismatches instead of importing or relabeling a session. `PROJECT_ROOT`, `PASEO_CLIENT` and other shell variables below are explicit verified values, not defaults supplied by this skill.
+   Defaults read `PASEO_AGENT_ID` and `CODEX_THREAD_ID`. For another native runtime, pass its verified session ID with `--native-id "$NATIVE_ID"`. Before connecting, the helper resolves the SDK's selected endpoint, including inherited `PASEO_HOST` and configured defaults. It accepts local IPC, `localhost` and literal loopback TCP only, then passes that exact endpoint explicitly to the connector. SSH, relay and remote TCP selections fail before any connection or registry/config write. Endpoint errors omit potentially credential-bearing addresses. The helper then checks raw SDK native persistence, effective profile, project/workspace/root and archive/permission state against the local daemon. It rejects mismatches instead of importing or relabeling a session. `PROJECT_ROOT`, `PASEO_CLIENT` and other shell variables below are explicit verified values, not defaults supplied by this skill.
 4. Discover where `manager-watchdog` actually executes. Inspect its executable, implementation, configured targets, user units and supported flags. Read [the installed contract](references/installed-contract.md) when qualifying compatibility. Verify on the execution host that the runtime file is readable and that its **local Paseo daemon** contains the exact Manager and all local participants it must observe. A matching absolute pathname or a remotely mounted file alone does not satisfy daemon identity. Report the concrete missing host access or daemon setup; retain existing registrations and schedule.
 
 ## Initialize or reconcile the private registry
@@ -96,4 +96,4 @@ node "$SKILL_DIR/scripts/manager-runtime.mjs" unmonitor \
 node --test "$SKILL_DIR/tests/manager-runtime.test.mjs"
 ```
 
-Fixtures use temporary files and fake identities: initialization, idempotency, conflict refusal, native/project/profile verification, exact handoff, multiple projects, retirement and interrupted/concurrent atomic writes. They do not mutate live registries, send messages, start timers or establish actual Manager authority.
+Fixtures use temporary files and fake identities: initialization, idempotency, conflict refusal, native/project/profile verification, exact handoff, multiple projects, retirement, interrupted/concurrent atomic writes and endpoint selection. Remote selections must fail before connection or mutation; supported local selections must be passed explicitly. They do not mutate live registries, send messages, start timers or establish actual Manager authority.

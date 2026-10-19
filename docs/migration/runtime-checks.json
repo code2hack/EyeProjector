@@ -1,0 +1,53 @@
+{
+  "date": "2026-10-19",
+  "sourceInputs": [
+    {
+      "path": ".agents/skills/manager-runtime/SKILL.md",
+      "sha256": "a4fcc8938fc5d8f341d759206b162059c27d04cdbf0d09104f5573ea020dd5a9"
+    },
+    {
+      "path": ".agents/skills/manager-runtime/references/installed-contract.md",
+      "sha256": "ee05cde4e8a4c9739d9409f08e134c295121675c83c492e3478061f04d3784ca"
+    },
+    {
+      "path": ".agents/skills/manager-runtime/scripts/manager-runtime.mjs",
+      "sha256": "51a679b44ccb8993b62b133a702239fbb77909dabbac2076a542240fa3165732"
+    },
+    {
+      "path": ".agents/skills/manager-runtime/tests/manager-runtime.test.mjs",
+      "sha256": "2f1f89e71ead2a9f10e12123c04038d4b25b096f2222144c09c2c99af9a3458f"
+    }
+  ],
+  "finding": "INIT-R1",
+  "correctedBehavior": "Reject nonlocal SDK-selected routes before connection/writes; pin validated local endpoint explicitly; no fallback",
+  "nodeTests": {
+    "passed": 8,
+    "failed": 0,
+    "skipped": 0
+  },
+  "independentFixtureChecks": {
+    "passed": 23,
+    "workflowCases": 17,
+    "endpointCases": 6,
+    "usesInstalledSdkResolvers": true,
+    "realConnection": false,
+    "evidence": [
+      {
+        "artifact": "forward-results.json",
+        "sha256": "9be1b09706b4f169a4f228a6dfb7fd3eada395e3aee681a1027a74afe2a81f00"
+      },
+      {
+        "artifact": "negative-results.json",
+        "sha256": "1ff9ff240aa863b1d4857248c85dda16b1640b33bf9c2f6bf89bf3bdb5190511"
+      },
+      {
+        "artifact": "endpoint-results.json",
+        "sha256": "6845a492ae0a6ac1f669b1e7766a7a7fe24dbb797b41f6e7e61f578d5434a4ca"
+      }
+    ]
+  },
+  "rootReadOnlyIdentityInspect": "passed",
+  "liveRegistrationActivated": false,
+  "existingMonitoringConfigurationChanged": false,
+  "androidBuildInputsChanged": false
+}

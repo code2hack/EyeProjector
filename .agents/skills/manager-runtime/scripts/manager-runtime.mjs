@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import {isIP} from 'node:net';
 import {execFileSync} from 'node:child_process';
 import {pathToFileURL, fileURLToPath} from 'node:url';
 
@@ -160,9 +161,21 @@ async function observedBinding(args) {
   const root = fs.realpathSync(execFileSync('git', ['rev-parse', '--show-toplevel'], {encoding: 'utf8'}).trim());
   const paseoId = requireText(args['paseo-id'] ?? process.env.PASEO_AGENT_ID, 'Paseo ID');
   const nativeId = requireText(args['native-id'] ?? process.env.CODEX_THREAD_ID, 'native ID');
-  const {connectToDaemon} = await import(pathToFileURL(absolute(args.client)).href);
-  // Local daemon only: the installed watchdog also observes its own local daemon.
-  const client = await connectToDaemon({timeout: 10000});
+  const {connectToDaemon, getDaemonHost, resolveDaemonTarget} = await import(pathToFileURL(absolute(args.client)).href);
+  let host;
+  try {
+    host = getDaemonHost();
+    const target = resolveDaemonTarget(host);
+    const address = target.type === 'tcp' ? new URL(target.url).hostname.replace(/^\[|\]$/g, '') : null;
+    const localIpc = target.type === 'ipc' && target.socketPath &&
+      (!target.socketPath.startsWith('\\\\') || target.socketPath.startsWith('\\\\.\\pipe\\'));
+    if (!localIpc && address !== 'localhost' && address !== '::1' &&
+        !(isIP(address ?? '') === 4 && address.startsWith('127.'))) throw Error();
+  } catch { throw Error('A local IPC or loopback Paseo daemon endpoint is required'); }
+  // Pin the checked endpoint so inherited environment/default fallback cannot select another daemon.
+  let client;
+  try { client = await connectToDaemon({host, timeout: 10000}); }
+  catch { throw Error('Cannot connect to the selected local Paseo daemon'); }
   try {
     const raw = await client.fetchAgent({agentId: paseoId});
     const pages = [], workspaces = [];
