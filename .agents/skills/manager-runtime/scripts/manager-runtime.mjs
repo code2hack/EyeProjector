@@ -14,7 +14,6 @@ const requireText = (value, label) => {
   if (typeof value !== 'string' || !value.trim()) throw Error(label + ' is required');
   return value;
 };
-const configPath = value => absolute(value?.startsWith('~/') ? path.join(os.homedir(), value.slice(2)) : value);
 const absolute = value => {
   requireText(value, 'absolute path');
   if (!path.isAbsolute(value)) throw Error('Use an absolute path: ' + value);
@@ -55,30 +54,94 @@ export function atomicUpdate(filename, update, beforeRename = () => {}) {
   }
 }
 
-export function validateRuntime(runtime) {
-  if (runtime?.schemaVersion !== 1 || !Number.isInteger(runtime.revision) || runtime.revision < 1) throw Error('Unsupported runtime schema/revision');
-  for (const field of ['project', 'settings']) if (!runtime[field] || typeof runtime[field] !== 'object' || Array.isArray(runtime[field])) throw Error('Missing ' + field);
-  if (!Object.hasOwn(runtime, 'currentRun') || !Array.isArray(runtime.agents)) throw Error('Missing currentRun/agents');
-  if (runtime.currentRun !== null) {
-    if (typeof runtime.currentRun !== 'object' || Array.isArray(runtime.currentRun)) throw Error('currentRun must be an object or null');
-    requireText(runtime.currentRun.id, 'currentRun.id'); absolute(runtime.currentRun.record);
+const timestamp = (value, label) => {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T/.test(value) || !Number.isFinite(Date.parse(value))) throw Error('Invalid timestamp: ' + label);
+};
+const records = (value, label) => {
+  if (!Array.isArray(value)) throw Error('Missing array: ' + label);
+  const ids = new Set();
+  for (const record of value) {
+    const id = requireText(record?.id, label + '.id');
+    if (ids.has(id)) throw Error('Duplicate ' + label + ' ID');
+    ids.add(id);
   }
-  requireText(runtime.project.paseoId, 'project.paseoId');
+  return ids;
+};
+
+export function validateRuntime(runtime) {
+  if (runtime?.schemaVersion !== 2 || !Number.isInteger(runtime.revision) || runtime.revision < 1) throw Error('Unsupported runtime schema/revision; preserve older schema before explicit conversion');
+  timestamp(runtime.updatedAt, 'updatedAt');
+  for (const field of ['project', 'settings']) if (!runtime[field] || typeof runtime[field] !== 'object' || Array.isArray(runtime[field])) throw Error('Missing ' + field);
+  for (const key of ['name', 'repository', 'paseoId']) requireText(runtime.project[key], 'project.' + key);
   absolute(runtime.project.root);
-  const identities = new Set(), names = new Set(), bindings = new Set();
+  if (!Number.isFinite(runtime.settings.guardApprovalTimeoutSeconds) || runtime.settings.guardApprovalTimeoutSeconds <= 0) throw Error('guardApprovalTimeoutSeconds must be positive');
+  if (!Object.hasOwn(runtime, 'currentVersion')) throw Error('Missing currentVersion');
+  if (runtime.currentVersion !== null) {
+    const version = runtime.currentVersion;
+    for (const key of ['id', 'branch']) requireText(version?.[key], 'currentVersion.' + key);
+    absolute(version.plan); absolute(version.record);
+    if (!['planned', 'implementing', 'completed'].includes(version.status)) throw Error('Invalid currentVersion status');
+  }
+  if (!Array.isArray(runtime.agents)) throw Error('Missing agents');
+  const identities = new Set(), names = new Set(), bindings = new Map();
   for (const agent of runtime.agents) {
-    for (const key of ['role', 'scope', 'host', 'runtime', 'id', 'name']) requireText(agent[key], key);
+    for (const key of ['role', 'scope', 'host', 'runtime', 'id', 'name', 'paseo', 'workspace']) requireText(agent[key], key);
+    if (!['Manager', 'Worker', 'Reviewer'].includes(agent.role)) throw Error('Invalid participant role');
     if (!states.has(agent.status) || Object.keys(agent).some(k => k.toLowerCase() === 'lifecycle')) throw Error('Invalid expected status/lifecycle');
+    absolute(agent.cwd); absolute(agent.assignment);
+    for (const key of ['model', 'effort', 'mode']) if (agent[key] !== null) requireText(agent[key], key);
     const identity = JSON.stringify([agent.host, agent.runtime, agent.id]);
     const name = JSON.stringify([agent.role, agent.name]);
-    if (identities.has(identity) || names.has(name)) throw Error('Duplicate participant identity/name');
-    identities.add(identity); names.add(name);
-    if (agent.paseo) {
-      if (bindings.has(agent.paseo) || !agent.workspace) throw Error('Duplicate/invalid Paseo binding');
-      absolute(agent.cwd); bindings.add(agent.paseo);
-    } else if (agent.runtime !== 'chatgpt') throw Error('Local participant requires Paseo binding');
+    if (identities.has(identity) || names.has(name) || bindings.has(agent.paseo)) throw Error('Duplicate participant identity/name/binding');
+    identities.add(identity); names.add(name); bindings.set(agent.paseo, agent);
   }
   if (runtime.agents.filter(a => a.role === 'Manager').length !== 1) throw Error('Exactly one Manager is required');
+  const missions = records(runtime.missions, 'missions');
+  for (const mission of runtime.missions) {
+    for (const key of ['issue', 'branch', 'activity']) requireText(mission[key], 'mission.' + key);
+    absolute(mission.worktree); timestamp(mission.updatedAt, 'mission.updatedAt');
+    if (!['implementing', 'reviewing', 'waiting'].includes(mission.status)) throw Error('Invalid mission status');
+    if (bindings.get(mission.worker)?.role !== 'Worker' ||
+        (mission.reviewer !== null && bindings.get(mission.reviewer)?.role !== 'Reviewer') ||
+        (mission.status === 'reviewing' && mission.reviewer === null)) throw Error('Mission requires role-correct Worker/Reviewer bindings');
+  }
+  records(runtime.reservations, 'reservations');
+  const resources = new Set();
+  for (const reservation of runtime.reservations) {
+    requireText(reservation.resource, 'reservation.resource');
+    if (resources.has(reservation.resource) || !missions.has(reservation.mission) || !bindings.has(reservation.holder)) throw Error('Invalid/duplicate reservation reference');
+    resources.add(reservation.resource);
+    if (!Array.isArray(reservation.operations)) throw Error('Reservation operations required');
+    for (const operation of reservation.operations) requireText(operation, 'reservation operation');
+    timestamp(reservation.acquiredAt, 'reservation.acquiredAt');
+  }
+  records(runtime.guardRequests, 'guardRequests');
+  for (const request of runtime.guardRequests) {
+    for (const key of ['proposal', 'reason']) requireText(request[key], 'guardRequest.' + key);
+    if (request.mission !== null) requireText(request.mission, 'guardRequest.mission');
+    if (!['pending', 'approved', 'denied'].includes(request.status) || ![null, 'owner', 'timeout'].includes(request.resolution) || typeof request.askOnNextWatchdog !== 'boolean') throw Error('Invalid guard decision');
+    timestamp(request.requestedAt, 'guardRequest.requestedAt'); timestamp(request.deadline, 'guardRequest.deadline');
+    if (Date.parse(request.deadline) <= Date.parse(request.requestedAt)) throw Error('Invalid guard deadline');
+    if (request.status === 'pending') {
+      if ((request.mission !== null && !missions.has(request.mission)) || request.resolution !== null || request.decisionAt !== null || request.dismissedAt !== null) throw Error('Invalid pending guard proposal');
+    } else {
+      timestamp(request.decisionAt, 'guardRequest.decisionAt');
+      if (request.dismissedAt !== null) timestamp(request.dismissedAt, 'guardRequest.dismissedAt');
+      if (request.resolution === 'timeout') {
+        if (request.status !== 'denied' || request.dismissedAt === null) throw Error('Timeout is a dismissed denial');
+      } else if (request.resolution !== 'owner' || !request.ownerDecision) throw Error('Owner decision reference required');
+    }
+  }
+  records(runtime.credentials, 'credentials');
+  for (const credential of runtime.credentials) {
+    for (const key of ['kind', 'host', 'ownerRequest', 'versionId']) requireText(credential[key], 'credential.' + key);
+    const relative = path.relative(runtime.project.root, absolute(credential.path));
+    if (!relative || (!relative.startsWith('..' + path.sep) && !path.isAbsolute(relative))) throw Error('Credential reference must be outside repository');
+    timestamp(credential.createdAt, 'credential.createdAt');
+    if (!['pending-owner-decision', 'retained', 'destroyed'].includes(credential.cleanupStatus)) throw Error('Invalid credential cleanupStatus');
+  }
+  if (!Array.isArray(runtime.history)) throw Error('Missing history');
+  for (const reference of runtime.history) requireText(reference, 'history reference');
   return runtime;
 }
 
@@ -100,13 +163,15 @@ export function verifyBinding(raw, workspaces, {root, paseoId, nativeId, host}) 
 }
 
 export function reconcileRuntime(previous, binding, options) {
-  const {name, assignment, status, settings, currentRun, handoff} = options;
+  const {name, assignment, status, settings, currentVersion, handoff} = options;
   requireText(name, 'Manager name'); absolute(assignment);
   if (!states.has(status)) throw Error('Choose expected running, idle or waiting');
+  if (!previous && (!settings || typeof settings !== 'object' || Array.isArray(settings))) throw Error('Initial settings must be an object');
   const next = previous ? structuredClone(validateRuntime(previous)) : {
-    schemaVersion: 1, revision: 1, updatedAt: new Date().toISOString(),
+    schemaVersion: 2, revision: 1, updatedAt: new Date().toISOString(),
     project: {...binding.project, repository: requireText(options.repository, 'repository')},
-    settings: settings ?? {}, currentRun: currentRun ?? null, agents: [],
+    settings: {guardApprovalTimeoutSeconds: 600, ...settings}, currentVersion: currentVersion ?? null,
+    agents: [], missions: [], reservations: [], guardRequests: [], credentials: [], history: [],
   };
   if (next.project.root !== binding.project.root || next.project.paseoId !== binding.project.paseoId) throw Error('Existing registry belongs to another project/root');
   const existing = next.agents.find(a => a.role === 'Manager');
@@ -120,39 +185,13 @@ export function reconcileRuntime(previous, binding, options) {
     scope: current?.role === 'Manager' ? current.scope : 'Project-wide coordination', name, assignment, status};
   if (current) next.agents[next.agents.indexOf(current)] = participant;
   else next.agents.push(participant);
-  // Existing settings, pending requests, current run and extension fields remain intact.
+  if (currentVersion !== undefined) next.currentVersion = currentVersion && currentVersion.id === next.currentVersion?.id
+    ? {...next.currentVersion, ...currentVersion} : currentVersion;
+  // Operational records, settings and extension fields remain intact.
   validateRuntime(next);
   if (previous && !same(previous, next)) {
     next.revision = previous.revision + 1;
     next.updatedAt = new Date().toISOString();
-  }
-  return next;
-}
-
-export function reconcileConfig(previous, entry, {replaceId, remove = false} = {}) {
-  if (!previous || !Number.isInteger(previous.intervalSeconds) || previous.intervalSeconds < 1 || !Array.isArray(previous.managers)) throw Error('Existing supported watchdog config required');
-  const next = structuredClone(previous);
-  const ids = new Set(), files = new Set();
-  for (const item of next.managers) {
-    if (!/^[A-Za-z0-9_-]+$/.test(item.paseoId) || ids.has(item.paseoId) || files.has(item.runtimeFile)) throw Error('Invalid/duplicate watchdog targets');
-    const runtimeFile = configPath(item.runtimeFile);
-    if (files.has(runtimeFile)) throw Error('Duplicate watchdog runtime path');
-    ids.add(item.paseoId); files.add(runtimeFile);
-  }
-  if (!/^[A-Za-z0-9_-]+$/.test(entry.paseoId)) throw Error('Invalid Paseo ID');
-  absolute(entry.runtimeFile);
-  const found = next.managers.find(m => m.paseoId === entry.paseoId || configPath(m.runtimeFile) === entry.runtimeFile);
-  if (remove) {
-    if (found && (found.paseoId !== entry.paseoId || configPath(found.runtimeFile) !== entry.runtimeFile)) throw Error('Retirement target mismatch');
-    if (found) next.managers.splice(next.managers.indexOf(found), 1);
-    if (!next.managers.length) throw Error('Last monitor requires explicit service retirement; no empty supported config');
-  } else if (found) {
-    if (found.paseoId === entry.paseoId && configPath(found.runtimeFile) === entry.runtimeFile) return next;
-    if (configPath(found.runtimeFile) !== entry.runtimeFile || found.paseoId !== replaceId) throw Error('Conflicting monitor: require exact predecessor ID');
-    next.managers[next.managers.indexOf(found)] = {...found, ...entry};
-  } else {
-    if (replaceId) throw Error('Predecessor monitor not found');
-    next.managers.push(entry);
   }
   return next;
 }
@@ -200,46 +239,28 @@ async function main() {
     if (Object.hasOwn(args, key)) throw Error('Duplicate option: ' + key);
     args[key] = argv[i + 1];
   }
-  const allowed = new Set(['paseo-id', 'native-id', 'client', 'name', 'assignment', 'status', 'settings', 'current-run', 'handoff', 'config', 'runtime', 'watchdog', 'replace-id']);
+  const allowed = new Set(['paseo-id', 'native-id', 'client', 'name', 'assignment', 'status', 'settings', 'current-version', 'handoff']);
   for (const key of Object.keys(args)) if (!allowed.has(key)) throw Error('Unknown option: ' + key);
   const read = filename => JSON.parse(fs.readFileSync(absolute(filename), 'utf8'));
-  if (!['inspect', 'register', 'monitor', 'unmonitor'].includes(command)) throw Error('Commands: inspect, register, monitor, unmonitor');
-  if (command === 'unmonitor') {
-    const result = atomicUpdate(args.config, old => reconcileConfig(old, {paseoId: requireText(args['paseo-id'], 'Paseo ID'), runtimeFile: absolute(args.runtime)}, {remove: true}));
-    console.log(json({changed: result.changed})); return;
-  }
+  if (!['inspect', 'register'].includes(command)) throw Error('Commands: inspect, register');
   const binding = await observedBinding(args);
   if (command === 'inspect') { console.log(json(binding)); return; }
   const runtimeFile = path.join(binding.project.root, 'runtime.json');
-  if (command === 'register') {
-    execFileSync('git', ['check-ignore', '--quiet', runtimeFile]);
-    if (execFileSync('git', ['ls-files', '--', runtimeFile], {encoding: 'utf8'}).trim()) throw Error('runtime.json must be untracked');
-    const assignment = absolute(args.assignment);
-    fs.accessSync(assignment, fs.constants.R_OK);
-    const handoff = args.handoff ? read(args.handoff) : undefined;
-    if (handoff) fs.accessSync(absolute(handoff.record), fs.constants.R_OK);
-    const result = atomicUpdate(runtimeFile, old => {
-      if (!old && (!args.settings || !args['current-run'])) throw Error('Initialize with explicit settings and current-run JSON files');
-      return reconcileRuntime(old, binding, {
+  execFileSync('git', ['check-ignore', '--quiet', runtimeFile]);
+  if (execFileSync('git', ['ls-files', '--', runtimeFile], {encoding: 'utf8'}).trim()) throw Error('runtime.json must be untracked');
+  const assignment = absolute(args.assignment);
+  fs.accessSync(assignment, fs.constants.R_OK);
+  const handoff = args.handoff ? read(args.handoff) : undefined;
+  if (handoff) fs.accessSync(absolute(handoff.record), fs.constants.R_OK);
+  const result = atomicUpdate(runtimeFile, old => {
+    if (!old && (!args.settings || !args['current-version'])) throw Error('Initialize with explicit settings and current-version JSON files');
+    return reconcileRuntime(old, binding, {
       name: args.name, assignment, status: args.status, repository: execFileSync('git', ['remote', 'get-url', 'origin'], {encoding: 'utf8'}).trim(),
       settings: args.settings ? read(args.settings) : undefined,
-      currentRun: args['current-run'] ? read(args['current-run']) : undefined, handoff,
-      });
+      currentVersion: args['current-version'] ? read(args['current-version']) : undefined, handoff,
     });
-    console.log(json({changed: result.changed, runtimeFile, revision: result.value.revision})); return;
-  }
-  const runtime = validateRuntime(read(runtimeFile));
-  const manager = runtime.agents.find(a => a.role === 'Manager');
-  if (manager.host !== os.hostname() || manager.paseo !== binding.agent.paseo || manager.id !== binding.agent.id) throw Error('Watchdog host/Manager binding mismatch');
-  const watchdog = await import(pathToFileURL(absolute(args.watchdog)).href);
-  const entry = {paseoId: manager.paseo, runtimeFile};
-  watchdog.validateRuntime(runtime, entry);
-  const result = atomicUpdate(args.config, old => {
-    const next = reconcileConfig(old, entry, {replaceId: args['replace-id']});
-    watchdog.validateConfig(next);
-    return next;
   });
-  console.log(json({changed: result.changed, runtimeFile, paseoId: manager.paseo, readiness: 'Run installed watchdog --check and inspect units'}));
+  console.log(json({changed: result.changed, runtimeFile, revision: result.value.revision}));
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

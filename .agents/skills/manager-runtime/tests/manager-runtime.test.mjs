@@ -5,7 +5,7 @@ import path from 'node:path';
 import {test} from 'node:test';
 import {execFileSync, spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {atomicUpdate, verifyBinding, validateRuntime, reconcileRuntime, reconcileConfig} from '../scripts/manager-runtime.mjs';
+import {atomicUpdate, verifyBinding, validateRuntime, reconcileRuntime} from '../scripts/manager-runtime.mjs';
 
 const root = '/tmp/manager-runtime-fixture';
 const binding = {project: {name: 'Fixture', root, paseoId: 'prj_fixture'}, agent: {
@@ -15,10 +15,8 @@ const binding = {project: {name: 'Fixture', root, paseoId: 'prj_fixture'}, agent
 }};
 const options = {name: 'Manager', assignment: '/tmp/fixture-run/run.json', status: 'running',
   repository: 'example/fixture', settings: {notification: 'written', concurrencyDecision: '/tmp/decision'},
-  currentRun: {kind: 'initialization', id: 'run-001', record: '/tmp/fixture-run/run.json'}};
+  currentVersion: {id: 'version-001', branch: 'version/fixture', plan: '/tmp/fixture-run/plan.md', record: '/tmp/fixture-run/run.json', status: 'planned'}};
 const initial = () => reconcileRuntime(null, binding, options);
-const monitor = {paseoId: 'paseo-1', runtimeFile: root + '/runtime.json'};
-const other = {paseoId: 'other-manager', runtimeFile: '/tmp/other/runtime.json'};
 
 function writeClientFixture(dir) {
   const client = path.join(dir, 'fake-client.mjs');
@@ -47,7 +45,7 @@ function writeClientFixture(dir) {
 
 test('initialization, exact identities, private schema and idempotent reconciliation', () => {
   const value = initial();
-  assert.equal(value.schemaVersion, 1);
+  assert.equal(value.schemaVersion, 2);
   assert.equal(value.revision, 1);
   assert.equal(value.project.root, root);
   assert.equal(value.agents[0].id, 'native-1');
@@ -55,11 +53,12 @@ test('initialization, exact identities, private schema and idempotent reconcilia
   assert.deepEqual(reconcileRuntime(value, binding, options), value);
   value.pendingRequests = [{id: 'request-1', state: 'unknown'}];
   value.agents[0].attempts = [{todo: 'todo-1', count: 3}];
-  const next = reconcileRuntime(value, {...binding, agent: {...binding.agent, model: 'new-model'}}, {...options, status: 'waiting', settings: {discard: true}, currentRun: null});
+  const next = reconcileRuntime(value, {...binding, agent: {...binding.agent, model: 'new-model'}}, {...options, status: 'waiting', settings: {discard: true}, currentVersion: undefined});
   assert.equal(next.revision, 2);
   assert.equal(next.agents[0].status, 'waiting');
   assert.deepEqual(next.settings, value.settings);
-  assert.deepEqual(next.currentRun, value.currentRun);
+  assert.equal(next.settings.guardApprovalTimeoutSeconds, 600);
+  assert.deepEqual(next.currentVersion, value.currentVersion);
   assert.deepEqual(next.pendingRequests, value.pendingRequests);
   assert.deepEqual(next.agents[0].attempts, value.agents[0].attempts);
 });
@@ -82,7 +81,7 @@ test('conflicting Manager/project/identity/status fails without displacement', (
   assert.equal(value.agents[0].id, 'native-1');
 });
 
-test('handoff replaces only recorded Manager, retaining run, children and history references', () => {
+test('handoff replaces only recorded Manager, retaining version, children and history references', () => {
   const value = initial();
   const worker = {...value.agents[0], role: 'Worker', name: 'Worker', id: 'native-worker', paseo: 'paseo-worker', workspace: 'wks_worker', status: 'waiting', assignment: '/tmp/worker-mission.json'};
   value.agents.push(worker);
@@ -94,7 +93,7 @@ test('handoff replaces only recorded Manager, retaining run, children and histor
   assert.equal(result.agents.filter(a => a.role === 'Manager').length, 1);
   assert.equal(result.agents.find(a => a.role === 'Manager').id, 'native-2');
   assert.deepEqual(result.agents.find(a => a.role === 'Worker'), worker);
-  assert.deepEqual(result.currentRun, value.currentRun);
+  assert.deepEqual(result.currentVersion, value.currentVersion);
   assert.deepEqual(result.settings, value.settings);
   assert.deepEqual(result.pendingRequests, value.pendingRequests);
   const successorParticipant = {...worker, name: 'Successor Worker', id: 'native-2', paseo: 'paseo-2', workspace: 'wks_next', scope: 'Old implementation assignment', attemptHistory: '/tmp/successor-history.json'};
@@ -107,27 +106,77 @@ test('handoff replaces only recorded Manager, retaining run, children and histor
   assert.deepEqual(promoted.agents.find(a => a.role === 'Worker'), worker);
 });
 
-test('multiple projects, config idempotency, conflicts, exact handoff and retirement', () => {
-  const config = {intervalSeconds: 413, managers: [other], extension: {retained: true}};
-  const next = reconcileConfig(config, monitor);
-  assert.deepEqual(next.managers, [other, monitor]);
-  assert.equal(next.intervalSeconds, 413);
-  assert.deepEqual(next.extension, config.extension);
-  assert.deepEqual(reconcileConfig(next, monitor), next);
-  const successor = {...monitor, paseoId: 'paseo-2'};
-  assert.throws(() => reconcileConfig(next, successor), /Conflicting monitor/);
-  assert.throws(() => reconcileConfig(next, {...monitor, runtimeFile: '/tmp/wrong/runtime.json'}, {replaceId: monitor.paseoId}), /Conflicting monitor/);
-  const switched = reconcileConfig(next, successor, {replaceId: 'paseo-1'});
-  assert.deepEqual(switched.managers, [other, successor]);
-  assert.deepEqual(reconcileConfig(switched, successor, {remove: true}), config);
-  assert.throws(() => reconcileConfig(switched, monitor, {remove: true}), /target mismatch/);
-  assert.throws(() => reconcileConfig(config, other, {remove: true}), /Last monitor/);
-  assert.deepEqual(config.managers, [other]);
-  const tildeEntry = {paseoId: 'home-manager', runtimeFile: '~/project/runtime.json'};
-  const tildeConfig = {...config, managers: [other, tildeEntry]};
-  const expanded = {...tildeEntry, runtimeFile: path.join(os.homedir(), 'project/runtime.json')};
-  assert.deepEqual(reconcileConfig(tildeConfig, expanded), tildeConfig);
-  assert.deepEqual(reconcileConfig(tildeConfig, expanded, {remove: true}), config);
+test('formal version state updates preserve operational records and older schema requires explicit conversion', () => {
+  const value = initial();
+  assert.equal(value.settings.guardApprovalTimeoutSeconds, 600);
+  assert.equal(reconcileRuntime(null, binding, {...options, settings: {guardApprovalTimeoutSeconds: 90}}).settings.guardApprovalTimeoutSeconds, 90);
+  for (const key of ['missions', 'reservations', 'guardRequests', 'credentials', 'history']) assert.deepEqual(value[key], []);
+  const worker = {...value.agents[0], role: 'Worker', name: 'Worker', id: 'worker-native', paseo: 'worker-paseo', assignment: '/tmp/worker-mission.json'};
+  const reviewer = {...worker, role: 'Reviewer', name: 'Reviewer', id: 'reviewer-native', paseo: 'reviewer-paseo', assignment: '/tmp/review-mission.json'};
+  value.agents.push(worker, reviewer);
+  value.missions.push({id: 'mission-1', issue: 'https://example.invalid/issues/1', worker: worker.paseo, reviewer: reviewer.paseo, branch: 'work/issue-1', worktree: '/tmp/issue-1', status: 'reviewing', activity: 'Review exact candidate', updatedAt: value.updatedAt});
+  value.reservations.push({id: 'phone-reservation', resource: 'phone-fixture', mission: 'mission-1', holder: worker.paseo, operations: ['inspect'], acquiredAt: value.updatedAt});
+  value.guardRequests.push({id: 'guard-1', mission: 'mission-1', proposal: 'Proposed check', reason: 'Explain actual purpose', requestedAt: '2026-10-19T00:00:00Z', deadline: '2026-10-19T00:10:00Z', status: 'pending', decisionAt: null, resolution: null, dismissedAt: null, askOnNextWatchdog: false});
+  value.credentials.push({id: 'credential-1', kind: 'fixture', host: 'fixture-host', path: '/tmp/private-credentials/fixture', ownerRequest: 'owner-retention-request', createdAt: value.updatedAt, versionId: 'version-001', cleanupStatus: 'pending-owner-decision'});
+  value.history.push('/tmp/fixture-run/decision.json');
+  value.currentVersion.extension = {retained: true};
+  const {extension, ...fields} = value.currentVersion;
+  const version = {...fields, status: 'implementing'};
+  const next = reconcileRuntime(value, binding, {...options, currentVersion: version});
+  assert.deepEqual(next.currentVersion, {...version, extension});
+  for (const key of ['missions', 'reservations', 'guardRequests', 'credentials', 'history']) assert.deepEqual(next[key], value[key]);
+  assert.equal(next.guardRequests[0].status, 'pending'); // Manager adjudicates deadlines; registration does not schedule decisions.
+  assert.deepEqual(next.agents.find(a => a.paseo === worker.paseo), worker);
+  assert.equal(next.revision, value.revision + 1);
+  assert.equal(reconcileRuntime(next, binding, {...options, currentVersion: null}).currentVersion, null);
+  const invalidWorker = structuredClone(value);
+  invalidWorker.missions[0].worker = reviewer.paseo;
+  assert.throws(() => validateRuntime(invalidWorker), /role-correct/);
+  const duplicateResource = structuredClone(value);
+  duplicateResource.reservations.push({...value.reservations[0], id: 'other-reservation'});
+  assert.throws(() => validateRuntime(duplicateResource), /reservation/);
+  const insideRepository = structuredClone(value);
+  insideRepository.credentials[0].path = root + '/secret';
+  assert.throws(() => validateRuntime(insideRepository), /outside repository/);
+  const badRole = structuredClone(value);
+  badRole.agents[1].role = 'OtherRole';
+  assert.throws(() => validateRuntime(badRole), /participant role/);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'manager-runtime-old-schema-'));
+  try {
+    const filename = path.join(dir, 'runtime.json');
+    const old = {...value, schemaVersion: 1, currentRun: {record: '/tmp/older-run.json'}};
+    fs.writeFileSync(filename, JSON.stringify(old));
+    const original = fs.readFileSync(filename, 'utf8');
+    assert.throws(() => atomicUpdate(filename, previous => reconcileRuntime(previous, binding, options)), /explicit conversion/);
+    assert.equal(fs.readFileSync(filename, 'utf8'), original);
+    assert.deepEqual(fs.readdirSync(dir), ['runtime.json']);
+  } finally { fs.rmSync(dir, {recursive: true}); }
+});
+
+test('timeout guard denial is dismissed and retained for a new correlated question', () => {
+  const value = initial();
+  const denied = {id: 'guard-1', mission: 'finished-mission', proposal: 'Proposed check', reason: 'Purpose', requestedAt: '2026-10-19T00:00:00Z', deadline: '2026-10-19T00:10:00Z', status: 'denied', decisionAt: '2026-10-19T00:10:01Z', resolution: 'timeout', dismissedAt: '2026-10-19T00:10:01Z', askOnNextWatchdog: true};
+  value.guardRequests.push(denied);
+  value.history.push('/tmp/finished-mission.json');
+  assert.equal(validateRuntime(value), value);
+  const nextQuestion = {...denied, id: 'guard-2', mission: null, status: 'pending', decisionAt: null, resolution: null, dismissedAt: null, askOnNextWatchdog: false, inReplyTo: 'guard-1'};
+  value.guardRequests.push(nextQuestion);
+  assert.equal(validateRuntime(value), value);
+  assert.equal(value.guardRequests[0].status, 'denied');
+  const processed = structuredClone(value);
+  processed.guardRequests[0].askOnNextWatchdog = false;
+  processed.guardRequests[0].followupRequest = 'guard-2';
+  assert.equal(validateRuntime(processed), processed);
+  for (const key of ['status', 'resolution', 'decisionAt', 'dismissedAt']) assert.equal(processed.guardRequests[0][key], denied[key]);
+  const unresolved = structuredClone(value);
+  unresolved.guardRequests[0].dismissedAt = null;
+  assert.throws(() => validateRuntime(unresolved), /dismissed denial/);
+  const invalidApproval = structuredClone(value);
+  invalidApproval.guardRequests[0].status = 'approved';
+  assert.throws(() => validateRuntime(invalidApproval), /Timeout/);
+  const explicit = structuredClone(value);
+  explicit.guardRequests[0] = {...denied, resolution: 'owner', ownerDecision: '/tmp/owner-decision.json', askOnNextWatchdog: false};
+  assert.equal(validateRuntime(explicit), explicit);
 });
 
 test('binding observes native identity/project/profile and rejects child masquerading as parent', () => {
@@ -171,7 +220,7 @@ test('atomic private writes, interruption rollback, stale writer refusal, concur
 });
 
 
-test('CLI initializes an isolated ignored registry and qualifies/registers an isolated monitor', () => {
+test('CLI initializes an isolated ignored registry', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'manager-runtime-cli-'));
   const script = fileURLToPath(new URL('../scripts/manager-runtime.mjs', import.meta.url));
   try {
@@ -182,8 +231,8 @@ test('CLI initializes an isolated ignored registry and qualifies/registers an is
     fs.writeFileSync(assignment, '{}');
     const settings = path.join(dir, 'settings.json');
     fs.writeFileSync(settings, JSON.stringify(options.settings));
-    const currentRun = path.join(dir, 'current-run.json');
-    fs.writeFileSync(currentRun, JSON.stringify({...options.currentRun, record: assignment}));
+    const currentVersion = path.join(dir, 'current-version.json');
+    fs.writeFileSync(currentVersion, JSON.stringify({...options.currentVersion, record: assignment}));
     const client = writeClientFixture(dir);
     const common = ['--client', client, '--paseo-id', 'fixture-paseo', '--native-id', 'fixture-native'];
     const env = {...process.env, PASEO_HOST: ''};
@@ -191,7 +240,7 @@ test('CLI initializes an isolated ignored registry and qualifies/registers an is
     const inspected = run(['inspect', ...common]);
     assert.equal(inspected.agent.id, 'fixture-native');
     assert.equal(inspected.agent.role, undefined);
-    const register = ['register', ...common, '--name', 'Manager', '--assignment', assignment, '--status', 'running', '--settings', settings, '--current-run', currentRun];
+    const register = ['register', ...common, '--name', 'Manager', '--assignment', assignment, '--status', 'running', '--settings', settings, '--current-version', currentVersion];
     assert.equal(run(register).changed, true);
     assert.equal(run(register).changed, false);
     const runtimeFile = path.join(dir, 'runtime.json');
@@ -200,18 +249,6 @@ test('CLI initializes an isolated ignored registry and qualifies/registers an is
     const rejected = spawnSync(process.execPath, [script, 'register', ...common, '--name', 'Manager', '--assignment', assignment, '--status', 'retired'], {cwd: dir, encoding: 'utf8', env});
     assert.notEqual(rejected.status, 0);
     assert.equal(fs.readFileSync(runtimeFile, 'utf8'), before);
-    const watchdog = path.join(dir, 'fake-watchdog.mjs');
-    fs.writeFileSync(watchdog, `export function validateRuntime(runtime,entry) {if(runtime.agents[0].paseo!==entry.paseoId) throw Error('wrong Manager');} export function validateConfig(c) {if(!c.managers.length) throw Error('empty');}`);
-    const config = path.join(dir, 'watchdog.json');
-    fs.writeFileSync(config, JSON.stringify({intervalSeconds: 777, managers: [other]}));
-    const monitorArgs = ['monitor', ...common, '--watchdog', watchdog, '--config', config];
-    assert.equal(run(monitorArgs).changed, true);
-    assert.equal(run(monitorArgs).changed, false);
-    const registered = JSON.parse(fs.readFileSync(config));
-    assert.equal(registered.intervalSeconds, 777);
-    assert.deepEqual(registered.managers, [other, {paseoId: 'fixture-paseo', runtimeFile}]);
-    assert.equal(run(['unmonitor', '--config', config, '--runtime', runtimeFile, '--paseo-id', 'fixture-paseo']).changed, true);
-    assert.deepEqual(JSON.parse(fs.readFileSync(config)).managers, [other]);
     assert.equal(fs.readdirSync(dir).some(name => name.endsWith('.lock') || name.endsWith('.tmp')), false);
   } finally { fs.rmSync(dir, {recursive: true}); }
 });
@@ -223,17 +260,14 @@ test('daemon selection rejects remote routes before connection or writes and pin
     execFileSync('git', ['init', '--quiet', dir]);
     const client = writeClientFixture(dir);
     const common = ['--client', client, '--paseo-id', 'fixture-paseo', '--native-id', 'fixture-native'];
-    const config = path.join(dir, 'config.json');
-    const originalConfig = JSON.stringify({intervalSeconds: 600, managers: [other]});
-    fs.writeFileSync(config, originalConfig);
     const run = (command, host) => spawnSync(process.execPath,
-      [script, command, ...common, '--config', config],
+      [script, command, ...common],
       {cwd: dir, encoding: 'utf8', env: {...process.env, PASEO_HOST: host}, timeout: 10000});
     const remoteHosts = ['ssh://fixture-remote', 'https://relay.example/offer?token=fixture-secret',
       'tcp://198.51.100.8:6767?password=fixture-secret', 'fixture-remote:6767',
       '0.0.0.0:6767', '[::]:6767', String.raw`pipe://\\fixture-remote\pipe\daemon`];
     for (const host of remoteHosts) {
-      for (const command of ['register', 'monitor']) {
+      for (const command of ['inspect', 'register']) {
         const result = run(command, host);
         assert.notEqual(result.status, 0);
         assert.match(result.stderr, /local IPC or loopback/);
@@ -241,7 +275,6 @@ test('daemon selection rejects remote routes before connection or writes and pin
         assert.equal(result.stderr.includes('fixture-secret'), false);
         assert.equal(fs.existsSync(path.join(dir, 'connected')), false);
         assert.equal(fs.existsSync(path.join(dir, 'runtime.json')), false);
-        assert.equal(fs.readFileSync(config, 'utf8'), originalConfig);
         assert.equal(fs.readdirSync(dir).some(name => name.endsWith('.lock') || name.endsWith('.tmp')), false);
       }
     }

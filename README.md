@@ -7,7 +7,7 @@ EyeProjector projects supported Android applications from a Phone-hosted virtual
 - [SPEC.md](SPEC.md): product goals, behavior and acceptance.
 - [AGENTS.md](AGENTS.md): multi-agent roles, orchestration, communication and review.
 - [RUNBOOK.md](RUNBOOK.md): toolchains, builds, lint and device debugging.
-- [Manager runtime skill](.agents/skills/manager-runtime/SKILL.md): initialize the local participant registry and register the assigned Manager with the installed watchdog.
+- [Manager runtime skill](.agents/skills/manager-runtime/SKILL.md): maintain the local version runtime and register its Manager with the shared watchdog for that version.
 - [Initialization audit](docs/migration/initialization-audit.md): imported source, renamed identities, verification and remaining handoffs.
 
 The build contains `directhost` (Phone host), `directrg` (Glasses receiver), `protocol` (transport/backend parsing), and `hostprobe` (controlled fixtures). Build and test commands are in the runbook.

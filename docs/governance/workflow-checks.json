@@ -1,0 +1,77 @@
+{
+  "date": "2026-10-20",
+  "sourceInputs": [
+    {
+      "path": "AGENTS.md",
+      "sha256": "03120d4c6a6cf3affda6310a6de55255753b96cb7aae716d63526437ae0ba9bd"
+    },
+    {
+      "path": "RUNBOOK.md",
+      "sha256": "23d23d2cb624cb02595338224f43582aab47c1bf189b3ac2ff3a3ce10b774357"
+    },
+    {
+      "path": "README.md",
+      "sha256": "8f833d0a389bd5f5bc852519c3ac99b118e4fa91137fc5ddd0eb907026ebe0de"
+    },
+    {
+      "path": ".agents/skills/manager-runtime/SKILL.md",
+      "sha256": "c665afdc035304e4e9553a729341b35c65a239cc6d6165a4668f671725bd197f"
+    },
+    {
+      "path": ".agents/skills/manager-runtime/references/installed-contract.md",
+      "sha256": "b3de48dcd21d065fb687d241d505d7242490d46e87812f80a9d9e3ede8380388"
+    },
+    {
+      "path": ".agents/skills/manager-runtime/scripts/manager-runtime.mjs",
+      "sha256": "89a3a0b77f4d9ba928853227bf1d1707808f8435c0a53d59bf0e724e2fbba29a"
+    },
+    {
+      "path": ".agents/skills/manager-runtime/tests/manager-runtime.test.mjs",
+      "sha256": "fca106f5b040bb3adcef536361a696deece70c0b772701313d3f48e459454557"
+    },
+    {
+      "path": ".agents/skills/manager-runtime/scripts/save-credential.py",
+      "sha256": "cf70766421974de2b00f5c2a2b40ad400f6a87dd57e3d62551d2c8375302bfb0"
+    },
+    {
+      "path": ".agents/skills/manager-runtime/tests/test_save_credential.py",
+      "sha256": "50c9d3660f197382921e2ab1cdc8b048e904fcebc1fe0ad799c1741e137b1462"
+    },
+    {
+      "path": "tools/manager-watchdog/main.mjs",
+      "sha256": "347e4ccbffd2011c3d536c871553b934fb1781f736b07ce4d9d734430f0cb3d5"
+    },
+    {
+      "path": "tools/manager-watchdog/main.test.mjs",
+      "sha256": "440feff6c64048b7a16ca225739ee99ee814e0d8051c6a13af96bbbb5afc1dee"
+    }
+  ],
+  "tests": {
+    "runtimeNode": 9,
+    "watchdogNode": 13,
+    "credentialPython": 3,
+    "independentFixtureChecks": 19,
+    "failures": 0
+  },
+  "androidInputsChanged": false,
+  "credentialValues": "synthetic fixtures only; no live capture",
+  "watchdogDeployment": {
+    "host": "spark",
+    "implementationSha256": "347e4ccbffd2011c3d536c871553b934fb1781f736b07ce4d9d734430f0cb3d5",
+    "previousImplementationSha256": "eb1c3b454997347a17de4a43acbc2b0c7852bc76cb7b0310776353fe9282bce4",
+    "registeredManagers": 2,
+    "registrationsPreserved": true,
+    "intervalSeconds": 1200,
+    "timerEnabled": true,
+    "timerActive": true,
+    "serviceTimeoutSeconds": 170,
+    "readOnlyCheckModes": [
+      "would-wake",
+      "manager-running-defer"
+    ],
+    "liveWakeForced": false,
+    "initialRollout": "unit SDK path rejected; previous files restored; path regression corrected and independent check passed before retry"
+  },
+  "protectedDocumentPublication": "pending exact-candidate Owner approval",
+  "currentVersionActivated": false
+}

@@ -1,5 +1,6 @@
 # Initialization audit
 
+Historical bootstrap evidence: the current governance/runtime changes are recorded in [the 2026-10-20 workflow update](../governance/version-workflow-update.md).
 Owner authority: `OWNER-EYEPROJECTOR-INIT-02`. Tracking: [EyeProjector #1](https://github.com/code2hack/EyeProjector/issues/1); [run record](../runs/initialization.md). This report distinguishes repository readiness from physical product acceptance and live Manager monitoring.
 
 ## Source and destination

@@ -1,5 +1,6 @@
 # Workflow audit
 
+Historical bootstrap evidence: the current governance/runtime changes are recorded in [the 2026-10-20 workflow update](version-workflow-update.md).
 Audit snapshot: 2026-10-19 UTC. Scope: current accepted remote governance, its relevant decision history, installed runtime consumers and the explicit initialization assignment `OWNER-EYEPROJECTOR-INIT-02`. EyeProjector uses independent product governance and history; source links below establish provenance rather than an ongoing organizational dependency.
 
 ## Authoritative evidence
