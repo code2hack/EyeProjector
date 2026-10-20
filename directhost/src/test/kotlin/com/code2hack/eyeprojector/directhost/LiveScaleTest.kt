@@ -3,12 +3,142 @@ package com.code2hack.eyeprojector.directhost
 import com.code2hack.eyeprojector.protocol.*
 import org.junit.Assert.*
 import org.junit.Test
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
+import java.io.IOException
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
 class LiveScaleTest {
+    private fun checkedThread(failure: AtomicReference<Throwable?>, action: () -> Unit) = thread(isDaemon = true) {
+        try { action() } catch (error: Throwable) { failure.compareAndSet(null, error) }
+    }
+
+    @Test fun requestAfterLandscapeGeometryReceiptWaitsForFeedbackAndUsesLandscapeTarget() {
+        val publicationLock = Any()
+        val controlLock = Any()
+        val bytes = ByteArrayOutputStream()
+        val output = DataOutputStream(bytes)
+        fun send(frame: Frame) = synchronized(publicationLock) { Wire.writeFrame(output, frame) }
+        val writes = Collections.synchronizedList(mutableListOf<Geometry>())
+        val inputGeometry = AtomicReference<Geometry>()
+        val scale = LiveScale({ synchronized(controlLock) { writes.add(it) } }, {
+            send(Frame(Wire.SCALE_STATE, it.requestId, it.bytes()))
+        })
+        scale.observe(ScrcpyRecord.Session(Geometry(480, 640), false))
+        bytes.reset()
+        val published = CountDownLatch(1)
+        val finishObservation = CountDownLatch(1)
+        val requestStarted = CountDownLatch(1)
+        val requestDone = CountDownLatch(1)
+        val pongStarted = CountDownLatch(1)
+        val pongDone = CountDownLatch(1)
+        val failure = AtomicReference<Throwable?>()
+        val observer = checkedThread(failure) {
+            scale.observe(ScrcpyRecord.Session(Geometry(640, 480), false), publicationLock) {
+                synchronized(controlLock) { inputGeometry.set(Geometry(640, 480)) }
+                send(Frame(Wire.GEOMETRY, payload = inputGeometry.get().bytes()))
+                published.countDown()
+                check(finishObservation.await(2, TimeUnit.SECONDS))
+            }
+        }
+        var requester: Thread? = null
+        var pong: Thread? = null
+        try {
+            assertTrue(published.await(2, TimeUnit.SECONDS))
+            // Decode the actual published frame before starting the request, as a receiver does.
+            val received = Wire.readFrame(DataInputStream(ByteArrayInputStream(bytes.toByteArray())))
+            assertEquals(Wire.GEOMETRY, received.channel)
+            val dimensions = DataInputStream(ByteArrayInputStream(received.payload))
+            assertEquals(Geometry(640, 480), Geometry(dimensions.readInt(), dimensions.readInt()))
+            requester = checkedThread(failure) {
+                requestStarted.countDown()
+                scale.request(42, 1.25)
+                scale.request(43, Double.NaN)
+                requestDone.countDown()
+            }
+            pong = checkedThread(failure) {
+                pongStarted.countDown()
+                send(Frame(Wire.PONG, 7))
+                pongDone.countDown()
+            }
+            assertTrue(requestStarted.await(2, TimeUnit.SECONDS))
+            assertTrue(pongStarted.await(2, TimeUnit.SECONDS))
+            assertFalse(requestDone.await(100, TimeUnit.MILLISECONDS))
+            assertFalse(pongDone.await(100, TimeUnit.MILLISECONDS))
+        } finally {
+            finishObservation.countDown()
+            listOfNotNull(observer, requester, pong).forEach { it.join(2000); assertFalse(it.isAlive) }
+        }
+        failure.get()?.let { throw AssertionError("Publication worker failed", it) }
+        val input = DataInputStream(ByteArrayInputStream(bytes.toByteArray()))
+        val frames = mutableListOf<Frame>()
+        while (input.available() > 0) frames.add(Wire.readFrame(input))
+        assertEquals(listOf(Wire.GEOMETRY, Wire.SCALE_STATE), frames.take(2).map { it.channel })
+        val states = frames.filter { it.channel == Wire.SCALE_STATE }.map { ScaleState.from(it.payload) }
+        assertEquals(listOf(ScaleStatus.READY, ScaleStatus.PENDING, ScaleStatus.REJECTED), states.map { it.status })
+        assertTrue(states.all { it.observed == Geometry(640, 480) })
+        assertEquals(42L, states[1].requestId)
+        assertEquals(43L, states[2].requestId)
+        assertEquals(listOf(Geometry(512, 384)), writes)
+        assertEquals(42L, scale.state().requestId)
+        assertEquals(1, frames.count { it.channel == Wire.PONG })
+    }
+
+    @Test fun observationCallbackSeesNewGeometryAndCannotOverwriteAReentrantRequest() {
+        val writes = mutableListOf<Geometry>()
+        val states = mutableListOf<ScaleState>()
+        val scale = LiveScale(writes::add, states::add)
+        scale.observe(ScrcpyRecord.Session(Geometry(480, 640), false))
+        states.clear()
+        scale.observe(ScrcpyRecord.Session(Geometry(640, 480), false)) {
+            assertEquals(Geometry(640, 480), scale.state().observed)
+            scale.request(42, 1.25)
+        }
+        assertEquals(listOf(Geometry(512, 384)), writes)
+        assertEquals(listOf(42L, 42L), states.map { it.requestId })
+        assertTrue(states.all { it.status == ScaleStatus.PENDING && it.observed == Geometry(640, 480) })
+        assertEquals(states.last(), scale.state())
+    }
+
+    @Test fun publicationFailuresRetainActualGeometryAndUnwindBeforeCloseCanReadScale() {
+        for (failFeedback in listOf(false, true)) {
+            val publicationLock = Any()
+            val controlLock = Any()
+            val marker = IOException("modeled transport failure")
+            val writes = mutableListOf<Geometry>()
+            var feedbackAttempts = 0
+            val scale = LiveScale({ synchronized(controlLock) { writes.add(it) } }, {
+                synchronized(publicationLock) { feedbackAttempts++; if (failFeedback) throw marker }
+            })
+            try {
+                scale.observe(ScrcpyRecord.Session(Geometry(640, 480), false), publicationLock) {
+                    synchronized(controlLock) { if (!failFeedback) throw marker }
+                }
+                fail("Expected publication failure")
+            } catch (error: IOException) {
+                assertSame(marker, error)
+                assertFalse(Thread.holdsLock(scale))
+                assertFalse(Thread.holdsLock(publicationLock))
+                assertFalse(Thread.holdsLock(controlLock))
+            }
+            val failure = AtomicReference<Throwable?>()
+            val closeSnapshot = AtomicReference<ScaleState>()
+            val closer = checkedThread(failure) { closeSnapshot.set(scale.state()) }
+            closer.join(2000)
+            assertFalse(closer.isAlive)
+            failure.get()?.let { throw AssertionError("Close snapshot failed", it) }
+            assertEquals(Geometry(640, 480), closeSnapshot.get().observed)
+            assertEquals(if (failFeedback) 1 else 0, feedbackAttempts)
+            assertTrue(writes.isEmpty())
+        }
+    }
+
     @Test fun localStartupDoesNotPublishBeforeWelcomeButEstablishedStreamGetsUnavailableReply() {
         val frames = mutableListOf<ScaleState>()
         val scale = LiveScale({}, frames::add)
