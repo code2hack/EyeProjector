@@ -30,7 +30,10 @@ class PairingPanel(
     private val information = TextView(activity).apply { setTextColor(Color.WHITE); gravity = Gravity.CENTER }
     val pairButton = Button(activity).apply { text = "Pair with display device"; setOnClickListener { showCodePrompt() } }
     val forgetButton = Button(activity).apply { text = "Forget"; setOnClickListener {
+        forgetting = true
+        refresh()
         beforeForget {
+            forgetting = false
             panelError = null
             try { pairing.forget() } catch (_: Exception) { panelError = "Could not remove pairing. Try Forget again." }
             if (!closed) refresh()
@@ -42,6 +45,8 @@ class PairingPanel(
     private var displayedPeers = emptyList<DiscoveredPeer>()
     private var lastPaired: Boolean? = null
     private var panelError: String? = null
+    var forgetting = false
+        private set
     private var closed = false
     private val tick = object : Runnable {
         override fun run() { if (!closed) { refresh(); postDelayed(this, 1000) } }
@@ -61,6 +66,7 @@ class PairingPanel(
         pairButton.visibility = if (!paired && role == PeerRole.PHONE) View.VISIBLE else View.GONE
         pairButton.isEnabled = !pairing.pairing
         forgetButton.visibility = if (paired) View.VISIBLE else View.GONE
+        forgetButton.isEnabled = !forgetting
         if (paired) caption.text = if (role == PeerRole.PHONE) "Paired with display device" else "Paired with Phone"
         else if (role == PeerRole.GLASSES) {
             val code = pairing.codes.display()
@@ -68,6 +74,7 @@ class PairingPanel(
         } else caption.text = "No paired display device"
         val label = if (!paired && role == PeerRole.GLASSES) pairing.identityId?.let { "Display ${it.take(12)}\n" } ?: "" else ""
         val state = when {
+            forgetting -> "Stopping projection before Forget. If this waits, restore Shizuku using the Phone setup controls."
             !paired && role == PeerRole.GLASSES && pairing.codes.display().attemptsRemaining == 0 ->
                 "Five pairing attempts used. Wait for the code to rotate; the countdown shows when pairing resumes."
             paired && pairing.availablePeers().none { it.identityId == peer?.identityId } ->

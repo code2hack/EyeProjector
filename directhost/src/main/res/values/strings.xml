@@ -1,4 +1,5 @@
 <resources>
+    <string name="host_forget_pending">Forget is waiting for the host to stop and revoke its saved session. Restore Shizuku access to continue.</string>
     <string name="host_stop">Stop host</string>
     <string name="host_stopped">Host stopped</string>
     <string name="host_stop_unknown">Stop not verified</string>

@@ -78,7 +78,7 @@ either production application's peer store. Within a recorded device window,
 install it and run the bounded Android container/crypto check on each device:
 
 ```sh
-timeout 120s adb -s "$DEVICE" install -r protocol/build/outputs/apk/androidTest/debug/protocol-debug-androidTest.apk
+timeout 120s adb -s "$DEVICE" install -r -t protocol/build/outputs/apk/androidTest/debug/protocol-debug-androidTest.apk
 timeout 120s adb -s "$DEVICE" shell am instrument -w \
   -e mode loopback \
   com.code2hack.eyeprojector.protocol.test/com.code2hack.eyeprojector.protocol.PairingInstrumentation
