@@ -26,6 +26,7 @@ class ProjectionSession(
     private val onState: (ProjectionSession, String) -> Unit,
     private val onGeometry: (ProjectionSession, Geometry) -> Unit,
     private val context: Context? = null,
+    private val onScale: (ProjectionSession, ScaleState) -> Unit = { _, _ -> },
 ) : Closeable {
     private val running = AtomicBoolean(true)
     private val timer = Executors.newScheduledThreadPool(2)
@@ -42,6 +43,8 @@ class ProjectionSession(
     @Volatile var geometry: Geometry? = null
         private set
     @Volatile private var readyForTouch = false
+    @Volatile var scaleState: ScaleState? = null
+        private set
     private val started = System.nanoTime()
     private val stats = JSONObject().put("state", "CONNECTING").put("audio", "system-bluetooth")
     private var packets = 0L
@@ -149,6 +152,11 @@ class ProjectionSession(
 
     internal fun receive(frame: Frame) {
         when (frame.channel) {
+            Wire.SCALE_STATE -> {
+                val next = ScaleState.from(frame.payload)
+                scaleState = next
+                onScale(this, next)
+            }
             Wire.GEOMETRY -> {
                 val data = DataInputStream(frame.payload.inputStream())
                 val size = Geometry(data.readInt(), data.readInt())
@@ -208,6 +216,17 @@ class ProjectionSession(
     }
 
     fun tap(tap: Tap): Boolean = input(Wire.TAP, tap.geometry, tap.bytes())
+    /** Acceptance here means queued locally; onScale/scaleState supplies backend observations. */
+    fun requestScale(value: Double, requestId: Long = System.nanoTime()): Boolean {
+        if (!running.get() || geometry == null) return false
+        return try {
+            controls.execute {
+                try { if (running.get()) send(Frame(Wire.SCALE_REQUEST, requestId, ScaleRequest(value).bytes())) }
+                catch (_: Exception) { closeWithState("DISCONNECTED") }
+            }
+            true
+        } catch (_: java.util.concurrent.RejectedExecutionException) { false }
+    }
     fun scroll(scroll: Scroll): Boolean = input(Wire.SCROLL, scroll.target.geometry, scroll.bytes())
     fun navigate(action: Navigation): Boolean {
         val size = geometry ?: return false

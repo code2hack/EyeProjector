@@ -81,4 +81,28 @@ class VideoSessionTest {
             assertFalse(session.navigate(Navigation.HOME))
         } finally { session.close() }
     }
+
+    @Test fun scaleFeedbackKeepsRequestedAndObservedNumbersSeparateWithoutReplacingTheDecoder() {
+        val states = mutableListOf<ScaleState>()
+        val codec = codec()
+        val session = ProjectionSession(temporary.newFolder().resolve("session"), Surface(), { _, _ -> }, { _, _ -> },
+            onScale = { _, state -> states.add(state) })
+        try {
+            val old = Geometry(480, 640)
+            deliver(session, Frame(Wire.GEOMETRY, payload = old.bytes()), Frame(Wire.VIDEO, 0, byteArrayOf(1)))
+            val pending = ScaleState(7, 1.25, old, Geometry(384, 512), ScaleStatus.PENDING, false)
+            deliver(session, Frame(Wire.SCALE_STATE, 7, pending.bytes()))
+            assertEquals(pending, session.scaleState)
+            assertEquals(1.0, LayoutScale.applied(session.scaleState!!.observed!!), 0.0)
+            assertEquals(old, session.geometry)
+            assertEquals(0, codec.releases.get())
+            val rejected = pending.copy(requestId = 8, requested = -1.0, target = null, status = ScaleStatus.REJECTED)
+            deliver(session, Frame(Wire.SCALE_STATE, 8, rejected.bytes()))
+            assertEquals(listOf(pending, rejected), states)
+            assertEquals(old, session.geometry)
+            assertEquals(0, codec.releases.get())
+        } finally { session.close() }
+        assertEquals(1, codec.releases.get())
+        assertFalse(session.requestScale(1.0))
+    }
 }

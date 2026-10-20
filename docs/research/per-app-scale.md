@@ -16,4 +16,4 @@ An EyeProjector app profile could map the gesture panel's pinch to display setti
 
 Current EyeProjector starts `480x640/160`, and capture belongs to the receiver's projection session. The planned Phone gesture panel will send scaling controls for that active display. [Current host](../../directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost/ShellMain.kt)
 
-No scaling prototype, dependency, device setting or runtime was changed during this research. Live resizing stability and app/device compatibility remain unverified.
+The original research above changed no prototype, dependency, device setting or runtime. Issue #11 now implements a retained-density flex-display path: changing the virtual display dimensions changes the app's available dp bounds, rather than only capture size. The operation and its requested/observed feedback, intrinsic limitations and pending device qualification are documented in [live-scale verification](../testing/live-scale.md). It uses the unmodified pinned server; it does not add a DPI-control message. Live resizing stability and app/device compatibility still require fresh reserved-device evidence.
