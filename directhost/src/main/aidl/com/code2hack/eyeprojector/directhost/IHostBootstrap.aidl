@@ -5,5 +5,7 @@ interface IHostBootstrap {
     String status() = 0;
     String start(in byte[] identity, in byte[] password, in @nullable byte[] legacyPeer, in byte[] endpoint, in @nullable byte[] pairedPeer) = 1;
     String stop() = 2;
+    byte[] requestScale(long requestId, double scale) = 3;
+    byte[] scaleState() = 4;
     void destroy() = 16777114;
 }

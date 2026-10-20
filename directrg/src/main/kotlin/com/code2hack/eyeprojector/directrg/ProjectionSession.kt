@@ -24,10 +24,12 @@ class ProjectionSession(
     private val onState: (ProjectionSession, String) -> Unit,
     private val onGeometry: (ProjectionSession, Geometry) -> Unit,
     private val context: Context? = null,
+    private val onScale: (ProjectionSession, ScaleState) -> Unit = { _, _ -> },
 ) : Closeable {
     private val running = AtomicBoolean(true)
     private val timer = Executors.newScheduledThreadPool(2)
     private val controls = OrderedControlDispatcher { error -> failure(error); closeWithState("DISCONNECTED") }
+    private val scaleControls = OrderedControlDispatcher { error -> failure(error); closeWithState("DISCONNECTED") }
     private val outputLock = Any()
     private val lifecycleLock = Any()
     private val writing = AtomicLong()
@@ -40,6 +42,8 @@ class ProjectionSession(
     @Volatile var geometry: Geometry? = null
         private set
     @Volatile private var readyForTouch = false
+    @Volatile var scaleState: ScaleState? = null
+        private set
     private val started = System.nanoTime()
     private val stats = JSONObject().put("state", "CONNECTING").put("audio", "system-bluetooth")
     private var packets = 0L
@@ -155,6 +159,11 @@ class ProjectionSession(
 
     internal fun receive(frame: Frame) {
         when (frame.channel) {
+            Wire.SCALE_STATE -> {
+                val next = ScaleState.from(frame.payload)
+                scaleState = next
+                onScale(this, next)
+            }
             Wire.GEOMETRY -> {
                 val data = DataInputStream(frame.payload.inputStream())
                 val size = Geometry(data.readInt(), data.readInt())
@@ -214,6 +223,14 @@ class ProjectionSession(
         if (!installed) next.close()
     }
 
+    /** Acceptance here means queued locally; onScale/scaleState supplies backend observations. */
+    fun requestScale(value: Double, requestId: Long = System.nanoTime()): Boolean {
+        if (!running.get() || geometry == null) return false
+        return scaleControls.submit(System.nanoTime() / 1_000_000, { running.get() && geometry != null }, "scale") {
+            send(Frame(Wire.SCALE_REQUEST, requestId, ScaleRequest(value).bytes()))
+        }
+    }
+
     /** True means queued, not an acknowledgment from the Phone's target widget. */
     fun tap(tap: Tap, eventTimeMs: Long = System.nanoTime() / 1_000_000): Boolean =
         input(Wire.TAP, tap.geometry, tap.bytes(), eventTimeMs)
@@ -249,6 +266,7 @@ class ProjectionSession(
             decoder.also { decoder = null }
         }
         runCatching { socket?.close() }; timer.shutdownNow(); controls.close()
+        scaleControls.close()
         synchronized(this) { old?.let { stats.put("decoderProgress", it.snapshot()) } }
         runCatching { old?.close() }
         state(value)
