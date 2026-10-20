@@ -109,7 +109,7 @@ Stock Phone support, the required privilege mechanism and camera selection by in
 
 ### Glasses-native interaction
 
-The Receiver must draw a local head-pointer overlay independently of video delivery, available for both the projection and the local control panel. It must stop or reset tracking when sensor data or focus becomes invalid. Projection input uses current display orientation and fitted video geometry, with no remote tap for a target outside the visible app image; the local control panel uses its own UI geometry.
+The Receiver must draw a local head-pointer overlay independently of video delivery, available for both the projection and the local control panel. Horizontal and vertical pointer directions must remain correct regardless of startup posture, including upright, sideways or upside-down startup followed by normal wear. Focus changes, relaunch and supported display rotations must preserve the correct directions. It must stop or reset tracking when sensor data or focus becomes invalid. Projection input uses current display orientation and fitted video geometry, with no remote tap for a target outside the visible app image; the local control panel uses its own UI geometry.
 
 During projection, touch and scroll actions target the Phone's virtual display at the head pointer. In the control panel, they operate the local EyeProjector UI. The v0.1 interaction contract is:
 

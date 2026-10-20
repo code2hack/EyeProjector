@@ -11,6 +11,7 @@ Split the current scalar pointer gain into independent X/Y settings. Retain the 
 **Acceptance**
 
 - Changing X changes horizontal sensitivity independently of Y, and vice versa.
+- Both pointer directions stay correct regardless of startup posture, including upright, sideways and upside-down startup followed by normal wear, focus/re-entry, relaunch and supported display rotations.
 - Existing scalar preferences migrate to both axes; gains, scroll speed and toggle persist.
 - Turning head scrolling off ends an active head-driven scroll promptly while pointer movement and pad scrolling remain usable.
 - Settings remain operable through the local pointer and use black/light styling.
