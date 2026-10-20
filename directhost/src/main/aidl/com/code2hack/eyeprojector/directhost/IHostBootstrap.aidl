@@ -7,5 +7,7 @@ interface IHostBootstrap {
     String stop() = 2;
     byte[] requestScale(long requestId, double scale) = 3;
     byte[] scaleState() = 4;
+    byte[] launchApp(long requestId, String packageName, String expectedOwnerEpoch, String expectedProjectionToken) = 7;
+    byte[] projectionDisplayState(String expectedOwnerEpoch, String expectedProjectionToken) = 8;
     void destroy() = 16777114;
 }

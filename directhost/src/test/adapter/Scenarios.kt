@@ -6,6 +6,8 @@ import rikka.shizuku.Shizuku
 import java.io.File
 import java.nio.file.Files
 import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /** Compiles and drives the actual HostBootstrap; doubles supply external API events. */
@@ -24,8 +26,12 @@ private class Fixture : AutoCloseable {
     fun field(name: String): Any? = HostBootstrap::class.java.getDeclaredField(name).apply { isAccessible = true }.get(host)
     fun drain() {
         // A callback may enqueue more work behind the first barrier.
-        repeat(3) { (field("executor") as ScheduledExecutorService).submit {}.get(3, TimeUnit.SECONDS) }
+        repeat(3) {
+            (field("executor") as ScheduledExecutorService).submit {}.get(3, TimeUnit.SECONDS)
+            (field("displayExecutor") as ExecutorService).submit {}.get(3, TimeUnit.SECONDS)
+        }
     }
+    fun lifecycle() { repeat(3) { (field("executor") as ScheduledExecutorService).submit {}.get(3, TimeUnit.SECONDS) } }
     fun attach(service: FakeService) {
         Shizuku.connection!!.onServiceConnected(Shizuku.args!!.component, service); drain()
     }
@@ -37,6 +43,8 @@ private class Fixture : AutoCloseable {
     override fun close() {
         val executor = field("executor") as ScheduledExecutorService
         executor.shutdownNow(); executor.awaitTermination(3, TimeUnit.SECONDS)
+        val displayExecutor = field("displayExecutor") as ExecutorService
+        displayExecutor.shutdownNow(); displayExecutor.awaitTermination(3, TimeUnit.SECONDS)
         directory.deleteRecursively()
     }
 }
@@ -252,6 +260,136 @@ fun main() {
         val fresh = FakeService(); f.attach(fresh)
         check(fresh.starts == 1 && model.state().phase == SessionPhase.AVAILABLE)
     }
+    scenario("launch/display without attachment does not start or bind a backend") { f ->
+        var replies = 0
+        f.host.launchApp("example.app") { check(it == null); replies++ }
+        f.host.projectionDisplayState { check(it == null); replies++ }
+        f.drain()
+        check(replies == 2 && Shizuku.binds == 0)
+    }
+    scenario("actual launch adapter preserves generation/results and rejects malformed or dead-service replies") { f ->
+        f.host.start(); f.drain()
+        val first = FakeService().apply { state = "STREAMING" }; f.attach(first)
+        var response: ProjectionDisplayState? = null
+        f.host.launchApp("example.phone") { response = it }; f.drain()
+        check(first.launches == listOf("example.phone"))
+        check(response!!.displayId == 47 && response!!.generation == "fixture:child")
+        check(response!!.requestedPackage == "example.phone" && response!!.foregroundPackage == "example.phone")
+        first.displayPayloadOverride = ByteArray(4)
+        f.host.projectionDisplayState { response = it }; f.drain(); check(response == null)
+        first.displayPayloadOverride = null
+        f.host.stop(); f.drain()
+        f.host.projectionDisplayState { response = it }; f.drain(); check(response == null)
+        f.host.start(); f.drain()
+        val fresh = FakeService().apply { state = "STREAMING"; display = display.copy(generation = "fresh:child", displayId = 88) }
+        f.attach(fresh)
+        f.host.projectionDisplayState { response = it }; f.drain()
+        check(response!!.generation == "fresh:child" && response!!.displayId == 88 && response!!.foregroundPackage == null)
+    }
+    scenario("long Binder launch does not block Stop and late reply cannot cross revoked binding") { f ->
+        f.host.start(); f.drain()
+        val entered = CountDownLatch(1); val finish = CountDownLatch(1)
+        val service = FakeService().apply { state = "STREAMING"; beforeLaunch = { entered.countDown(); check(finish.await(3, TimeUnit.SECONDS)) } }
+        f.attach(service)
+        var replies = 0
+        try {
+            f.host.launchApp("example.slow") { check(it == null); replies++ }
+            check(entered.await(2, TimeUnit.SECONDS))
+            f.host.stop()
+            repeat(3) { (f.field("executor") as ScheduledExecutorService).submit {}.get(2, TimeUnit.SECONDS) }
+            check(service.stops > 0 && service.destroys == 1 && f.backend() == "STOPPED")
+            finish.countDown(); f.drain()
+            check(replies == 1 && service.launches.isEmpty())
+        } finally { finish.countDown() }
+    }
+    scenario("R1 actual controller normal end and same-live-Binder restart cannot retarget queued launch/query") { f ->
+        val controller = SessionController({ f.host.start(it) }, { f.host.stop() }, initialPhase = SessionPhase.UNKNOWN)
+        f.host.observe { s -> controller.observeBackend(s.sessionEpoch,s.backend,s.detail.orEmpty(),s.rejectedEpoch) }
+        val oldOwner = controller.start().epoch; f.drain()
+        val service = FakeService().apply { state = "STREAMING" }; f.attach(service)
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        val gate = (f.field("displayExecutor") as ExecutorService).submit { entered.countDown(); check(release.await(4,TimeUnit.SECONDS)) }
+        check(entered.await(2,TimeUnit.SECONDS))
+        var oldReplies = 0
+        try {
+            f.host.launchApp("example.old.pending") { check(it==null);oldReplies++ }
+            f.host.projectionDisplayState { check(it==null);oldReplies++ }
+            f.lifecycle()
+            service.state = "STOPPED";f.host.refresh();f.lifecycle()
+            check(controller.state().phase==SessionPhase.INACTIVE)
+            service.state = "READY"
+            val freshOwner = controller.start().epoch;f.lifecycle()
+            check(oldOwner!=freshOwner && service.starts==2 && service.stops==0 && service.destroys==0 && service.isBinderAlive)
+            service.display = service.display.copy(generation="replacement:child",displayId=88,context=ProjectionContext("","replacement-token"))
+            service.state="STREAMING";f.host.refresh();f.lifecycle()
+            release.countDown();gate.get(2,TimeUnit.SECONDS);f.drain()
+            check(oldReplies==2 && service.launches.isEmpty() && service.displayReads==0)
+            var positive: ProjectionDisplayState?=null
+            f.host.launchApp("example.fresh") { positive=it };f.drain()
+            check(service.launches==listOf("example.fresh") && positive!!.displayId==88 && positive!!.context==service.context)
+        }finally{release.countDown()}
+    }
+    scenario("R1 same owner replacement media token rejects old queued work without replacement observation") { f ->
+        f.host.start("same-owner");f.drain()
+        val service=FakeService().apply{state="STREAMING"};f.attach(service)
+        val entered=CountDownLatch(1);val release=CountDownLatch(1)
+        (f.field("displayExecutor") as ExecutorService).submit { entered.countDown();check(release.await(4,TimeUnit.SECONDS)) }
+        check(entered.await(2,TimeUnit.SECONDS))
+        try {
+            f.host.launchApp("example.old.media") { check(it==null) }
+            f.host.projectionDisplayState { check(it==null) }
+            service.display=service.display.copy(generation="different-generation",displayId=88,context=ProjectionContext("","fresh-media-token"))
+            f.host.refresh();f.lifecycle();release.countDown();f.drain()
+            check(service.launches.isEmpty() && service.displayReads==0)
+            f.host.projectionDisplayState { check(it!!.context==service.context && it.displayId==88) };f.drain()
+            check(service.displayReads==1)
+        }finally{release.countDown()}
+    }
+    scenario("R1 first lifecycle hop cannot replace an intent context captured at API entry") { f ->
+        f.host.start("first-owner");f.drain()
+        val service=FakeService().apply{state="STREAMING"};f.attach(service)
+        val entered=CountDownLatch(2);val release=CountDownLatch(1)
+        (f.field("executor") as ExecutorService).submit { entered.countDown();check(release.await(4,TimeUnit.SECONDS)) }
+        (f.field("displayExecutor") as ExecutorService).submit { entered.countDown();check(release.await(4,TimeUnit.SECONDS)) }
+        check(entered.await(2,TimeUnit.SECONDS))
+        try {
+            service.sessionEpoch="second-owner";service.display=service.display.copy(context=ProjectionContext("","second-token"))
+            f.host.refresh() // Queued ahead of the old implementation's first dispatch hop.
+            f.host.launchApp("example.first.hop.old") { check(it==null || it.status==ProjectionLaunchStatus.UNAVAILABLE) }
+            release.countDown();f.drain()
+            check(service.launches.isEmpty())
+        }finally{release.countDown()}
+    }
+    scenario("R1 replacement after client precheck is rejected by correlated server operation") { f ->
+        f.host.start("owner-a");f.drain()
+        val service=FakeService().apply{state="STREAMING"};f.attach(service)
+        val original=f.host.status().projectionContext
+        service.beforeLaunch={ service.sessionEpoch="owner-b";service.display=service.display.copy(context=ProjectionContext("","token-b"),displayId=88) }
+        var response: ProjectionDisplayState?=null
+        f.host.launchApp("example.precheck.race") { response=it };f.drain()
+        check(service.launches.isEmpty() && response!!.status==ProjectionLaunchStatus.UNAVAILABLE)
+        check(response!!.context==original && response!!.commandExit==null && response!!.foregroundPackage==null)
+        f.host.projectionDisplayState { check(it!!.context==original && it.foregroundPackage==null) };f.drain()
+        check(service.displayReads==0)
+    }
+    scenario("R1 actual Home Activity retains original intent context across new intent and late callback") { f ->
+        HomeContextScenarios.run(f.host, f::drain, f::lifecycle, f::field, f::attach)
+    }
+    scenario("R1 fixed Home context works before status poll without inventing a Phone target or rebinding") { f ->
+        f.host.start("home-first-poll");f.drain()
+        val service=FakeService();f.attach(service)
+        check(!f.host.status().projectionContext.available)
+        f.host.launchApp("example.no.actual.context") { check(it==null) };f.drain()
+        check(service.launches.isEmpty())
+        val homeContext=service.context // Original fixed intent from the actual Session.
+        var result:ProjectionDisplayState?=null
+        f.host.launchApp("example.explicit.home",homeContext) { result=it };f.drain()
+        check(result!!.context==homeContext && service.launches==listOf("example.explicit.home"))
+        service.display=service.display.copy(context=ProjectionContext("","replacement-before-poll"),displayId=88)
+        f.host.launchApp("example.old.explicit.home",homeContext) { result=it };f.drain()
+        check(service.launches==listOf("example.explicit.home"))
+        check(result!!.status==ProjectionLaunchStatus.UNAVAILABLE && result!!.context==homeContext && result!!.displayId==null)
+    }
     check(failures == 0) { "$failures adapter scenarios failed" }
-    println("13 adapter scenarios passed; modeled host events, no device/Binder claim")
+    println("22 adapter scenarios passed; modeled external APIs, no device/Binder claim")
 }

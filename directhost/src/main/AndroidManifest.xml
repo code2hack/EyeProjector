@@ -8,6 +8,9 @@
         </intent>
     </queries>
     <application android:theme="@android:style/Theme.Material.NoActionBar" android:label="EyeProjector host" android:allowBackup="false" android:dataExtractionRules="@xml/no_backup" android:icon="@android:drawable/ic_media_play" android:usesCleartextTraffic="false">
+        <activity android:name=".ProjectedHomeActivity" android:exported="true"
+            android:taskAffinity="com.code2hack.eyeprojector.directhost.projectedhome"
+            android:launchMode="singleTask" android:resizeableActivity="true" />
         <activity android:name=".ScaleFixtureActivity" android:exported="true" />
         <provider android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku" android:multiprocess="false"

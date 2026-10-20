@@ -35,6 +35,7 @@ class ChosenAppsInstrumentation : Instrumentation() {
         try {
             when (arguments.getString("operation", "ui")) {
                 "ui" -> testUi()
+                "projected-home" -> ProjectedHomeChecks.run(this, targetContext, arguments)
                 "persist-write" -> {
                     val store = ChosenApps.open(fixtureContext)
                     store.read().forEach { store.remove(it.packageName) }

@@ -33,6 +33,11 @@ class PhoneSessionController private constructor(context: Context) {
 
     fun stop(): SessionState = controller.stop()
 
+    /** Both launchers consume the owning backend's actual display/generation and result. */
+    fun launchApp(packageName: String, complete: (ProjectionDisplayState?) -> Unit) = bootstrap.launchApp(packageName, complete)
+    fun launchApp(packageName: String, expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit) = bootstrap.launchApp(packageName, expected, complete)
+    fun projectionDisplayState(complete: (ProjectionDisplayState?) -> Unit) = bootstrap.projectionDisplayState(complete)
+
     private fun command(request: SessionControl.Request): SessionState {
         val unavailable = if (request.operation == SessionControl.Operation.START)
             bootstrap.status().setup.takeIf { it != HostBootstrap.Setup.AVAILABLE }?.name else null
