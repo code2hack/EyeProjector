@@ -18,11 +18,7 @@ class PhoneSessionController private constructor(context: Context) {
 
     init {
         bootstrap.observe { state ->
-            state.rejectedEpoch?.let { controller.rejected(it, state.detail ?: "START_REJECTED") }
-            controller.restore(state.sessionEpoch, state.backend)
-            controller.backend(state.sessionEpoch, state.backend, state.detail.orEmpty())
-            if (state.backend == "FAILED" || state.detail == "SESSION_SETUP_REQUIRED")
-                controller.backend(state.sessionEpoch, "FAILED", state.detail.orEmpty())
+            controller.observeBackend(state.sessionEpoch, state.backend, state.detail.orEmpty(), state.rejectedEpoch)
         }
         pairing.start()
     }

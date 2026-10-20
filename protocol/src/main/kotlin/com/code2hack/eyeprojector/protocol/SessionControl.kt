@@ -10,11 +10,12 @@ import javax.net.ssl.SSLSocket
 /** Session commands use the existing paired certificate pins; discovery only supplies an address. */
 object SessionControl {
     private const val MAGIC = 0x45505331 // EPS1; separate from pairing and media framing.
-    private const val VERSION = 1
+    private const val VERSION = 2 // Typed attempt receipts; independent of the unchanged media Wire version.
     enum class Operation { STATUS, START, STOP, CONNECTING, RENDERED, FAILED }
-    // STOP with startEpoch cancels that specific START proposal from baseline epoch; empty retains ordinary owner STOP.
+    // startEpoch is the admission identity, allocated before STATUS; empty retains legacy owner operations.
     data class Request(val operation: Operation, val epoch: String = "", val startEpoch: String = "") {
         companion object {
+            fun observeAttempt(id: String) = Request(Operation.STATUS, startEpoch = id)
             fun cancelStart(baseline: String, proposal: String) = Request(Operation.STOP, baseline, proposal)
         }
     }
@@ -70,7 +71,13 @@ object SessionControl {
     internal fun writeState(output: DataOutputStream, state: SessionState) {
         require(state.epoch.length <= 64 && state.detail.length <= 128)
         output.writeInt(MAGIC); output.writeInt(VERSION)
-        output.writeUTF(state.epoch); output.writeByte(state.phase.ordinal); output.writeUTF(state.detail); output.flush()
+        output.writeUTF(state.epoch); output.writeByte(state.phase.ordinal); output.writeUTF(state.detail)
+        output.writeBoolean(state.receipt != null)
+        state.receipt?.let {
+            require(it.id.length <= 64 && (it.owner?.length ?: 0) <= 64)
+            output.writeUTF(it.id); output.writeUTF(it.owner.orEmpty()); output.writeByte(it.disposition.ordinal)
+        }
+        output.flush()
     }
 
     internal fun readState(input: DataInputStream): SessionState {
@@ -78,6 +85,11 @@ object SessionControl {
         val epoch = input.readUTF().also { require(it.length <= 64) }
         val phase = SessionPhase.entries[input.readUnsignedByte()]
         val detail = input.readUTF().also { require(it.length <= 128) }
-        return SessionState(epoch, phase, detail)
+        val receipt = if (input.readBoolean()) {
+            val id = input.readUTF().also { require(it.length <= 64) }
+            val owner = input.readUTF().also { require(it.length <= 64) }.takeIf { it.isNotEmpty() }
+            AttemptReceipt(id, owner, AttemptDisposition.entries[input.readUnsignedByte()])
+        } else null
+        return SessionState(epoch, phase, detail, receipt)
     }
 }

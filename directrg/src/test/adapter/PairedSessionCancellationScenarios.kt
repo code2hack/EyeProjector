@@ -104,11 +104,11 @@ private fun queuedAvailableAndContinuedPolling() {
     val transport: Transport = { request, opened -> when (request.operation) {
         SessionControl.Operation.STATUS -> {
             if (cancelIssued.get()) laterPolls.countDown()
-            host.controller.state()
+            host.command(request)
         }
         SessionControl.Operation.START -> {
             starts.incrementAndGet(); proposed.set(request.startEpoch)
-            check(host.controller.start(request.epoch, request.startEpoch).epoch == old.epoch)
+            check(host.command(request).epoch == old.epoch)
             canceledReply(opened, startEntered)
         }
         SessionControl.Operation.STOP -> {
@@ -149,11 +149,11 @@ private fun concurrentStartReplyCarriesDifferentOwner() {
     val active = AtomicReference<SessionState>(); val proposed = AtomicReference<String>()
     ui.afterPost = { repliesQueued.countDown() }
     val transport: Transport = { request, _ -> when (request.operation) {
-        SessionControl.Operation.STATUS -> host.controller.state()
+        SessionControl.Operation.STATUS -> host.command(request)
         SessionControl.Operation.START -> {
             proposed.set(request.startEpoch)
             active.set(host.ready()) // A Phone Start wins after the preceding inactive STATUS.
-            host.controller.start(request.epoch, request.startEpoch).also { check(it.epoch == active.get().epoch) }
+            host.command(request).also { check(it.epoch == active.get().epoch) }
         }
         SessionControl.Operation.STOP -> host.command(request).also {
             if (request.epoch == active.get().epoch) stopApplied.countDown()
@@ -176,10 +176,10 @@ private fun failedFirstFinalStopDoesNotSkipAcceptedStart() {
     val proposed = AtomicReference<String>(); val stopThread = AtomicReference<Thread>()
     val attempts = Collections.synchronizedList(mutableListOf<String>())
     val transport: Transport = { request, opened -> when (request.operation) {
-        SessionControl.Operation.STATUS -> host.controller.state()
+        SessionControl.Operation.STATUS -> host.command(request)
         SessionControl.Operation.START -> {
             proposed.set(request.startEpoch)
-            check(host.controller.start(request.epoch, request.startEpoch).epoch == request.startEpoch)
+            check(host.command(request).epoch == request.startEpoch)
             canceledReply(opened, accepted)
         }
         SessionControl.Operation.STOP -> {
@@ -207,10 +207,15 @@ private fun staleFailureAndFreshConnect(disconnectFirst: Boolean) {
     val transport: Transport = { request, _ -> when (request.operation) {
         SessionControl.Operation.STATUS -> {
             if (statuses.incrementAndGet() == 1 || failNext.compareAndSet(true, false)) throw IOException("Synthetic connection error")
-            host.controller.state()
+            host.command(request)
         }
-        SessionControl.Operation.START -> host.controller.start(request.epoch, request.startEpoch)
-        SessionControl.Operation.STOP -> host.command(request)
+        SessionControl.Operation.START -> host.command(request).let { result ->
+            if (result.phase == SessionPhase.STARTING) host.controller.backend(result.epoch, "READY")
+            host.command(SessionControl.Request(SessionControl.Operation.STATUS, startEpoch = request.startEpoch))
+        }
+        SessionControl.Operation.STOP -> host.command(request).also {
+            if (it.phase == SessionPhase.STOPPING) host.release()
+        }
         else -> error("Unexpected operation")
     } }
     val session = client(ui, { attachment.available(it) }, { errors.incrementAndGet() }, transport)
@@ -218,7 +223,9 @@ private fun staleFailureAndFreshConnect(disconnectFirst: Boolean) {
         session.command(SessionControl.Operation.STATUS, ""); await(firstQueued)
         if (disconnectFirst) session.disconnect(null).forEach(attachment::suppress)
         session.connect()
-        ui.until { attachment.epoch == available.epoch }
+        ui.until { attachment.epoch != null }
+        if (disconnectFirst) check(attachment.epoch != available.epoch) // Disconnect canceled the first observation even without its reply.
+        else check(attachment.epoch == available.epoch)
         check(errors.get() == 0) { "Obsolete failure delivery overwrote a later action" }
         failNext.set(true); session.command(SessionControl.Operation.STATUS, "")
         ui.until { errors.get() == 1 }
@@ -229,7 +236,7 @@ private fun currentDeliveryCanDisconnectReentrantly() {
     val host = Host(); val available = host.ready(); val ui = UiQueue(); val delivered = AtomicInteger()
     val stopped = CountDownLatch(1); lateinit var session: PairedSessionClient
     val transport: Transport = { request, _ -> when (request.operation) {
-        SessionControl.Operation.STATUS -> host.controller.state()
+        SessionControl.Operation.STATUS -> host.command(request)
         SessionControl.Operation.STOP -> host.command(request).also { stopped.countDown() }
         else -> error("Unexpected operation")
     } }
@@ -252,7 +259,7 @@ private fun inFlightOwnerAfterDisconnect(mode: String) {
     val transport: Transport = { request, opened -> when (request.operation) {
         SessionControl.Operation.STATUS -> {
             if (starts.get() > 0) await(allowStatus)
-            host.controller.state()
+            host.command(request)
         }
         SessionControl.Operation.START -> {
             if (starts.incrementAndGet() == 1) {
@@ -323,7 +330,7 @@ private fun finalCancelOvertakesStartAdmission() {
     val delivered = AtomicInteger()
     val serverError = AtomicReference<Throwable>()
     val transport: Transport = { request, opened -> when (request.operation) {
-        SessionControl.Operation.STATUS -> host.controller.state()
+        SessionControl.Operation.STATUS -> host.command(request)
         SessionControl.Operation.START -> Socket().use { socket ->
             delayed.set(request); opened(socket); entered.countDown()
             // The Phone server is independent of the interrupted Receiver executor.

@@ -36,6 +36,21 @@ class SessionControlTest {
         assertEquals(cancellation, SessionControl.readRequest(DataInputStream(bytes.toByteArray().inputStream())))
     }
 
+    @Test fun admissionReceiptsRoundTripWithoutConfusingAcceptanceWithRelease() {
+        for (disposition in AttemptDisposition.entries) {
+            for (owner in listOf(null, "actual-owner")) {
+                val state = SessionState("actual", SessionPhase.UNKNOWN, "retry detail", AttemptReceipt("before-status", owner, disposition))
+                val bytes = ByteArrayOutputStream()
+                SessionControl.writeState(DataOutputStream(bytes), state)
+                assertEquals(state, SessionControl.readState(DataInputStream(bytes.toByteArray().inputStream())))
+            }
+        }
+        val bytes = ByteArrayOutputStream()
+        val observation = SessionControl.Request.observeAttempt("before-status")
+        SessionControl.writeRequest(DataOutputStream(bytes), observation)
+        assertEquals(observation, SessionControl.readRequest(DataInputStream(bytes.toByteArray().inputStream())))
+    }
+
     @Test fun pairedControlUsesBothRememberedIdentityPins() {
         val phone = PeerStore(temporary.newFolder("phone"))
         val glasses = PeerStore(temporary.newFolder("glasses"))

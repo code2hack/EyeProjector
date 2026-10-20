@@ -1,12 +1,10 @@
 package com.code2hack.eyeprojector.directhost
 
-import com.code2hack.eyeprojector.protocol.SessionPhase
-import com.code2hack.eyeprojector.protocol.SessionState
-import com.code2hack.eyeprojector.protocol.SessionControl
-import java.util.UUID
+import com.code2hack.eyeprojector.protocol.*
 import java.io.IOException
+import java.util.UUID
 
-/** All entry points (Phone, paired Glasses and widget) operate the same session generation. */
+/** Phone and paired Receiver commands share one owner and a durable admission/cancellation ledger. */
 class SessionController(
     private val startBackend: (String) -> Unit,
     private val stopBackend: () -> Unit,
@@ -15,218 +13,266 @@ class SessionController(
     initialCorrelation: Correlation = Correlation(),
     private val retainCorrelation: (Correlation) -> Unit = {},
 ) {
-    data class Binding(val baseline: String, val owner: String?)
-    data class Correlation(val owner: String? = null, val baseline: String? = null, val attempts: Map<String, Binding> = emptyMap())
+    data class Binding(
+        val baseline: String, val owner: String?, val canceled: Boolean = false,
+        val unresolved: Boolean = false, val retired: Boolean = false,
+    )
+    data class Correlation(
+        val owner: String? = null, val baseline: String? = null, val attempts: Map<String, Binding> = emptyMap(),
+        val stopOwner: String? = null, val stopUnresolved: Boolean = false,
+    )
     private var current = SessionState(newEpoch(), initialPhase)
     private var backendStarted = false
     private var backendEpoch: String? = null
+    private var recoveredOwner = initialCorrelation.owner
+    private var ownerBase = initialCorrelation.baseline
     private var releasing = false
     private var terminalFailure: String? = null
-    private data class Attempt(val base: String, val owner: String?)
-    private val attempts = initialCorrelation.attempts.mapValues { (_, value) -> Attempt(value.baseline, value.owner) }.toMutableMap()
-    private var ownerBase: String? = initialCorrelation.baseline
-    private var recoveredOwner: String? = initialCorrelation.owner
+    private val attempts = initialCorrelation.attempts.toMutableMap()
+    private var stopOwner = initialCorrelation.stopOwner
+    private var stopUnresolved = initialCorrelation.stopUnresolved
+    private var stopIssued: String? = null
     private var retained = initialCorrelation
+    private var retentionFailed = false
 
-    private fun persistCorrelation() {
-        val value = Correlation(backendEpoch ?: recoveredOwner, ownerBase,
-            attempts.mapValues { (_, attempt) -> Binding(attempt.base, attempt.owner) })
+    private fun correlation() = Correlation(backendEpoch ?: recoveredOwner, ownerBase, attempts.toMap(), stopOwner, stopUnresolved)
+
+    /** The desired state remains retryable after an irreversible backend observation. */
+    private fun retain(): Boolean = try {
+        val value = correlation()
         if (value != retained) { retainCorrelation(value); retained = value }
+        retentionFailed = false
+        true
+    } catch (_: IOException) {
+        retentionFailed = true
+        false
     }
 
-    /** Attempt identities live with their baseline/owner, rather than a clock or an arbitrary cache limit. */
-    private fun retireAttempts() {
-        attempts.entries.removeAll { (_, attempt) ->
-            attempt.base != current.epoch && attempt.base != ownerBase &&
-                (attempt.owner == null || (attempt.owner != backendEpoch && attempt.owner != recoveredOwner))
+    private fun actualOwner() = backendEpoch ?: recoveredOwner
+    private fun associatedOwner(baseline: String): String? = actualOwner()?.takeIf { it == baseline || ownerBase == baseline }
+
+    private fun refresh(binding: Binding): Binding {
+        if (binding.retired) return binding
+        val owner = actualOwner()
+        if (binding.unresolved) {
+            if (current.phase == SessionPhase.UNKNOWN) return binding
+            if (binding.baseline.isNotEmpty()) {
+                val associated = associatedOwner(binding.baseline)
+                return binding.copy(owner = associated, unresolved = false,
+                    retired = associated == null && (binding.canceled || binding.baseline != current.epoch))
+            }
+            return if (owner != null) binding.copy(baseline = ownerBase ?: owner, owner = owner, unresolved = false)
+            else binding.copy(baseline = current.epoch, unresolved = false, retired = binding.canceled)
         }
+        if (binding.owner != null) return if (binding.owner == owner) binding else binding.copy(owner = null, retired = true)
+        if (binding.canceled) return binding.copy(retired = true)
+        associatedOwner(binding.baseline)?.let { return binding.copy(owner = it) }
+        return if (current.phase != SessionPhase.UNKNOWN && binding.baseline != current.epoch)
+            binding.copy(retired = true) else binding
     }
 
-    private fun associate(expected: String?, proposal: String?, retain: Boolean = true) {
-        if (expected == null || proposal.isNullOrEmpty() || proposal in attempts) return
-        associatedOwner(expected)?.let { owner ->
-            attempts[proposal] = Attempt(expected, owner)
-            if (retain) persistCorrelation()
+    private fun refreshAttempts() {
+        attempts.replaceAll { _, binding -> refresh(binding) }
+        if (stopUnresolved && current.phase != SessionPhase.UNKNOWN) {
+            stopOwner = actualOwner()
+            stopUnresolved = false
         }
+        if (stopOwner != null && actualOwner() != stopOwner && current.phase != SessionPhase.UNKNOWN) stopOwner = null
     }
 
-    private fun associatedOwner(expected: String): String? {
-        if (!current.phase.active && current.phase != SessionPhase.UNKNOWN) return null
-        val owner = backendEpoch ?: recoveredOwner ?: current.epoch.takeIf { current.phase.active } ?: return null
-        return owner.takeIf { expected == owner || expected == ownerBase }
+    private fun observe(id: String, baseline: String = ""): Binding {
+        val existing = attempts[id]
+        if (existing != null) return refresh(existing).also { attempts[id] = it }
+        val unknown = current.phase == SessionPhase.UNKNOWN
+        val owner = if (baseline.isEmpty()) actualOwner() else associatedOwner(baseline)
+        return Binding(baseline.ifEmpty { if (unknown) "" else current.epoch }, owner,
+            unresolved = unknown && owner == null,
+            retired = !unknown && baseline.isNotEmpty() && baseline != current.epoch && owner == null)
+            .also { attempts[id] = it }
     }
 
-    /** Both the real Phone adapter and host regressions use this same command dispatch. */
-    @Synchronized fun command(request: SessionControl.Request, unavailable: String? = null): SessionState = when (request.operation) {
-        SessionControl.Operation.STATUS -> state()
-        SessionControl.Operation.START -> start(request.epoch, request.startEpoch, unavailable)
-        SessionControl.Operation.STOP -> if (request.startEpoch.isNotEmpty()) cancelStart(request.epoch, request.startEpoch) else stop(request.epoch)
-        SessionControl.Operation.CONNECTING -> receiverConnecting(request.epoch)
-        SessionControl.Operation.RENDERED -> receiverRendered(request.epoch)
-        SessionControl.Operation.FAILED -> {
-            if (current.epoch == request.epoch) backend(request.epoch, "FAILED", "RECEIVER_FAILED")
-            current
+    /** Dispatch only after the intent is retained; a recreated Phone derives this again from its ledger. */
+    private fun driveCancellation() {
+        val owner = backendEpoch ?: return
+        if (current.phase == SessionPhase.UNKNOWN) return
+        if (owner != stopOwner && attempts.values.none { it.canceled && !it.retired && it.owner == owner }) return
+        if (!retain()) return
+        if (stopIssued == owner) return
+        stopIssued = owner
+        releasing = true
+        current = SessionState(newEpoch(), if (terminalFailure == null) SessionPhase.STOPPING else SessionPhase.FAILED,
+            terminalFailure.orEmpty())
+        stopBackend()
+    }
+
+    private fun reply(id: String = ""): SessionState {
+        val value = if (retentionFailed) current.copy(detail = STORAGE_FAILURE) else current
+        if (id.isEmpty()) return value
+        val binding = attempts[id]
+        val disposition = when {
+            retentionFailed -> AttemptDisposition.RETRYABLE
+            binding == null -> AttemptDisposition.RETRYABLE
+            binding.retired -> if (binding.canceled) AttemptDisposition.CANCELED else AttemptDisposition.RETIRED
+            binding.canceled -> AttemptDisposition.CANCEL_PENDING
+            else -> AttemptDisposition.OBSERVED
         }
+        return value.copy(receipt = AttemptReceipt(id, binding?.owner, disposition))
     }
 
-    /** Cancel B's associated owner only. A late B cannot bind to an unrelated, newer owner C. */
+    /** The first STATUS is an admission, before the Receiver knows any owner or proposes a Start. */
+    @Synchronized fun command(request: SessionControl.Request, unavailable: String? = null): SessionState {
+        refreshAttempts()
+        retain()
+        driveCancellation()
+        val id = request.startEpoch
+        when (request.operation) {
+            SessionControl.Operation.STATUS -> if (id.isNotEmpty()) { observe(id); retain(); driveCancellation() }
+            SessionControl.Operation.START -> start(request.epoch, id, unavailable)
+            SessionControl.Operation.STOP -> if (id.isNotEmpty()) cancelStart(request.epoch, id) else stop(request.epoch)
+            SessionControl.Operation.CONNECTING -> receiverConnecting(request.epoch)
+            SessionControl.Operation.RENDERED -> receiverRendered(request.epoch)
+            SessionControl.Operation.FAILED -> if (current.epoch == request.epoch) backend(request.epoch, "FAILED", "RECEIVER_FAILED")
+        }
+        return reply(id)
+    }
+
     @Synchronized fun cancelStart(expected: String, proposal: String): SessionState {
-        retireAttempts()
-        val attempt = attempts[proposal] ?: Attempt(expected, associatedOwner(expected)).also { attempts[proposal] = it }
-        if (attempt.base != expected) return current
-        persistCorrelation() // Durable before acknowledging cancellation, including STOP-before-START.
-        return attempt.owner?.let(::stop) ?: current
+        val binding = observe(proposal, expected)
+        if (!binding.retired && expected.isNotEmpty() && binding.baseline != expected && binding.owner != expected) return reply(proposal)
+        attempts[proposal] = binding.copy(canceled = true, retired = binding.retired || (!binding.unresolved && binding.owner == null))
+        if (retain()) driveCancellation()
+        return reply(proposal)
     }
 
-    @Synchronized fun state(): SessionState = current
+    @Synchronized fun state(): SessionState {
+        refreshAttempts()
+        retain()
+        driveCancellation()
+        return reply()
+    }
 
-    /** A remote command carries its observed epoch; a delayed command cannot restart a newer session. */
     @Synchronized fun start(expectedEpoch: String? = null, startEpoch: String? = null, unavailable: String? = null): SessionState {
-        retireAttempts()
-        if (startEpoch != null && startEpoch in attempts) return current
-        if (expectedEpoch != null && expectedEpoch != current.epoch) {
-            associate(expectedEpoch, startEpoch)
-            return current
+        refreshAttempts()
+        val id = startEpoch.orEmpty()
+        val binding = if (id.isNotEmpty()) observe(id, expectedEpoch.orEmpty()) else null
+        if (binding != null && (binding.canceled || binding.retired || binding.owner != null || binding.unresolved)) {
+            retain(); driveCancellation(); return reply(id)
         }
-        if (current.phase.active || current.phase in setOf(SessionPhase.STOPPING, SessionPhase.UNKNOWN) || releasing) {
-            associate(expectedEpoch, startEpoch)
-            return current
+        if (expectedEpoch != null && expectedEpoch != current.epoch || current.phase.active ||
+            current.phase in setOf(SessionPhase.STOPPING, SessionPhase.UNKNOWN) || releasing || actualOwner() != null) {
+            retain(); driveCancellation(); return reply(id)
         }
         val previous = current
-        val previousBase = ownerBase
+        val previousCorrelation = correlation()
         val previousAttempts = attempts.toMap()
-        val previousBackend = backendEpoch
-        val previousStarted = backendStarted
-        val previousFailure = terminalFailure
-        try {
-            current = SessionState(startEpoch?.takeIf { it.isNotEmpty() } ?: newEpoch(), SessionPhase.STARTING)
-            ownerBase = previous.epoch
-            retireAttempts()
-            associate(expectedEpoch, startEpoch, retain = false)
-            backendStarted = false
-            terminalFailure = null
-            backendEpoch = if (unavailable == null) current.epoch else null
-            if (unavailable != null) current = current.copy(phase = SessionPhase.FAILED, detail = unavailable)
-            persistCorrelation() // Record the owner/base before dispatching a surviving backend.
-        } catch (_: IOException) {
+        val epoch = id.ifEmpty { newEpoch() }
+        current = SessionState(epoch, if (unavailable == null) SessionPhase.STARTING else SessionPhase.FAILED, unavailable.orEmpty())
+        ownerBase = previous.epoch
+        backendEpoch = epoch.takeIf { unavailable == null }
+        recoveredOwner = null
+        if (id.isNotEmpty()) attempts[id] = Binding(previous.epoch, backendEpoch, retired = unavailable != null)
+        if (!retain()) {
+            current = previous.copy(phase = SessionPhase.FAILED, detail = STORAGE_FAILURE)
+            ownerBase = previousCorrelation.baseline; backendEpoch = previousCorrelation.owner
+            recoveredOwner = null
             attempts.clear(); attempts.putAll(previousAttempts)
-            ownerBase = previousBase; backendEpoch = previousBackend
-            backendStarted = previousStarted; terminalFailure = previousFailure
-            current = previous.copy(phase = SessionPhase.FAILED, detail = "SESSION_CONTROL_STATE_UNAVAILABLE")
-            return current
+            return reply(id)
         }
-        if (unavailable != null) return current
-        startBackend(current.epoch)
-        return current
+        backendStarted = false
+        terminalFailure = null
+        if (unavailable == null) startBackend(epoch)
+        return reply(id)
     }
 
     @Synchronized fun stop(expectedEpoch: String? = null): SessionState {
-        retireAttempts()
-        val attempt = expectedEpoch?.let(attempts::get)
-        val owner = attempt?.owner ?: expectedEpoch
-        if (owner != null && owner != current.epoch) return current
-        if (current.phase in setOf(SessionPhase.STOPPING, SessionPhase.INACTIVE)) return current
-        current = SessionState(newEpoch(), SessionPhase.STOPPING)
-        terminalFailure = null
-        releasing = true
-        stopBackend()
-        return current
+        val owner = expectedEpoch?.let { attempts[it]?.owner ?: it }
+        if (owner != null && owner != actualOwner() && owner != current.epoch) return reply()
+        if (current.phase == SessionPhase.INACTIVE) return reply()
+        stopOwner = actualOwner()
+        stopUnresolved = current.phase == SessionPhase.UNKNOWN && stopOwner == null
+        if (retain()) {
+            driveCancellation()
+            // Unknown ownership is reconciled by restore, never reported as released.
+            if (stopUnresolved) current = current.copy(detail = "STOP_PENDING_RECONCILIATION")
+            else if (stopOwner == null) release()
+        }
+        return reply()
     }
 
     @Synchronized fun receiverConnecting(epoch: String): SessionState {
-        if (epoch == current.epoch && current.phase == SessionPhase.AVAILABLE)
-            current = current.copy(phase = SessionPhase.CONNECTING)
-        return current
+        if (epoch == current.epoch && current.phase == SessionPhase.AVAILABLE) current = current.copy(phase = SessionPhase.CONNECTING)
+        return reply()
     }
 
     @Synchronized fun receiverRendered(epoch: String): SessionState {
-        if (epoch == current.epoch && current.phase in setOf(SessionPhase.AVAILABLE, SessionPhase.CONNECTING))
-            current = current.copy(phase = SessionPhase.STREAMING)
-        return current
+        if (epoch == current.epoch && current.phase in setOf(SessionPhase.AVAILABLE, SessionPhase.CONNECTING)) current = current.copy(phase = SessionPhase.STREAMING)
+        return reply()
     }
 
     @Synchronized fun backend(epoch: String, state: String, detail: String = ""): SessionState {
-        if (epoch != backendEpoch) return current
-        if (releasing && state !in setOf("STOPPED", "STOP_UNVERIFIED", "STOPPING")) return current
+        if (epoch != backendEpoch) return reply()
+        if (releasing && state !in setOf("STOPPED", "STOP_UNVERIFIED", "STOPPING")) return reply()
         when (state) {
-            "STARTING" -> if (current.phase.active) backendStarted = true
-            "READY" -> if (current.phase.active || current.phase == SessionPhase.UNKNOWN) {
+            "STARTING" -> backendStarted = true
+            "READY", "SESSION_STARTING", "STREAMING" -> {
                 backendStarted = true
-                if (current.phase in setOf(SessionPhase.STARTING, SessionPhase.UNKNOWN)) current = current.copy(phase = SessionPhase.AVAILABLE)
+                if (current.phase in setOf(SessionPhase.STARTING, SessionPhase.UNKNOWN) ||
+                    state != "READY" && current.phase in setOf(SessionPhase.AVAILABLE, SessionPhase.CONNECTING)) current = current.copy(
+                    phase = if (state == "READY") SessionPhase.AVAILABLE else SessionPhase.CONNECTING, detail = "")
             }
-            "SESSION_STARTING", "STREAMING" -> if (current.phase.active || current.phase == SessionPhase.UNKNOWN) {
-                backendStarted = true
-                if (current.phase != SessionPhase.STREAMING) current = current.copy(phase = SessionPhase.CONNECTING)
-            }
-            "STOPPED" -> if (releasing || backendStarted) {
-                current = SessionState(newEpoch(), if (terminalFailure != null) SessionPhase.FAILED else SessionPhase.INACTIVE, terminalFailure ?: detail)
-                backendStarted = false
-                backendEpoch = null
-                ownerBase = null
-                recoveredOwner = null
-                releasing = false
-                terminalFailure = null
-            }
-            "FAILED" -> {
-                current = current.copy(phase = SessionPhase.FAILED, detail = detail)
-                terminalFailure = detail
-                releasing = true
-                stopBackend()
-            }
-            "UNKNOWN" -> {
-                if (detail in setOf("SERVICE_DIED", "SERVICE_DISCONNECTED")) {
-                    current = current.copy(phase = SessionPhase.FAILED, detail = detail)
-                    terminalFailure = detail
-                    releasing = true
-                    stopBackend()
-                } else current = current.copy(phase = SessionPhase.UNKNOWN, detail = detail)
-            }
+            "STOPPED" -> if (releasing || backendStarted) release(detail)
+            "FAILED" -> failAndStop(detail)
+            "UNKNOWN" -> if (detail in setOf("SERVICE_DIED", "SERVICE_DISCONNECTED")) failAndStop(detail)
+                else current = current.copy(phase = SessionPhase.UNKNOWN, detail = detail)
             "STOPPING", "STOP_UNVERIFIED" -> current = current.copy(
-                phase = if (terminalFailure != null) SessionPhase.FAILED else SessionPhase.STOPPING,
-                detail = terminalFailure ?: detail,
-            )
+                phase = if (terminalFailure != null) SessionPhase.FAILED else SessionPhase.STOPPING, detail = terminalFailure ?: detail)
         }
-        retireAttempts()
-        persistCorrelation()
-        return current
+        refreshAttempts()
+        retain()
+        driveCancellation()
+        return reply()
+    }
+
+    private fun failAndStop(detail: String) {
+        current = current.copy(phase = SessionPhase.FAILED, detail = detail)
+        terminalFailure = detail
+        stopOwner = actualOwner()
+        if (retain()) driveCancellation()
+    }
+
+    private fun release(detail: String = "") {
+        current = SessionState(newEpoch(), if (terminalFailure == null) SessionPhase.INACTIVE else SessionPhase.FAILED, terminalFailure ?: detail)
+        backendEpoch = null; recoveredOwner = null; ownerBase = null
+        backendStarted = false; releasing = false; terminalFailure = null; stopIssued = null
+        stopOwner = null; stopUnresolved = false
+        refreshAttempts()
+        retain() // STOPPED is authoritative even if its retirement cannot yet be saved.
     }
 
     @Synchronized fun rejected(epoch: String, detail: String) {
         if (epoch == current.epoch && current.phase == SessionPhase.STARTING) {
             current = current.copy(phase = SessionPhase.FAILED, detail = detail)
             backendEpoch = null
+            refreshAttempts(); retain()
         }
     }
 
-    /** Reattach to the authoritative shell service after an ordinary app-process restart. */
-    @Synchronized fun restore(epoch: String, state: String) {
-        if (backendEpoch == null && current.phase == SessionPhase.STOPPING) {
-            if (state == "STOPPED") {
-                current = SessionState(newEpoch(), SessionPhase.INACTIVE)
-                ownerBase = null
-                recoveredOwner = null
-                releasing = false
-                retireAttempts()
-                persistCorrelation()
-            } else if (epoch.isNotEmpty()) backendEpoch = epoch
+    /** Actual service ownership is resolved before retained cancellation may dispatch or expose AVAILABLE. */
+    @Synchronized fun restore(epoch: String, state: String) = restoreBackend(epoch, state, "BACKEND_FAILED")
+
+    private fun restoreBackend(epoch: String, state: String, detail: String) {
+        if (backendEpoch != null || current.phase !in setOf(SessionPhase.INACTIVE, SessionPhase.UNKNOWN, SessionPhase.STOPPING)) return
+        if (state == "STOPPED") { release(); return }
+        if (epoch.isEmpty()) {
+            if (state == "FAILED") current = current.copy(phase = SessionPhase.UNKNOWN, detail = "BACKEND_RELEASE_UNCONFIRMED")
             return
         }
-        if (backendEpoch != null || current.phase !in setOf(SessionPhase.INACTIVE, SessionPhase.UNKNOWN)) return
-        if (state in setOf("STOPPED", "FAILED")) {
-            current = current.copy(phase = if (state == "STOPPED") SessionPhase.INACTIVE else SessionPhase.FAILED)
-            ownerBase = null
-            recoveredOwner = null
-            retireAttempts()
-            persistCorrelation()
-            return
-        }
-        if (epoch.isEmpty()) return
         val phase = when (state) {
             "STARTING" -> SessionPhase.STARTING
             "READY" -> SessionPhase.AVAILABLE
-            "SESSION_STARTING" -> SessionPhase.CONNECTING
-            "STREAMING" -> SessionPhase.CONNECTING
+            "SESSION_STARTING", "STREAMING" -> SessionPhase.CONNECTING
             "STOPPING", "STOP_UNVERIFIED" -> SessionPhase.STOPPING
+            "FAILED" -> SessionPhase.FAILED
             else -> return
         }
         backendEpoch = epoch
@@ -235,8 +281,18 @@ class SessionController(
         backendStarted = true
         releasing = phase == SessionPhase.STOPPING
         current = SessionState(epoch, phase)
-        retireAttempts()
-        persistCorrelation()
+        refreshAttempts()
+        retain()
+        if (state == "FAILED") failAndStop(detail) else driveCancellation()
     }
 
+    /** Shared by the real main-thread bootstrap observer and its host adapter regression. */
+    @Synchronized fun observeBackend(epoch: String, state: String, detail: String = "", rejectedEpoch: String? = null) {
+        rejectedEpoch?.let { rejected(it, detail.ifEmpty { "START_REJECTED" }) }
+        restoreBackend(epoch, state, detail.ifEmpty { "BACKEND_FAILED" })
+        backend(epoch, state, detail)
+        if (state == "FAILED" || detail == "SESSION_SETUP_REQUIRED") backend(epoch, "FAILED", detail)
+    }
+
+    companion object { private const val STORAGE_FAILURE = "SESSION_CONTROL_STATE_UNAVAILABLE" }
 }
