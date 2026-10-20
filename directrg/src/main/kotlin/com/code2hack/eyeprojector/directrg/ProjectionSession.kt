@@ -11,8 +11,6 @@ import java.io.DataOutputStream
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.Executors
-import java.util.concurrent.SynchronousQueue
-import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -30,7 +28,7 @@ class ProjectionSession(
 ) : Closeable {
     private val running = AtomicBoolean(true)
     private val timer = Executors.newScheduledThreadPool(2)
-    private val controls = ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS, SynchronousQueue())
+    private val controls = OrderedControlDispatcher { error -> failure(error); closeWithState("DISCONNECTED") }
     private val outputLock = Any()
     private val lifecycleLock = Any()
     private val writing = AtomicLong()
@@ -53,6 +51,7 @@ class ProjectionSession(
     private var touches = 0L
     private var scrolls = 0L
     private var navigations = 0L
+    private var inputRejected = 0L
     private var lastHash: ByteArray? = null
     private val renderDelayMs = ArrayDeque<Double>()
     private val roundTripMs = ArrayDeque<Double>()
@@ -67,10 +66,16 @@ class ProjectionSession(
             .put("scrollsSent", scrolls).put("navigationsSent", navigations)
             .put("packetReadToCallbackP95Ms", p95(renderDelayMs)).put("networkRoundTripP95Ms", p95(roundTripMs))
             .put("latencyScope", "RG System.nanoTime packet-read to render-callback receipt; network echo RTT; no optical/input end-to-end claim")
-            .put("maxEncodedPacketBytes", Wire.MAX_PAYLOAD).put("maxInflightFrames", 16).put("queuedTaps", 0)
+            .put("maxEncodedPacketBytes", Wire.MAX_PAYLOAD).put("maxInflightFrames", 16)
         stats.put("videoLateDrops", droppedVideo)
             .put("videoTiming", "Video PTS relative to first frame receipt in each decoder stream; Receiver monotonic clock")
             .put("avScope", "Native Bluetooth audio is independent; physical AV offset is unmeasured")
+        val input = controls.snapshot()
+        stats.put("controlsAccepted", input.accepted).put("controlsWritten", input.written)
+            .put("controlsCanceled", input.canceled).put("controlsFailed", input.failed)
+            .put("controlsRejected", input.rejected + inputRejected).put("controlsPending", input.pending).put("controlsInFlight", input.inFlight)
+            .put("controlSubmissionToWriteMeanMs", input.meanWriteDelayMs).put("controlSubmissionToWriteMaxMs", input.maxWriteDelayMs)
+            .put("controlDeliveryScope", "written means TLS write returned; no target-injection acknowledgment")
         val writeBegin = System.nanoTime()
         val file = AtomicFile(File(directory.parentFile, "status.json"))
         val out = file.startWrite()
@@ -184,6 +189,7 @@ class ProjectionSession(
     }
 
     internal fun replaceDecoder(size: Geometry) {
+        controls.cancelPending()
         val epoch = Any()
         val old = synchronized(lifecycleLock) {
             decoderEpoch = epoch
@@ -215,42 +221,40 @@ class ProjectionSession(
         if (!installed) next.close()
     }
 
-    fun tap(tap: Tap): Boolean = input(Wire.TAP, tap.geometry, tap.bytes())
     /** Acceptance here means queued locally; onScale/scaleState supplies backend observations. */
     fun requestScale(value: Double, requestId: Long = System.nanoTime()): Boolean {
         if (!running.get() || geometry == null) return false
-        return try {
-            controls.execute {
-                try { if (running.get()) send(Frame(Wire.SCALE_REQUEST, requestId, ScaleRequest(value).bytes())) }
-                catch (_: Exception) { closeWithState("DISCONNECTED") }
-            }
-            true
-        } catch (_: java.util.concurrent.RejectedExecutionException) { false }
-    }
-    fun scroll(scroll: Scroll): Boolean = input(Wire.SCROLL, scroll.target.geometry, scroll.bytes())
-    fun navigate(action: Navigation): Boolean {
-        val size = geometry ?: return false
-        return input(Wire.NAVIGATE, size, Navigate(action, size).bytes())
+        return controls.submit(System.nanoTime() / 1_000_000, { running.get() && geometry != null }, "scale") {
+            send(Frame(Wire.SCALE_REQUEST, requestId, ScaleRequest(value).bytes()))
+        }
     }
 
-    private fun input(channel: Int, size: Geometry, payload: ByteArray): Boolean {
-        if (!running.get() || !readyForTouch || size != geometry) return false
-        return try {
-            // SynchronousQueue retains no command. Pause/loss closes the socket and rejects later work.
-            controls.execute {
-                try {
-                    if (running.get() && readyForTouch && size == geometry) {
-                        send(Frame(channel, payload = payload))
-                        synchronized(this) { when (channel) {
-                            Wire.TAP -> touches++
-                            Wire.SCROLL -> scrolls++
-                            Wire.NAVIGATE -> navigations++
-                        } }
-                    }
-                } catch (_: Exception) { closeWithState("DISCONNECTED") }
-            }
-            true
-        } catch (_: java.util.concurrent.RejectedExecutionException) { false }
+    /** True means queued, not an acknowledgment from the Phone's target widget. */
+    fun tap(tap: Tap, eventTimeMs: Long = System.nanoTime() / 1_000_000): Boolean =
+        input(Wire.TAP, tap.geometry, tap.bytes(), eventTimeMs)
+    fun scroll(scroll: Scroll, eventTimeMs: Long = System.nanoTime() / 1_000_000, headMotion: Boolean = false): Boolean =
+        input(Wire.SCROLL, scroll.target.geometry, scroll.bytes(), eventTimeMs, if (headMotion) "head-scroll" else "input")
+    fun navigate(action: Navigation): Boolean {
+        val size = geometry ?: return false
+        return input(Wire.NAVIGATE, size, Navigate(action, size).bytes(), System.nanoTime() / 1_000_000)
+    }
+
+    fun cancelPendingInput() = controls.cancelPending()
+    fun cancelHeadScroll() = controls.cancelPending("head-scroll")
+
+    private fun input(channel: Int, size: Geometry, payload: ByteArray, eventTimeMs: Long, category: String = "input"): Boolean {
+        if (!running.get() || !readyForTouch || size != geometry) {
+            synchronized(this) { inputRejected++ }
+            return false
+        }
+        return controls.submit(eventTimeMs, { running.get() && readyForTouch && size == geometry }, category) {
+            send(Frame(channel, payload = payload))
+            synchronized(this) { when (channel) {
+                Wire.TAP -> touches++
+                Wire.SCROLL -> scrolls++
+                Wire.NAVIGATE -> navigations++
+            } }
+        }
     }
 
     private fun closeWithState(value: String) {
@@ -259,7 +263,7 @@ class ProjectionSession(
             readyForTouch = false
             decoder.also { decoder = null }
         }
-        runCatching { socket?.close() }; timer.shutdownNow(); controls.shutdownNow()
+        runCatching { socket?.close() }; timer.shutdownNow(); controls.close()
         runCatching { old?.close() }
         state(value)
     }

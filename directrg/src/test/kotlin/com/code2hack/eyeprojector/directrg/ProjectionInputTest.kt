@@ -1,0 +1,107 @@
+package com.code2hack.eyeprojector.directrg
+
+import android.view.Surface
+import com.code2hack.eyeprojector.protocol.*
+import org.junit.Assert.*
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
+import java.io.IOException
+import java.io.OutputStream
+import java.util.Collections
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+
+/** Real ProjectionSession submission/serialization with a controlled output stream, not physical injection. */
+class ProjectionInputTest {
+    @get:Rule val temporary = TemporaryFolder()
+    private val geometry = Geometry(480, 640)
+    private fun set(session: ProjectionSession, name: String, value: Any) {
+        ProjectionSession::class.java.getDeclaredField(name).apply { isAccessible = true }.set(session, value)
+    }
+    private fun controls(session: ProjectionSession): OrderedControlDispatcher =
+        ProjectionSession::class.java.getDeclaredField("controls").apply { isAccessible = true }.get(session) as OrderedControlDispatcher
+    private fun ready(output: OutputStream, state: (String) -> Unit = {}): ProjectionSession =
+        ProjectionSession(temporary.root.resolve("session"), Surface(), { _, value -> state(value) }, { _, _ -> }).also {
+            set(it, "geometry", geometry); set(it, "readyForTouch", true); set(it, "output", DataOutputStream(output))
+        }
+
+    @Test fun normalizedBurstSurvivesTheActualSessionSubmissionAndWirePath() {
+        val blocked = CountDownLatch(1); val release = CountDownLatch(1); val done = CountDownLatch(4)
+        val first = AtomicBoolean(true)
+        val buffer = ByteArrayOutputStream()
+        val at = Collections.synchronizedList(mutableListOf<Long>())
+        val output = object : OutputStream() {
+            override fun write(value: Int) {
+                if (first.compareAndSet(true, false)) { blocked.countDown(); check(release.await(2, TimeUnit.SECONDS)) }
+                buffer.write(value)
+            }
+            override fun flush() { at.add(System.nanoTime()); done.countDown() }
+        }
+        ready(output).use { session ->
+            val point = PointerPosition(123f, 234f, true)
+            val pad = PadGestureRecognizer(300, 500) { action -> when (action) {
+                is PadGestureRecognizer.Action.Tap -> assertTrue(session.tap(Tap(123, 234, geometry),
+                    action.downTimeMs + action.timeMs - action.upTimeMs))
+                is PadGestureRecognizer.Action.Scroll -> assertTrue(session.scroll(Scroll(Tap(123, 234, geometry), action.pixels), action.timeMs))
+                else -> fail("Unexpected action $action")
+            } }
+            fun key(key: PadGestureRecognizer.Key, t: Long) {
+                pad.accept(PadGestureRecognizer.Event(key, PadGestureRecognizer.Phase.DOWN, t, t, position = point), t)
+                pad.accept(PadGestureRecognizer.Event(key, PadGestureRecognizer.Phase.UP, t + 22, t), t + 22)
+            }
+            for (t in listOf(1000L, 1190L, 1343L, 1500L)) key(PadGestureRecognizer.Key.CONTACT, t)
+            key(PadGestureRecognizer.Key.FORWARD, 1630)
+            pad.confirm(3000)
+            assertTrue(blocked.await(2, TimeUnit.SECONDS))
+            assertEquals(4L, controls(session).snapshot().accepted)
+            release.countDown(); assertTrue(done.await(3, TimeUnit.SECONDS))
+            val stream = DataInputStream(buffer.toByteArray().inputStream())
+            val frames = (1..4).map { Wire.readFrame(stream) }
+            assertEquals(listOf(Wire.TAP, Wire.TAP, Wire.TAP, Wire.SCROLL), frames.map { it.channel })
+            assertTrue(frames.take(3).all { Tap.from(it.payload) == Tap(123, 234, geometry) })
+            assertEquals(Scroll(Tap(123, 234, geometry), 160), Scroll.from(frames.last().payload))
+            assertEquals(0, stream.available())
+            assertTrue((at[1] - at[0]) / 1_000_000 >= 150)
+            assertTrue((at[2] - at[1]) / 1_000_000 >= 110)
+        }
+    }
+
+    @Test fun focusCancellationAndGeometryReplacementDropAcceptedQueuedControls() {
+        val blocked = CountDownLatch(1); val release = CountDownLatch(1); val firstDone = CountDownLatch(1)
+        val first = AtomicBoolean(true)
+        val output = object : OutputStream() {
+            override fun write(value: Int) {
+                if (first.compareAndSet(true, false)) { blocked.countDown(); check(release.await(2, TimeUnit.SECONDS)) }
+            }
+            override fun flush() { firstDone.countDown() }
+        }
+        ready(output).use { session ->
+            assertTrue(session.tap(Tap(10, 20, geometry), 1000))
+            assertTrue(blocked.await(2, TimeUnit.SECONDS))
+            assertTrue(session.scroll(Scroll(Tap(10, 20, geometry), 160), 1100))
+            session.cancelPendingInput()
+            assertEquals(1L, controls(session).snapshot().canceled)
+            set(session, "geometry", Geometry(640, 480))
+            assertFalse(session.tap(Tap(10, 20, geometry), 1200))
+            release.countDown(); assertTrue(firstDone.await(2, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test fun acceptedWriteFailureIsReportedWithoutClaimingASuccessfulWrite() {
+        val disconnected = CountDownLatch(1)
+        ready(object : OutputStream() { override fun write(value: Int) { throw IOException("test socket write failure") } }) {
+            if (it == "DISCONNECTED") disconnected.countDown()
+        }.use { session ->
+            assertTrue(session.tap(Tap(10, 20, geometry), 1000))
+            assertTrue(disconnected.await(2, TimeUnit.SECONDS))
+            val counts = controls(session).snapshot()
+            assertEquals(1L, counts.accepted); assertEquals(0L, counts.written); assertEquals(1L, counts.failed)
+            assertFalse(session.scroll(Scroll(Tap(10, 20, geometry), -160), 1200))
+        }
+    }
+}
