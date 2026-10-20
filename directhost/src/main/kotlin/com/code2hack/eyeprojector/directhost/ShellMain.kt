@@ -68,7 +68,7 @@ object ShellMain {
     internal fun videoControlCommand(scid: Int): List<String> = listOf("/system/bin/app_process", "/", "com.genymobile.scrcpy.Server", Wire.SCRCPY_VERSION,
             "scid=%08x".format(scid), "log_level=debug", "tunnel_forward=false", "send_dummy_byte=false",
             "send_device_meta=false", "send_stream_meta=true", "send_frame_meta=true", "video=true", "audio=false",
-            "control=true", "video_codec=h264", "video_bit_rate=2000000", "max_fps=30", "new_display=480x640/160",
+            "control=true", "video_codec=h264", "video_bit_rate=2000000", "max_fps=30", "new_display=480x640/160", "flex_display=true",
             "display_ime_policy=local", "vd_destroy_content=true", "clipboard_autosync=false", "power_on=false", "keep_active=true", "cleanup=true")
 
     @JvmStatic fun main(args: Array<String>) {
@@ -164,6 +164,12 @@ internal class Bridge(
 
     override fun close() = close(SessionStopReason.OWNER_CLOSE)
 
+    /** Typed local controller hook for the owning Shizuku service; it creates no network identity. */
+    fun requestScale(requestId: Long, value: Double): ScaleState =
+        active.get()?.requestScale(requestId, value) ?: LiveScale.unavailable(requestId, value)
+
+    fun scaleState(): ScaleState = active.get()?.scaleState() ?: LiveScale.unavailable()
+
     private fun close(reason: SessionStopReason) {
         if (!running.compareAndSet(true, false)) return
         listener.close(); active.getAndSet(null)?.close(reason)
@@ -183,6 +189,11 @@ private class Session(
     private val geometry = AtomicReference<Geometry?>()
     private val writeStarted = AtomicLong()
     private val output = DataOutputStream(peer.outputStream)
+    private val controlLock = Any()
+    private val scale = LiveScale(
+        resize = { size -> writeControl(Scrcpy.resize(size)) },
+        publish = { value -> send(Frame(Wire.SCALE_STATE, value.requestId, value.bytes())) },
+    )
     private var localListener: LocalServerSocket? = null
     private var video: LocalSocket? = null
     private var control: LocalSocket? = null
@@ -201,6 +212,21 @@ private class Session(
     private val localPort = peer.localPort
     private val peerAddress = peer.inetAddress.hostAddress
     private val peerPort = peer.port
+
+    fun requestScale(id: Long, value: Double, streamRequest: Boolean = false): ScaleState {
+        if (!running.get()) return LiveScale.unavailable(id, value)
+        return try { scale.request(id, value, publishUnavailable = streamRequest) }
+        catch (error: Exception) {
+            close(sessionFailureReason(error, control = true))
+            LiveScale.unavailable(id, value)
+        }
+    }
+    fun scaleState(): ScaleState = if (running.get()) scale.state() else LiveScale.unavailable()
+
+    private fun writeControl(payload: ByteArray) = synchronized(controlLock) {
+        check(running.get())
+        control!!.outputStream.write(payload)
+    }
 
     @Synchronized private fun send(frame: Frame) {
         check(running.get())
@@ -246,20 +272,22 @@ private class Session(
                     val frame = Wire.readFrame(input)
                     when (frame.channel) {
                         Wire.PING -> send(Frame(Wire.PONG, frame.stamp))
+                        Wire.SCALE_REQUEST -> {
+                            requestScale(frame.stamp, ScaleRequest.from(frame.payload).scale, streamRequest = true)
+                        }
                         Wire.TAP -> {
                             val tap = Tap.from(frame.payload)
-                            require(tap.geometry == geometry.get())
-                            control!!.outputStream.write(Scrcpy.tap(tap)); touches.incrementAndGet()
+                            if (tap.geometry == geometry.get()) {
+                                writeControl(Scrcpy.tap(tap)); touches.incrementAndGet()
+                            }
                         }
                         Wire.SCROLL -> {
                             val scroll = Scroll.from(frame.payload)
-                            require(scroll.target.geometry == geometry.get())
-                            control!!.outputStream.write(Scrcpy.scroll(scroll))
+                            if (scroll.target.geometry == geometry.get()) writeControl(Scrcpy.scroll(scroll))
                         }
                         Wire.NAVIGATE -> {
                             val navigate = Navigate.from(frame.payload)
-                            require(navigate.geometry == geometry.get())
-                            control!!.outputStream.write(Scrcpy.navigate(navigate))
+                            if (navigate.geometry == geometry.get()) writeControl(Scrcpy.navigate(navigate))
                         }
                         Wire.END -> break
                         else -> error("Unsupported control")
@@ -274,9 +302,11 @@ private class Session(
             while (running.get()) {
                 when (val record = Scrcpy.readRecord(videoInput)) {
                     is ScrcpyRecord.Session -> {
-                        geometry.set(record.geometry)
                         startup.cancel(false)
-                        send(Frame(Wire.GEOMETRY, payload = record.geometry.bytes()))
+                        scale.observe(record, this) {
+                            synchronized(controlLock) { geometry.set(record.geometry) }
+                            send(Frame(Wire.GEOMETRY, payload = record.geometry.bytes()))
+                        }
                     }
                     is ScrcpyRecord.Packet -> {
                         send(Frame(Wire.VIDEO, record.stamp, record.data))
@@ -316,6 +346,12 @@ private class Session(
             .put("childStartedMs", childStartedMs.get()).put("firstVideoFrameMs", firstVideoFrameMs.get())
             .put("tls", tlsProtocol).put("localAddress", localAddress).put("localPort", localPort)
             .put("peerAddress", peerAddress).put("peerPort", peerPort).put("scid", "%08x".format(scid))
+        val scaleState = scale.state()
+        data.put("scaleStatus", scaleState.status.name)
+            .put("requestedScale", scaleState.requested.takeIf { it.isFinite() } ?: JSONObject.NULL)
+            .put("observedWidth", scaleState.observed?.width ?: JSONObject.NULL)
+            .put("observedHeight", scaleState.observed?.height ?: JSONObject.NULL)
+            .put("appliedScale", scaleState.observed?.let(LayoutScale::applied) ?: JSONObject.NULL)
         File(directory, "last-session.json").writeText(data.toString())
         println(data.toString())
     }
