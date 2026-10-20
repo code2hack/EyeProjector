@@ -1,5 +1,6 @@
 package com.code2hack.eyeprojector.directhost
 
+import com.code2hack.eyeprojector.protocol.ScaleState
 import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Context
@@ -113,6 +114,19 @@ class HostBootstrap private constructor(private val context: Context) {
     fun stop() { executor.execute {
         requestStop()
     } }
+
+    /** Local typed Binder operations; no peer TLS keys or new network trust are involved. */
+    fun requestScale(value: Double, complete: (ScaleState?) -> Unit) =
+        scaleOperation({ it.requestScale(System.nanoTime(), value) }, complete)
+
+    fun scaleState(complete: (ScaleState?) -> Unit) = scaleOperation({ it.scaleState() }, complete)
+
+    private fun scaleOperation(operation: (IHostBootstrap) -> ByteArray, complete: (ScaleState?) -> Unit) {
+        executor.execute {
+            val result = runCatching { remote?.let { ScaleState.from(operation(it)) } }.getOrNull()
+            main.post { complete(result) }
+        }
+    }
 
     /** PairingPanel.beforeForget hook: completion and the caller's trust deletion run on main. */
     fun stopBeforeForget(complete: () -> Unit) { executor.execute {

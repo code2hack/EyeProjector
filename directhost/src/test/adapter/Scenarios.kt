@@ -1,6 +1,7 @@
 package com.code2hack.eyeprojector.directhost
 
 import android.content.Context
+import com.code2hack.eyeprojector.protocol.*
 import rikka.shizuku.Shizuku
 import java.io.File
 import java.nio.file.Files
@@ -128,6 +129,52 @@ fun main() {
         f.host.refresh(); f.drain()
         check(completions == 1)
     }
+    scenario("scale without an attached service reports no value and never starts projection") { f ->
+        var replies = 0
+        f.host.requestScale(1.25) { check(it == null); replies++ }
+        f.host.scaleState { check(it == null); replies++ }
+        f.drain()
+        check(replies == 2 && Shizuku.binds == 0)
+    }
+    scenario("typed local scale preserves observed feedback and exposes unavailable transport honestly") { f ->
+        f.host.start(); f.drain()
+        val service = FakeService(); f.attach(service)
+        var response: ScaleState? = null
+        f.host.requestScale(1.25) { response = it }; f.drain()
+        check(service.scaleRequests.size == 1)
+        check(response!!.requestId == service.scaleRequests.single().first)
+        check(response!!.requested == 1.25 && response!!.status == ScaleStatus.PENDING)
+        check(LayoutScale.applied(response!!.observed!!) == 1.0)
+        service.currentScale = service.currentScale.copy(observed = Geometry(384, 512), status = ScaleStatus.OBSERVED, clientResize = true)
+        f.host.scaleState { response = it }; f.drain()
+        check(response!!.requested == 1.25 && LayoutScale.applied(response!!.observed!!) == 1.25)
+        service.scalePayloadOverride = ByteArray(7)
+        f.host.scaleState { response = it }; f.drain()
+        check(response == null) // Decode failure must not become a fabricated 1.0x observation.
+        service.scalePayloadOverride = null
+        service.die(); f.drain()
+        f.host.requestScale(2.0) { response = it }; f.drain()
+        check(response == null && service.scaleRequests.size == 1)
+    }
+    scenario("Stop and fresh attachment cannot reuse the preceding session scale") { f ->
+        f.host.start(); f.drain()
+        val first = FakeService().apply {
+            currentScale = currentScale.copy(observed = Geometry(384, 512), requested = 1.25, status = ScaleStatus.OBSERVED)
+        }
+        f.attach(first)
+        var response: ScaleState? = null
+        f.host.scaleState { response = it }; f.drain()
+        check(LayoutScale.applied(response!!.observed!!) == 1.25)
+        f.host.stop(); f.drain()
+        check(first.revoked && first.destroys == 1 && f.backend() == "STOPPED")
+        f.host.scaleState { response = it }; f.drain()
+        check(response == null)
+        f.host.start(); f.drain()
+        val second = FakeService(); f.attach(second)
+        f.host.scaleState { response = it }; f.drain()
+        check(response!!.status == ScaleStatus.READY && LayoutScale.applied(response!!.observed!!) == 1.0)
+        check(second.starts == 1 && first.starts == 1 && second.scaleRequests.isEmpty())
+    }
     check(failures == 0) { "$failures adapter scenarios failed" }
-    println("6 adapter scenarios passed; modeled host events, no device/Binder claim")
+    println("9 adapter scenarios passed; modeled host events, no device/Binder claim")
 }
