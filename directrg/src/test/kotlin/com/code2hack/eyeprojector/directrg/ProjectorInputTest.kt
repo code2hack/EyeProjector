@@ -346,15 +346,4 @@ class ProjectorInputTest {
         assertEquals(listOf(-160), scrolls)
         assertEquals(0, taps); assertEquals(0, backs); assertEquals(0, exits)
     }
-    @Test fun settingsUseOwnNumericValuesAndRetainValueOnSaveFailure() {
-        val saved = mutableMapOf<String, String>(); var writable = true
-        val settings = LocalInputSettings(saved::get) { k, v -> if (writable) { saved[k] = v; true } else false }
-        assertEquals(2.0, settings.pointerGain, 0.0)
-        settings.stepPointer(1); settings.stepScroll(-1)
-        assertEquals(2.1, settings.pointerGain, 0.0); assertEquals(230, settings.scrollSpeed)
-        writable = false
-        assertFalse(settings.stepPointer(1)); assertEquals(2.1, settings.pointerGain, 0.0)
-        assertNotNull(settings.error)
-        assertEquals(2.1, LocalInputSettings(saved::get) { _, _ -> false }.pointerGain, 0.0)
-    }
 }

@@ -65,18 +65,23 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         status = TextView(this).apply { setTextColor(Color.WHITE); textSize = 18f; gravity = Gravity.CENTER }
         val connectButton = Button(this).apply { text = getString(R.string.connect); setOnClickListener { connect() } }
         localButtons.add(connectButton)
+        val settingsPanel = LocalInputSettingsPanel(this, settings) {
+            pointer.sensitivity(settings.pointerXGain, settings.pointerYGain)
+            edgeMotion.enabled = settings.headScrollEnabled
+            updateEdgeScroll()
+            showStatus(connectionStatus)
+        }
+        localButtons.addAll(settingsPanel.buttons)
+        edgeMotion.enabled = settings.headScrollEnabled
         connectionView = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setBackgroundColor(Color.BLACK)
             addView(status)
-            addView(settingsRow("Pointer", { "%.1f×".format(settings.pointerGain) },
-                { if (it < 0) settings.pointerTenths > 1 else settings.pointerTenths < 60 }, settings::stepPointer))
-            addView(settingsRow("Scroll", { "${settings.scrollSpeed} nominal px/s" },
-                { if (it < 0) settings.scrollSpeed > 10 else settings.scrollSpeed < 1200 }, settings::stepScroll))
             addView(connectButton)
+            addView(settingsPanel)
         }
         root.addView(connectionView, FrameLayout.LayoutParams(-1, -1))
         pointer = PointerOverlay(this).apply {
-            sensitivity(settings.pointerGain)
+            sensitivity(settings.pointerXGain, settings.pointerYGain)
             onPositionChanged = { updateEdgeScroll() }
         }
         root.addView(pointer, FrameLayout.LayoutParams(-1, -1))
@@ -96,30 +101,6 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
                 systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             }
             resize()
-        }
-    }
-
-    private fun settingsRow(label: String, value: () -> String, enabled: (Int) -> Boolean, step: (Int) -> Boolean): LinearLayout {
-        val number = TextView(this).apply { setTextColor(Color.WHITE); gravity = Gravity.CENTER }
-        val minus = Button(this).apply { text = "−"; contentDescription = "Decrease $label" }
-        val plus = Button(this).apply { text = "+"; contentDescription = "Increase $label" }
-        fun refresh() {
-            number.text = "$label ${value()}"
-            minus.isEnabled = enabled(-1); plus.isEnabled = enabled(1)
-        }
-        for ((button, direction) in listOf(minus to -1, plus to 1)) {
-            localButtons.add(button)
-            button.setOnClickListener {
-                step(direction)
-                pointer.sensitivity(settings.pointerGain)
-                refresh()
-                showStatus(connectionStatus)
-            }
-        }
-        refresh()
-        return LinearLayout(this).apply {
-            gravity = Gravity.CENTER
-            addView(minus); addView(number, LinearLayout.LayoutParams(0, -2, 1f)); addView(plus)
         }
     }
 
@@ -240,7 +221,8 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         .put("lastSensorReceiptNs", pointer.lastSampleReceiptNs).put("lastCursorDrawNs", pointer.lastDrawElapsedNs)
         .put("cursorX", pointer.position.x).put("cursorY", pointer.position.y).put("pointerAvailable", pointer.position.available)
         .put("hardwarePadUps", padUps).put("tapContinuationMs", gestures.doubleTapMs)
-        .put("pointerGain", settings.pointerGain).put("nominalScrollPixelsPerSecond", settings.scrollSpeed)
+        .put("pointerXGain", settings.pointerXGain).put("pointerYGain", settings.pointerYGain)
+        .put("headScrollEnabled", settings.headScrollEnabled).put("nominalScrollPixelsPerSecond", settings.scrollSpeed)
         .put("streaming", streaming).put("opticalOrErgonomicPass", false)
 
     private fun connect() {
