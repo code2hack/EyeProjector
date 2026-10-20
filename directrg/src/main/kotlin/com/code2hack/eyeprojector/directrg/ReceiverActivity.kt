@@ -21,11 +21,14 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import com.code2hack.eyeprojector.protocol.Fit
 import com.code2hack.eyeprojector.protocol.Geometry
 import com.code2hack.eyeprojector.protocol.Navigation
 import com.code2hack.eyeprojector.protocol.Scroll
+import com.code2hack.eyeprojector.protocol.PairingPanel
+import com.code2hack.eyeprojector.protocol.PeerRole
 import java.io.File
 import org.json.JSONObject
 
@@ -33,7 +36,8 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var root: FrameLayout
     private lateinit var screen: ProjectorSurface
     private lateinit var pointer: PointerOverlay
-    private lateinit var connectionView: LinearLayout
+    private lateinit var connectionView: ScrollView
+    private lateinit var pairingPanel: PairingPanel
     private val localButtons = mutableListOf<Button>()
     private lateinit var status: TextView
     private var connectionStatus = ""
@@ -73,6 +77,11 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         status = TextView(this).apply { setTextColor(Color.WHITE); textSize = 18f; gravity = Gravity.CENTER }
         val connectButton = Button(this).apply { text = getString(R.string.connect); setOnClickListener { connect() } }
         localButtons.add(connectButton)
+        pairingPanel = PairingPanel(this, PeerRole.GLASSES, { paired ->
+            connectButton.visibility = if (paired) View.VISIBLE else View.GONE
+        }, { complete -> disconnect(); complete() })
+        pairingPanel.addView(connectButton, 2)
+        localButtons.add(pairingPanel.forgetButton)
         val settingsPanel = LocalInputSettingsPanel(this, settings) {
             pointer.sensitivity(settings.pointerXGain, settings.pointerYGain)
             edgeMotion.enabled = settings.headScrollEnabled
@@ -81,11 +90,12 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         }
         localButtons.addAll(settingsPanel.buttons)
         edgeMotion.enabled = settings.headScrollEnabled
-        connectionView = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setBackgroundColor(Color.BLACK)
-            addView(status)
-            addView(connectButton)
-            addView(settingsPanel)
+        connectionView = ScrollView(this).apply {
+            isFillViewport = true; setBackgroundColor(Color.BLACK)
+            addView(LinearLayout(this@ReceiverActivity).apply {
+                orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setBackgroundColor(Color.BLACK)
+                addView(pairingPanel); addView(status); addView(settingsPanel)
+            })
         }
         root.addView(connectionView, FrameLayout.LayoutParams(-1, -1))
         pointer = PointerOverlay(this).apply {
@@ -273,6 +283,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         .put("streaming", streaming).put("opticalOrErgonomicPass", false)
 
     private fun connect() {
+        if (!pairingPanel.isPaired()) { showStatus("Pair with the Phone before connecting"); return }
         cancelInput()
         pointer.stop(); if (resumed && hasWindowFocus()) pointer.start()
         if (!screen.holder.surface.isValid) { showStatus(getString(R.string.display_unavailable)); return }
@@ -321,7 +332,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         }
     }
     override fun onPause() { resumed = false; longTouch.stop(); pointer.stop(); disconnect(); super.onPause() }
-    override fun onDestroy() { longTouch.stop(); disconnect(); super.onDestroy() }
+    override fun onDestroy() { longTouch.stop(); disconnect(); pairingPanel.close(); super.onDestroy() }
     override fun surfaceCreated(holder: SurfaceHolder) = Unit
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) { resize() }
     override fun surfaceDestroyed(holder: SurfaceHolder) { disconnect() }

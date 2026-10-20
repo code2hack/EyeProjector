@@ -1,6 +1,26 @@
 <resources>
+    <string name="host_forget_pending">Forget is waiting for the host to stop and revoke its saved session. Restore Shizuku access to continue.</string>
     <string name="host_ready">EyeProjector host\nReady for authorized video and control session setup.</string>
     <string name="host_stop">Stop host</string>
     <string name="host_stopped">Host stopped</string>
     <string name="host_stop_unknown">Stop not verified</string>
+    <string name="host_status">EyeProjector host\n\n%1$s\n\n%2$s</string>
+    <string name="host_start">Start</string>
+    <string name="host_authorize">Authorize EyeProjector</string>
+    <string name="host_open_shizuku">Open Shizuku / Install</string>
+    <string name="host_setup_guide">Shizuku setup and reboot recovery</string>
+    <string name="host_guide_address">Open https://shizuku.rikka.app/guide/setup/ to install Shizuku and start it using wireless debugging. After reboot, start Shizuku again, authorize EyeProjector if asked, then return here and tap Start.</string>
+    <string name="host_shizuku_missing">Install Shizuku, then follow its wireless debugging setup guide.</string>
+    <string name="host_shizuku_unavailable">Shizuku is unavailable. Open Shizuku and start it using wireless debugging. After reboot, start it again, then return here.</string>
+    <string name="host_shizuku_update">Update Shizuku to version 13 or later, then start it again.</string>
+    <string name="host_shizuku_authorize">Shizuku is running. Tap Authorize EyeProjector and allow access. If previously denied, open Shizuku and enable EyeProjector in Authorized applications.</string>
+    <string name="host_shizuku_shell">Start Shizuku through wireless debugging (shell mode). This backend requires shell UID 2000.</string>
+    <string name="host_shizuku_available">Shizuku is available and EyeProjector is authorized.</string>
+    <string name="host_session_missing">Pair with a display device, connect both devices to the same Wi-Fi or Phone hotspot, then tap Start.</string>
+    <string name="host_bind_pending">Backend attachment is still pending. Open Shizuku to check it is running and EyeProjector is authorized, then return here. Stop remains pending until attachment completes.</string>
+    <string name="host_listening">Host is ready for the configured peer. This confirms host readiness; connect the Glasses to verify projection.</string>
+    <string name="host_starting">Starting the shell backend… Stop cancels this startup.</string>
+    <string name="host_stopping">Stopping the owned backend…</string>
+    <string name="host_start_failed">Backend startup or execution failed. Check the private peer setup and Shizuku, then tap Start to retry.</string>
+    <string name="host_unknown">Host state is unknown. Restore Shizuku and authorization, then use Stop to verify teardown or Start to retry.</string>
 </resources>
