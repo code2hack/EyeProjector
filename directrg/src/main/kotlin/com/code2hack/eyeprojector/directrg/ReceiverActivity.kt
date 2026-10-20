@@ -4,13 +4,11 @@ import android.app.Activity
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Color
-import android.graphics.Rect
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
 import android.view.GestureDetector
 import android.view.Gravity
-import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceHolder
@@ -41,6 +39,15 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     private var connectionStatus = ""
     private lateinit var settings: LocalInputSettings
     private lateinit var gestures: PadGestureRecognizer
+    private lateinit var localInput: LocalPointerDispatcher
+    private lateinit var longTouch: NativePadLongTouch
+    private var nativeActionsSubmitted = 0L
+    private var nativeActionsRejected = 0L
+    private var longClassifications = 0L
+    private var unsupportedHeldEvents = 0L
+    private var tapDelaySamples = 0L
+    private var tapDelayTotalMs = 0L
+    private var tapDelayMaxMs = 0L
     private val edgeMotion = EdgeScrollMotion()
     private var session: ProjectionSession? = null
     private var currentGeometry: Geometry? = null
@@ -54,6 +61,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         val preferences = getSharedPreferences("projector-input", MODE_PRIVATE)
         settings = LocalInputSettings({ preferences.getString(it, null) }, { k, v -> preferences.edit().putString(k, v).commit() })
         root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+        localInput = LocalPointerDispatcher(root)
         screen = ProjectorSurface(this,
             { x, y -> remoteTap(x + screen.left, y + screen.top) },
             { x, y, pixels -> remoteScroll(x + screen.left, y + screen.top, pixels) },
@@ -82,16 +90,21 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         root.addView(connectionView, FrameLayout.LayoutParams(-1, -1))
         pointer = PointerOverlay(this).apply {
             sensitivity(settings.pointerXGain, settings.pointerYGain)
-            onPositionChanged = { updateEdgeScroll() }
+            onPositionChanged = {
+                if (!position.available) cancelInput()
+                updateEdgeScroll()
+            }
         }
         root.addView(pointer, FrameLayout.LayoutParams(-1, -1))
         gestures = PadGestureRecognizer(
             ViewConfiguration.getDoubleTapTimeout().toLong().coerceIn(100, 600),
             ViewConfiguration.getLongPressTimeout().toLong().coerceIn(200, 2000),
-            { if (usable()) activatePointer() }, { remoteBack() }, { pixels ->
-                if (usable()) pointer.inputPosition().let { remoteScroll(it.x, it.y, pixels) }
-            }, { if (usable() && streaming) disconnect() },
+            ::dispatchPadAction,
         )
+        longTouch = NativePadLongTouch(this) { at ->
+            if (usable()) gestures.classifyLongPress(at) else gestures.cancel(at)
+            schedulePadConfirmation()
+        }
         root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> resize() }
         setContentView(root)
         showStatus(getString(R.string.disconnected))
@@ -133,37 +146,59 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun usable() = resumed && hasWindowFocus()
-    private fun remoteTap(x: Float, y: Float): Boolean {
+    private fun remoteTap(x: Float, y: Float, eventTimeMs: Long = SystemClock.uptimeMillis()): Boolean {
         if (!usable() || !streaming) return false
         val size = currentGeometry ?: return false
         val target = Fit.inside(root.width, root.height, size).touch(x, y, size) ?: return false
-        return session?.tap(target) == true
+        return session?.tap(target, eventTimeMs) == true
     }
-    private fun remoteScroll(x: Float, y: Float, pixels: Int): Boolean {
+    private fun remoteScroll(x: Float, y: Float, pixels: Int, eventTimeMs: Long = SystemClock.uptimeMillis(), headMotion: Boolean = false): Boolean {
         if (!usable() || !streaming || pixels == 0) return false
         val size = currentGeometry ?: return false
         val target = Fit.inside(root.width, root.height, size).touch(x, y, size) ?: return false
-        return session?.scroll(Scroll(target, pixels)) == true
+        return session?.scroll(Scroll(target, pixels), eventTimeMs, headMotion) == true
     }
 
-    private fun activatePointer() {
-        val point = pointer.inputPosition()
-        if (!point.available) return
-        if (connectionView.visibility == View.VISIBLE) {
-            val rect = Rect()
-            for (button in localButtons) {
-                if (!button.isShown || !button.isEnabled) continue
-                button.getDrawingRect(rect)
-                root.offsetDescendantRectToMyCoords(button, rect)
-                if (rect.contains(point.x.toInt(), point.y.toInt())) { button.performClick(); break }
+    private fun dispatchPadAction(action: PadGestureRecognizer.Action) {
+        when (action) {
+            is PadGestureRecognizer.Action.LongPress -> { longClassifications++; return }
+            is PadGestureRecognizer.Action.Contact -> {
+                // EP-11 receives genuine DOWN/MOVE/UP/CANCEL here; never replace a hold by a tap.
+                unsupportedHeldEvents++
+                return
             }
-        } else remoteTap(point.x, point.y)
+            is PadGestureRecognizer.Action.Back -> { remoteBack(); return }
+            else -> Unit
+        }
+        if (!usable()) { nativeActionsRejected++; return }
+        val submitted = when (action) {
+            is PadGestureRecognizer.Action.Tap -> {
+                val delay = SystemClock.uptimeMillis() - action.downTimeMs
+                tapDelaySamples++; tapDelayTotalMs += delay; tapDelayMaxMs = maxOf(tapDelayMaxMs, delay)
+                val point = action.position
+                if (point?.available != true) false
+                else if (connectionView.visibility == View.VISIBLE) localInput.tap(action)
+                else remoteTap(point.x, point.y, action.downTimeMs + action.timeMs - action.upTimeMs)
+            }
+            is PadGestureRecognizer.Action.Scroll -> {
+                val point = action.position
+                if (point?.available != true) false
+                else if (connectionView.visibility == View.VISIBLE) localInput.scroll(point, action.pixels)
+                else remoteScroll(point.x, point.y, action.pixels, action.timeMs)
+            }
+            else -> false
+        }
+        if (submitted) nativeActionsSubmitted++ else {
+            nativeActionsRejected++
+            Log.w("EyeProjectorPad", "Native pointer action was not submitted")
+        }
     }
 
     private fun updateEdgeScroll() {
         if (!usable() || !streaming ||
             edgeMotion.direction(pointer.position, pointer.visibleBounds, pointer.expiresAtNs, SystemClock.elapsedRealtimeNanos()) == 0) {
             root.removeCallbacks(edgeTick); edgeScheduled = false; edgeMotion.stop()
+            session?.cancelHeadScroll()
         } else if (!edgeScheduled) { edgeScheduled = true; root.post(edgeTick) }
     }
     private val edgeTick = object : Runnable {
@@ -175,16 +210,23 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             val bounds = pointer.visibleBounds
             if (edgeMotion.direction(point, bounds, pointer.expiresAtNs, now) == 0) { edgeMotion.stop(); return }
             val pixels = edgeMotion.step(point, bounds, pointer.expiresAtNs, now, settings.scrollSpeed)
-            if (pixels != 0) remoteScroll(point.x, (bounds.top + bounds.bottom) / 2, pixels)
+            if (pixels != 0) remoteScroll(point.x, (bounds.top + bounds.bottom) / 2, pixels, headMotion = true)
             root.removeCallbacks(this); edgeScheduled = true; root.postDelayed(this, 50)
         }
     }
     private val confirmTap = Runnable {
         if (usable()) gestures.confirm(SystemClock.uptimeMillis()) else gestures.cancel()
+        schedulePadConfirmation()
+    }
+    private fun schedulePadConfirmation() {
+        root.removeCallbacks(confirmTap)
+        gestures.deadline?.let { root.postDelayed(confirmTap, (it - SystemClock.uptimeMillis()).coerceAtLeast(0)) }
     }
     private fun cancelInput() {
         if (::gestures.isInitialized) gestures.cancel(SystemClock.uptimeMillis())
         if (::screen.isInitialized) screen.cancelTouch()
+        if (::localInput.isInitialized) localInput.cancel()
+        session?.cancelPendingInput()
         root.removeCallbacks(confirmTap); root.removeCallbacks(edgeTick); edgeScheduled = false; edgeMotion.stop()
     }
 
@@ -209,9 +251,9 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             // actually reach this Activity, rather than assuming kernel delivery.
             if (padKey != null && padUps <= 64) Log.d("EyeProjectorPad", "key=${event.keyCode} up=${event.eventTime} down=${event.downTime}")
         }
-        gestures.accept(PadGestureRecognizer.Event(key, phase, event.eventTime, event.downTime, event.repeatCount), SystemClock.uptimeMillis())
-        root.removeCallbacks(confirmTap)
-        gestures.deadline?.let { root.postDelayed(confirmTap, (it - SystemClock.uptimeMillis()).coerceAtLeast(0)) }
+        gestures.accept(PadGestureRecognizer.Event(key, phase, event.eventTime, event.downTime, event.repeatCount,
+            if (phase == PadGestureRecognizer.Phase.DOWN) pointer.inputPosition() else null), SystemClock.uptimeMillis())
+        schedulePadConfirmation()
         return true
     }
 
@@ -221,6 +263,11 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         .put("lastSensorReceiptNs", pointer.lastSampleReceiptNs).put("lastCursorDrawNs", pointer.lastDrawElapsedNs)
         .put("cursorX", pointer.position.x).put("cursorY", pointer.position.y).put("pointerAvailable", pointer.position.available)
         .put("hardwarePadUps", padUps).put("tapContinuationMs", gestures.doubleTapMs)
+        .put("nativeMarkerReplayDelayMs", PadGestureRecognizer.CLASSIFICATION_MS)
+        .put("nativeActionsSubmitted", nativeActionsSubmitted).put("nativeActionsRejected", nativeActionsRejected)
+        .put("longClassifications", longClassifications).put("unsupportedHeldEvents", unsupportedHeldEvents)
+        .put("nativeTapNormalizationSamples", tapDelaySamples).put("nativeTapNormalizationMaxMs", tapDelayMaxMs)
+        .put("nativeTapNormalizationMeanMs", if (tapDelaySamples == 0L) 0.0 else tapDelayTotalMs.toDouble() / tapDelaySamples)
         .put("pointerXGain", settings.pointerXGain).put("pointerYGain", settings.pointerYGain)
         .put("headScrollEnabled", settings.headScrollEnabled).put("nominalScrollPixelsPerSecond", settings.scrollSpeed)
         .put("streaming", streaming).put("opticalOrErgonomicPass", false)
@@ -240,12 +287,12 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
                     connectionView.visibility = if (streaming) View.GONE else View.VISIBLE
                     showStatus(when (state) {
                         "STREAMING" -> getString(R.string.connected)
-                        "CONNECTING", "WAITING_FOR_VIDEO", "WAITING_FOR_AUDIO", "WAITING_FOR_AUDIO_CLOCK" -> getString(R.string.connecting)
+                        "CONNECTING", "WAITING_FOR_VIDEO" -> getString(R.string.connecting)
                         else -> "Projection stopped: $state"
                     })
                     if (!streaming) cancelInput()
-                    if (state !in listOf("STREAMING", "CONNECTING", "WAITING_FOR_VIDEO", "WAITING_FOR_AUDIO", "WAITING_FOR_AUDIO_CLOCK")) window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                    // Audio publishes STREAMING every second; telemetry must not cancel pad continuations.
+                    if (state !in listOf("STREAMING", "CONNECTING", "WAITING_FOR_VIDEO")) window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    // Repeated state telemetry must not cancel pending input in the same context.
                     if (wasStreaming != streaming) resize()
                 }
             } },
@@ -265,32 +312,19 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         resize()
     }
-    override fun onResume() { super.onResume(); resumed = true; pointer.start() }
+    override fun onResume() { super.onResume(); resumed = true; pointer.start(); longTouch.start() }
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (::root.isInitialized) {
-            if (!hasFocus) { cancelInput(); pointer.stop() }
-            else if (resumed) pointer.start()
+            if (!hasFocus) { cancelInput(); pointer.stop(); if (::longTouch.isInitialized) longTouch.stop() }
+            else if (resumed) { pointer.start(); longTouch.start() }
         }
     }
-    override fun onPause() { resumed = false; pointer.stop(); disconnect(); super.onPause() }
-    override fun onDestroy() { disconnect(); super.onDestroy() }
+    override fun onPause() { resumed = false; longTouch.stop(); pointer.stop(); disconnect(); super.onPause() }
+    override fun onDestroy() { longTouch.stop(); disconnect(); super.onDestroy() }
     override fun surfaceCreated(holder: SurfaceHolder) = Unit
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) { resize() }
     override fun surfaceDestroyed(holder: SurfaceHolder) { disconnect() }
-}
-
-/** Same hardware mapping as the pinned donor; desktop keyboards do not masquerade as RG pad input. */
-internal fun nativePadKey(deviceName: String?, source: Int, keyCode: Int): PadGestureRecognizer.Key? {
-    if (deviceName != "ROKID,PSOC-TP-R" || source and InputDevice.SOURCE_KEYBOARD != InputDevice.SOURCE_KEYBOARD) return null
-    return when (keyCode) {
-        KeyEvent.KEYCODE_NOTIFICATION -> PadGestureRecognizer.Key.CONTACT
-        KeyEvent.KEYCODE_ENTER -> PadGestureRecognizer.Key.TAP
-        291, KeyEvent.KEYCODE_BACK -> PadGestureRecognizer.Key.DOUBLE
-        KeyEvent.KEYCODE_DPAD_RIGHT, 292 -> PadGestureRecognizer.Key.FORWARD
-        KeyEvent.KEYCODE_DPAD_LEFT, 293 -> PadGestureRecognizer.Key.BACKWARD
-        else -> null
-    }
 }
 
 /** Native clicks (including accessibility activation) and drags share the same mapped input path. */

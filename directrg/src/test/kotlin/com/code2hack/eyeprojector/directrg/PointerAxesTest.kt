@@ -109,11 +109,14 @@ class PointerAxesTest {
         assertTrue(point.available); assertTrue(point.x > 240); assertTrue(point.y > 320)
         assertEquals(0, edge.direction(point.copy(y = 650f), pointer.motionBounds, Long.MAX_VALUE, 21_000_000))
         val scrolls = mutableListOf<Int>()
-        val pad = PadGestureRecognizer(300, 500, {}, {}, { scrolls.add(it) }, {})
+        val pad = PadGestureRecognizer(300, 500) { action ->
+            if (action is PadGestureRecognizer.Action.Scroll) scrolls.add(action.pixels)
+        }
         for ((key, at) in listOf(PadGestureRecognizer.Key.FORWARD to 1000L, PadGestureRecognizer.Key.BACKWARD to 1500L)) {
             pad.accept(PadGestureRecognizer.Event(key, PadGestureRecognizer.Phase.DOWN, at, at), at)
             pad.accept(PadGestureRecognizer.Event(key, PadGestureRecognizer.Phase.UP, at + 20, at), at + 20)
         }
+        pad.confirm(2000)
         assertEquals(listOf(160, -160), scrolls)
     }
 }

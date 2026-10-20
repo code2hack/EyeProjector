@@ -1,12 +1,15 @@
 package com.code2hack.eyeprojector.directhost
 
 import android.app.Activity
+import android.annotation.SuppressLint
 import android.graphics.Color
 import android.os.Bundle
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
 import android.util.AtomicFile
+import android.view.GestureDetector
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
@@ -19,6 +22,7 @@ import android.widget.ListView
 import android.widget.ScrollView
 import android.widget.TextView
 import java.io.File
+import org.json.JSONArray
 import org.json.JSONObject
 
 /** Owned Android Views only. Input comes through the real Phone IME and Android input dispatch. */
@@ -27,6 +31,9 @@ class InputFixtureActivity : Activity() {
     private lateinit var main: ScrollView
     private lateinit var nested: ListView
     private var taps = 0
+    private var doubleTaps = 0
+    private val tapDownTimes = mutableListOf<Long>()
+    private val tapUpTimes = mutableListOf<Long>()
     private var actions = 0
     private var active = false
 
@@ -37,6 +44,8 @@ class InputFixtureActivity : Activity() {
             .put("fieldFocused", field.hasFocus()).put("mainScrollY", main.scrollY)
             .put("nestedFirst", nested.firstVisiblePosition).put("nestedTop", nested.getChildAt(0)?.top)
             .put("taps", taps).put("editorActions", actions)
+            .put("nativeDoubleTaps", doubleTaps).put("tapDownTimesMs", JSONArray(tapDownTimes))
+            .put("tapUpTimesMs", JSONArray(tapUpTimes))
         val file = AtomicFile(File(filesDir, "input-fixture.json"))
         val output = file.startWrite()
         try { output.write(value.toString().toByteArray()); file.finishWrite(output) }
@@ -73,7 +82,23 @@ class InputFixtureActivity : Activity() {
         root.addView(field, LinearLayout.LayoutParams(-1, -2))
         main = ScrollView(this).apply { id = R.id.main_scroll }
         val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        content.addView(Button(this).apply {
+        val tapDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent) = true
+            override fun onDoubleTap(e: MotionEvent): Boolean { doubleTaps++; return true }
+        })
+        content.addView(object : Button(this) {
+            override fun performClick(): Boolean = super.performClick()
+            @SuppressLint("ClickableViewAccessibility") // Button's superclass dispatch detects clicks; this observer consumes nothing.
+            override fun onTouchEvent(event: MotionEvent): Boolean {
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> tapDownTimes.add(event.eventTime)
+                    MotionEvent.ACTION_UP -> tapUpTimes.add(event.eventTime)
+                }
+                tapDetector.onTouchEvent(event)
+                // The detector observes timing. The ordinary Button handles and clicks its touch stream.
+                return super.onTouchEvent(event)
+            }
+        }.apply {
             text = "Native tap: 0"
             setOnClickListener { taps++; text = "Native tap: $taps"; record() }
         })

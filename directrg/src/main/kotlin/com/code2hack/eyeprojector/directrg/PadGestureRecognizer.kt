@@ -1,120 +1,192 @@
 package com.code2hack.eyeprojector.directrg
 
-// Input primitive adapted from v0.0.4@03de921e2400147842ce6c56101b58d514dde77c.
-
-/** One key sequence, one gesture. All times are Android uptime milliseconds, never sensor time. */
+/**
+ * Normalizes firmware classifications, not physical touch edges. NOTIFICATION is a short
+ * marker even for a held finger (see rokid-long-touch-2026-10-20.md). Its UP is never a release.
+ * Times use Android uptime. Every marker uses the same replay offset, retaining tap intervals.
+ */
 internal class PadGestureRecognizer(
     val doubleTapMs: Long,
     private val longPressMs: Long,
-    private val single: ()->Unit,
-    private val back: ()->Unit,
-    private val scroll: (Int)->Unit,
-    private val disconnect: ()->Unit,
+    private val emit: (Action) -> Unit,
 ) {
-    enum class Key { CONTACT, TAP, DOUBLE, BACK, FORWARD, BACKWARD }
-    enum class Phase { DOWN, UP, CANCEL }
-    data class Event(val key: Key, val phase: Phase, val timeMs: Long, val downTimeMs: Long, val repeat: Int=0)
-    private data class Press(val key: Key, val downTimeMs: Long)
-    private var press: Press?=null
-    private var pending: Long?=null
-    private var taps=0
-    private var rawPairNeedsOem=false
-    private var lastTapUpMs=0L
-    private var lastDoubleDownMs=-1L
-    private var lastDoubleUpMs=0L
-    private var contactReports=false
-    private var lastEventMs=0L
-    private var suppressTapsUntil=0L
-    val deadline get() = pending ?: press?.let { it.downTimeMs+longPressMs }
-    val hasWork get() = press!=null || pending!=null || taps!=0
+    enum class Key { CONTACT, TAP, DOUBLE, BACK, FORWARD, BACKWARD, FORWARD_ALIAS, BACKWARD_ALIAS, SWIPE_TAIL, HELD_CONTACT }
+    enum class Phase { DOWN, MOVE, UP, CANCEL }
+    enum class Timing { CONTACT_MARKER, INFERRED_SUMMARY }
+    data class Event(
+        val key: Key, val phase: Phase, val timeMs: Long, val downTimeMs: Long,
+        val repeat: Int = 0, val position: PointerPosition? = null,
+    )
+    sealed interface Action {
+        val timeMs: Long
+        data class Tap(
+            val downTimeMs: Long, val upTimeMs: Long, val position: PointerPosition?, val timing: Timing,
+            override val timeMs: Long,
+        ) : Action
+        data class Scroll(val pixels: Int, val position: PointerPosition?, override val timeMs: Long) : Action
+        /** Only a source with real sustained DOWN/release may supply these events. */
+        data class Contact(val event: Event) : Action { override val timeMs = event.timeMs }
+        /** Classification only: it supplies neither sustained contact nor release. EP-11 owns those. */
+        data class LongPress(val markerDownTimeMs: Long?, override val timeMs: Long) : Action
+        data class Back(override val timeMs: Long) : Action
+    }
+    private data class Press(val event: Event)
+    private data class Pending(val origin: Long, val due: Long, val action: Action)
+    private data class SummarySingle(val up: Event, var matched: Boolean = false)
+    private val presses = mutableMapOf<Key, Press>()
+    private val completed = mutableMapOf<Key, Long>()
+    private val pending = mutableListOf<Pending>()
+    private val summarySingles = mutableListOf<SummarySingle>()
+    private var contactReports = false
+    private var lastEventMs = 0L
+    private var canceledThrough = -1L
+    private var epoch = 0L
+    private var held: Event? = null
+    private var lastSwipe: Event? = null
+    val deadline: Long? get() = (pending.map { it.due } + presses.values
+        .map { it.event.downTimeMs + CLASSIFICATION_MS }).minOrNull()
+    val hasWork get() = pending.isNotEmpty() || presses.isNotEmpty() || held != null
 
     init { require(doubleTapMs in 100..600 && longPressMs in 200..2_000) }
 
     fun accept(event: Event, receiptUptimeMs: Long) {
-        // The identified pad emits per-contact NOTIFICATION markers, then delayed
-        // Enter/Back classifications. Once contacts are available, summaries must
-        // never add another tap/action, including after Disconnect changes the UI.
-        if (contactReports && (event.key==Key.TAP || event.key==Key.DOUBLE)) return
-        // An identical OEM report is not another physical pair, including after a callback.
-        if (event.key==Key.DOUBLE && event.downTimeMs==lastDoubleDownMs &&
-            event.timeMs<=lastDoubleUpMs && event.repeat==0) return
-        if (event.timeMs<=0 || event.timeMs<lastEventMs || event.timeMs>receiptUptimeMs ||
-            receiptUptimeMs-event.timeMs>MAX_EVENT_AGE_MS || event.downTimeMs<0 || event.downTimeMs>event.timeMs) {
-            cancel();return
+        // Related summaries can arrive after a UI transition or with an earlier timestamp.
+        if (contactReports && event.key in listOf(Key.TAP, Key.DOUBLE)) return
+        if (event.key == Key.SWIPE_TAIL) return
+        if (event.key != Key.HELD_CONTACT && event.downTimeMs <= (completed[event.key] ?: -1L)) return
+        if (event.downTimeMs <= canceledThrough) return
+        if (event.timeMs <= 0 || event.timeMs < lastEventMs || event.timeMs > receiptUptimeMs ||
+            receiptUptimeMs - event.timeMs > MAX_EVENT_AGE_MS || event.downTimeMs < 0 || event.downTimeMs > event.timeMs) {
+            cancel(receiptUptimeMs); return
         }
-        lastEventMs=event.timeMs
-        if (event.phase==Phase.CANCEL || event.repeat!=0) { cancel();return }
-        if (event.key==Key.CONTACT && !contactReports) { clear();contactReports=true }
-        if ((event.key==Key.CONTACT || event.key==Key.TAP || event.key==Key.DOUBLE) && event.timeMs<suppressTapsUntil) {
-            // Wait for an actual quiet boundary, rather than reusing a burst's fourth
-            // or later contact as a new click on the disconnected settings/Connect UI.
-            suppressTapsUntil=event.timeMs+doubleTapMs
+        lastEventMs = event.timeMs
+        // Android repeats are the same held press, never a new gesture or a release.
+        if (event.phase == Phase.CANCEL) {
+            if (event.key == Key.HELD_CONTACT) contact(event) else cancel(event.timeMs)
             return
         }
-        if (event.phase==Phase.DOWN) {
-            if (press?.let { it.key==event.key && it.downTimeMs==event.downTimeMs }==true) return
-            if (press!=null) {
-                cancel(event.timeMs) // A new tap cannot complete an earlier missing UP.
-                if (event.key!=Key.BACK && event.key!=Key.FORWARD && event.key!=Key.BACKWARD) return
-            }
-            confirm(event.timeMs)
-            // A press within the continuation interval defers the old action until its UP.
-            if (event.key==Key.FORWARD || event.key==Key.BACKWARD || event.key==Key.BACK) { taps=0;rawPairNeedsOem=false }
-            pending=null
-            press=Press(event.key,event.downTimeMs)
+        if (event.repeat != 0) return
+        if (event.key == Key.HELD_CONTACT) { contact(event); return }
+        if (event.phase == Phase.MOVE) return
+        if (event.key == Key.CONTACT) { contactReports = true; summarySingles.clear() }
+        if (event.phase == Phase.DOWN) {
+            if (presses[event.key]?.event?.downTimeMs == event.downTimeMs) return
+            presses.remove(event.key) // A missing UP cannot be completed by another DOWN.
+            presses[event.key] = Press(event)
             return
         }
-        val old=press ?: return
-        if (old.key!=event.key || old.downTimeMs!=event.downTimeMs) { cancel();return }
-        if (event.timeMs-old.downTimeMs>=longPressMs) { cancel();return }
-        press=null
-        when(event.key) {
-            Key.CONTACT,Key.TAP -> {
-                taps++;lastTapUpMs=event.timeMs
-                rawPairNeedsOem=taps==2
-                if (taps==3) {
-                    clear();suppressTapsUntil=event.timeMs+doubleTapMs
-                    disconnect()
-                } else pending=event.timeMs+doubleTapMs
+        val press = presses.remove(event.key)?.event ?: return
+        if (press.downTimeMs != event.downTimeMs) return
+        completed[event.key] = event.downTimeMs
+        when (event.key) {
+            Key.CONTACT -> {
+                // The duration describes the marker pulse, not the user's hold duration.
+                if (event.timeMs - event.downTimeMs >= longPressMs) return
+                val action = Action.Tap(press.timeMs, event.timeMs, press.position,
+                    Timing.CONTACT_MARKER, event.timeMs + CLASSIFICATION_MS)
+                pending.add(Pending(press.timeMs, action.timeMs, action))
             }
-            Key.DOUBLE -> {
-                lastDoubleDownMs=event.downTimeMs;lastDoubleUpMs=event.timeMs
-                if (taps==2 && rawPairNeedsOem) {
-                    // Two raw taps followed by their OEM summary still represent only two taps.
-                    rawPairNeedsOem=false;pending=lastTapUpMs+doubleTapMs
-                } else if (taps<=1) {
-                    // OEM-only reporting, or one raw single followed by the pair's OEM summary.
-                    taps=2;rawPairNeedsOem=false;lastTapUpMs=event.timeMs
-                    pending=event.timeMs+doubleTapMs
-                } else {
-                    // Two distinct OEM pairs are four taps, not the selected three-tap action.
-                    clear();suppressTapsUntil=event.timeMs+doubleTapMs
-                }
+            Key.TAP -> if (event.timeMs - event.downTimeMs < longPressMs) {
+                val action = Action.Tap(press.timeMs, event.timeMs, press.position,
+                    Timing.INFERRED_SUMMARY, event.timeMs + doubleTapMs)
+                pending.add(Pending(press.timeMs, action.timeMs, action))
+                summarySingles.removeAll { event.timeMs - it.up.timeMs > CLASSIFICATION_MS }
+                summarySingles.add(SummarySingle(event))
             }
-            Key.FORWARD,Key.BACKWARD -> {
-                clear();suppressTapsUntil=event.timeMs+doubleTapMs
-                scroll(if(event.key==Key.FORWARD) 160 else -160)
-            }
-            Key.BACK -> { clear();suppressTapsUntil=event.timeMs+doubleTapMs;back() }
+            Key.DOUBLE -> summaryPair(press, event)
+            Key.FORWARD, Key.BACKWARD, Key.FORWARD_ALIAS, Key.BACKWARD_ALIAS -> swipe(press, event)
+            Key.BACK -> { cancel(event.timeMs); emit(Action.Back(event.timeMs)) }
+            else -> Unit
+        }
+        confirm(receiptUptimeMs)
+    }
+
+    private fun summaryPair(down: Event, up: Event) {
+        if (up.timeMs - down.timeMs >= longPressMs) return
+        summarySingles.removeAll { down.timeMs - it.up.timeMs > CLASSIFICATION_MS }
+        // Retain single-report provenance after replay, so a delayed pair summary cannot replay it.
+        val singles = summarySingles.filter { !it.matched }.takeLast(2)
+        singles.forEach { it.matched = true }
+        if (singles.size >= 2) return // Their firmware pair summary adds no third touch.
+        val gap = doubleTapMs / 2
+        val starts = if (singles.size == 1) listOf(down.timeMs) else listOf(down.timeMs - gap, down.timeMs)
+        for (start in starts) {
+            val action = Action.Tap(start, start + minOf(20L, up.timeMs - down.timeMs), down.position,
+                Timing.INFERRED_SUMMARY, start + 20 + doubleTapMs)
+            pending.add(Pending(start, action.timeMs, action))
         }
     }
+
+    private fun swipe(down: Event, up: Event) {
+        val pixels = if (down.key in listOf(Key.FORWARD, Key.FORWARD_ALIAS)) 160 else -160
+        val old = lastSwipe
+        // Retain legacy alternate key reports, without counting their companion twice.
+        if (old != null && old.key != down.key &&
+            up.timeMs - old.timeMs in 0..500 &&
+            (old.key in listOf(Key.FORWARD, Key.FORWARD_ALIAS)) == (pixels > 0)) return
+        val marker = takeMarker(up.timeMs, old?.timeMs ?: -1)
+        lastSwipe = up
+        val origin = marker?.origin ?: down.timeMs
+        val due = marker?.due ?: up.timeMs + if (contactReports) CLASSIFICATION_MS else doubleTapMs
+        pending.add(Pending(origin, due, Action.Scroll(pixels,
+            (marker?.action as? Action.Tap)?.position ?: down.position, due)))
+    }
+
+    private fun takeMarker(at: Long, after: Long = -1): Pending? {
+        val marker = pending.lastOrNull { it.action is Action.Tap &&
+            it.action.timing == Timing.CONTACT_MARKER && it.origin > after && at - it.origin in 0..CLASSIFICATION_MS }
+        // Some firmware classifications precede the marker UP.
+        presses[Key.CONTACT]?.event?.let {
+            if (it.timeMs > maxOf(after, marker?.origin ?: -1) && at - it.timeMs in 0..CLASSIFICATION_MS) {
+                presses.remove(Key.CONTACT); completed[Key.CONTACT] = it.downTimeMs
+                return Pending(it.timeMs, at + CLASSIFICATION_MS,
+                    Action.Tap(it.timeMs, at, it.position, Timing.CONTACT_MARKER, at + CLASSIFICATION_MS))
+            }
+        }
+        if (marker != null) pending.remove(marker)
+        return marker
+    }
+
+    fun classifyLongPress(receiptUptimeMs: Long) {
+        val marker = takeMarker(receiptUptimeMs)
+        emit(Action.LongPress(marker?.origin, receiptUptimeMs))
+    }
+
+    private fun contact(event: Event) {
+        when (event.phase) {
+            Phase.DOWN -> {
+                if (held != null) return
+                takeMarker(event.timeMs)
+                held = event
+            }
+            Phase.MOVE, Phase.UP, Phase.CANCEL -> if (held?.downTimeMs != event.downTimeMs) return
+        }
+        if (event.phase == Phase.UP || event.phase == Phase.CANCEL) held = null
+        emit(Action.Contact(event))
+    }
+
     fun confirm(nowUptimeMs: Long) {
-        press?.let {
-            if (nowUptimeMs>=it.downTimeMs+longPressMs) cancel(nowUptimeMs)
-            return
+        presses.entries.removeAll { nowUptimeMs >= it.value.event.downTimeMs + CLASSIFICATION_MS }
+        val generation = epoch
+        while (epoch == generation) {
+            val next = pending.minWithOrNull(compareBy<Pending> { it.due }.thenBy { it.origin }) ?: break
+            if (next.due > nowUptimeMs) break
+            pending.remove(next) // Callbacks may synchronously cancel or change context.
+            emit(next.action)
         }
-        val old=pending ?: return
-        if(nowUptimeMs<old) return
-        val count=taps
-        clear() // Clear before the callback, which may pause or disconnect the Activity.
-        when(count) { 1->single();2->back() }
     }
-    private fun clear() { press=null;pending=null;taps=0;rawPairNeedsOem=false }
+
     fun cancel(nowUptimeMs: Long = lastEventMs) {
-        // Do not reinterpret the remaining tail of an invalidated physical sequence as a fresh tap
-        // after a pause, focus loss or geometry change.
-        if(hasWork) suppressTapsUntil=maxOf(suppressTapsUntil,pending ?: 0L,nowUptimeMs+doubleTapMs)
-        clear()
+        val old = held
+        held = null; pending.clear(); presses.clear(); summarySingles.clear(); lastSwipe = null
+        canceledThrough = maxOf(canceledThrough, nowUptimeMs); epoch++
+        if (old != null) emit(Action.Contact(old.copy(phase = Phase.CANCEL, timeMs = nowUptimeMs)))
     }
-    companion object { const val MAX_EVENT_AGE_MS=250L }
+
+    companion object {
+        const val MAX_EVENT_AGE_MS = 250L
+        // Two measured AI classifications arrived ~815 ms after the initial 22 ms marker.
+        // This is a replay choice for that firmware evidence, not a measured universal bound.
+        const val CLASSIFICATION_MS = 1_000L
+    }
 }
