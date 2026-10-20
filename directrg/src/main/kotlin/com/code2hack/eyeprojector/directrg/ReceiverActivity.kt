@@ -329,8 +329,9 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     private fun connect() {
         if (!pairingPanel.isPaired()) { showStatus("Pair with the Phone before connecting"); return }
         if (session != null || connectRequested) return
+        if (!screen.holder.surface.isValid) { showStatus(getString(R.string.display_unavailable)); return }
         connectRequested = true
-        connectButton.text = "Disconnect"
+        connectButton.text = getString(R.string.disconnect)
         showStatus(getString(R.string.connecting))
         sessionClient?.connect()
     }
@@ -347,7 +348,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         if (session != null && (attachment.epoch != state.epoch || !state.phase.active)) disconnect(notifyPeer = false)
         if (session == null && state.phase.active) {
             connectRequested = true
-            connectButton.text = "Disconnect"
+            connectButton.text = getString(R.string.disconnect)
             showStatus(getString(R.string.connecting))
         }
         if (state.phase == SessionPhase.STOPPING) {
@@ -371,7 +372,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         cancelInput()
         pointer.stop(); if (resumed && hasWindowFocus()) pointer.start()
         streaming = false; currentGeometry = null; presentation.disconnected(); connectionView.visibility = View.VISIBLE
-        connectButton.text = "Disconnect"
+        connectButton.text = getString(R.string.disconnect)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         sessionClient?.command(SessionControl.Operation.CONNECTING, epoch)
         val next = ProjectionSession(File(filesDir, "session"), screen.holder.surface,
