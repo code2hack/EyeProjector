@@ -57,9 +57,10 @@ internal object NativeInputWidgetChecks {
         val laidOut = java.util.concurrent.CountDownLatch(1)
         main(Runnable { root.post { laidOut.countDown() } })
         check(laidOut.await(3, java.util.concurrent.TimeUnit.SECONDS))
+        lateinit var local: LocalPointerDispatcher
         main(Runnable {
             check(root.width > 0 && nested.height > 0)
-            val local = LocalPointerDispatcher(root)
+            local = LocalPointerDispatcher(root)
             val point = PointerPosition(button.width / 2f, button.height / 2f, true)
             val pad = PadGestureRecognizer(300, 500) { action ->
                 if (action is PadGestureRecognizer.Action.Tap) check(local.tap(action))
@@ -73,6 +74,15 @@ internal object NativeInputWidgetChecks {
                     at + 22, at), at + 22)
             }
             pad.confirm(SystemClock.uptimeMillis())
+        })
+        // ACTION_UP posts Button.PerformClick. Drain those callbacks before asserting,
+        // waiting only on the instrumentation thread after touch dispatch has returned.
+        val clicksDrained = java.util.concurrent.CountDownLatch(1)
+        root.post { clicksDrained.countDown() }
+        check(clicksDrained.await(3, java.util.concurrent.TimeUnit.SECONDS)) {
+            "Native button click callbacks did not drain within three seconds"
+        }
+        main(Runnable {
             check(clicks == 3) { "Expected three native button clicks: $clicks" }
             check(doubles == 1) { "Expected one native double-tap classification: $doubles" }
             check(downTimes.zipWithNext { a, b -> b - a } == listOf(190L, 153L))
