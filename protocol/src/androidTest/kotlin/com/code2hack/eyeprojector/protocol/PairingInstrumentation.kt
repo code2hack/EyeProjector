@@ -19,6 +19,7 @@ class PairingInstrumentation : Instrumentation() {
     private lateinit var arguments: Bundle
     private var currentStage: String? = null
     private var discoveryDiagnostics: LanDiscoveryDiagnostics? = null
+    private var observeAppNetwork = false
     override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); this.arguments = arguments ?: Bundle(); start() }
 
     override fun onStart() {
@@ -96,9 +97,19 @@ class PairingInstrumentation : Instrumentation() {
 
     private fun appendDiscoveryDiagnostics(report: Bundle) {
         discoveryDiagnostics?.let { report.putString("discoveryDiagnostics", it.snapshot().toJson()) }
+        if (observeAppNetwork) {
+            try {
+                report.putString("appNetworkDiagnostics", AppNetworkDiagnostics.capture(context))
+            } catch (error: Exception) {
+                report.putString("appNetworkDiagnosticsError", error.javaClass.simpleName)
+            } catch (error: LinkageError) {
+                report.putString("appNetworkDiagnosticsError", error.javaClass.simpleName)
+            }
+        }
     }
 
     private fun lan(report: Bundle) {
+        observeAppNetwork = true
         stage("LAN_IDENTITY_SETUP")
         val role = PeerRole.valueOf(arguments.getString("role", "GLASSES")!!)
         val store = sandbox("lan-${role.name}")

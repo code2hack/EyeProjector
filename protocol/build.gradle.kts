@@ -23,3 +23,8 @@ dependencies {
 }
 
 kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
+
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    inputs.file("src/androidTest/java/com/code2hack/eyeprojector/protocol/AppNetworkDiagnostics.java")
+    inputs.dir("src/testFixtures/appNetwork")
+}
