@@ -36,7 +36,7 @@ class HeadPointerModel(val settings: Settings = Settings()) {
     private val maxY get() = 1.0-minY
     private var rotation = 0
     private var running = false
-    private var reference: HeadOrientation? = null
+    private var previousOrientation: HeadOrientation? = null
     private var sourceTimeNs = 0L
     private var frameTimeXNs = 0L
     private var frameTimeYNs = 0L
@@ -60,13 +60,13 @@ class HeadPointerModel(val settings: Settings = Settings()) {
 
     fun start() { stop();running=true }
     fun stop() {
-        running=false;fresh=false;reference=null;sourceTimeNs=0;frameTimeXNs=0;frameTimeYNs=0
+        running=false;fresh=false;previousOrientation=null;sourceTimeNs=0;frameTimeXNs=0;frameTimeYNs=0
         targetX=x;targetY=y
     }
     fun resize(value: PointerBounds, displayRotation: Int, verticalPadding: Float = 0f) {
         require(displayRotation in 0..3)
         require(verticalPadding.isFinite() && verticalPadding>=0)
-        if (displayRotation!=rotation) { reference=null;fresh=false;x=.5;y=.5;targetX=.5;targetY=.5 }
+        if (displayRotation!=rotation) { previousOrientation=null;fresh=false;x=.5;y=.5;targetX=.5;targetY=.5 }
         rotation=displayRotation;bounds=value;this.verticalPadding=verticalPadding
         y=y.coerceIn(minY,maxY);targetY=targetY.coerceIn(minY,maxY)
     }
@@ -76,21 +76,24 @@ class HeadPointerModel(val settings: Settings = Settings()) {
         if (!running || nowNs<=0 || sample.timestampNs<=sourceTimeNs || sample.timestampNs>nowNs ||
             nowNs-sample.timestampNs>=settings.staleNs) return false
         val current=HeadOrientation.from(sample) ?: return false
-        val rebase=reference==null || !fresh || sample.timestampNs-sourceTimeNs>=settings.staleNs
+        val previous=previousOrientation
+        val rebase=previous==null || !fresh || sample.timestampNs-sourceTimeNs>=settings.staleNs
         sourceTimeNs=sample.timestampNs;fresh=true
         if (rebase) {
-            reference=current;x=.5;y=.5;targetX=.5;targetY=.5;frameTimeXNs=nowNs;frameTimeYNs=nowNs
+            x=.5;y=.5;targetX=.5;targetY=.5;frameTimeXNs=nowNs;frameTimeYNs=nowNs
             yaw=0.0;pitch=0.0;quietYaw=0.0;quietPitch=0.0
         } else {
-            // Express the reference ray in the current head frame. The inverse order
-            // keeps using the startup axes and can reverse/swap aiming after roll.
-            aim(current.inverse()*checkNotNull(reference))
+            // Integrate motion in the current device frame. Projecting a fixed
+            // startup ray can reverse Y after moving from a backward startup pose.
+            aim(current.inverse()*checkNotNull(previous))
         }
+        previousOrientation=current
         return true
     }
 
     private fun aim(q: HeadOrientation) {
-        val (nextYaw,nextPitch)=q.angles(rotation)
+        val (yawStep,pitchStep)=q.motion(rotation)
+        val nextYaw=yaw+yawStep;val nextPitch=pitch+pitchStep
         fun delta(next: Double, previous: Double) = (next-previous+540.0)%360.0-180.0
         fun axis(next: Double, previous: Double, quiet: Double, current: Double,
                  target: Double, halfRange: Double, gain: Double, minimum: Double, maximum: Double): Pair<Double,Double> {
