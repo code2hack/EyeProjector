@@ -6,6 +6,8 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.widget.Button
+import android.widget.ScrollView
+import com.code2hack.eyeprojector.directhost.apps.ChosenAppsPanel
 import android.widget.LinearLayout
 import android.widget.TextView
 
@@ -26,7 +28,8 @@ class HostActivity : Activity() {
         status = TextView(this).apply { textSize = 20f; setTextColor(Color.WHITE) }
         start = button(R.string.host_start) { bootstrap.start() }
         authorize = button(R.string.host_authorize) { bootstrap.requestAuthorization() }
-        setContentView(LinearLayout(this).apply {
+        setContentView(ScrollView(this).apply {
+            addView(LinearLayout(this@HostActivity).apply {
             orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.BLACK); setPadding(24, 24, 24, 24)
             addView(status); addView(start)
             addView(button(R.string.host_stop) { bootstrap.stop() })
@@ -36,6 +39,8 @@ class HostActivity : Activity() {
                 if (intent != null) startActivity(intent) else openGuide()
             })
             addView(button(R.string.host_setup_guide) { openGuide() })
+            addView(ChosenAppsPanel(this@HostActivity))
+            })
         })
     }
 
