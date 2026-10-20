@@ -3,6 +3,8 @@ package com.code2hack.eyeprojector.protocol
 import org.junit.Assert.*
 import org.junit.Test
 import java.io.DataInputStream
+import java.io.DataOutputStream
+import java.io.ByteArrayOutputStream
 
 class TouchTest {
     private val target = Tap(123, 234, Geometry(480, 640))
@@ -26,4 +28,17 @@ class TouchTest {
             assertThrows(RuntimeException::class.java) { Touch.from(bad) }
         }
     }
+    @Test fun touchFramesCoexistWithScaleUnderTheSameRevisionFourFraming() {
+        assertEquals(4, Wire.VERSION)
+        val touch = Touch(Touch.Phase.MOVE, 1000, target)
+        val output = ByteArrayOutputStream()
+        Wire.writeFrame(DataOutputStream(output), Frame(Wire.TOUCH, payload = touch.bytes()))
+        val frame = Wire.readFrame(DataInputStream(output.toByteArray().inputStream()))
+        assertEquals(14, frame.channel); assertEquals(touch, Touch.from(frame.payload))
+        assertEquals(10, Wire.SCALE_REQUEST); assertEquals(11, Wire.SCALE_STATE)
+        assertThrows(IllegalArgumentException::class.java) {
+            Wire.writeFrame(DataOutputStream(ByteArrayOutputStream()), Frame(Wire.TOUCH, payload = target.bytes()))
+        }
+    }
+
 }

@@ -93,6 +93,7 @@ object Wire {
     const val NAVIGATE = 9
     const val SCALE_REQUEST = 10
     const val SCALE_STATE = 11
+    const val TOUCH = 14
     const val STREAM = 1
     const val STOP_HOST = 2
 
@@ -113,10 +114,11 @@ object Wire {
         require(input.readUTF() == SCRCPY_VERSION && input.readInt() == H264)
     }
     private fun validate(channel: Int, length: Int) {
-        require(channel in GEOMETRY..SCALE_STATE && length in 0..MAX_PAYLOAD)
+        require(channel in GEOMETRY..TOUCH && length in 0..MAX_PAYLOAD)
         when (channel) {
             GEOMETRY -> require(length == 8)
             TAP -> require(length == 16)
+            TOUCH -> require(length == Touch.PAYLOAD_SIZE)
             SCROLL -> require(length == 20)
             NAVIGATE -> require(length == 12)
             SCALE_REQUEST -> require(length == 8)

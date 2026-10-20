@@ -214,7 +214,7 @@ internal class PadGestureRecognizer(
 
     fun cancel(nowUptimeMs: Long = lastEventMs) {
         val old = held
-        held = null; pending.clear(); presses.clear(); summarySingles.clear(); lastSwipe = null; swipeFirst = null
+        held = null; continuousReports = false; pending.clear(); presses.clear(); summarySingles.clear(); lastSwipe = null; swipeFirst = null
         canceledThrough = maxOf(canceledThrough, nowUptimeMs); epoch++
         if (old != null) emit(Action.Contact(old.copy(phase = Phase.CANCEL, timeMs = nowUptimeMs)))
     }

@@ -104,4 +104,37 @@ class ProjectionInputTest {
             assertFalse(session.scroll(Scroll(Tap(10, 20, geometry), -160), 1200))
         }
     }
+    @Test fun actualSessionDeliversAllHeldTransitionsAndCancelsBehindInFlightDown() {
+        for (cancel in listOf(false, true)) {
+            val started = CountDownLatch(1); val release = CountDownLatch(1)
+            val done = CountDownLatch(if (cancel) 2 else 3)
+            val first = AtomicBoolean(true)
+            val buffer = ByteArrayOutputStream()
+            val out = object : OutputStream() {
+                override fun write(value: Int) {
+                    if (first.compareAndSet(true, false)) { started.countDown(); check(release.await(2, TimeUnit.SECONDS)) }
+                    buffer.write(value)
+                }
+                override fun flush() { done.countDown() }
+            }
+            ready(out).use { session ->
+                fun event(phase: Touch.Phase, x: Int) = Touch(phase, 1000, Tap(x, 20, geometry))
+                assertTrue(session.touch(event(Touch.Phase.DOWN, 10), 1000))
+                assertTrue(started.await(2, TimeUnit.SECONDS))
+                assertTrue(session.touch(event(Touch.Phase.MOVE, 100), 1010))
+                assertTrue(session.touch(event(Touch.Phase.UP, 200), 1020))
+                if (cancel) session.cancelPendingInput()
+                release.countDown(); assertTrue(done.await(2, TimeUnit.SECONDS))
+                val input = DataInputStream(buffer.toByteArray().inputStream())
+                val frames = (1..if (cancel) 2 else 3).map { Wire.readFrame(input) }
+                assertTrue(frames.all { it.channel == Wire.TOUCH })
+                val events = frames.map { Touch.from(it.payload) }
+                assertEquals(if (cancel) listOf(Touch.Phase.DOWN, Touch.Phase.CANCEL)
+                    else listOf(Touch.Phase.DOWN, Touch.Phase.MOVE, Touch.Phase.UP), events.map { it.phase })
+                assertEquals(if (cancel) 10 else 200, events.last().target.x)
+                assertTrue(events.all { it.contactId == 1000L }); assertEquals(0, input.available())
+            }
+        }
+    }
+
 }

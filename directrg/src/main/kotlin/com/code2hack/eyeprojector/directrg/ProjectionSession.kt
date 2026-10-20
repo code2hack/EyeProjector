@@ -30,6 +30,13 @@ class ProjectionSession(
     private val timer = Executors.newScheduledThreadPool(2)
     private val controls = OrderedControlDispatcher { error -> failure(error); closeWithState("DISCONNECTED") }
     private val scaleControls = OrderedControlDispatcher { error -> failure(error); closeWithState("DISCONNECTED") }
+    private val inputLock = Any()
+    private val heldTouch = HeldTouchTransport(controls,
+        { running.get() && readyForTouch && it.target.geometry == geometry },
+        {
+            send(Frame(Wire.TOUCH, payload = it.bytes()))
+            synchronized(this) { heldTouchFrames++ }
+        })
     private val outputLock = Any()
     private val lifecycleLock = Any()
     private val writing = AtomicLong()
@@ -50,6 +57,7 @@ class ProjectionSession(
     private var changes = 0L
     private var rendered = 0L
     private var touches = 0L
+    private var heldTouchFrames = 0L
     private var scrolls = 0L
     private var navigations = 0L
     private var inputRejected = 0L
@@ -65,7 +73,7 @@ class ProjectionSession(
         stats.put("startedMonoNs", started).put("elapsedMs", (seconds * 1000).toLong()).put("packets", packets).put("changingPackets", changes)
             .put("rendered", rendered).put("receivedFps", if (seconds > 0) packets / seconds else 0)
             .put("renderedFps", if (seconds > 0) rendered / seconds else 0).put("touchesSent", touches)
-            .put("scrollsSent", scrolls).put("navigationsSent", navigations)
+            .put("heldTouchFramesWritten", heldTouchFrames).put("scrollsSent", scrolls).put("navigationsSent", navigations)
             .put("packetReadToCallbackP95Ms", p95(renderDelayMs)).put("networkRoundTripP95Ms", p95(roundTripMs))
             .put("latencyScope", "RG System.nanoTime packet-read to render-callback receipt; network echo RTT; no optical/input end-to-end claim")
             .put("maxEncodedPacketBytes", Wire.MAX_PAYLOAD).put("maxInflightFrames", 16)
@@ -191,7 +199,7 @@ class ProjectionSession(
     }
 
     internal fun replaceDecoder(size: Geometry) {
-        controls.cancelPending()
+        synchronized(inputLock) { readyForTouch = false; cancelPendingInput() }
         val epoch = Any()
         val old = synchronized(lifecycleLock) {
             decoderEpoch = epoch
@@ -241,7 +249,16 @@ class ProjectionSession(
         return input(Wire.NAVIGATE, size, Navigate(action, size).bytes(), System.nanoTime() / 1_000_000)
     }
 
-    fun cancelPendingInput() = controls.cancelPending()
+    fun touch(event: Touch, eventTimeMs: Long): Boolean = synchronized(inputLock) {
+        heldTouch.submit(event, eventTimeMs).also { accepted ->
+            if (!accepted) synchronized(this) { inputRejected++ }
+        }
+    }
+
+    fun cancelPendingInput() = synchronized(inputLock) {
+        controls.cancelPending()
+        heldTouch.cancel(0)
+    }
     fun cancelHeadScroll() = controls.cancelPending("head-scroll")
 
     private fun input(channel: Int, size: Geometry, payload: ByteArray, eventTimeMs: Long, category: String = "input"): Boolean {

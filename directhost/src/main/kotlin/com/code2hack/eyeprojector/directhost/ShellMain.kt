@@ -197,11 +197,14 @@ private class Session(
     private var localListener: LocalServerSocket? = null
     private var video: LocalSocket? = null
     private var control: LocalSocket? = null
+    private val inputControls = PhoneTouchDispatcher(controlLock) { control!!.outputStream.write(it) }
     private var server: java.lang.Process? = null
     private var inputThread: Thread? = null
     private var watchdog: java.util.concurrent.ScheduledFuture<*>? = null
     private val frames = AtomicLong()
     private val touches = AtomicLong()
+    private val heldTouchFrames = AtomicLong()
+    private val rejectedHeldTouchFrames = AtomicLong()
     private val begin = System.nanoTime()
     private val startupStage = AtomicReference(StartupStage.CREATED)
     private val childStartedMs = AtomicLong(-1)
@@ -225,6 +228,7 @@ private class Session(
 
     private fun writeControl(payload: ByteArray) = synchronized(controlLock) {
         check(running.get())
+        inputControls.cancel()
         control!!.outputStream.write(payload)
     }
 
@@ -278,16 +282,20 @@ private class Session(
                         Wire.TAP -> {
                             val tap = Tap.from(frame.payload)
                             if (tap.geometry == geometry.get()) {
-                                writeControl(Scrcpy.tap(tap)); touches.incrementAndGet()
+                                if (inputControls.tap(tap)) touches.incrementAndGet()
                             }
                         }
                         Wire.SCROLL -> {
                             val scroll = Scroll.from(frame.payload)
-                            if (scroll.target.geometry == geometry.get()) writeControl(Scrcpy.scroll(scroll))
+                            if (scroll.target.geometry == geometry.get()) inputControls.scroll(scroll)
                         }
                         Wire.NAVIGATE -> {
                             val navigate = Navigate.from(frame.payload)
-                            if (navigate.geometry == geometry.get()) writeControl(Scrcpy.navigate(navigate))
+                            if (navigate.geometry == geometry.get()) inputControls.navigate(navigate)
+                        }
+                        Wire.TOUCH -> {
+                            if (inputControls.touch(Touch.from(frame.payload))) heldTouchFrames.incrementAndGet()
+                            else rejectedHeldTouchFrames.incrementAndGet()
                         }
                         Wire.END -> break
                         else -> error("Unsupported control")
@@ -302,6 +310,7 @@ private class Session(
             while (running.get()) {
                 when (val record = Scrcpy.readRecord(videoInput)) {
                     is ScrcpyRecord.Session -> {
+                        inputControls.geometry(record.geometry)
                         geometry.set(record.geometry)
                         startup.cancel(false)
                         send(Frame(Wire.GEOMETRY, payload = record.geometry.bytes()))
@@ -329,6 +338,7 @@ private class Session(
         val lastStartupStage = startupStage.get()
         watchdog?.cancel(false)
         runCatching { peer.close() }; runCatching { localListener?.close() }
+        HeldInputRelease.beforeTransportClose { inputControls.close() }
         runCatching { video?.close() }; runCatching { control?.close() }
         server?.let { process ->
             runCatching {
@@ -340,6 +350,7 @@ private class Session(
         }
         if (inputThread !== Thread.currentThread()) runCatching { inputThread?.join(1000) }
         val data = JSONObject().put("audio", "system-bluetooth").put("state", "SESSION_STOPPED").put("frames", frames.get()).put("touches", touches.get())
+            .put("heldTouchFrames", heldTouchFrames.get()).put("rejectedHeldTouchFrames", rejectedHeldTouchFrames.get())
             .put("elapsedMs", (System.nanoTime() - begin) / 1_000_000).put("serverAlive", server?.isAlive ?: false)
             .put("stopReason", reason.name).put("startupStage", lastStartupStage.name).put("stopStartedMs", stopStartedMs)
             .put("childStartedMs", childStartedMs.get()).put("firstVideoFrameMs", firstVideoFrameMs.get())

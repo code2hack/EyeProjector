@@ -39,4 +39,18 @@ class ContinuousContactRecognizerTest {
         assertEquals(1, actions.filterIsInstance<PadGestureRecognizer.Action.Scroll>().size)
         assertTrue(actions.none { it is PadGestureRecognizer.Action.Tap })
     }
+    @Test fun inputLossAllowsFreshMarkerSourceWithoutReplayingTheOldContact() {
+        val actions = mutableListOf<PadGestureRecognizer.Action>()
+        val pad = PadGestureRecognizer(300, 500) { actions.add(it) }
+        pad.accept(PadGestureRecognizer.Event(PadGestureRecognizer.Key.HELD_CONTACT, PadGestureRecognizer.Phase.DOWN, 1000, 1000), 1000)
+        pad.cancel(1100)
+        pad.accept(PadGestureRecognizer.Event(PadGestureRecognizer.Key.HELD_CONTACT, PadGestureRecognizer.Phase.UP, 1200, 1000), 1200)
+        pad.accept(PadGestureRecognizer.Event(PadGestureRecognizer.Key.CONTACT, PadGestureRecognizer.Phase.DOWN, 1300, 1300), 1300)
+        pad.accept(PadGestureRecognizer.Event(PadGestureRecognizer.Key.CONTACT, PadGestureRecognizer.Phase.UP, 1322, 1300), 1322)
+        pad.confirm(3000)
+        assertEquals(listOf(PadGestureRecognizer.Phase.DOWN, PadGestureRecognizer.Phase.CANCEL),
+            actions.filterIsInstance<PadGestureRecognizer.Action.Contact>().map { it.event.phase })
+        assertEquals(1, actions.filterIsInstance<PadGestureRecognizer.Action.Tap>().size)
+    }
+
 }
