@@ -8,6 +8,7 @@ Only the projection modules and their fixtures are included. Source import and m
 | Gradle wrapper / distribution 8.11.1 | Checked-in standard wrapper JAR/scripts; wrapper distribution is checksum-pinned | Copyright Gradle contributors; Apache 2.0, notices retained in scripts/JAR. [Upstream license](https://github.com/gradle/gradle/blob/v8.11.1/LICENSE). |
 | Kotlin standard library 2.2.21 | Android app transitive runtime dependency | Copyright JetBrains and Kotlin contributors; Apache 2.0. [Exact source](https://github.com/JetBrains/kotlin/tree/v2.2.21). |
 | JetBrains annotations 13.0 | Kotlin standard library transitive dependency | Apache 2.0; [upstream](https://github.com/JetBrains/java-annotations). |
+| Bouncy Castle Java 1.83 (`bcpkix-jdk18on`, `bcprov-jdk18on`, `bcutil-jdk18on`) | J-PAKE password-authenticated pairing and local self-signed X.509 identity generation | Copyright The Legion of the Bouncy Castle Inc.; [upstream MIT-style license](https://github.com/bcgit/bc-java/blob/r1rv83/LICENSE.html). License retained in dependency JARs. |
 | JUnit 4.13.2 | JVM tests only | Eclipse Public License 1.0; [source/license](https://github.com/junit-team/junit4/tree/r4.13.2). |
 | Hamcrest Core 1.3 | JUnit transitive test dependency | BSD 3-Clause; [source/license](https://github.com/hamcrest/JavaHamcrest/tree/hamcrest-java-1.3). |
 
