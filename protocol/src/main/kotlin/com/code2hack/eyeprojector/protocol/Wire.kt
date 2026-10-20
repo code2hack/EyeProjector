@@ -77,19 +77,18 @@ data class Frame(val channel: Int, val stamp: Long = 0, val payload: ByteArray =
 
 object Wire {
     const val MAGIC = 0x50415631
-    const val VERSION = 2
+    const val VERSION = 3
     const val SCRCPY_VERSION = "5.0.1"
     const val H264 = 0x68323634
-    const val OPUS = 0x6f707573
     const val MAX_PAYLOAD = 1024 * 1024
     const val GEOMETRY = 0
     const val VIDEO = 1
-    const val AUDIO = 2 // Pinned encoded audio packets, including config flags and source PTS.
+    // Channel 2 (forwarded audio) is retired.
     const val TAP = 3
     const val PING = 4
     const val PONG = 5
     const val END = 6
-    const val AUDIO_CODEC = 7 // Exact four-byte upstream codec ID (0/1 are explicit capture/config failure).
+    // Channel 7 (forwarded audio codec) is retired.
     const val SCROLL = 8
     const val NAVIGATE = 9
     const val STREAM = 1
@@ -105,23 +104,22 @@ object Wire {
     }
     fun writeWelcome(output: DataOutputStream) {
         output.writeInt(MAGIC); output.writeInt(VERSION); output.writeUTF(SCRCPY_VERSION)
-        output.writeInt(H264); output.writeBoolean(true); output.flush()
+        output.writeInt(H264); output.flush()
     }
     fun readWelcome(input: DataInputStream) {
         require(input.readInt() == MAGIC && input.readInt() == VERSION)
         require(input.readUTF() == SCRCPY_VERSION && input.readInt() == H264)
-        require(input.readBoolean()) { "Required audio is unavailable" }
     }
     private fun validate(channel: Int, length: Int) {
         require(channel in GEOMETRY..NAVIGATE && length in 0..MAX_PAYLOAD)
         when (channel) {
             GEOMETRY -> require(length == 8)
             TAP -> require(length == 16)
-            AUDIO_CODEC -> require(length == 4)
             SCROLL -> require(length == 20)
             NAVIGATE -> require(length == 12)
-            VIDEO, AUDIO -> require(length > 0)
+            VIDEO -> require(length > 0)
             PING, PONG, END -> require(length == 0)
+            else -> error("Unsupported channel")
         }
     }
     fun readFrame(input: DataInputStream): Frame {

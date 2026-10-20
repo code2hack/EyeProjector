@@ -1,5 +1,5 @@
 <resources>
-    <string name="host_ready">EyeProjector host\nReady for authorized video and audio session setup.</string>
+    <string name="host_ready">EyeProjector host\nReady for authorized video and control session setup.</string>
     <string name="host_stop">Stop host</string>
     <string name="host_stopped">Host stopped</string>
     <string name="host_stop_unknown">Stop not verified</string>
