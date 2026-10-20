@@ -18,11 +18,11 @@ class SurfaceDecoder(
     name: (String) -> Unit,
     private val format: (String) -> Unit,
     private val failed: (Exception) -> Unit,
-    private val audioTime: (Long) -> Long? = { null },
     private val sample: (Long, Long) -> Unit = { _, _ -> },
     private val dropped: () -> Unit = {},
 ) : Closeable {
     private val running = AtomicBoolean(true)
+    private val videoClock = VideoClock()
     private val codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
     private val received = LinkedHashMap<Long, Long>()
     private val released = LinkedHashMap<Long, Long>()
@@ -64,18 +64,15 @@ class SurfaceDecoder(
                                 received.remove(info.presentationTimeUs)?.let { released[info.presentationTimeUs] = it }
                                 check(released.size <= 16) { "Surface stalled" }
                             }
-                            val target = audioTime(info.presentationTimeUs)
+                            val target = videoClock.timeNs(info.presentationTimeUs) ?: error("Missing video timing origin")
                             val now = System.nanoTime()
-                            if (target != null && target < now - 100_000_000L) {
+                            if (target < now - 100_000_000L) {
                                 synchronized(received) { released.remove(info.presentationTimeUs) }
                                 codec.releaseOutputBuffer(index, false); dropped()
                             } else {
-                                // Sparse UI updates can lead the current audio position by334ms.
-                                // Half a second fits the existing clock freshness and16-frame cap;
-                                // this is a bounded wait, not permission to present out of sync.
-                                check(target == null || target - now <= 500_000_000L) { "Video/audio clock diverged: videoPtsUs=${info.presentationTimeUs}, aheadMs=${(target!! - now) / 1_000_000.0}" }
+                                check(target - now <= 500_000_000L) { "Video clock diverged: videoPtsUs=${info.presentationTimeUs}, aheadMs=${(target - now) / 1_000_000.0}" }
                                 // Wait only on the output worker; Stop remains bounded and cancels presentation.
-                                while (running.get() && target != null && target - System.nanoTime() > 2_000_000L) Thread.sleep(2)
+                                while (running.get() && target - System.nanoTime() > 2_000_000L) Thread.sleep(2)
                                 codec.releaseOutputBuffer(index, running.get())
                             }
                         }
@@ -97,6 +94,7 @@ class SurfaceDecoder(
         require(packet.data.size <= buffer.capacity())
         buffer.clear(); buffer.put(packet.data)
         if (!packet.config) synchronized(received) {
+            videoClock.start(packet.ptsUs, receivedAt)
             check(received.size < 16) { "Decoder backlog" }
             received[packet.ptsUs] = receivedAt
         }
