@@ -126,21 +126,31 @@ class PairingPanel(
             addView(choices); addView(input)
         }
         displayedPeers = emptyList()
+        var attempt: PairingAttempt? = null
+        var dismissed = false
         dialog = AlertDialog.Builder(activity).setTitle("Pair with display device").setView(content)
             .setNegativeButton("Cancel", null).setPositiveButton("Pair", null).create().also { prompt ->
-                prompt.setOnDismissListener { dialog = null; choices = null }
+                // Negative button, Back, outside touch and teardown all dismiss.
+                prompt.setOnDismissListener {
+                    dismissed = true
+                    pairing.cancelPairing(attempt)
+                    if (dialog === prompt) { dialog = null; choices = null }
+                    if (!closed) refresh()
+                }
                 prompt.show()
                 prompt.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                     val code = input.text.toString()
                     if (!code.matches(Regex("[0-9]{4}"))) { input.error = "Enter four digits"; return@setOnClickListener }
                     val candidate = displayedPeers.getOrNull(choices?.selectedItemPosition ?: -1) ?: return@setOnClickListener
                     prompt.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
-                    pairing.pair(code, candidate) { success -> activity.runOnUiThread {
-                        if (!closed) {
+                    var submitted: PairingAttempt? = null
+                    submitted = pairing.pair(code, candidate) { success -> activity.runOnUiThread {
+                        if (!closed && !dismissed && dialog === prompt && submitted != null && attempt === submitted) {
                             if (success) prompt.dismiss() else input.error = "Pairing failed. Check the current code and display label."
                             refresh()
                         }
                     } }
+                    attempt = submitted
                 }
             }
         updateChoices()

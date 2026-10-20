@@ -28,8 +28,8 @@ object PairingExchange {
     private const val VERSION = 1
     private const val MAX_RECORD = 16_384
 
-    fun pairPhone(socket: Socket, code: String, store: PeerStore, localPairingPort: Int, expectedIdentityId: String? = null): RememberedPeer {
-        val revision = store.pairingRevision()
+    fun pairPhone(socket: Socket, code: String, store: PeerStore, localPairingPort: Int, expectedIdentityId: String? = null,
+                  revision: Long = store.pairingRevision()): RememberedPeer {
         val channel = authenticate(socket, code, store, PeerRole.PHONE)
         channel.sendIdentity(store, localPairingPort)
         val peer = channel.receiveIdentity(socket)

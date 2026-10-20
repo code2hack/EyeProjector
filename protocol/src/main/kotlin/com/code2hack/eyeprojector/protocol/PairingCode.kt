@@ -4,7 +4,7 @@ import java.security.SecureRandom
 
 /** Uses elapsed time: a clock adjustment cannot prolong a displayed code. */
 class PairingCode(
-    private val elapsedMillis: () -> Long = { System.nanoTime() / 1_000_000 },
+    private val elapsedMillis: () -> Long,
     private val generate: () -> String = { "%04d".format(java.util.Locale.ROOT, SecureRandom().nextInt(10_000)) },
 ) {
     data class Display(val code: String, val generation: Long, val expiresAt: Long, val remainingSeconds: Long, val attemptsRemaining: Int)

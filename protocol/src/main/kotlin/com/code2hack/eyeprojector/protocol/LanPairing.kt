@@ -1,7 +1,7 @@
 package com.code2hack.eyeprojector.protocol
 
+import android.os.SystemClock
 import java.io.Closeable
-import java.net.InetSocketAddress
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -12,18 +12,18 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /** Lifecycle owner used by either panel. Its callbacks run off the Android UI thread. */
 class LanPairing(val store: PeerStore, val role: PeerRole, private val changed: () -> Unit) : Closeable {
-    val codes = PairingCode()
+    val codes = PairingCode(SystemClock::elapsedRealtime)
     private val peers = ConcurrentHashMap<String, Pair<DiscoveredPeer, Long>>()
     private val closed = AtomicBoolean()
     private val executor = Executors.newSingleThreadExecutor()
+    private val phone = PhonePairingClient(store, executor, ::phoneChanged)
     private val lifecycle = Any()
     private var listener: ServerSocket? = null
     private var discovery: LanDiscovery? = null
     @Volatile private var activeSocket: Socket? = null
     @Volatile var status: String = "Looking for the paired device on Wi-Fi or the Phone hotspot"
         private set
-    @Volatile var pairing = false
-        private set
+    val pairing: Boolean get() = phone.pairing
     @Volatile var identityId: String? = null
         private set
 
@@ -79,26 +79,15 @@ class LanPairing(val store: PeerStore, val role: PeerRole, private val changed: 
     fun availablePeers(): List<DiscoveredPeer> = peers.values.filter { System.nanoTime() - it.second < 8_000_000_000L }
         .map { it.first }.sortedBy { it.identityId }
 
-    fun pair(code: String, candidate: DiscoveredPeer, finished: (Boolean) -> Unit) {
-        if (pairing || closed.get()) return
-        pairing = true; status = "Pairing…"; changed()
-        executor.execute {
-            val success = runCatching {
-                val port = listener?.localPort ?: error("Pairing not ready")
-                Socket().use { socket ->
-                    synchronized(lifecycle) {
-                        check(!closed.get())
-                        activeSocket = socket
-                    }
-                    socket.connect(InetSocketAddress(candidate.endpoint.host, candidate.endpoint.pairingPort), 3000)
-                    PairingExchange.pairPhone(socket, code, store, port, candidate.identityId)
-                }
-            }.isSuccess
-            activeSocket = null; pairing = false
-            status = if (success) "Paired with display device" else "Pairing failed. Check the selected display and its current code."
-            if (!closed.get()) { changed(); finished(success) }
-        }
+    private fun phoneChanged() { status = phone.status; if (!closed.get()) changed() }
+
+    fun pair(code: String, candidate: DiscoveredPeer, finished: (Boolean) -> Unit): PairingAttempt? {
+        if (closed.get()) return null
+        val port = listener?.localPort ?: return null
+        return phone.pair(code, candidate, port, finished)
     }
+
+    fun cancelPairing(attempt: PairingAttempt?) = phone.cancel(attempt)
 
     fun forget() {
         runCatching { activeSocket?.close() }
@@ -107,7 +96,7 @@ class LanPairing(val store: PeerStore, val role: PeerRole, private val changed: 
 
     override fun close() {
         synchronized(lifecycle) {
-            closed.set(true); store.cancelPendingPairing()
+            closed.set(true); phone.close()
             runCatching { activeSocket?.close() }; runCatching { listener?.close() }
             discovery?.close(); executor.shutdownNow()
         }

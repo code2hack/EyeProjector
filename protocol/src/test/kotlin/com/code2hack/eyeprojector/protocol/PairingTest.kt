@@ -77,6 +77,7 @@ class PairingTest {
         expected: String? = null, phone: PeerStore = store("phone"), glasses: PeerStore = store("glasses"),
         serverClock: () -> Long = { 0L },
         sharedCodes: PairingCode? = null,
+        phoneRevision: Long? = null,
     ): Result {
         val server = ServerSocket(0, 2, InetAddress.getLoopbackAddress()).apply { soTimeout = 5000 }
         val executor = Executors.newSingleThreadExecutor()
@@ -88,7 +89,7 @@ class PairingTest {
         return try {
             val client = runCatching {
                 Socket(InetAddress.getLoopbackAddress(), server.localPort).use {
-                    PairingExchange.pairPhone(it, clientCode, phone, 28001, expected ?: glasses.identityId())
+                    PairingExchange.pairPhone(it, clientCode, phone, 28001, expected ?: glasses.identityId(), phoneRevision ?: phone.pairingRevision())
                 }
             }.isSuccess
             Result(phone, glasses, client, future.get(20, TimeUnit.SECONDS))
@@ -109,7 +110,7 @@ class PairingTest {
         assertEquals("192.168.43.1", glasses.pairedPeer()!!.endpoint.host)
     }
 
-    @Test fun codeAuthenticatesExistingCaIssuedLeafWithProofOfItsPrivateKey() {
+    @Test fun codeAuthenticatesCaIssuedPhoneServerLeafWithProofOfItsPrivateKey() {
         val phone = store("ca-phone")
         val original = phone.identityCertificate()
         val ca = KeyPairGenerator.getInstance("EC").apply { initialize(256) }.generateKeyPair()
@@ -139,6 +140,19 @@ class PairingTest {
         val result = pair(clientCode = "0124")
         assertFalse(result.clientAccepted); assertFalse(result.serverAccepted)
         assertNull(result.phone.pairedPeer()); assertNull(result.glasses.pairedPeer())
+    }
+
+    @Test fun canceledRevisionCannotCommitAfterDelayedExchangeEntry() {
+        val phone = store("canceled-phone")
+        val original = phone.pairingRevision()
+        phone.cancelPendingPairing()
+        val result = pair(phone = phone, phoneRevision = original)
+        assertFalse(result.clientAccepted)
+        assertNull(phone.pairedPeer())
+        assertFalse(File(phone.directory, "endpoint.properties").exists())
+        // The remote can have committed before the interrupted final acknowledgment.
+        assertTrue(result.serverAccepted)
+        assertNotNull(result.glasses.pairedPeer())
     }
 
     @Test fun networkExchangeRejectsSixthAttemptEvenWithRightCodeThenAcceptsRotatedCode() {

@@ -3,7 +3,8 @@
 Worker: Worker-EyeProjector-6 — issue #6.
 
 The Glasses display a random four-digit code for 300 seconds of monotonic elapsed
-time. Expiry rotates the code and invalidates an exchange that has not completed.
+time, using Android's suspend-inclusive `SystemClock.elapsedRealtime`. Expiry
+rotates the code and invalidates an exchange that has not completed.
 The Phone opens a code prompt and lists nearby displays by the same short identity
 label shown on the Glasses. Selecting a display binds pairing to that discovered
 certificate fingerprint. The full fingerprint is retained and verified internally.
@@ -38,11 +39,25 @@ retrying the same code with that same Phone can complete the exchange, or Forget
 on the Glasses allows a fresh pairing. A different Phone cannot replace a paired
 identity using a code.
 
+Cancel, local Back and outside dismissal of the Phone prompt cancel that
+specific queued/in-flight request and close its socket. Its store revision is
+captured before queueing so canceled work cannot adopt a new revision and commit
+later. Old callbacks cannot update a disposed prompt or a newer retry. Cancellation
+that wins before the local trust write prevents that write; a write that already
+won stays paired. The remote may already have committed after receiving the
+Phone's confirmation, so local cancellation does not promise remote rollback.
+The interrupted-acknowledgment recovery above still applies.
+
 Private `files/session/` contains the local EC identity and PKCS12 password and an
 atomic `paired-peer.properties` record with the peer certificate, fingerprint and
 last endpoint. Local identities are generated in the app, without a computer or
-system trust-store changes. Existing explicitly provisioned PKCS12 identities
-remain readable. Neither Android backup nor native Bluetooth pairing is used for
+system trust-store changes. Existing provisioned identity files are retained.
+The generated self-signed identity path is the intended qualification target.
+Host tests also cover a CA-issued Phone/server identity; they do not establish
+general CA-issued compatibility. Independent JDK probing found that a CA-issued
+Glasses/client can complete pairing but fail later mTLS client-alias selection,
+also in the pre-pairing baseline. Android provider behavior remains unmeasured.
+Neither Android backup nor native Bluetooth pairing is used for
 EyeProjector trust. Forget deletes both the new peer record and legacy `peer.crt`,
 clears the transport endpoint, and retains the local identity. In-progress pairing
 cannot undo Forget. Stop and Disconnect do not delete trust.
@@ -91,7 +106,9 @@ a Phone. On the Phone, run the same instrumentation with `-e mode lan -e role PH
 the actual network topology. Repeat on shared Wi-Fi and on the Phone hotspot.
 This checks device crypto, discovery and persistence in isolated test state;
 production-panel code entry, actual countdown/rotation, restart and Forget still
-require the two application UIs and separate evidence.
+require the two application UIs and separate evidence. Device qualification must
+also check Cancel, Back/outside prompt dismissal during a delayed exchange and a
+fresh retry, plus code expiry after retained-process sleep longer than five minutes.
 
 Protocol references: [RFC 8236](https://www.rfc-editor.org/rfc/rfc8236),
 [Bouncy Castle JPAKEParticipant source at 1.83](https://github.com/bcgit/bc-java/blob/r1rv83/core/src/main/java/org/bouncycastle/crypto/agreement/jpake/JPAKEParticipant.java),
