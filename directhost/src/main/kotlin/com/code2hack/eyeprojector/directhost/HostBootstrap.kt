@@ -26,9 +26,10 @@ class HostBootstrap private constructor(private val context: Context) {
     private val main = Handler(Looper.getMainLooper())
     private val forget = HostForgetCompletion { main.post(it) }
     private val executor = Executors.newSingleThreadScheduledExecutor()
+    private val displayExecutor = Executors.newSingleThreadExecutor()
     private val observers = CopyOnWriteArraySet<(Status) -> Unit>()
     @Volatile private var current = Status(Setup.UNAVAILABLE, "UNKNOWN")
-    private var remote: IHostBootstrap? = null
+    @Volatile private var remote: IHostBootstrap? = null
     private var revokedBinder: IBinder? = null
     private var pending: Action? = null
     private var pendingEpoch = ""
@@ -130,6 +131,23 @@ class HostBootstrap private constructor(private val context: Context) {
         executor.execute {
             val result = runCatching { remote?.let { ScaleState.from(operation(it)) } }.getOrNull()
             main.post { complete(result) }
+        }
+    }
+
+    fun launchApp(packageName: String, complete: (ProjectionDisplayState?) -> Unit) =
+        displayOperation({ it.launchApp(System.nanoTime(), packageName) }, complete)
+
+    fun projectionDisplayState(complete: (ProjectionDisplayState?) -> Unit) =
+        displayOperation({ it.projectionDisplayState() }, complete)
+
+    private fun displayOperation(operation: (IHostBootstrap) -> ByteArray, complete: (ProjectionDisplayState?) -> Unit) {
+        executor.execute {
+            val service = remote
+            val epoch = current.sessionEpoch
+            displayExecutor.execute {
+                val result = runCatching { service?.let { ProjectionDisplayState.from(operation(it)) } }.getOrNull()
+                main.post { complete(result.takeIf { remote === service && current.sessionEpoch == epoch }) }
+            }
         }
     }
 

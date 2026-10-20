@@ -80,6 +80,11 @@ class ShizukuHostService @Keep constructor(private val context: Context) : IHost
 
     override fun scaleState(): ByteArray = (projectionBridge?.scaleState() ?: LiveScale.unavailable()).bytes()
 
+    override fun launchApp(requestId: Long, packageName: String): ByteArray =
+        (projectionBridge?.launchApp(requestId, packageName) ?: ProjectionDisplayState(requestId = requestId, requestedPackage = packageName)).bytes()
+
+    override fun projectionDisplayState(): ByteArray = (projectionBridge?.projectionDisplayState() ?: ProjectionDisplayState()).bytes()
+
     override fun destroy() {
         stop()
         // Shizuku's reserved destroy transaction ends this exact owned process.

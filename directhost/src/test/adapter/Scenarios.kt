@@ -6,6 +6,8 @@ import rikka.shizuku.Shizuku
 import java.io.File
 import java.nio.file.Files
 import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /** Compiles and drives the actual HostBootstrap; doubles supply external API events. */
@@ -24,7 +26,10 @@ private class Fixture : AutoCloseable {
     fun field(name: String): Any? = HostBootstrap::class.java.getDeclaredField(name).apply { isAccessible = true }.get(host)
     fun drain() {
         // A callback may enqueue more work behind the first barrier.
-        repeat(3) { (field("executor") as ScheduledExecutorService).submit {}.get(3, TimeUnit.SECONDS) }
+        repeat(3) {
+            (field("executor") as ScheduledExecutorService).submit {}.get(3, TimeUnit.SECONDS)
+            (field("displayExecutor") as ExecutorService).submit {}.get(3, TimeUnit.SECONDS)
+        }
     }
     fun attach(service: FakeService) {
         Shizuku.connection!!.onServiceConnected(Shizuku.args!!.component, service); drain()
@@ -37,6 +42,8 @@ private class Fixture : AutoCloseable {
     override fun close() {
         val executor = field("executor") as ScheduledExecutorService
         executor.shutdownNow(); executor.awaitTermination(3, TimeUnit.SECONDS)
+        val displayExecutor = field("displayExecutor") as ExecutorService
+        displayExecutor.shutdownNow(); displayExecutor.awaitTermination(3, TimeUnit.SECONDS)
         directory.deleteRecursively()
     }
 }
@@ -252,6 +259,48 @@ fun main() {
         val fresh = FakeService(); f.attach(fresh)
         check(fresh.starts == 1 && model.state().phase == SessionPhase.AVAILABLE)
     }
+    scenario("launch/display without attachment does not start or bind a backend") { f ->
+        var replies = 0
+        f.host.launchApp("example.app") { check(it == null); replies++ }
+        f.host.projectionDisplayState { check(it == null); replies++ }
+        f.drain()
+        check(replies == 2 && Shizuku.binds == 0)
+    }
+    scenario("actual launch adapter preserves generation/results and rejects malformed or dead-service replies") { f ->
+        f.host.start(); f.drain()
+        val first = FakeService(); f.attach(first)
+        var response: ProjectionDisplayState? = null
+        f.host.launchApp("example.phone") { response = it }; f.drain()
+        check(first.launches == listOf("example.phone"))
+        check(response!!.displayId == 47 && response!!.generation == "fixture:child")
+        check(response!!.requestedPackage == "example.phone" && response!!.foregroundPackage == "example.phone")
+        first.displayPayloadOverride = ByteArray(4)
+        f.host.projectionDisplayState { response = it }; f.drain(); check(response == null)
+        first.displayPayloadOverride = null
+        f.host.stop(); f.drain()
+        f.host.projectionDisplayState { response = it }; f.drain(); check(response == null)
+        f.host.start(); f.drain()
+        val fresh = FakeService().apply { display = display.copy(generation = "fresh:child", displayId = 88) }
+        f.attach(fresh)
+        f.host.projectionDisplayState { response = it }; f.drain()
+        check(response!!.generation == "fresh:child" && response!!.displayId == 88 && response!!.foregroundPackage == null)
+    }
+    scenario("long Binder launch does not block Stop and late reply cannot cross revoked binding") { f ->
+        f.host.start(); f.drain()
+        val entered = CountDownLatch(1); val finish = CountDownLatch(1)
+        val service = FakeService().apply { beforeLaunch = { entered.countDown(); check(finish.await(3, TimeUnit.SECONDS)) } }
+        f.attach(service)
+        var replies = 0
+        try {
+            f.host.launchApp("example.slow") { check(it == null); replies++ }
+            check(entered.await(2, TimeUnit.SECONDS))
+            f.host.stop()
+            repeat(3) { (f.field("executor") as ScheduledExecutorService).submit {}.get(2, TimeUnit.SECONDS) }
+            check(service.stops > 0 && service.destroys == 1 && f.backend() == "STOPPED")
+            finish.countDown(); f.drain()
+            check(replies == 1 && service.launches.isEmpty())
+        } finally { finish.countDown() }
+    }
     check(failures == 0) { "$failures adapter scenarios failed" }
-    println("13 adapter scenarios passed; modeled host events, no device/Binder claim")
+    println("16 adapter scenarios passed; modeled host events, no device/Binder claim")
 }

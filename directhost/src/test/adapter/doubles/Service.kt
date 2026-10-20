@@ -10,6 +10,8 @@ interface IHostBootstrap {
     fun destroy()
     fun requestScale(requestId: Long, scale: Double): ByteArray
     fun scaleState(): ByteArray
+    fun launchApp(requestId: Long, packageName: String): ByteArray
+    fun projectionDisplayState(): ByteArray
     fun asBinder(): android.os.IBinder
     object Stub { fun asInterface(binder: android.os.IBinder): IHostBootstrap = binder as IHostBootstrap }
 }
@@ -29,6 +31,10 @@ class FakeService : IHostBootstrap, android.os.IBinder {
     var scaleReads = 0
     var scalePayloadOverride: ByteArray? = null
     var currentScale = ScaleState(0, 1.0, Geometry(480, 640), null, ScaleStatus.READY, false)
+    var display = ProjectionDisplayState(generation = "fixture:child", displayId = 47, status = ProjectionLaunchStatus.READY)
+    var displayPayloadOverride: ByteArray? = null
+    var beforeLaunch: (() -> Unit)? = null
+    val launches = mutableListOf<String>()
     private var alive = true
     private val deaths = mutableListOf<() -> Unit>()
     override val isBinderAlive: Boolean get() = alive
@@ -57,6 +63,14 @@ class FakeService : IHostBootstrap, android.os.IBinder {
         return scalePayloadOverride ?: currentScale.bytes()
     }
     override fun scaleState(): ByteArray { check(alive); scaleReads++; return scalePayloadOverride ?: currentScale.bytes() }
+    override fun launchApp(requestId: Long, packageName: String): ByteArray {
+        check(alive); beforeLaunch?.invoke(); check(alive)
+        launches.add(packageName)
+        display = display.copy(requestId = requestId, requestedPackage = packageName, status = ProjectionLaunchStatus.STARTED,
+            commandExit = 0, launchedComponent = "$packageName/.Main", foregroundPackage = packageName)
+        return displayPayloadOverride ?: display.bytes()
+    }
+    override fun projectionDisplayState(): ByteArray { check(alive); return displayPayloadOverride ?: display.bytes() }
     fun die() { alive = false; deaths.toList().forEach { it() } }
     override fun asBinder() = this
 }

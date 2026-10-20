@@ -28,6 +28,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import java.util.UUID
 import javax.net.ssl.SSLServerSocket
 import javax.net.ssl.SSLSocket
 import org.json.JSONObject
@@ -70,7 +71,7 @@ object ShellMain {
             "scid=%08x".format(scid), "log_level=debug", "tunnel_forward=false", "send_dummy_byte=false",
             "send_device_meta=false", "send_stream_meta=true", "send_frame_meta=true", "video=true", "audio=false",
             "control=true", "video_codec=h264", "video_bit_rate=2000000", "max_fps=30", "new_display=480x640/160", "flex_display=true",
-            "display_ime_policy=local", "vd_destroy_content=true", "clipboard_autosync=false", "power_on=false", "keep_active=true", "cleanup=true")
+            "display_ime_policy=local", "vd_destroy_content=true", "vd_system_decorations=false", "clipboard_autosync=false", "power_on=false", "keep_active=true", "cleanup=true")
 
     @JvmStatic fun main(args: Array<String>) {
         require(Process.myUid() == 2000 && args.size == 2)
@@ -185,6 +186,11 @@ internal class Bridge(
 
     fun scaleState(): ScaleState = active.get()?.scaleState() ?: LiveScale.unavailable()
 
+    fun launchApp(requestId: Long, packageName: String): ProjectionDisplayState =
+        active.get()?.launchApp(requestId, packageName) ?: ProjectionDisplayState(requestId = requestId, requestedPackage = packageName)
+
+    fun projectionDisplayState(): ProjectionDisplayState = active.get()?.projectionDisplayState() ?: ProjectionDisplayState()
+
     private fun close(reason: SessionStopReason) = release.close {
         running.set(false)
         runCatching { listener.close() }
@@ -238,6 +244,13 @@ private class Session(
     private val lastPongNs = AtomicLong()
     private val lastWriteChannel = AtomicLong(-1)
     private val scid = SecureRandom().nextInt(Int.MAX_VALUE)
+    private val launches = ProjectedAppLaunch("${UUID.randomUUID()}:scrcpy-%08x".format(scid), PlatformProjectionLaunch()) {
+        synchronized(controlLock) {
+            check(running.get())
+            inputControls.cancel()
+        }
+    }
+    private var identifiedDisplay = false
     private val tlsProtocol = peer.session.protocol
     private val localAddress = peer.localAddress.hostAddress
     private val localPort = peer.localPort
@@ -255,6 +268,9 @@ private class Session(
         }
     }
     fun scaleState(): ScaleState = if (running.get()) scale.state() else LiveScale.unavailable()
+
+    fun launchApp(requestId: Long, packageName: String): ProjectionDisplayState = launches.launch(requestId, packageName)
+    fun projectionDisplayState(): ProjectionDisplayState = launches.snapshot(observe = true)
 
     private fun writeControl(payload: ByteArray) = synchronized(controlLock) {
         check(running.get())
@@ -338,7 +354,10 @@ private class Session(
                         }
                         Wire.NAVIGATE -> {
                             val navigate = Navigate.from(frame.payload)
-                            if (navigate.geometry == geometry.get()) inputControls.navigate(navigate)
+                            if (navigate.geometry == geometry.get()) {
+                                if (navigate.action == Navigation.HOME) launches.home()
+                                else inputControls.navigate(navigate)
+                            }
                         }
                         Wire.TOUCH -> {
                             if (inputControls.touch(Touch.from(frame.payload))) heldTouchFrames.incrementAndGet()
@@ -364,6 +383,13 @@ private class Session(
                                 geometry.set(record.geometry)
                             }
                             send(Frame(Wire.GEOMETRY, payload = record.geometry.bytes()))
+                        }
+                        // Creation is logged before this metadata by the pinned capture. Do not
+                        // launch or query while LiveScale holds the output/publication locks.
+                        if (!identifiedDisplay) {
+                            identifiedDisplay = true
+                            val id = ProjectionLaunchCommands.displayId(File(directory, "scrcpy-%08x.log".format(scid)).readText())
+                            if (id != null) launches.initialize(id)
                         }
                     }
                     is ScrcpyRecord.Packet -> {
@@ -393,6 +419,8 @@ private class Session(
             try { operation() } finally { phases.put(name, (System.nanoTime() - start) / 1_000_000) }
         }
         watchdog?.cancel(false)
+        // Stop/reap only this Session's fixed launch/query helper before transport release.
+        val launchRelease = runCatching { launches.close() }
         synchronized(resources) {
             phase("peerCloseMs") { runCatching { peer.close() } }
             phase("localListenerCloseMs") { runCatching { localListener?.close() } }
@@ -423,8 +451,12 @@ private class Session(
             .put("observedWidth", scaleState.observed?.width ?: JSONObject.NULL)
             .put("observedHeight", scaleState.observed?.height ?: JSONObject.NULL)
             .put("appliedScale", scaleState.observed?.let(LayoutScale::applied) ?: JSONObject.NULL)
+        val displayState = launches.snapshot()
+        data.put("displayGeneration", displayState.generation).put("projectionDisplayId", displayState.displayId ?: JSONObject.NULL)
+            .put("launchStatus", displayState.status.name).put("launchHelperReleased", launchRelease.isSuccess)
         File(directory, "last-session.json").writeText(data.toString())
         println(data.toString())
         check(server?.isAlive != true) { "Owned stock child release incomplete" }
+        launchRelease.getOrThrow()
     }
 }
