@@ -40,4 +40,4 @@ Capture identifies and saves the physical button; runtime timing determines the 
 - **Triple-click default:** Rokid documents Bluetooth pairing as the default. Cancellation of this action on the actual firmware remains unverified. The required result is the requested local transition with pairing state preserved. [Official controls](https://global.rokid.com/blogs/academy-glasses/2-3-button-touch-controls)
 - **Home and Back:** verify routing and actual result on the projection display, including the curated launcher. Preserve local control-panel navigation as a separate context. [Projection home design](projection-home.md)
 
-The current code still implements touchpad double-tap Back and triple-tap Disconnect; those bindings are replaced by the Owner's v0.1 requirements. No input code, devices, issues or runtime registrations were changed for this design update.
+The imported baseline used touchpad double-tap Back and triple-tap Disconnect. The v0.1 issue set replaces those bindings with ordinary touches; implementation and physical qualification are tracked separately in the version plan.
