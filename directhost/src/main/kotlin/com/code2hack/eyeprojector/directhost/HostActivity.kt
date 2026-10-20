@@ -29,9 +29,11 @@ class HostActivity : Activity() {
     private lateinit var chosenApps: ChosenAppsPanel
     private lateinit var launcherStatus: TextView
     private var launchEnabled = false
-    private val launchChosenApp: (ChosenApp) -> Unit = { app ->
+    private var launchContext = ProjectionContext()
+    private fun launchChosenApp(app: ChosenApp, expected: ProjectionContext) {
         launcherStatus.text = getString(R.string.projected_home_opening, app.label)
-        sessions.launchApp(app.packageName) { result ->
+        sessions.launchApp(app.packageName, expected) { result ->
+            if (launchContext != expected) return@launchApp
             launcherStatus.text = getString(when {
                 result?.foregroundPackage == app.packageName -> R.string.projected_home_opened
                 result?.status == ProjectionLaunchStatus.TIMED_OUT -> R.string.projected_home_timeout
@@ -58,10 +60,12 @@ class HostActivity : Activity() {
             state.backend !in listOf("STARTING", "STOPPING", "READY", "SESSION_STARTING", "STREAMING", "STOP_UNVERIFIED") &&
             state.detail !in listOf("FORGET_PENDING", "RESTORE_SHIZUKU_TO_VERIFY_STOP")
         authorize.isEnabled = state.setup == HostBootstrap.Setup.AUTHORIZATION_REQUIRED
-        val canLaunch = session.phase == SessionPhase.STREAMING
-        if (::chosenApps.isInitialized && canLaunch != launchEnabled) {
+        val expected = state.projectionContext
+        val canLaunch = session.phase == SessionPhase.STREAMING && expected.available
+        if (::chosenApps.isInitialized && (canLaunch != launchEnabled || expected != launchContext)) {
             launchEnabled = canLaunch
-            chosenApps.onAppSelected = if (canLaunch) launchChosenApp else null
+            launchContext = expected
+            chosenApps.onAppSelected = if (canLaunch) { app -> launchChosenApp(app, expected) } else null
         }
     }
     private val sessionTick = object : Runnable {

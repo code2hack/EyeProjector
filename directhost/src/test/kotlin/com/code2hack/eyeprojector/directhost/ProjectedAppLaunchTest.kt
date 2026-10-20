@@ -35,8 +35,10 @@ class ProjectedAppLaunchTest {
         assertEquals("example.native.app", app.last())
         assertTrue(app.containsAll(listOf("android.intent.action.MAIN", "android.intent.category.LAUNCHER", "-p")))
         assertFalse(app.contains("-S")); assertFalse(app.contains("--activity-clear-task"))
-        val home = ProjectionLaunchCommands.launch(47, "ignored.by.fixed.home", true)
-        assertEquals(ProjectionLaunchCommands.HOME_COMPONENT, home.last())
+        val home = ProjectionLaunchCommands.launch(47, "ignored.by.fixed.home", true, ProjectionContext("owner", "actual-token"))
+        assertEquals(ProjectionLaunchCommands.HOME_COMPONENT, home[home.indexOf("-n") + 1])
+        assertEquals("owner", home[home.indexOf(ProjectionContext.OWNER_EXTRA) + 1])
+        assertEquals("actual-token", home[home.indexOf(ProjectionContext.TOKEN_EXTRA) + 1])
         assertFalse(home.contains("ignored.by.fixed.home"))
     }
 
@@ -61,7 +63,7 @@ class ProjectedAppLaunchTest {
         assertNull(ProjectionLaunchCommands.foreground(dump, 48))
         assertNull(ProjectionLaunchCommands.foreground("ResumedActivity: ActivityRecord{ab u0 physical.launcher/.Home t1}", 47))
         val state = ProjectionDisplayState(8, "generation:child", 47, "requested.app", ProjectionLaunchStatus.STARTED, 0,
-            "requested.app/.Main", "example.actual")
+            "requested.app/.Main", "example.actual", ProjectionContext("owner", "actual-token"))
         assertEquals(state, ProjectionDisplayState.from(state.bytes()))
         assertThrows(IllegalArgumentException::class.java) { ProjectionDisplayState.from(state.bytes() + 1.toByte()) }
     }
@@ -77,7 +79,7 @@ class ProjectedAppLaunchTest {
                 return super.launch(displayId, packageName, home)
             }
         }
-        ProjectedAppLaunch("one:child1", adapter, { touch.cancel() }).use { launcher ->
+        ProjectedAppLaunch("one:child1", adapter, beforeLaunch = { touch.cancel() }).use { launcher ->
             assertEquals(ProjectionLaunchStatus.UNAVAILABLE, launcher.launch(1, "example.app").status)
             launcher.initialize(47)
             launcher.initialize(99)
@@ -161,7 +163,7 @@ class ProjectedAppLaunchTest {
         val gate = Any(); val entered = CountDownLatch(1); val callerDone = CountDownLatch(1)
         val block = AtomicBoolean()
         val adapter = Adapter()
-        ProjectedAppLaunch("cancel:child", adapter, {
+        ProjectedAppLaunch("cancel:child", adapter, beforeLaunch = {
             if (block.get()) { entered.countDown(); synchronized(gate) { } }
         }).use { launcher ->
             launcher.initialize(47); launcher.snapshot(true)

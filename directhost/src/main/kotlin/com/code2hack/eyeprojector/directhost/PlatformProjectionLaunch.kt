@@ -7,9 +7,10 @@ import java.util.concurrent.TimeUnit
 /** No shell script: the Session owns the actual cmd/dumpsys process and reaps it on Stop. */
 internal class PlatformProjectionLaunch(
     private val commands: OwnedProjectionCommands = OwnedProjectionCommands(),
+    private val context: ProjectionContext = ProjectionContext(),
 ) : ProjectionLaunchAdapter {
     override fun launch(displayId: Int, packageName: String, home: Boolean) =
-        commands.run(ProjectionLaunchCommands.launch(displayId, packageName, home), 4000)
+        commands.run(ProjectionLaunchCommands.launch(displayId, packageName, home, context), 4000)
 
     override fun foreground(displayId: Int): String? {
         val result = commands.run(listOf("/system/bin/dumpsys", "-t", "2", "activity", "activities"), 3000)

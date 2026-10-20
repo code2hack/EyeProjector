@@ -35,8 +35,9 @@ java = str(Path(java_home) / 'bin/java') if java_home else shutil.which('java')
 if not java:
     parser.error('Configure JDK 17 using JAVA_HOME or PATH')
 actual = args.source_dir.resolve() if args.source_dir else root / 'directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost'
-sources = sorted((suite / 'doubles').glob('*.kt')) + [suite / 'Scenarios.kt']
-sources += [actual / name for name in ('HostBootstrap.kt', 'HostForgetCompletion.kt', 'BootstrapSessionFiles.kt', 'SessionController.kt', 'SessionAttemptStore.kt', 'ProjectionDisplayState.kt')]
+sources = sorted((suite / 'doubles').glob('*.kt')) + [suite / 'Scenarios.kt', suite / 'HomeContextScenarios.kt']
+sources += [actual / name for name in ('HostBootstrap.kt', 'HostForgetCompletion.kt', 'BootstrapSessionFiles.kt', 'SessionController.kt', 'SessionAttemptStore.kt', 'ProjectionDisplayState.kt', 'ProjectionContext.kt', 'ProjectedHomeActivity.kt')]
+sources += [actual / 'apps/ChosenAppStore.kt']
 protocol = root / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
 sources += [protocol / name for name in ('Wire.kt', 'LayoutScale.kt', 'Touch.kt')]
 jar = output / 'adapter-regressions.jar'

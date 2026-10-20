@@ -20,9 +20,11 @@ internal object ProjectionLaunchCommands {
     const val HOME_PACKAGE = "com.code2hack.eyeprojector.directhost"
     const val HOME_COMPONENT = "$HOME_PACKAGE/.ProjectedHomeActivity"
 
-    fun launch(displayId: Int, packageName: String, home: Boolean): List<String> =
+    fun launch(displayId: Int, packageName: String, home: Boolean, context: ProjectionContext = ProjectionContext()): List<String> =
         listOf("/system/bin/cmd", "activity", "start-activity", "-W", "--display", displayId.toString(), "--activity-new-task") +
-            if (home) listOf("--activity-clear-top", "-n", HOME_COMPONENT)
+            if (home) listOf("--activity-clear-top", "-n", HOME_COMPONENT,
+                "--es", ProjectionContext.OWNER_EXTRA, context.ownerEpoch,
+                "--es", ProjectionContext.TOKEN_EXTRA, context.projectionToken)
             else listOf("--activity-reset-task-if-needed", "-a", "android.intent.action.MAIN",
                 "-c", "android.intent.category.LAUNCHER", "-p", packageName)
 
@@ -60,12 +62,13 @@ internal object ProjectionLaunchCommands {
 internal class ProjectedAppLaunch(
     generation: String,
     private val adapter: ProjectionLaunchAdapter,
+    context: ProjectionContext = ProjectionContext(),
     private val beforeLaunch: () -> Unit,
 ) : Closeable {
     private val closed = AtomicBoolean()
     private val admission = Any()
     private val release = OwnedRelease()
-    private val state = AtomicReference(ProjectionDisplayState(generation = generation))
+    private val state = AtomicReference(ProjectionDisplayState(generation = generation, context = context))
     private val executor = Executors.newSingleThreadExecutor()
 
     fun initialize(displayId: Int) = synchronized(admission) {

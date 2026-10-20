@@ -9,7 +9,7 @@ import java.util.concurrent.*
 import javax.net.ssl.*
 
 /** Only external Android socket/JSON APIs are doubled; Session and its release remain production code. */
-private class Peer : SSLSocket() {
+internal class Peer : SSLSocket() {
     var released = false
     val sink = ByteArrayOutputStream()
     override fun getOutputStream(): OutputStream = sink
@@ -38,7 +38,7 @@ private class Peer : SSLSocket() {
     override fun setEnableSessionCreation(v: Boolean) {}
     override fun getEnableSessionCreation() = true
 }
-private class Child : Process() {
+internal class Child : Process() {
     var alive = true
     override fun getOutputStream(): OutputStream = ByteArrayOutputStream()
     override fun getInputStream(): InputStream = ByteArrayInputStream(byteArrayOf())
@@ -50,13 +50,13 @@ private class Child : Process() {
     override fun destroyForcibly(): Process { alive = false; return this }
     override fun isAlive() = alive
 }
-private class Fixture : AutoCloseable {
+internal class Fixture(val ownerEpoch: String = "session-owner") : AutoCloseable {
     val directory = Files.createTempDirectory("eyeprojector-launch-composition-").toFile()
     val peer = Peer()
     val timer = Executors.newSingleThreadScheduledExecutor()
     val type = Class.forName("com.code2hack.eyeprojector.directhost.Session")
     val session = type.declaredConstructors.single().apply { isAccessible = true }.newInstance(
-        peer, DataInputStream(peer.inputStream), directory, File(directory,"unused.jar"), timer, {} as () -> Unit)
+        peer, DataInputStream(peer.inputStream), directory, File(directory,"unused.jar"), timer, ownerEpoch, {} as () -> Unit)
     val control = LocalSocket()
     val video = LocalSocket()
     val child = Child()
@@ -75,13 +75,14 @@ private class Fixture : AutoCloseable {
         type.getDeclaredMethod("launchApp",Long::class.javaPrimitiveType,String::class.java).apply { isAccessible = true }.invoke(session,id,pkg) as ProjectionDisplayState
     override fun close() { runCatching { closeSession() }; timer.shutdownNow(); directory.deleteRecursively() }
 }
-private open class Adapter : ProjectionLaunchAdapter {
+internal open class Adapter : ProjectionLaunchAdapter {
     val calls = mutableListOf<Int>()
     var releaseAttempts = 0
+    var foregroundReads = 0
     override fun launch(displayId: Int, packageName: String, home: Boolean): ProjectionCommandResult {
         calls.add(displayId); return ProjectionCommandResult(0,"Status: ok\nActivity: $packageName/.Main\n")
     }
-    override fun foreground(displayId: Int) = "example.app"
+    override fun foreground(displayId: Int): String { foregroundReads++; return "example.app" }
     override fun close() { releaseAttempts++ }
 }
 fun main() {
@@ -152,5 +153,6 @@ fun main() {
         check(a.calls.isEmpty())
         println("PASS actual Session close reaches transports/child while initial Home waits on old control lock")
     }
-    println("4 actual Session composition scenarios passed; modeled external APIs, no Android/device proof")
+    serviceContextScenarios()
+    println("10 actual Session/service context scenarios passed; modeled external APIs, no Android/device proof")
 }

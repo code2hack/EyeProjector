@@ -10,8 +10,8 @@ interface IHostBootstrap {
     fun destroy()
     fun requestScale(requestId: Long, scale: Double): ByteArray
     fun scaleState(): ByteArray
-    fun launchApp(requestId: Long, packageName: String): ByteArray
-    fun projectionDisplayState(): ByteArray
+    fun launchApp(requestId: Long, packageName: String, expectedOwnerEpoch: String, expectedProjectionToken: String): ByteArray
+    fun projectionDisplayState(expectedOwnerEpoch: String, expectedProjectionToken: String): ByteArray
     fun asBinder(): android.os.IBinder
     object Stub { fun asInterface(binder: android.os.IBinder): IHostBootstrap = binder as IHostBootstrap }
 }
@@ -31,7 +31,10 @@ class FakeService : IHostBootstrap, android.os.IBinder {
     var scaleReads = 0
     var scalePayloadOverride: ByteArray? = null
     var currentScale = ScaleState(0, 1.0, Geometry(480, 640), null, ScaleStatus.READY, false)
-    var display = ProjectionDisplayState(generation = "fixture:child", displayId = 47, status = ProjectionLaunchStatus.READY)
+    var display = ProjectionDisplayState(generation = "fixture:child", displayId = 47, status = ProjectionLaunchStatus.READY,
+        context = ProjectionContext("", "fixture-token"))
+    val context get() = display.context.copy(ownerEpoch = sessionEpoch)
+    var displayReads = 0
     var displayPayloadOverride: ByteArray? = null
     var beforeLaunch: (() -> Unit)? = null
     val launches = mutableListOf<String>()
@@ -45,7 +48,7 @@ class FakeService : IHostBootstrap, android.os.IBinder {
     override fun status(): String {
         check(alive)
         statusReads++
-        return "{\"state\":\"$state\",\"sessionRevoked\":$revoked,\"sessionEpoch\":\"$sessionEpoch\"}"
+        return "{\"state\":\"$state\",\"sessionRevoked\":$revoked,\"sessionEpoch\":\"$sessionEpoch\",\"projectionToken\":\"${context.projectionToken}\"}"
     }
     override fun stop(): String {
         stops++
@@ -63,14 +66,22 @@ class FakeService : IHostBootstrap, android.os.IBinder {
         return scalePayloadOverride ?: currentScale.bytes()
     }
     override fun scaleState(): ByteArray { check(alive); scaleReads++; return scalePayloadOverride ?: currentScale.bytes() }
-    override fun launchApp(requestId: Long, packageName: String): ByteArray {
+    override fun launchApp(requestId: Long, packageName: String, expectedOwnerEpoch: String, expectedProjectionToken: String): ByteArray {
         check(alive); beforeLaunch?.invoke(); check(alive)
+        val expected = ProjectionContext(expectedOwnerEpoch, expectedProjectionToken)
+        if (expected != context) return ProjectionDisplayState(requestId = requestId, requestedPackage = packageName, context = expected).bytes()
         launches.add(packageName)
         display = display.copy(requestId = requestId, requestedPackage = packageName, status = ProjectionLaunchStatus.STARTED,
-            commandExit = 0, launchedComponent = "$packageName/.Main", foregroundPackage = packageName)
+            commandExit = 0, launchedComponent = "$packageName/.Main", foregroundPackage = packageName, context = context)
         return displayPayloadOverride ?: display.bytes()
     }
-    override fun projectionDisplayState(): ByteArray { check(alive); return displayPayloadOverride ?: display.bytes() }
+    override fun projectionDisplayState(expectedOwnerEpoch: String, expectedProjectionToken: String): ByteArray {
+        check(alive)
+        val expected = ProjectionContext(expectedOwnerEpoch, expectedProjectionToken)
+        if (expected != context) return ProjectionDisplayState(context = expected).bytes()
+        displayReads++
+        return displayPayloadOverride ?: display.copy(context = context).bytes()
+    }
     fun die() { alive = false; deaths.toList().forEach { it() } }
     override fun asBinder() = this
 }

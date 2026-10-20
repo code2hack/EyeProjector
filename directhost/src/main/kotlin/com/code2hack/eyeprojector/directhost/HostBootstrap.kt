@@ -21,7 +21,10 @@ import rikka.shizuku.Shizuku
 /** One app-scoped route, also used by subsequent launcher/widget integration. */
 class HostBootstrap private constructor(private val context: Context) {
     enum class Setup { MISSING, UNAVAILABLE, UPDATE_REQUIRED, AUTHORIZATION_REQUIRED, SHELL_REQUIRED, AVAILABLE }
-    data class Status(val setup: Setup, val backend: String, val detail: String? = null, val sessionEpoch: String = "", val rejectedEpoch: String? = null)
+    data class Status(val setup: Setup, val backend: String, val detail: String? = null, val sessionEpoch: String = "", val rejectedEpoch: String? = null,
+        val projectionToken: String = "") {
+        val projectionContext: ProjectionContext get() = ProjectionContext(sessionEpoch, projectionToken)
+    }
     private enum class Action { START, STOP }
     private val main = Handler(Looper.getMainLooper())
     private val forget = HostForgetCompletion { main.post(it) }
@@ -36,7 +39,7 @@ class HostBootstrap private constructor(private val context: Context) {
     private var localDetail: String? = null
     private var connecting = false
     private var bindStarted = 0L
-    private var bindingGeneration = 0L
+    @Volatile private var bindingGeneration = 0L
     private var acceptedGeneration = -1L
     private var connection: ServiceConnection? = null
     // A new installed APK gets a new shell process rather than reusing loaded old dex.
@@ -135,19 +138,38 @@ class HostBootstrap private constructor(private val context: Context) {
     }
 
     fun launchApp(packageName: String, complete: (ProjectionDisplayState?) -> Unit) =
-        displayOperation({ it.launchApp(System.nanoTime(), packageName) }, complete)
+        launchApp(packageName, current.projectionContext, complete)
+
+    fun launchApp(packageName: String, expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit) =
+        displayOperation(expected, { service, requestId -> service.launchApp(requestId, packageName, expected.ownerEpoch, expected.projectionToken) }, complete)
 
     fun projectionDisplayState(complete: (ProjectionDisplayState?) -> Unit) =
-        displayOperation({ it.projectionDisplayState() }, complete)
+        projectionDisplayState(current.projectionContext, complete)
 
-    private fun displayOperation(operation: (IHostBootstrap) -> ByteArray, complete: (ProjectionDisplayState?) -> Unit) {
-        executor.execute {
-            val service = remote
-            val epoch = current.sessionEpoch
-            displayExecutor.execute {
-                val result = runCatching { service?.let { ProjectionDisplayState.from(operation(it)) } }.getOrNull()
-                main.post { complete(result.takeIf { remote === service && current.sessionEpoch == epoch }) }
-            }
+    fun projectionDisplayState(expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit) =
+        displayOperation(expected, { service, _ -> service.projectionDisplayState(expected.ownerEpoch, expected.projectionToken) }, complete)
+
+    private fun displayOperation(expected: ProjectionContext, operation: (IHostBootstrap, Long) -> ByteArray, complete: (ProjectionDisplayState?) -> Unit) {
+        // Capture before the first queue hop. The server independently validates these
+        // same identities when selecting its exact Bridge/Session, including Binder reuse.
+        val service = remote
+        val binding = bindingGeneration
+        val originalStatus = current
+        val requestId = System.nanoTime()
+        fun matches(): Boolean {
+            val observed = current
+            // Home already carries an actual context even before the first status poll.
+            // Only that unchanged, not-yet-observed snapshot may defer token validation
+            // to the server. A new published snapshot cannot rebind the original intent.
+            val sameProjection = observed.projectionContext == expected ||
+                (originalStatus.projectionToken.isEmpty() && observed === originalStatus && observed.sessionEpoch == expected.ownerEpoch)
+            return service != null && remote === service && bindingGeneration == binding && sameProjection
+        }
+        displayExecutor.execute {
+            val result = runCatching {
+                if (!expected.available || !matches()) null else ProjectionDisplayState.from(operation(service!!, requestId))
+            }.getOrNull()
+            main.post { complete(result.takeIf { matches() && it?.context == expected }) }
         }
     }
 
@@ -281,10 +303,13 @@ class HostBootstrap private constructor(private val context: Context) {
         val backend = data.getString("state")
         publish(if (pending == Action.STOP && backend == "STOPPED") "STOPPING" else backend,
             data.optString("failure").takeIf { it.isNotBlank() && it != "null" } ?: localDetail,
-            data.optString("sessionEpoch").ifEmpty { current.sessionEpoch })
+            data.optString("sessionEpoch").ifEmpty { current.sessionEpoch }, projectionToken = data.optString("projectionToken"))
     }
-    private fun publish(backend: String, detail: String? = null, sessionEpoch: String = current.sessionEpoch, rejectedEpoch: String? = null) {
-        val value = Status(setup(), backend, detail, sessionEpoch, rejectedEpoch)
+    private fun publish(backend: String, detail: String? = null, sessionEpoch: String = current.sessionEpoch, rejectedEpoch: String? = null,
+        projectionToken: String? = null) {
+        val token = if (backend in setOf("SESSION_STARTING", "STREAMING"))
+            projectionToken ?: current.projectionToken.takeIf { current.sessionEpoch == sessionEpoch }.orEmpty() else ""
+        val value = Status(setup(), backend, detail, sessionEpoch, rejectedEpoch, token)
         if (value == current) return
         current = value
         main.post { observers.forEach { it(value) } }

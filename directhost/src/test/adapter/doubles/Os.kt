@@ -5,3 +5,5 @@ interface IBinder {
  val isBinderAlive: Boolean
  fun linkToDeath(recipient: () -> Unit, flags: Int)
 }
+
+class Bundle
