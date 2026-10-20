@@ -18,6 +18,7 @@ import java.util.concurrent.atomic.AtomicReference
 class PairingInstrumentation : Instrumentation() {
     private lateinit var arguments: Bundle
     private var currentStage: String? = null
+    private var discoveryDiagnostics: LanDiscoveryDiagnostics? = null
     override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); this.arguments = arguments ?: Bundle(); start() }
 
     override fun onStart() {
@@ -28,6 +29,7 @@ class PairingInstrumentation : Instrumentation() {
                 "lan" -> lan(report)
                 else -> error("Unknown test mode")
             }
+            appendDiscoveryDiagnostics(report)
             report.putString("result", "PASS")
             finish(-1, report)
         } catch (error: Exception) {
@@ -35,6 +37,7 @@ class PairingInstrumentation : Instrumentation() {
             // Fixed classification only; no keys/passwords or exception text.
             report.putString("failureType", error.javaClass.simpleName)
             currentStage?.let { report.putString("failureStage", it) }
+            appendDiscoveryDiagnostics(report)
             finish(0, report)
         }
     }
@@ -88,7 +91,11 @@ class PairingInstrumentation : Instrumentation() {
 
     private fun stage(label: String) {
         currentStage = label
-        sendStatus(1, Bundle().apply { putString("stage", label) })
+        sendStatus(1, Bundle().apply { putString("stage", label); appendDiscoveryDiagnostics(this) })
+    }
+
+    private fun appendDiscoveryDiagnostics(report: Bundle) {
+        discoveryDiagnostics?.let { report.putString("discoveryDiagnostics", it.snapshot().toJson()) }
     }
 
     private fun lan(report: Bundle) {
@@ -100,9 +107,15 @@ class PairingInstrumentation : Instrumentation() {
         val found = CountDownLatch(1)
         val discovered = AtomicReference<DiscoveredPeer>()
         val label = arguments.getString("display", "")!!
+        val diagnostics = LanDiscoveryDiagnostics()
+        discoveryDiagnostics = diagnostics
+        stage("LAN_DISCOVERY_SETUP")
         val discovery = LanDiscovery(store.identityId(), role, listener.localPort, { peer ->
-            if (peer.identityId.startsWith(label) && discovered.compareAndSet(null, peer)) found.countDown()
-        })
+            val matches = peer.identityId.startsWith(label)
+            val selected = matches && discovered.compareAndSet(null, peer)
+            diagnostics.labelChecked(matches, selected)
+            if (selected) found.countDown()
+        }, diagnostics = diagnostics)
         try {
             stage("LAN_DISCOVERY_START")
             discovery.start()
