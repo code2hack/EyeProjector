@@ -14,7 +14,7 @@ class PanelPowerTest {
         assertArrayEquals(byteArrayOf(10, 0), Scrcpy.displayPower(false))
         assertArrayEquals(byteArrayOf(10, 1), Scrcpy.displayPower(true))
         val written = mutableListOf<ByteArray>()
-        val panel = SessionPanelPower(Any(), { true }, written::add)
+        val panel = SessionPanelPower(Any(), { true }, write = written::add)
         val off = panel.requestOff(42)
         assertEquals(PanelSubmission.SUBMITTED, off.off)
         assertEquals(PanelRestoration.PENDING, off.restoration)
@@ -34,14 +34,14 @@ class PanelPowerTest {
     @Test fun inactiveAndNeverBlankedSessionsDoNotChangePanelPower() {
         var active = false
         val written = mutableListOf<ByteArray>()
-        val panel = SessionPanelPower(Any(), { active }, written::add)
+        val panel = SessionPanelPower(Any(), { active }, write = written::add)
         assertEquals(PanelSubmission.UNAVAILABLE, panel.requestOff(1).off)
         active = true
         assertEquals(PanelSubmission.NOT_REQUESTED, panel.state().off)
         panel.close()
         assertEquals(PanelRestoration.NOT_NEEDED, panel.state().restoration)
         assertTrue(written.isEmpty())
-        val next = SessionPanelPower(Any(), { true }, written::add)
+        val next = SessionPanelPower(Any(), { true }, write = written::add)
         assertEquals(PanelSubmission.NOT_REQUESTED, next.state().off)
         assertEquals(PanelRestoration.NOT_NEEDED, next.state().restoration)
     }

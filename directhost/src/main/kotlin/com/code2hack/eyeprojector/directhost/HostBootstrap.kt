@@ -21,11 +21,13 @@ import rikka.shizuku.Shizuku
 /** One app-scoped route, also used by subsequent launcher/widget integration. */
 class HostBootstrap private constructor(private val context: Context) {
     enum class Setup { MISSING, UNAVAILABLE, UPDATE_REQUIRED, AUTHORIZATION_REQUIRED, SHELL_REQUIRED, AVAILABLE }
-    data class Status(val setup: Setup, val backend: String, val detail: String? = null, val sessionEpoch: String = "", val rejectedEpoch: String? = null)
+    data class Status(val setup: Setup, val backend: String, val detail: String? = null, val sessionEpoch: String = "", val rejectedEpoch: String? = null, val projectionToken: String = "")
     private enum class Action { START, STOP }
     private val main = Handler(Looper.getMainLooper())
     private val forget = HostForgetCompletion { main.post(it) }
     private val executor = Executors.newSingleThreadScheduledExecutor()
+    private val panelExecutor = Executors.newSingleThreadExecutor()
+    private val panelQueryExecutor = Executors.newSingleThreadExecutor()
     private val observers = CopyOnWriteArraySet<(Status) -> Unit>()
     @Volatile private var current = Status(Setup.UNAVAILABLE, "UNKNOWN")
     private var remote: IHostBootstrap? = null
@@ -126,16 +128,40 @@ class HostBootstrap private constructor(private val context: Context) {
 
     fun scaleState(complete: (ScaleState?) -> Unit) = scaleOperation({ it.scaleState() }, complete)
 
-    /** Fixed active-session OFF only; a submitted command is never a physical observation. */
-    fun requestPanelOff(complete: (PanelPowerState?) -> Unit) =
-        panelOperation({ it.requestPanelOff(System.nanoTime()) }, complete)
+    /** Capture context on the lifecycle lane; Binder work cannot occupy that lane. */
+    fun requestPanelOff(complete: (PanelPowerState?) -> Unit) {
+        val id = System.nanoTime()
+        panelOperation(id, false, { service, context -> service.requestPanelOff(id, context.ownerEpoch, context.projectionToken) }, complete)
+    }
 
-    fun panelState(complete: (PanelPowerState?) -> Unit) = panelOperation({ it.panelState() }, complete)
+    fun panelState(complete: (PanelPowerState?) -> Unit) = panelOperation(0, true,
+        { service, context -> service.panelState(context.ownerEpoch, context.projectionToken) }, complete)
 
-    private fun panelOperation(operation: (IHostBootstrap) -> ByteArray, complete: (PanelPowerState?) -> Unit) {
+    private fun panelOperation(id: Long, query: Boolean, operation: (IHostBootstrap, PanelContext) -> ByteArray, complete: (PanelPowerState?) -> Unit) {
+        val atEntry = current
+        val context = PanelContext(atEntry.sessionEpoch, atEntry.projectionToken)
         executor.execute {
-            val result = runCatching { remote?.let { PanelPowerState.from(operation(it)) } }.getOrNull()
-            main.post { complete(result) }
+            val service = remote
+            val generation = bindingGeneration
+            if (service == null) { main.post { complete(null) }; return@execute }
+            if (!context.resolved || context != PanelContext(current.sessionEpoch, current.projectionToken) ||
+                pending == Action.STOP || revokedBinder != null) {
+                main.post { complete(PanelPowerState.unavailable(id, context)) }; return@execute
+            }
+            val binder = service.asBinder()
+            val operations = if (query) panelQueryExecutor else panelExecutor
+            operations.execute {
+                // Never resolve remote or current context here: even queued calls retain their original target.
+                val result = runCatching { PanelPowerState.from(operation(service, context)) }.getOrNull()
+                executor.execute {
+                    val currentContext = PanelContext(current.sessionEpoch, current.projectionToken)
+                    val reply = result?.takeIf {
+                        remote?.asBinder() == binder && bindingGeneration == generation &&
+                            currentContext == context && pending != Action.STOP && revokedBinder == null && it.context == context
+                    }
+                    main.post { complete(reply) }
+                }
+            }
         }
     }
 
@@ -276,10 +302,12 @@ class HostBootstrap private constructor(private val context: Context) {
         val backend = data.getString("state")
         publish(if (pending == Action.STOP && backend == "STOPPED") "STOPPING" else backend,
             data.optString("failure").takeIf { it.isNotBlank() && it != "null" } ?: localDetail,
-            data.optString("sessionEpoch").ifEmpty { current.sessionEpoch })
+            data.optString("sessionEpoch").ifEmpty { current.sessionEpoch },
+            projectionToken = data.optString("projectionToken"))
     }
-    private fun publish(backend: String, detail: String? = null, sessionEpoch: String = current.sessionEpoch, rejectedEpoch: String? = null) {
-        val value = Status(setup(), backend, detail, sessionEpoch, rejectedEpoch)
+    private fun publish(backend: String, detail: String? = null, sessionEpoch: String = current.sessionEpoch, rejectedEpoch: String? = null,
+        projectionToken: String = if (backend == "STREAMING") current.projectionToken else "") {
+        val value = Status(setup(), backend, detail, sessionEpoch, rejectedEpoch, projectionToken)
         if (value == current) return
         current = value
         main.post { observers.forEach { it(value) } }

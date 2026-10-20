@@ -22,9 +22,14 @@ private class Fixture : AutoCloseable {
         drain()
     }
     fun field(name: String): Any? = HostBootstrap::class.java.getDeclaredField(name).apply { isAccessible = true }.get(host)
-    fun drain() {
+    fun drain(includePanelOperations: Boolean = true) {
         // A callback may enqueue more work behind the first barrier.
-        repeat(3) { (field("executor") as ScheduledExecutorService).submit {}.get(3, TimeUnit.SECONDS) }
+        repeat(3) {
+            (field("executor") as ScheduledExecutorService).submit {}.get(3, TimeUnit.SECONDS)
+            if (includePanelOperations) for (name in listOf("panelExecutor", "panelQueryExecutor")) {
+                (field(name) as java.util.concurrent.ExecutorService).submit {}.get(3, TimeUnit.SECONDS)
+            }
+        }
     }
     fun attach(service: FakeService) {
         Shizuku.connection!!.onServiceConnected(Shizuku.args!!.component, service); drain()
@@ -35,6 +40,10 @@ private class Fixture : AutoCloseable {
     }
     fun backend() = (field("current") as HostBootstrap.Status).backend
     override fun close() {
+        for (name in listOf("panelExecutor", "panelQueryExecutor")) {
+            val operations = field(name) as java.util.concurrent.ExecutorService
+            operations.shutdownNow(); operations.awaitTermination(3, TimeUnit.SECONDS)
+        }
         val executor = field("executor") as ScheduledExecutorService
         executor.shutdownNow(); executor.awaitTermination(3, TimeUnit.SECONDS)
         directory.deleteRecursively()
@@ -42,7 +51,9 @@ private class Fixture : AutoCloseable {
 }
 
 private var failures = 0
+private var scenarios = 0
 private fun scenario(name: String, run: (Fixture) -> Unit) {
+    scenarios++
     try {
         Fixture().use(run)
         println("PASS $name")
@@ -261,7 +272,7 @@ fun main() {
     }
     scenario("panel adapter retains submission versus observation and malformed/dead transport") { f ->
         f.host.start(); f.drain()
-        val service = FakeService(); f.attach(service)
+        val service = FakeService().apply { state = "STREAMING" }; f.attach(service)
         var result: PanelPowerState? = null
         f.host.requestPanelOff { result = it }; f.drain()
         check(result!!.requestId == service.panelRequests.single())
@@ -279,7 +290,7 @@ fun main() {
     }
     scenario("fresh panel attachment cannot inherit preceding session submission") { f ->
         f.host.start(); f.drain()
-        val first = FakeService(); f.attach(first)
+        val first = FakeService().apply { state = "STREAMING" }; f.attach(first)
         f.host.requestPanelOff {}; f.drain()
         f.host.stop(); f.drain()
         check(first.revoked && first.destroys == 1 && f.backend() == "STOPPED")
@@ -287,10 +298,126 @@ fun main() {
         f.host.panelState { result = it }; f.drain()
         check(result == null)
         f.host.start(); f.drain()
-        val fresh = FakeService(); f.attach(fresh)
+        val fresh = FakeService().apply { state = "STREAMING" }; f.attach(fresh)
         f.host.panelState { result = it }; f.drain()
         check(result!!.off == PanelSubmission.NOT_REQUESTED && fresh.panelRequests.isEmpty())
     }
+    scenario("R18-1 actual SessionController Stop/status/death remain runnable during blocked panel Binder") { f ->
+        val model = SessionController({ epoch -> f.host.start(epoch) }, { f.host.stop() })
+        f.host.observe { model.observeBackend(it.sessionEpoch, it.backend, it.detail.orEmpty(), it.rejectedEpoch) }
+        val owner = model.start().epoch; f.drain()
+        val service = FakeService().apply { state = "STREAMING"; exitOnDestroy = false; panelGate = java.util.concurrent.CountDownLatch(1) }
+        f.attach(service); model.receiverRendered(owner)
+        check(model.state().phase == SessionPhase.STREAMING)
+        var replies = 0
+        f.host.requestPanelOff { check(it == null); replies++ }
+        check(service.panelEntered.await(2, TimeUnit.SECONDS))
+        try {
+            val reads = service.statusReads
+            f.host.refresh(); f.drain(false)
+            check(service.statusReads > reads)
+            var pending: PanelPowerState? = null
+            f.host.panelState { pending = it }
+            f.drain(false) // Ensure the lifecycle capture has actually queued the query before its barrier.
+            (f.field("panelQueryExecutor") as java.util.concurrent.ExecutorService).submit {}.get(1, TimeUnit.SECONDS)
+            f.drain(false)
+            check(pending?.context == service.currentPanel.context)
+            model.stop()
+            check(service.stopEntered.await(1, TimeUnit.SECONDS)) { "R18-1 Stop blocked behind panel Binder" }
+            f.drain(false)
+            check(f.backend() == "STOPPING")
+            service.die(); f.drain(false)
+            check(model.state().phase == SessionPhase.INACTIVE && f.backend() == "STOPPED")
+            check(replies == 0)
+        } finally { service.panelGate!!.countDown() }
+        f.drain(); check(replies == 1)
+    }
+    scenario("R18-1 blocked panel Binder cannot delay Forget revocation/death completion") { f ->
+        f.host.start(); f.drain()
+        val service = FakeService().apply { state = "STREAMING"; exitOnDestroy = false; panelGate = java.util.concurrent.CountDownLatch(1) }
+        f.attach(service)
+        f.host.requestPanelOff {}
+        check(service.panelEntered.await(2, TimeUnit.SECONDS))
+        var completions = 0
+        try {
+            f.host.stopBeforeForget { completions++ }
+            check(service.stopEntered.await(1, TimeUnit.SECONDS))
+            f.drain(false); check(completions == 0 && service.revoked)
+            service.die(); f.drain(false)
+            check(completions == 1 && f.backend() == "STOPPED")
+        } finally { service.panelGate!!.countDown() }
+        f.drain(); check(completions == 1)
+    }
+    for (replaceOwner in listOf(true, false)) {
+        scenario("queued OFF retains context across same Binder fresh ${if (replaceOwner) "owner" else "media Session"}") { f ->
+            f.host.start(); f.drain()
+            val service = FakeService().apply { state = "STREAMING"; panelGate = java.util.concurrent.CountDownLatch(1) }
+            f.attach(service)
+            val original = service.currentPanel.context
+            val replies = java.util.concurrent.CopyOnWriteArrayList<PanelPowerState?>()
+            f.host.requestPanelOff { replies.add(it) }
+            check(service.panelEntered.await(2, TimeUnit.SECONDS))
+            try {
+                f.host.requestPanelOff { replies.add(it) }; f.drain(false)
+                service.replaceProjection(if (replaceOwner) "fresh-owner" else original.ownerEpoch)
+                val fresh = service.currentPanel.context
+                check(original.projectionToken != fresh.projectionToken)
+                f.host.refresh(); f.drain(false)
+                var query: PanelPowerState? = null
+                f.host.panelState { query = it }
+                f.drain(false) // Ensure the lifecycle capture has actually queued the query before its barrier.
+            (f.field("panelQueryExecutor") as java.util.concurrent.ExecutorService).submit {}.get(1, TimeUnit.SECONDS)
+                f.drain(false)
+                check(query!!.context == fresh)
+            } finally { service.panelGate!!.countDown() }
+            f.drain()
+            check(service.panelContexts == listOf(original, original))
+            check(service.panelWrites.isEmpty())
+            check(replies.size == 2 && replies.all { it == null })
+        }
+    }
+    scenario("unresolved projection context never dispatches delayed OFF or query") { f ->
+        f.host.start(); f.drain()
+        val service = FakeService(); f.attach(service)
+        var responses = 0
+        f.host.requestPanelOff { check(it?.off == PanelSubmission.UNAVAILABLE); responses++ }
+        f.host.panelState { check(it?.off == PanelSubmission.UNAVAILABLE); responses++ }
+        f.drain()
+        check(responses == 2 && service.panelRequests.isEmpty() && service.panelReads == 0)
+    }
+    scenario("blocked panel query leaves lifecycle Stop/status reachable") { f ->
+        f.host.start(); f.drain()
+        val service = FakeService().apply { state = "STREAMING"; panelQueryGate = java.util.concurrent.CountDownLatch(1) }
+        f.attach(service); f.host.panelState {}
+        check(service.queryEntered.await(2, TimeUnit.SECONDS))
+        try {
+            val reads = service.statusReads
+            f.host.refresh(); f.host.stop()
+            check(service.stopEntered.await(1, TimeUnit.SECONDS))
+            f.drain(false); check(service.statusReads > reads && f.backend() == "STOPPED")
+        } finally { service.panelQueryGate!!.countDown() }
+        f.drain()
+    }
+    scenario("public OFF intent captures old context before its first lifecycle hop") { f ->
+        f.host.start(); f.drain()
+        val service = FakeService().apply { state = "STREAMING" }; f.attach(service)
+        val original = service.currentPanel.context
+        val gate = java.util.concurrent.CountDownLatch(1); val entered = java.util.concurrent.CountDownLatch(1)
+        val executor = f.field("executor") as ScheduledExecutorService
+        executor.execute {
+            entered.countDown(); gate.await()
+            service.replaceProjection()
+            HostBootstrap::class.java.getDeclaredMethod("readStatus", String::class.java).apply { isAccessible = true }
+                .invoke(f.host, service.status())
+        }
+        check(entered.await(1, TimeUnit.SECONDS))
+        var response: PanelPowerState? = null
+        try { f.host.requestPanelOff { response = it } }
+        finally { gate.countDown() }
+        f.drain()
+        check(response!!.context == original && response!!.off == PanelSubmission.UNAVAILABLE)
+        check(service.currentPanel.context != original && service.panelRequests.isEmpty())
+    }
     check(failures == 0) { "$failures adapter scenarios failed" }
-    println("16 adapter scenarios passed; modeled host events, no device/Binder claim")
+    println("$scenarios adapter scenarios passed; modeled host events, no device/Binder claim")
 }

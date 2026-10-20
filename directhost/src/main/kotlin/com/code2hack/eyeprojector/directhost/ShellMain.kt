@@ -19,6 +19,7 @@ import java.nio.file.Files
 import java.nio.file.StandardOpenOption
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.util.UUID
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -52,6 +53,7 @@ internal fun panelPowerJson(state: PanelPowerState): JSONObject = JSONObject()
     .put("requestId", state.requestId).put("offSubmission", state.off.name)
     .put("restorationSubmission", state.restoration.name).put("physicalObservation", state.observation.name)
     .put("sessionActive", state.sessionActive)
+    .put("ownerEpoch", state.context.ownerEpoch).put("projectionToken", state.context.projectionToken)
 
 /** Explicit shell bootstrap only. An ordinary installed APK never acquires shell authority. */
 object ShellMain {
@@ -93,10 +95,12 @@ internal class Bridge(
     private val timer: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor(),
     private val listener: SSLServerSocket = Tls.context(directory).serverSocketFactory.createServerSocket() as SSLServerSocket,
     private val reportStatus: ((String) -> Unit)? = null,
+    private val ownerEpoch: String = "",
 ) : Closeable {
     private val running = AtomicBoolean(true)
     private val release = OwnedRelease()
     private val admission = Any()
+    private var panelAdmissionOpen = true
     private val active = AtomicReference<Session?>()
     @Volatile private var lastPanelState = PanelPowerState.unavailable()
     private val peers = ConcurrentHashMap.newKeySet<SSLSocket>()
@@ -159,7 +163,7 @@ internal class Bridge(
                 Wire.STREAM -> {
                     session = synchronized(admission) {
                         if (!running.get() || active.get() != null) return
-                        Session(socket, input, directory, jar, timer) { if (running.get()) status("STREAMING") }.also { active.set(it) }
+                        Session(socket, input, directory, jar, timer, ownerEpoch) { if (running.get()) status("STREAMING") }.also { active.set(it) }
                     }
                     status("SESSION_STARTING")
                     session.run()
@@ -191,24 +195,44 @@ internal class Bridge(
 
     fun scaleState(): ScaleState = active.get()?.scaleState() ?: LiveScale.unavailable()
 
-    fun requestPanelOff(requestId: Long): PanelPowerState =
-        active.get()?.requestPanelOff(requestId) ?: PanelPowerState.unavailable(requestId)
+    private fun panelTarget(context: PanelContext): Session? = synchronized(admission) {
+        if (!panelAdmissionOpen || !running.get() || !context.resolved || context.ownerEpoch != ownerEpoch) null
+        else active.get()?.takeIf { it.panelContext == context }
+    }
+
+    fun requestPanelOff(requestId: Long, expectedOwnerEpoch: String, expectedProjectionToken: String): PanelPowerState {
+        val context = PanelContext(expectedOwnerEpoch, expectedProjectionToken)
+        val target = panelTarget(context) ?: return PanelPowerState.unavailable(requestId, context)
+        return target.requestPanelOff(requestId)
+    }
+
+    fun panelState(expectedOwnerEpoch: String, expectedProjectionToken: String): PanelPowerState {
+        val context = PanelContext(expectedOwnerEpoch, expectedProjectionToken)
+        val target = panelTarget(context)
+        return target?.panelState() ?: lastPanelState.takeIf { context.resolved && it.context == context }
+            ?: PanelPowerState.unavailable(context = context)
+    }
 
     fun panelState(): PanelPowerState = active.get()?.panelState() ?: lastPanelState
 
-    private fun close(reason: SessionStopReason) = release.close {
-        running.set(false)
-        runCatching { listener.close() }
-        val owned = synchronized(admission) { active.get() }
-        peers.filterNot { owned?.owns(it) == true }.forEach { runCatching { it.close() } }
-        peers.clear()
-        try { owned?.close(reason) }
-        finally {
-            lastPanelState = owned?.panelState() ?: lastPanelState
-            workers.shutdownNow(); timer.shutdownNow()
+    fun invalidatePanelOperations() = synchronized(admission) { panelAdmissionOpen = false }
+
+    private fun close(reason: SessionStopReason) {
+        invalidatePanelOperations()
+        release.close {
+            running.set(false)
+            runCatching { listener.close() }
+            val owned = synchronized(admission) { active.get() }
+            peers.filterNot { owned?.owns(it) == true }.forEach { runCatching { it.close() } }
+            peers.clear()
+            try { owned?.close(reason) }
+            finally {
+                lastPanelState = owned?.panelState() ?: lastPanelState
+                workers.shutdownNow(); timer.shutdownNow()
+            }
+            active.compareAndSet(owned, null)
+            status("HOST_STOPPED")
         }
-        active.compareAndSet(owned, null)
-        status("HOST_STOPPED")
     }
 }
 
@@ -218,6 +242,7 @@ private class Session(
     private val directory: File,
     private val jar: File,
     private val timer: java.util.concurrent.ScheduledExecutorService,
+    ownerEpoch: String,
     private val firstFrame: () -> Unit,
 ) : Closeable {
     private val running = AtomicBoolean(true)
@@ -229,9 +254,14 @@ private class Session(
     private val writeStarted = AtomicLong()
     private val output = DataOutputStream(peer.outputStream)
     private val controlLock = Any()
+    val panelContext = PanelContext(ownerEpoch, UUID.randomUUID().toString())
+    @Volatile private var lastScaleReportAttempt: ScaleState? = null
     private val scale = LiveScale(
         resize = { size -> writeControl(Scrcpy.resize(size)) },
-        publish = { value -> send(Frame(Wire.SCALE_STATE, value.requestId, value.bytes())) },
+        publish = { value ->
+            lastScaleReportAttempt = value
+            send(Frame(Wire.SCALE_STATE, value.requestId, value.bytes()))
+        },
     )
     private var localListener: LocalServerSocket? = null
     private var video: LocalSocket? = null
@@ -241,7 +271,7 @@ private class Session(
     private var inputThread: Thread? = null
     private var watchdog: java.util.concurrent.ScheduledFuture<*>? = null
     private val frames = AtomicLong()
-    private val panelPower = SessionPanelPower(controlLock, { running.get() && frames.get() > 0 }) {
+    private val panelPower = SessionPanelPower(controlLock, { running.get() && frames.get() > 0 }, panelContext) {
         control!!.outputStream.write(it)
     }
     private val touches = AtomicLong()
@@ -451,12 +481,16 @@ private class Session(
             .put("lastWriteChannel", lastWriteChannel.get()).put("writeStartedMonoNs", writeStarted.get())
             .put("tls", tlsProtocol).put("localAddress", localAddress).put("localPort", localPort)
             .put("peerAddress", peerAddress).put("peerPort", peerPort).put("scid", "%08x".format(scid))
-        val scaleState = scale.state()
-        data.put("scaleStatus", scaleState.status.name)
-            .put("requestedScale", scaleState.requested.takeIf { it.isFinite() } ?: JSONObject.NULL)
-            .put("observedWidth", scaleState.observed?.width ?: JSONObject.NULL)
-            .put("observedHeight", scaleState.observed?.height ?: JSONObject.NULL)
-            .put("appliedScale", scaleState.observed?.let(LayoutScale::applied) ?: JSONObject.NULL)
+        // A single sampled report attempt; never wait for the scale transaction during release.
+        val scaleState = lastScaleReportAttempt
+        data.put("scaleSnapshotBasis", if (scaleState == null) "UNKNOWN_BEFORE_FIRST_REPORT" else "LAST_KNOWN_REPORT_ATTEMPT")
+            .put("finalAppliedScaleVerified", false)
+            .put("scaleStatus", scaleState?.status?.name ?: "UNKNOWN")
+            .put("scaleRequestId", scaleState?.requestId ?: JSONObject.NULL)
+            .put("requestedScale", scaleState?.requested?.takeIf { it.isFinite() } ?: JSONObject.NULL)
+            .put("observedWidth", scaleState?.observed?.width ?: JSONObject.NULL)
+            .put("observedHeight", scaleState?.observed?.height ?: JSONObject.NULL)
+            .put("appliedScale", scaleState?.observed?.let(LayoutScale::applied) ?: JSONObject.NULL)
         File(directory, "last-session.json").writeText(data.toString())
         println(data.toString())
         check(server?.isAlive != true) { "Owned stock child release incomplete" }
