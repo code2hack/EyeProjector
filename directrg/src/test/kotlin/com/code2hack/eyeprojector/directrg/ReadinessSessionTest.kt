@@ -260,13 +260,17 @@ class ReadinessSessionTest {
             next.at = { if (it == "name") allocations.incrementAndGet() }
             MediaCodec.created = next
             val replacement = task(errors) { fixture.session.receive(Frame(Wire.GEOMETRY, payload = resized.bytes())) }
+            val closed = CountDownLatch(1)
+            var closing: Thread? = null
             try {
                 assertTrue(entered.await(3, TimeUnit.SECONDS))
-                fixture.session.close()
-                assertFalse(running(fixture.session))
+                closing = task(errors) { fixture.session.close(); closed.countDown() }
+                await("Stop cancels before waiting for old release") { !running(fixture.session) }
                 assertFalse(readiness(fixture.session).ready)
                 assertEquals(0, allocations.get())
-            } finally { release.countDown(); joined(replacement, errors) }
+                assertFalse("close must join old release", closed.await(60, TimeUnit.MILLISECONDS))
+                assertFalse(fixture.states.contains("STOPPED"))
+            } finally { release.countDown(); joined(replacement, errors); closing?.let { joined(it, errors) } }
             assertEquals(0, allocations.get())
             assertEquals(1, fixture.first.releases.get())
             assertEquals(0, next.releases.get())
@@ -282,12 +286,16 @@ class ReadinessSessionTest {
             next.at = { if (it == "configure") { entered.countDown(); check(construct.await(5, TimeUnit.SECONDS)) } }
             MediaCodec.created = next
             val replacement = task(errors) { fixture.session.receive(Frame(Wire.GEOMETRY, payload = resized.bytes())) }
+            val closed = CountDownLatch(1)
+            var closing: Thread? = null
             try {
                 assertTrue(entered.await(3, TimeUnit.SECONDS))
-                fixture.session.close()
-                assertFalse(running(fixture.session))
+                closing = task(errors) { fixture.session.close(); closed.countDown() }
+                await("Stop cancels before waiting for construction") { !running(fixture.session) }
                 assertFalse(readiness(fixture.session).ready)
-            } finally { construct.countDown(); joined(replacement, errors) }
+                assertFalse("close must join unpublished codec release", closed.await(60, TimeUnit.MILLISECONDS))
+                assertFalse(fixture.states.contains("STOPPED"))
+            } finally { construct.countDown(); joined(replacement, errors); closing?.let { joined(it, errors) } }
             assertNull(field(fixture.session, "decoder").get(fixture.session))
             assertEquals(1, next.releases.get())
             assertEquals("STOPPED", fixture.states.last())

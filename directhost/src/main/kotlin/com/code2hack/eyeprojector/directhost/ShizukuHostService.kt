@@ -16,17 +16,21 @@ class ShizukuHostService @Keep constructor(private val context: Context) : IHost
     private val sessions = OwnedShellSessions(File("/data/local/tmp", "eyeprojector-${context.packageName}-${context.applicationInfo.uid}"))
     @Volatile private var revokeFailed = false
     @Volatile private var attribution = JSONObject()
+    @Volatile private var sessionEpoch = ""
 
     override fun status(): String {
         val snapshot = lifecycle.status()
         return JSONObject().put("state", if (revokeFailed) "STOP_UNVERIFIED" else snapshot.state.name)
             .put("failure", if (revokeFailed) "SESSION_REVOKE_FAILED" else snapshot.failure)
             .put("sessionRevoked", sessions.isRevoked())
+            .put("sessionEpoch", sessionEpoch)
             .put("shellUid", Process.myUid()).put("pid", Process.myPid())
             .put("serverSha256", ShellMain.SERVER_SHA256).put("attribution", attribution).toString()
     }
 
-    @Synchronized override fun start(identity: ByteArray, password: ByteArray, legacyPeer: ByteArray?, endpoint: ByteArray, pairedPeer: ByteArray?): String {
+    @Synchronized override fun start(identity: ByteArray, password: ByteArray, legacyPeer: ByteArray?, endpoint: ByteArray, pairedPeer: ByteArray?, sessionEpoch: String): String {
+        if (lifecycle.status().state !in setOf(OwnedHostLifecycle.State.STOPPED, OwnedHostLifecycle.State.FAILED)) return status()
+        this.sessionEpoch = sessionEpoch
         lifecycle.start { ready ->
             // The existing backend contract requires shell, including on rooted Shizuku hosts.
             require(Process.myUid() == 2000)
@@ -44,7 +48,12 @@ class ShizukuHostService @Keep constructor(private val context: Context) : IHost
             attribution = JSONObject().put("apkSha256", sha256(apk)).put("apk", apk.path)
                 .put("sessionDirectory", session.path).put("sessionOwnerUid", Process.myUid())
             val bridge = Bridge(session, jar, reportStatus = { state ->
-                if (state == "HOST_READY") ready()
+                when (state) {
+                    "HOST_READY" -> ready()
+                    "SESSION_STARTING" -> lifecycle.report(OwnedHostLifecycle.State.SESSION_STARTING)
+                    "STREAMING" -> lifecycle.report(OwnedHostLifecycle.State.STREAMING)
+                    "SESSION_FAILED" -> lifecycle.report(OwnedHostLifecycle.State.FAILED, "SESSION_FAILED")
+                }
             })
             projectionBridge = bridge
             object : OwnedHostLifecycle.Backend {

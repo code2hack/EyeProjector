@@ -111,14 +111,19 @@ class DecoderLifetimeTest {
         val resume = CountDownLatch(1)
         codec.at = { if (it == "configure") { entered.countDown(); check(resume.await(5, TimeUnit.SECONDS)) } }
         val session = session()
-        val worker = Executors.newSingleThreadExecutor()
+        val worker = Executors.newFixedThreadPool(2)
         try {
             val construction = worker.submit { session.replaceDecoder(size) }
             assertTrue(entered.await(5, TimeUnit.SECONDS))
-            session.close()
+            val stopCalled = CountDownLatch(1)
+            val stopping = worker.submit { stopCalled.countDown(); session.close() }
+            assertTrue(stopCalled.await(2, TimeUnit.SECONDS))
+            assertFalse("Close waits for the in-progress allocation to release", stopping.isDone)
             resume.countDown()
             construction.get(5, TimeUnit.SECONDS)
+            stopping.get(5, TimeUnit.SECONDS)
             assertEquals("Stop must close a decoder whose constructor finishes late", 1, codec.releases.get())
+            assertNull(ProjectionSession::class.java.getDeclaredField("decoder").apply { isAccessible = true }.get(session))
             assertFalse(Thread.getAllStackTraces().keys.any { it.name == "eyeprojector-decoder" && it.isAlive })
         } finally { resume.countDown(); session.close(); worker.shutdownNow() }
     }

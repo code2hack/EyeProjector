@@ -26,6 +26,7 @@ class PairingPanel(
     private val role: PeerRole,
     private val pairedChanged: (Boolean) -> Unit,
     private val beforeForget: (complete: () -> Unit) -> Unit = { it() },
+    private val sharedPairing: LanPairing? = null,
 ) : LinearLayout(activity), Closeable {
     val store = PeerStore(File(activity.filesDir, "session"))
     private val caption = TextView(activity).apply { setTextColor(Color.WHITE); textSize = 22f; gravity = Gravity.CENTER }
@@ -41,7 +42,7 @@ class PairingPanel(
             if (!closed) refresh()
         }
     } }
-    private val pairing = LanPairing(store, role) { activity.runOnUiThread { if (!closed) refresh() } }
+    private val pairing = sharedPairing ?: LanPairing(store, role, { activity.runOnUiThread { if (!closed) refresh() } })
     private var dialog: AlertDialog? = null
     private var choices: Spinner? = null
     private var displayedPeers = emptyList<DiscoveredPeer>()
@@ -57,7 +58,8 @@ class PairingPanel(
     init {
         orientation = VERTICAL; gravity = Gravity.CENTER; setBackgroundColor(Color.BLACK)
         addView(caption); addView(information); addView(pairButton); addView(forgetButton)
-        pairing.start(); post(tick)
+        if (sharedPairing == null) pairing.start()
+        post(tick)
     }
 
     fun isPaired(): Boolean = runCatching { store.pairedPeer() != null }.getOrDefault(false)
@@ -156,5 +158,5 @@ class PairingPanel(
         updateChoices()
     }
 
-    override fun close() { closed = true; removeCallbacks(tick); dialog?.dismiss(); pairing.close() }
+    override fun close() { closed = true; removeCallbacks(tick); dialog?.dismiss(); if (sharedPairing == null) pairing.close() }
 }

@@ -29,16 +29,16 @@ deps = [
 jars = [str(j) for dependency in deps for j in sorted((cache / dependency).rglob('*.jar'))]
 if not jars:
     parser.error('Run the affected Gradle checks first to provision Kotlin compiler dependencies')
-classpath = os.pathsep.join(jars)
+classpath = os.pathsep.join([str(root / "protocol/build/tmp/kotlin-classes/debug")] + jars)
 java_home = os.environ.get('JAVA_HOME')
 java = str(Path(java_home) / 'bin/java') if java_home else shutil.which('java')
 if not java:
     parser.error('Configure JDK 17 using JAVA_HOME or PATH')
 actual = args.source_dir.resolve() if args.source_dir else root / 'directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost'
 sources = sorted((suite / 'doubles').glob('*.kt')) + [suite / 'Scenarios.kt']
-sources += [actual / name for name in ('HostBootstrap.kt', 'HostForgetCompletion.kt', 'BootstrapSessionFiles.kt')]
+sources += [actual / name for name in ('HostBootstrap.kt', 'HostForgetCompletion.kt', 'BootstrapSessionFiles.kt', 'SessionController.kt', 'SessionAttemptStore.kt')]
 protocol = root / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
-sources += [protocol / name for name in ('Wire.kt', 'LayoutScale.kt')]
+sources += [protocol / name for name in ('Wire.kt', 'LayoutScale.kt', 'Touch.kt')]
 jar = output / 'adapter-regressions.jar'
 compile_command = [java, '-cp', classpath, 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler',
                    '-no-stdlib', '-no-reflect', '-classpath', classpath, '-d', str(jar)] + list(map(str, sources))

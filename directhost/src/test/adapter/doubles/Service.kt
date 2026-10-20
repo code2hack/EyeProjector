@@ -4,7 +4,7 @@ import com.code2hack.eyeprojector.protocol.*
 
 class ShizukuHostService
 interface IHostBootstrap {
-    fun start(identity: ByteArray, password: ByteArray, legacy: ByteArray?, endpoint: ByteArray, paired: ByteArray?): String
+    fun start(identity: ByteArray, password: ByteArray, legacy: ByteArray?, endpoint: ByteArray, paired: ByteArray?, sessionEpoch: String): String
     fun status(): String
     fun stop(): String
     fun destroy()
@@ -23,6 +23,7 @@ class FakeService : IHostBootstrap, android.os.IBinder {
     var stops = 0
     var destroys = 0
     var starts = 0
+    var sessionEpoch = ""
     var statusReads = 0
     val scaleRequests = mutableListOf<Pair<Long, Double>>()
     var scaleReads = 0
@@ -32,13 +33,13 @@ class FakeService : IHostBootstrap, android.os.IBinder {
     private val deaths = mutableListOf<() -> Unit>()
     override val isBinderAlive: Boolean get() = alive
     override fun linkToDeath(recipient: () -> Unit, flags: Int) { deaths.add(recipient) }
-    override fun start(identity: ByteArray, password: ByteArray, legacy: ByteArray?, endpoint: ByteArray, paired: ByteArray?): String {
-        starts++; return status()
+    override fun start(identity: ByteArray, password: ByteArray, legacy: ByteArray?, endpoint: ByteArray, paired: ByteArray?, sessionEpoch: String): String {
+        starts++; this.sessionEpoch = sessionEpoch; return status()
     }
     override fun status(): String {
         check(alive)
         statusReads++
-        return "{\"state\":\"$state\",\"sessionRevoked\":$revoked}"
+        return "{\"state\":\"$state\",\"sessionRevoked\":$revoked,\"sessionEpoch\":\"$sessionEpoch\"}"
     }
     override fun stop(): String {
         stops++

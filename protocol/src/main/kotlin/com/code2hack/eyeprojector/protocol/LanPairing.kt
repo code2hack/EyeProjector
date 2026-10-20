@@ -11,7 +11,13 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** Lifecycle owner used by either panel. Its callbacks run off the Android UI thread. */
-class LanPairing(val store: PeerStore, val role: PeerRole, private val changed: () -> Unit) : Closeable {
+class LanPairing(
+    val store: PeerStore,
+    val role: PeerRole,
+    private val changed: () -> Unit,
+    private val control: ((Socket) -> Unit)?,
+) : Closeable {
+    constructor(store: PeerStore, role: PeerRole, changed: () -> Unit) : this(store, role, changed, null)
     val codes = PairingCode(SystemClock::elapsedRealtime)
     private val peers = ConcurrentHashMap<String, Pair<DiscoveredPeer, Long>>()
     private val closed = AtomicBoolean()
@@ -40,7 +46,7 @@ class LanPairing(val store: PeerStore, val role: PeerRole, private val changed: 
                     }.also { it.start() }
                     server
                 }
-                if (role == PeerRole.GLASSES) Thread({
+                if (role == PeerRole.GLASSES || control != null) Thread({
                     while (!closed.get()) {
                         val socket = runCatching { server.accept() }.getOrNull() ?: break
                         synchronized(lifecycle) {
@@ -48,9 +54,15 @@ class LanPairing(val store: PeerStore, val role: PeerRole, private val changed: 
                             activeSocket = socket
                         }
                         try {
-                            socket.use { PairingExchange.pairGlasses(it, codes, store, server.localPort) }
-                            status = "Paired with Phone"
-                        } catch (_: Exception) { if (!closed.get()) status = "Pairing failed. Use the current code and try again." }
+                            socket.use {
+                                if (role == PeerRole.GLASSES) {
+                                    PairingExchange.pairGlasses(it, codes, store, server.localPort)
+                                    status = "Paired with Phone"
+                                } else control?.invoke(it)
+                            }
+                        } catch (_: Exception) {
+                            if (!closed.get() && role == PeerRole.GLASSES) status = "Pairing failed. Use the current code and try again."
+                        }
                         finally { activeSocket = null; changed() }
                     }
                 }, "EyeProjector-pairing").start()

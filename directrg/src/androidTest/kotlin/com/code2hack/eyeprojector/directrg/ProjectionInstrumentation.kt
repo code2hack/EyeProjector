@@ -57,8 +57,8 @@ class ProjectionInstrumentation : Instrumentation() {
         }
         check(ready) { "No current projection Surface" }
         runOnMainSync {
-            freshAfterNs = System.nanoTime()
-            buttons(activity.window.decorView).single { it.text == "Connect" }.performClick()
+            // Phone Start may already have attached this resumed Receiver through the paired control route.
+            buttons(activity.window.decorView).singleOrNull { it.text == "Connect" }?.performClick()
         }
     }
     private fun status(): JSONObject = JSONObject(File(targetContext.filesDir, "status.json").readText()).also {
@@ -188,7 +188,7 @@ class ProjectionInstrumentation : Instrumentation() {
             } else if (operation == "unauthenticated") {
                 require(unauthenticated()); report.put("unauthenticatedRefused", true).put("mediaWelcomeReceived", false)
             } else {
-                require(operation in listOf("stream", "static-content", "scale", "pause", "reconnect", "local-stop", "host-stop", "surface-diagnostic", "input-observation", "audio-focus", "audio-volume"))
+                require(operation in listOf("stream", "static-content", "scale", "connected-panel", "pause", "reconnect", "local-stop", "host-stop", "surface-diagnostic", "input-observation", "audio-focus", "audio-volume"))
                 val seconds = args.getString("seconds")?.toInt() ?: 10
                 require(seconds in 1..660)
                 val waitForFixture = args.getString("waitForGo") == "true"
@@ -198,13 +198,19 @@ class ProjectionInstrumentation : Instrumentation() {
                     audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, minOf(2, audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)), 0)
                 }
                 val intent = Intent().setClassName(targetContext.packageName, ReceiverActivity::class.java.name).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                freshAfterNs = System.nanoTime()
                 activity = startActivitySync(intent); waitForIdleSync(); Thread.sleep(250)
-                clickConnect(activity)
+                if (args.getString("autoStart") == "true") {
+                    File(targetContext.filesDir, "probe-$id.ready").writeText("Receiver resumed; waiting for Phone Start; no Glasses Connect invocation")
+                    report.put("initiator", "Phone Start; no Glasses Connect invocation")
+                } else clickConnect(activity)
                 if (waitForFixture) waitFixtureGeometry() else waitStreaming()
+                if (operation == "connected-panel") report.put("connectedPanel", ConnectedPanelChecks.run(this, activity as ReceiverActivity))
                 report.put("connected", status())
                 if (operation == "reconnect") {
                     runOnMainSync { activity!!.finish() }; Thread.sleep(1500)
                     require(status().getString("state") == "STOPPED")
+                    freshAfterNs = System.nanoTime()
                     activity = startActivitySync(intent); waitForIdleSync(); Thread.sleep(250)
                     clickConnect(activity)
                     if (waitForFixture) waitFixtureGeometry() else waitStreaming()

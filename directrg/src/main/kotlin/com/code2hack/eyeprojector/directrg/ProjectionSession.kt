@@ -39,8 +39,13 @@ class ProjectionSession(
         })
     private val outputLock = Any()
     private val lifecycleLock = Any()
+    private val closeLock = Any()
+    @Volatile private var closeComplete = false
+    private var closingThread: Thread? = null
     private val videoReadiness = VideoReadiness()
     private val states = StatePublisher()
+    // Guarded by closeLock; nested replacement frames share the outer publication gate.
+    private var stateGate: StatePublisher.Gate? = null
     private val writing = AtomicLong()
     @Volatile private var socket: SSLSocket? = null
     @Volatile private var output: DataOutputStream? = null
@@ -98,17 +103,27 @@ class ProjectionSession(
         }
     }
 
-    private fun state(value: String, epoch: Any? = null) = states.publish {
-        if (!running.get() && value in listOf("CONNECTING", "WAITING_FOR_VIDEO", "STREAMING")) return@publish
-        if (epoch != null && when (value) {
-            "WAITING_FOR_VIDEO" -> !videoReadiness.awaiting(epoch)
-            "STREAMING" -> !videoReadiness.ready(epoch)
-            else -> false
-        }) return@publish
-        // Serialized publication closes the check/callback gap: an older render either
-        // finishes before the next WAITING/terminal notification, or is discarded here.
-        record(value)
-        onState(this, value)
+    private fun state(value: String, epoch: Any? = null) {
+        val gate = if (Thread.holdsLock(closeLock)) stateGate else null
+        states.enqueue(gate) {
+            if (!running.get() && value in listOf("CONNECTING", "WAITING_FOR_VIDEO", "STREAMING")) return@enqueue
+            if (epoch != null && when (value) {
+                "WAITING_FOR_VIDEO" -> !videoReadiness.awaiting(epoch)
+                "STREAMING" -> !videoReadiness.ready(epoch)
+                else -> false
+            }) return@enqueue
+            // Serialized publication closes the check/callback gap: an older render either
+            // finishes before the next WAITING/terminal notification, or is discarded here.
+            record(value)
+            onState(this, value)
+        }
+        drainStates()
+    }
+
+    private fun drainStates() {
+        // A release or geometry callback can reenter close while replacement owns this monitor.
+        // The outermost replacement drains after releasing it, including on early return/failure.
+        if (!Thread.holdsLock(closeLock)) states.drain()
     }
 
     @Synchronized private fun failure(error: Exception) {
@@ -211,37 +226,51 @@ class ProjectionSession(
     }
 
     internal fun replaceDecoder(size: Geometry) {
-        val epoch = synchronized(inputLock) {
-            if (!running.get()) return
-            val next = videoReadiness.beginReplacement() ?: return
-            cancelPendingInput()
-            next
-        }
-        val old = synchronized(lifecycleLock) {
-            if (!running.get() || !videoReadiness.replacing(epoch)) return
-            decoderEpoch = epoch
-            decoder.also { decoder = null }
-        }
-        old?.close()
-        if (!running.get() || !videoReadiness.awaitFrame(epoch, System.nanoTime())) return
-        state("WAITING_FOR_VIDEO", epoch)
-        geometry = size
-        onGeometry(this, size)
-        synchronized(this) { stats.put("width", size.width).put("height", size.height) }
-        if (!running.get() || !videoReadiness.awaiting(epoch)) return
-        val next = SurfaceDecoder(surface, size, { delay ->
-            synchronized(this) {
-                rendered++; renderDelayMs.addLast(delay)
-                if (renderDelayMs.size > 256) renderDelayMs.removeFirst()
+        var gate: StatePublisher.Gate? = null
+        try {
+            synchronized(closeLock) {
+                if (stateGate == null) {
+                    gate = StatePublisher.Gate()
+                    stateGate = gate
+                }
+                try {
+                    val epoch = synchronized(inputLock) {
+                        if (!running.get()) return
+                        val next = videoReadiness.beginReplacement() ?: return
+                        cancelPendingInput()
+                        next
+                    }
+                    val old = synchronized(lifecycleLock) {
+                        if (!running.get() || !videoReadiness.replacing(epoch)) return
+                        decoderEpoch = epoch
+                        decoder.also { decoder = null }
+                    }
+                    old?.close()
+                    if (!running.get() || !videoReadiness.awaitFrame(epoch, System.nanoTime())) return
+                    state("WAITING_FOR_VIDEO", epoch)
+                    geometry = size
+                    onGeometry(this, size)
+                    synchronized(this) { stats.put("width", size.width).put("height", size.height) }
+                    if (!running.get() || !videoReadiness.awaiting(epoch)) return
+                    val next = SurfaceDecoder(surface, size, { delay ->
+                        synchronized(this) {
+                            rendered++; renderDelayMs.addLast(delay)
+                            if (renderDelayMs.size > 256) renderDelayMs.removeFirst()
+                        }
+                        if (running.get() && videoReadiness.rendered(epoch)) state("STREAMING", epoch)
+                    }, { name -> synchronized(this) { stats.put("decoder", name) } },
+                        { format -> synchronized(this) { stats.put("decoderFormat", format) } }, { error -> failure(error); closeWithState("DECODE_FAILED") },
+                        dropped = { synchronized(this) { droppedVideo++ } })
+                    val installed = synchronized(lifecycleLock) {
+                        if (running.get() && decoderEpoch === epoch) { decoder = next; true } else false
+                    }
+                    if (!installed) next.close()
+                } finally { if (gate != null) stateGate = null }
             }
-            if (running.get() && videoReadiness.rendered(epoch)) state("STREAMING", epoch)
-        }, { name -> synchronized(this) { stats.put("decoder", name) } },
-            { format -> synchronized(this) { stats.put("decoderFormat", format) } }, { error -> failure(error); closeWithState("DECODE_FAILED") },
-            dropped = { synchronized(this) { droppedVideo++ } })
-        val installed = synchronized(lifecycleLock) {
-            if (running.get() && decoderEpoch === epoch) { decoder = next; true } else false
+        } finally {
+            gate?.release()
+            drainStates()
         }
-        if (!installed) next.close()
     }
 
     /** Acceptance here means queued locally; onScale/scaleState supplies backend observations. */
@@ -292,14 +321,26 @@ class ProjectionSession(
     private fun closeWithState(value: String, expiry: VideoReadiness.Expiry? = null) {
         if (expiry != null && !videoReadiness.claim(expiry)) return
         videoReadiness.close()
-        val old = synchronized(lifecycleLock) {
-            if (!running.compareAndSet(true, false)) return
-            decoder.also { decoder = null }
+        // Cancel construction immediately; wait below for its unpublished codec to be released.
+        running.set(false)
+        // Always join the outer replacement frame: a reentrant close may have marked
+        // completion while that frame still owns a detached or unpublished codec.
+        synchronized(closeLock) {
+            if (closeComplete || closingThread === Thread.currentThread()) return
+            closingThread = Thread.currentThread()
+            try {
+                val old = synchronized(lifecycleLock) {
+                    running.set(false)
+                    decoder.also { decoder = null }
+                }
+                runCatching { socket?.close() }; timer.shutdownNow(); controls.close()
+                scaleControls.close()
+                runCatching { synchronized(this) { old?.let { stats.put("decoderProgress", it.snapshot()) } } }
+                runCatching { old?.close() }
+                closeComplete = true
+            } finally { closingThread = null }
         }
-        runCatching { socket?.close() }; timer.shutdownNow(); controls.close()
-        scaleControls.close()
-        synchronized(this) { old?.let { stats.put("decoderProgress", it.snapshot()) } }
-        runCatching { old?.close() }
+        // Callbacks may synchronously close again or wait for another close caller.
         state(value)
     }
     override fun close() = closeWithState("STOPPED")

@@ -1,0 +1,96 @@
+package com.code2hack.eyeprojector.directrg
+
+import com.code2hack.eyeprojector.protocol.AttemptReceipt
+import com.code2hack.eyeprojector.protocol.AttemptDisposition
+import com.code2hack.eyeprojector.protocol.SessionControl
+import com.code2hack.eyeprojector.protocol.SessionPhase
+import com.code2hack.eyeprojector.protocol.SessionState
+import org.junit.Assert.*
+import org.junit.Test
+import java.io.File
+import java.io.IOException
+import java.net.Socket
+import java.util.Collections
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+
+/** Real client executor/cancellation with modeled network admission; TLS is tested in protocol. */
+class PairedSessionClientTest {
+    @Test fun failedCancellationRetentionReportsCurrentErrorWithoutDeliveringStopState() {
+        val error = CountDownLatch(1)
+        val states = Collections.synchronizedList(mutableListOf<SessionState>())
+        val client = PairedSessionClient(File("unused-synthetic-directory"), states::add, { error.countDown() }, { request, _ ->
+            assertEquals(SessionControl.Operation.STOP, request.operation)
+            SessionState("still-owned", SessionPhase.AVAILABLE, "SESSION_CONTROL_STATE_UNAVAILABLE",
+                request.startEpoch.takeIf { it.isNotEmpty() }?.let { AttemptReceipt(it, "still-owned", AttemptDisposition.RETRYABLE) })
+        })
+        try {
+            client.disconnect(null)
+            assertTrue(error.await(2, TimeUnit.SECONDS))
+            assertTrue(states.isEmpty())
+        } finally { client.close() }
+    }
+
+    @Test fun disconnectCancelsBothStaleAttachedEpochAndAnAcceptedStartWithoutAReply() {
+        exercise(close = false)
+    }
+
+    @Test fun pauseClosesTheInflightSocketAndCancelsBothRelevantEpochs() {
+        exercise(close = true)
+    }
+
+    @Test fun forgetCompletionRunsAfterTheBoundedStopAttemptBeforeTrustIsRemoved() {
+        val entered = CountDownLatch(1); val release = CountDownLatch(1); val complete = CountDownLatch(1)
+        val client = PairedSessionClient(File("unused-synthetic-directory"), {}, {}, { request, _ ->
+            check(request.operation == SessionControl.Operation.STOP)
+            entered.countDown(); check(release.await(2, TimeUnit.SECONDS))
+            SessionState("retired", SessionPhase.INACTIVE)
+        })
+        try {
+            client.disconnect("ending") { complete.countDown() }
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            assertFalse(complete.await(50, TimeUnit.MILLISECONDS))
+            release.countDown()
+            assertTrue(complete.await(2, TimeUnit.SECONDS))
+        } finally { release.countDown(); client.close() }
+    }
+
+    private fun exercise(close: Boolean) {
+        val accepted = CountDownLatch(1); val stopped = CountDownLatch(2)
+        val targets = Collections.synchronizedList(mutableListOf<String>())
+        val reported = Collections.synchronizedList(mutableListOf<SessionState>())
+        var proposed = ""
+        val client = PairedSessionClient(File("unused-synthetic-directory"), reported::add, {}, { request, opened ->
+            when (request.operation) {
+                SessionControl.Operation.STATUS -> SessionState("observed-inactive", SessionPhase.INACTIVE, receipt = AttemptReceipt(request.startEpoch, null, AttemptDisposition.OBSERVED))
+                SessionControl.Operation.START -> {
+                    proposed = request.startEpoch
+                    Socket().use { socket ->
+                        opened(socket); accepted.countDown()
+                        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+                        while (!socket.isClosed && System.nanoTime() < deadline) Thread.sleep(1)
+                        check(socket.isClosed)
+                        throw IOException("Canceled reply after simulated Start admission")
+                    }
+                }
+                SessionControl.Operation.STOP -> {
+                    if (request.startEpoch.isNotEmpty()) assertEquals("observed-inactive", request.epoch)
+                    targets.add(request.startEpoch.ifEmpty { request.epoch }); stopped.countDown()
+                    SessionState("retired", SessionPhase.INACTIVE)
+                }
+                else -> error("Unexpected command")
+            }
+        })
+        try {
+            client.connect()
+            assertTrue(accepted.await(2, TimeUnit.SECONDS))
+            if (close) client.close("stale-attached") else {
+                val suppressed = client.disconnect("stale-attached")
+                assertEquals(setOf("stale-attached", proposed), suppressed.toSet())
+            }
+            assertTrue(stopped.await(3, TimeUnit.SECONDS))
+            assertEquals(setOf("stale-attached", proposed), targets.toSet())
+            assertTrue(reported.none { it.phase.active })
+        } finally { client.close() }
+    }
+}
