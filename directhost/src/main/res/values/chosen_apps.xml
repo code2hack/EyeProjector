@@ -1,0 +1,11 @@
+<resources>
+    <string name="chosen_apps_title">Projection apps</string>
+    <string name="chosen_apps_hint">Add apps with +. Hold an icon to remove it from this list.</string>
+    <string name="chosen_apps_add">Add app</string>
+    <string name="chosen_apps_plus">+</string>
+    <string name="chosen_apps_remove">Remove</string>
+    <string name="chosen_apps_empty_catalog">No more launchable apps are available to add.</string>
+    <string name="chosen_apps_not_installed">Not installed</string>
+    <string name="chosen_apps_unavailable">Unavailable</string>
+    <string name="chosen_apps_description">%1$s, %2$s</string>
+</resources>
