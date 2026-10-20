@@ -55,7 +55,7 @@ internal class PairedSessionClient(
     }
 
     /** Cancel a Start even when its reply has not arrived; the proposed epoch identifies only that Start. */
-    fun disconnect(epoch: String?): List<String> {
+    fun disconnect(epoch: String?, complete: (() -> Unit)? = null): List<String> {
         val targets = synchronized(lock) {
             commandGeneration++
             connectWanted = false
@@ -63,7 +63,10 @@ internal class PairedSessionClient(
             listOfNotNull(epoch, pendingStart).distinct().also { pendingStart = null }
         }
         synchronized(lock) {
-            if (!closed.get()) executor.execute { targets.forEach { exchange(SessionControl.Request(SessionControl.Operation.STOP, it)) } }
+            if (!closed.get()) executor.execute {
+                try { targets.forEach { exchange(SessionControl.Request(SessionControl.Operation.STOP, it)) } }
+                finally { complete?.invoke() }
+            } else complete?.invoke()
         }
         return targets
     }

@@ -35,7 +35,7 @@ class MediaCodec {
     fun getInputBuffer(index: Int): ByteBuffer = ByteBuffer.allocate(1024)
     fun queueInputBuffer(index: Int, offset: Int, size: Int, pts: Long, flags: Int) { queuedInput(pts, flags) }
     fun stop() = Unit
-    fun release() { releases.incrementAndGet(); releaseFailure?.let { throw it } }
+    fun release() { at("release"); releases.incrementAndGet(); releaseFailure?.let { throw it } }
 }
 
 class MediaCrypto

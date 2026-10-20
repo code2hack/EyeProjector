@@ -22,6 +22,22 @@ class PairedSessionClientTest {
         exercise(close = true)
     }
 
+    @Test fun forgetCompletionRunsAfterTheBoundedStopAttemptBeforeTrustIsRemoved() {
+        val entered = CountDownLatch(1); val release = CountDownLatch(1); val complete = CountDownLatch(1)
+        val client = PairedSessionClient(File("unused-synthetic-directory"), {}, {}, { request, _ ->
+            check(request.operation == SessionControl.Operation.STOP)
+            entered.countDown(); check(release.await(2, TimeUnit.SECONDS))
+            SessionState("retired", SessionPhase.INACTIVE)
+        })
+        try {
+            client.disconnect("ending") { complete.countDown() }
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            assertFalse(complete.await(50, TimeUnit.MILLISECONDS))
+            release.countDown()
+            assertTrue(complete.await(2, TimeUnit.SECONDS))
+        } finally { release.countDown(); client.close() }
+    }
+
     private fun exercise(close: Boolean) {
         val accepted = CountDownLatch(1); val stopped = CountDownLatch(2)
         val targets = Collections.synchronizedList(mutableListOf<String>())

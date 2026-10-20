@@ -32,6 +32,9 @@ class ProjectionSession(
     private val scaleControls = OrderedControlDispatcher { error -> failure(error); closeWithState("DISCONNECTED") }
     private val outputLock = Any()
     private val lifecycleLock = Any()
+    private val closeLock = Any()
+    @Volatile private var closeComplete = false
+    private var closingThread: Thread? = null
     private val writing = AtomicLong()
     @Volatile private var socket: SSLSocket? = null
     @Volatile private var output: DataOutputStream? = null
@@ -190,7 +193,8 @@ class ProjectionSession(
         }
     }
 
-    internal fun replaceDecoder(size: Geometry) {
+    internal fun replaceDecoder(size: Geometry) = synchronized(closeLock) {
+        if (!running.get()) return@synchronized
         controls.cancelPending()
         val epoch = Any()
         val old = synchronized(lifecycleLock) {
@@ -204,6 +208,7 @@ class ProjectionSession(
         geometry = size
         onGeometry(this, size)
         synchronized(this) { stats.put("width", size.width).put("height", size.height) }
+        if (!running.get()) return@synchronized
         val next = SurfaceDecoder(surface, size, { delay ->
             synchronized(this) {
                 rendered++; renderDelayMs.addLast(delay)
@@ -260,15 +265,26 @@ class ProjectionSession(
     }
 
     private fun closeWithState(value: String) {
-        val old = synchronized(lifecycleLock) {
-            if (!running.compareAndSet(true, false)) return
-            readyForTouch = false
-            decoder.also { decoder = null }
+        if (closeComplete) return
+        // Cancel construction immediately; wait below for its unpublished codec to be released.
+        running.set(false)
+        synchronized(closeLock) {
+            if (closeComplete || closingThread === Thread.currentThread()) return
+            closingThread = Thread.currentThread()
+            try {
+                val old = synchronized(lifecycleLock) {
+                    running.set(false)
+                    readyForTouch = false
+                    decoder.also { decoder = null }
+                }
+                runCatching { socket?.close() }; timer.shutdownNow(); controls.close()
+                scaleControls.close()
+                runCatching { synchronized(this) { old?.let { stats.put("decoderProgress", it.snapshot()) } } }
+                runCatching { old?.close() }
+                closeComplete = true
+            } finally { closingThread = null }
         }
-        runCatching { socket?.close() }; timer.shutdownNow(); controls.close()
-        scaleControls.close()
-        synchronized(this) { old?.let { stats.put("decoderProgress", it.snapshot()) } }
-        runCatching { old?.close() }
+        // Callbacks may synchronously close again or wait for another close caller.
         state(value)
     }
     override fun close() = closeWithState("STOPPED")

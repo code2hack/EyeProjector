@@ -92,7 +92,13 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         localButtons.add(connectButton)
         pairingPanel = PairingPanel(this, PeerRole.GLASSES, { paired ->
             connectButton.visibility = if (paired) View.VISIBLE else View.GONE
-        }, { complete -> disconnect(); complete() })
+        }, { complete ->
+            val epoch = attachment.epoch ?: peerSession?.takeIf { it.phase.active }?.epoch
+            disconnect(notifyPeer = false)
+            val client = sessionClient
+            if (client == null) complete()
+            else client.disconnect(epoch) { runOnUiThread { complete() } }.forEach(attachment::suppress)
+        })
         pairingPanel.addView(connectButton, 2)
         localButtons.add(pairingPanel.forgetButton)
         val settingsPanel = LocalInputSettingsPanel(this, settings) {
@@ -330,6 +336,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun observePeer(state: SessionState) {
+        if (!pairingPanel.isPaired() || pairingPanel.forgetting) return
         if (state.phase == SessionPhase.UNKNOWN) {
             if (session == null) showStatus("Waiting for the Phone to verify its session state")
             return
