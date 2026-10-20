@@ -27,7 +27,11 @@ class ProjectionInputTest {
         ProjectionSession::class.java.getDeclaredField("controls").apply { isAccessible = true }.get(session) as OrderedControlDispatcher
     private fun ready(output: OutputStream, state: (String) -> Unit = {}): ProjectionSession =
         ProjectionSession(temporary.root.resolve("session"), Surface(), { _, value -> state(value) }, { _, _ -> }).also {
-            set(it, "geometry", geometry); set(it, "readyForTouch", true); set(it, "output", DataOutputStream(output))
+            set(it, "geometry", geometry)
+            val readiness = ProjectionSession::class.java.getDeclaredField("videoReadiness").apply { isAccessible = true }.get(it) as VideoReadiness
+            val epoch = readiness.beginReplacement()!!
+            check(readiness.awaitFrame(epoch, System.nanoTime()) && readiness.rendered(epoch))
+            set(it, "output", DataOutputStream(output))
         }
 
     @Test fun normalizedBurstSurvivesTheActualSessionSubmissionAndWirePath() {
