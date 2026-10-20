@@ -17,3 +17,5 @@ Add the Glasses control panel's HID key bindings entrance and four assignments: 
 - Scroll buttons act at the current pointer, and the screen uses black/light styling.
 
 **Verification:** binding collision/persistence and synthetic event tests, UI capture checks, then the Owner-selected HID's real press/release/repeat/reconnect behavior. Record its actual device identity. See [HID topology](../../../research/hid-connection.md).
+
+The Function binding inherits the updated connected navigation: triple opens the control panel while the session stays live; local Back returns to projection; the panel's Connect button becomes Disconnect. A triple in the local panel exits EyeProjector and releases the session.

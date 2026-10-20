@@ -13,7 +13,8 @@ Connect paired-peer availability to one owned host/session state and the two con
 - Phone Start reaches usable projection without a second Glasses button press.
 - Glasses Connect/reconnect and Phone Stop have the specified observed effects.
 - Startup, streaming, inactive and failed states agree across both devices; concurrent/repeated actions preserve one session owner.
-- Disconnect, pause, Surface loss and genuine failure release session resources and pending input. Fresh reconnect allocates fresh resources.
+- Opening the local control panel during projection retains the connection, decoder and Surface; it switches to local input and cancels pending projected gestures/head scroll. Local Back returns without reconnecting. Provide these view transitions for the function-button issue.
+- Glasses Connect becomes Disconnect while connected. Panel Disconnect, app exit, pause, Surface loss and genuine failure release session resources and pending input. Fresh reconnect allocates fresh resources.
 - Paired panel actions and setup guidance work; Glasses controls use black backgrounds/light content.
 
 **Verification:** state-transition and competing-action tests, both-device lifecycle instrumentation, and observed backend/display/socket teardown. Keep session duration unlimited; individual startup/I/O operations retain their bounded behavior.
