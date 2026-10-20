@@ -39,16 +39,17 @@ class ProjectionSession(
         })
     private val outputLock = Any()
     private val lifecycleLock = Any()
+    private val videoReadiness = VideoReadiness()
+    private val states = StatePublisher()
     private val writing = AtomicLong()
     @Volatile private var socket: SSLSocket? = null
     @Volatile private var output: DataOutputStream? = null
     @Volatile private var decoder: SurfaceDecoder? = null
     private var decoderEpoch: Any? = null
     private var droppedVideo = 0L
-    @Volatile private var mediaStartedNs = 0L
     @Volatile var geometry: Geometry? = null
         private set
-    @Volatile private var readyForTouch = false
+    private val readyForTouch get() = videoReadiness.ready
     @Volatile var scaleState: ScaleState? = null
         private set
     private val started = System.nanoTime()
@@ -97,9 +98,17 @@ class ProjectionSession(
         }
     }
 
-    @Synchronized private fun state(value: String) {
-        if (!running.get() && value in listOf("CONNECTING", "WAITING_FOR_VIDEO", "STREAMING")) return
-        record(value); onState(this, value)
+    private fun state(value: String, epoch: Any? = null) = states.publish {
+        if (!running.get() && value in listOf("CONNECTING", "WAITING_FOR_VIDEO", "STREAMING")) return@publish
+        if (epoch != null && when (value) {
+            "WAITING_FOR_VIDEO" -> !videoReadiness.awaiting(epoch)
+            "STREAMING" -> !videoReadiness.ready(epoch)
+            else -> false
+        }) return@publish
+        // Serialized publication closes the check/callback gap: an older render either
+        // finishes before the next WAITING/terminal notification, or is discarded here.
+        record(value)
+        onState(this, value)
     }
 
     @Synchronized private fun failure(error: Exception) {
@@ -129,18 +138,15 @@ class ProjectionSession(
                 Wire.writeRequest(output!!, Wire.STREAM)
                 val input = DataInputStream(peer.inputStream)
                 Wire.readWelcome(input)
-                mediaStartedNs = System.nanoTime()
+                val initialEpoch = videoReadiness.awaitInitialFrame(System.nanoTime())
                 synchronized(this) {
                     stats.put("tls", peer.session.protocol).put("peerAddress", peer.inetAddress.hostAddress)
                         .put("localAddress", peer.localAddress.hostAddress).put("scrcpy", Wire.SCRCPY_VERSION)
                 }
-                state("WAITING_FOR_VIDEO")
+                if (initialEpoch != null) state("WAITING_FOR_VIDEO", initialEpoch)
                 timer.scheduleWithFixedDelay({
                     try {
-                        send(Frame(Wire.PING, System.nanoTime()))
-                        if (!readyForTouch && System.nanoTime() - mediaStartedNs > 5_000_000_000L) {
-                            closeWithState("VIDEO_STALLED")
-                        } else record()
+                        heartbeat()
                     }
                     catch (_: Exception) { closeWithState("DISCONNECTED") }
                 }, 0, 1, TimeUnit.SECONDS)
@@ -163,6 +169,12 @@ class ProjectionSession(
                 closeWithState("DISCONNECTED")
             } catch (error: Exception) { failure(error); closeWithState("CONNECTION_OR_VIDEO_FAILED") }
         }, "eyeprojector-receiver").start()
+    }
+
+    internal fun heartbeat(nowNs: Long = System.nanoTime()) {
+        send(Frame(Wire.PING, System.nanoTime()))
+        val expiry = videoReadiness.expiry(nowNs)
+        if (expiry != null) closeWithState("VIDEO_STALLED", expiry) else record()
     }
 
     internal fun receive(frame: Frame) {
@@ -199,29 +211,30 @@ class ProjectionSession(
     }
 
     internal fun replaceDecoder(size: Geometry) {
-        synchronized(inputLock) { readyForTouch = false; cancelPendingInput() }
-        val epoch = Any()
+        val epoch = synchronized(inputLock) {
+            if (!running.get()) return
+            val next = videoReadiness.beginReplacement() ?: return
+            cancelPendingInput()
+            next
+        }
         val old = synchronized(lifecycleLock) {
+            if (!running.get() || !videoReadiness.replacing(epoch)) return
             decoderEpoch = epoch
-            readyForTouch = false
             decoder.also { decoder = null }
         }
         old?.close()
-        mediaStartedNs = System.nanoTime()
-        state("WAITING_FOR_VIDEO")
+        if (!running.get() || !videoReadiness.awaitFrame(epoch, System.nanoTime())) return
+        state("WAITING_FOR_VIDEO", epoch)
         geometry = size
         onGeometry(this, size)
         synchronized(this) { stats.put("width", size.width).put("height", size.height) }
+        if (!running.get() || !videoReadiness.awaiting(epoch)) return
         val next = SurfaceDecoder(surface, size, { delay ->
             synchronized(this) {
                 rendered++; renderDelayMs.addLast(delay)
                 if (renderDelayMs.size > 256) renderDelayMs.removeFirst()
             }
-            synchronized(lifecycleLock) {
-                if (decoderEpoch === epoch && running.get() && !readyForTouch) {
-                    readyForTouch = true; state("STREAMING")
-                }
-            }
+            if (running.get() && videoReadiness.rendered(epoch)) state("STREAMING", epoch)
         }, { name -> synchronized(this) { stats.put("decoder", name) } },
             { format -> synchronized(this) { stats.put("decoderFormat", format) } }, { error -> failure(error); closeWithState("DECODE_FAILED") },
             dropped = { synchronized(this) { droppedVideo++ } })
@@ -276,10 +289,11 @@ class ProjectionSession(
         }
     }
 
-    private fun closeWithState(value: String) {
+    private fun closeWithState(value: String, expiry: VideoReadiness.Expiry? = null) {
+        if (expiry != null && !videoReadiness.claim(expiry)) return
+        videoReadiness.close()
         val old = synchronized(lifecycleLock) {
             if (!running.compareAndSet(true, false)) return
-            readyForTouch = false
             decoder.also { decoder = null }
         }
         runCatching { socket?.close() }; timer.shutdownNow(); controls.close()

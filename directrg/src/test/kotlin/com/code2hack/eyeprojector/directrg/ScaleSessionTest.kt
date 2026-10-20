@@ -44,7 +44,9 @@ class ScaleSessionTest {
         val session = ProjectionSession(temporary.root.resolve("session"), Surface(), { _, _ -> }, { _, _ -> })
         val initial = Geometry(480, 640)
         set(session, "geometry", initial)
-        set(session, "readyForTouch", true)
+        val readiness = ProjectionSession::class.java.getDeclaredField("videoReadiness").apply { isAccessible = true }.get(session) as VideoReadiness
+        val epoch = readiness.beginReplacement()!!
+        check(readiness.awaitFrame(epoch, System.nanoTime()) && readiness.rendered(epoch))
         set(session, "output", DataOutputStream(output))
         val codec = MediaCodec().also { MediaCodec.created = it }
         try {
