@@ -12,6 +12,8 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "bootstrap"
+        testApplicationId = "com.code2hack.eyeprojector.directhost.test"
+        testInstrumentationRunner = "com.code2hack.eyeprojector.directhost.ChosenAppsInstrumentation"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

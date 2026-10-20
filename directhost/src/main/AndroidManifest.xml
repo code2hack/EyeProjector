@@ -1,5 +1,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
     <application android:theme="@android:style/Theme.Material.NoActionBar" android:label="EyeProjector host" android:allowBackup="false" android:dataExtractionRules="@xml/no_backup" android:icon="@android:drawable/ic_media_play" android:usesCleartextTraffic="false">
         <activity android:name=".InputFixtureActivity" android:exported="true" />
         <activity android:name=".AvFixtureActivity" android:exported="true" />
