@@ -8,8 +8,8 @@ interface IHostBootstrap {
     fun status(): String
     fun stop(): String
     fun destroy()
-    fun requestScale(requestId: Long, scale: Double): ByteArray
-    fun scaleState(): ByteArray
+    fun requestScale(requestId: Long, scale: Double, expectedOwnerEpoch: String, expectedProjectionToken: String): ByteArray
+    fun scaleState(expectedOwnerEpoch: String, expectedProjectionToken: String): ByteArray
     fun requestPanelOff(requestId: Long, expectedOwnerEpoch: String, expectedProjectionToken: String): ByteArray
     fun panelState(expectedOwnerEpoch: String, expectedProjectionToken: String): ByteArray
     fun asBinder(): android.os.IBinder
@@ -64,14 +64,21 @@ class FakeService : IHostBootstrap, android.os.IBinder {
         return status()
     }
     override fun destroy() { destroys++; if (exitOnDestroy) die() }
-    override fun requestScale(requestId: Long, scale: Double): ByteArray {
+    override fun requestScale(requestId: Long, scale: Double, expectedOwnerEpoch: String, expectedProjectionToken: String): ByteArray {
         check(alive)
+        if (PanelContext(expectedOwnerEpoch, expectedProjectionToken) != currentPanel.context || state != "STREAMING")
+            return ScaleState(requestId, scale, null, null, ScaleStatus.UNAVAILABLE, false).bytes()
         scaleRequests.add(requestId to scale)
         currentScale = currentScale.copy(requestId = requestId, requested = scale,
             target = LayoutScale.target(scale), status = ScaleStatus.PENDING)
         return scalePayloadOverride ?: currentScale.bytes()
     }
-    override fun scaleState(): ByteArray { check(alive); scaleReads++; return scalePayloadOverride ?: currentScale.bytes() }
+    override fun scaleState(expectedOwnerEpoch: String, expectedProjectionToken: String): ByteArray {
+        check(alive); scaleReads++
+        if (PanelContext(expectedOwnerEpoch, expectedProjectionToken) != currentPanel.context || state != "STREAMING")
+            return ScaleState(0, 1.0, null, null, ScaleStatus.UNAVAILABLE, false).bytes()
+        return scalePayloadOverride ?: currentScale.bytes()
+    }
     override fun requestPanelOff(requestId: Long, expectedOwnerEpoch: String, expectedProjectionToken: String): ByteArray {
         check(alive)
         panelRequests.add(requestId)

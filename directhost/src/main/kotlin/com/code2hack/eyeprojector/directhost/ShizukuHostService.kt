@@ -85,10 +85,13 @@ class ShizukuHostService @Keep constructor(private val context: Context) : IHost
         return status()
     }
 
-    override fun requestScale(requestId: Long, scale: Double): ByteArray =
-        (projectionBridge?.requestScale(requestId, scale) ?: LiveScale.unavailable(requestId, scale)).bytes()
+    override fun requestScale(requestId: Long, scale: Double, expectedOwnerEpoch: String, expectedProjectionToken: String): ByteArray =
+        (panelRoutes.capture(expectedOwnerEpoch)?.target?.requestScale(requestId, scale, expectedOwnerEpoch, expectedProjectionToken)
+            ?: LiveScale.unavailable(requestId, scale)).bytes()
 
-    override fun scaleState(): ByteArray = (projectionBridge?.scaleState() ?: LiveScale.unavailable()).bytes()
+    override fun scaleState(expectedOwnerEpoch: String, expectedProjectionToken: String): ByteArray =
+        (panelRoutes.capture(expectedOwnerEpoch)?.target?.scaleState(expectedOwnerEpoch, expectedProjectionToken)
+            ?: LiveScale.unavailable()).bytes()
 
     override fun requestPanelOff(requestId: Long, expectedOwnerEpoch: String, expectedProjectionToken: String): ByteArray =
         (panelRoutes.capture(expectedOwnerEpoch)?.target?.requestPanelOff(requestId, expectedOwnerEpoch, expectedProjectionToken)

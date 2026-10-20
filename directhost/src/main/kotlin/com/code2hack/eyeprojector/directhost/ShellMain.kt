@@ -190,10 +190,16 @@ internal class Bridge(
     override fun close() = close(SessionStopReason.OWNER_CLOSE)
 
     /** Typed local controller hook for the owning Shizuku service; it creates no network identity. */
-    fun requestScale(requestId: Long, value: Double): ScaleState =
-        active.get()?.requestScale(requestId, value) ?: LiveScale.unavailable(requestId, value)
+    fun requestScale(requestId: Long, value: Double, expectedOwnerEpoch: String, expectedProjectionToken: String): ScaleState {
+        val target = panelTarget(PanelContext(expectedOwnerEpoch, expectedProjectionToken))
+            ?: return LiveScale.unavailable(requestId, value)
+        return target.requestScale(requestId, value)
+    }
 
-    fun scaleState(): ScaleState = active.get()?.scaleState() ?: LiveScale.unavailable()
+    fun scaleState(expectedOwnerEpoch: String, expectedProjectionToken: String): ScaleState {
+        val target = panelTarget(PanelContext(expectedOwnerEpoch, expectedProjectionToken)) ?: return LiveScale.unavailable()
+        return target.scaleState()
+    }
 
     private fun panelTarget(context: PanelContext): Session? = synchronized(admission) {
         if (!panelAdmissionOpen || !running.get() || !context.resolved || context.ownerEpoch != ownerEpoch) null

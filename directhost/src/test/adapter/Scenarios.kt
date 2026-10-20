@@ -26,7 +26,7 @@ private class Fixture : AutoCloseable {
         // A callback may enqueue more work behind the first barrier.
         repeat(3) {
             (field("executor") as ScheduledExecutorService).submit {}.get(3, TimeUnit.SECONDS)
-            if (includePanelOperations) for (name in listOf("panelExecutor", "panelQueryExecutor")) {
+            if (includePanelOperations) for (name in listOf("panelExecutor", "panelQueryExecutor", "scaleExecutor")) {
                 (field(name) as java.util.concurrent.ExecutorService).submit {}.get(3, TimeUnit.SECONDS)
             }
         }
@@ -40,7 +40,7 @@ private class Fixture : AutoCloseable {
     }
     fun backend() = (field("current") as HostBootstrap.Status).backend
     override fun close() {
-        for (name in listOf("panelExecutor", "panelQueryExecutor")) {
+        for (name in listOf("panelExecutor", "panelQueryExecutor", "scaleExecutor")) {
             val operations = field(name) as java.util.concurrent.ExecutorService
             operations.shutdownNow(); operations.awaitTermination(3, TimeUnit.SECONDS)
         }
@@ -147,9 +147,18 @@ fun main() {
         f.drain()
         check(replies == 2 && Shizuku.binds == 0)
     }
-    scenario("typed local scale preserves observed feedback and exposes unavailable transport honestly") { f ->
+    scenario("scalar without actual projection context stays unavailable and never dispatches") { f ->
         f.host.start(); f.drain()
         val service = FakeService(); f.attach(service)
+        var replies = 0
+        f.host.requestScale(1.25) { check(it == null); replies++ }
+        f.host.scaleState { check(it == null); replies++ }
+        f.drain()
+        check(replies == 2 && service.scaleRequests.isEmpty() && service.scaleReads == 0)
+    }
+    scenario("typed local scale preserves observed feedback and exposes unavailable transport honestly") { f ->
+        f.host.start(); f.drain()
+        val service = FakeService().apply { state = "STREAMING" }; f.attach(service)
         var response: ScaleState? = null
         f.host.requestScale(1.25) { response = it }; f.drain()
         check(service.scaleRequests.size == 1)
@@ -170,6 +179,7 @@ fun main() {
     scenario("Stop and fresh attachment cannot reuse the preceding session scale") { f ->
         f.host.start(); f.drain()
         val first = FakeService().apply {
+            state = "STREAMING"
             currentScale = currentScale.copy(observed = Geometry(384, 512), requested = 1.25, status = ScaleStatus.OBSERVED)
         }
         f.attach(first)
@@ -181,7 +191,7 @@ fun main() {
         f.host.scaleState { response = it }; f.drain()
         check(response == null)
         f.host.start(); f.drain()
-        val second = FakeService(); f.attach(second)
+        val second = FakeService().apply { state = "STREAMING" }; f.attach(second)
         f.host.scaleState { response = it }; f.drain()
         check(response!!.status == ScaleStatus.READY && LayoutScale.applied(response!!.observed!!) == 1.0)
         check(second.starts == 1 && first.starts == 1 && second.scaleRequests.isEmpty())
