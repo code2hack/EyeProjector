@@ -20,6 +20,7 @@ import java.nio.file.StandardOpenOption
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ThreadPoolExecutor
@@ -89,7 +90,10 @@ internal class Bridge(
     private val reportStatus: ((String) -> Unit)? = null,
 ) : Closeable {
     private val running = AtomicBoolean(true)
+    private val release = OwnedRelease()
+    private val admission = Any()
     private val active = AtomicReference<Session?>()
+    private val peers = ConcurrentHashMap.newKeySet<SSLSocket>()
     private val workers = ThreadPoolExecutor(2, 2, 0, TimeUnit.SECONDS, ArrayBlockingQueue(2))
     private val settings = Tls.settings(directory)
     private val refused = AtomicLong()
@@ -126,8 +130,10 @@ internal class Bridge(
             val socket = try { listener.accept() as SSLSocket }
             catch (_: java.net.SocketTimeoutException) { continue }
             catch (error: Exception) { if (running.get()) throw error else break }
+            val admitted = synchronized(admission) { running.get() && peers.add(socket) }
+            if (!admitted) { socket.close(); continue }
             try { workers.execute { serve(socket) } }
-            catch (_: java.util.concurrent.RejectedExecutionException) { socket.close() }
+            catch (_: java.util.concurrent.RejectedExecutionException) { peers.remove(socket); socket.close() }
         }
     }
 
@@ -145,9 +151,11 @@ internal class Bridge(
             when (Wire.readRequest(input)) {
                 Wire.STOP_HOST -> { status("HOST_STOPPING"); close(SessionStopReason.HOST_STOP) }
                 Wire.STREAM -> {
-                    session = Session(socket, input, directory, jar, timer)
-                    if (!active.compareAndSet(null, session)) return
-                    status("STREAMING")
+                    session = synchronized(admission) {
+                        if (!running.get() || active.get() != null) return
+                        Session(socket, input, directory, jar, timer) { if (running.get()) status("STREAMING") }.also { active.set(it) }
+                    }
+                    status("SESSION_STARTING")
                     session.run()
                 }
             }
@@ -155,10 +163,17 @@ internal class Bridge(
             reason = SessionStopReason.SESSION_ERROR
             refused.incrementAndGet() // Fixed status only; never log private config/payload/exception text.
             if (!authenticated) unauthenticatedRefused.incrementAndGet()
-            if (running.get()) status(if (active.get() == null) "HOST_READY" else "STREAMING")
+            if (running.get() && session == null && active.get() == null) status("HOST_READY")
         } finally {
-            session?.close(reason); socket.close()
-            if (session != null && active.compareAndSet(session, null) && running.get()) status("DISCONNECTED")
+            var releaseFailed = false
+            try { session?.close(reason) }
+            catch (_: Exception) { releaseFailed = true }
+            finally { runCatching { socket.close() }; peers.remove(socket) }
+            if (session != null && active.get() === session && running.get()) {
+                try {
+                    status(if (!releaseFailed && session.stopReason in setOf(SessionStopReason.OWNER_CLOSE, SessionStopReason.CONTROL_END)) "DISCONNECTED" else "SESSION_FAILED")
+                } finally { close(reason) }
+            }
         }
     }
 
@@ -170,10 +185,15 @@ internal class Bridge(
 
     fun scaleState(): ScaleState = active.get()?.scaleState() ?: LiveScale.unavailable()
 
-    private fun close(reason: SessionStopReason) {
-        if (!running.compareAndSet(true, false)) return
-        listener.close(); active.getAndSet(null)?.close(reason)
-        workers.shutdownNow(); timer.shutdownNow()
+    private fun close(reason: SessionStopReason) = release.close {
+        running.set(false)
+        runCatching { listener.close() }
+        val owned = synchronized(admission) { active.get() }
+        peers.filterNot { owned?.owns(it) == true }.forEach { runCatching { it.close() } }
+        peers.clear()
+        try { owned?.close(reason) }
+        finally { workers.shutdownNow(); timer.shutdownNow() }
+        active.compareAndSet(owned, null)
         status("HOST_STOPPED")
     }
 }
@@ -184,8 +204,13 @@ private class Session(
     private val directory: File,
     private val jar: File,
     private val timer: java.util.concurrent.ScheduledExecutorService,
+    private val firstFrame: () -> Unit,
 ) : Closeable {
     private val running = AtomicBoolean(true)
+    private val release = OwnedRelease()
+    private val resources = Any()
+    @Volatile var stopReason = SessionStopReason.OWNER_CLOSE
+        private set
     private val geometry = AtomicReference<Geometry?>()
     private val writeStarted = AtomicLong()
     private val output = DataOutputStream(peer.outputStream)
@@ -206,12 +231,17 @@ private class Session(
     private val startupStage = AtomicReference(StartupStage.CREATED)
     private val childStartedMs = AtomicLong(-1)
     private val firstVideoFrameMs = AtomicLong(-1)
+    private val lastPingNs = AtomicLong()
+    private val lastPongNs = AtomicLong()
+    private val lastWriteChannel = AtomicLong(-1)
     private val scid = SecureRandom().nextInt(Int.MAX_VALUE)
     private val tlsProtocol = peer.session.protocol
     private val localAddress = peer.localAddress.hostAddress
     private val localPort = peer.localPort
     private val peerAddress = peer.inetAddress.hostAddress
     private val peerPort = peer.port
+
+    fun owns(socket: SSLSocket): Boolean = peer === socket
 
     fun requestScale(id: Long, value: Double, streamRequest: Boolean = false): ScaleState {
         if (!running.get()) return LiveScale.unavailable(id, value)
@@ -231,13 +261,20 @@ private class Session(
     @Synchronized private fun send(frame: Frame) {
         check(running.get())
         writeStarted.set(System.nanoTime())
-        try { Wire.writeFrame(output, frame) } finally { writeStarted.set(0) }
+        lastWriteChannel.set(frame.channel.toLong())
+        try {
+            Wire.writeFrame(output, frame)
+            if (frame.channel == Wire.PONG) lastPongNs.set(System.nanoTime())
+        } finally { writeStarted.set(0) }
     }
 
     fun run() {
         val socketName = "scrcpy_%08x".format(scid)
         // Reverse local sockets avoid a retry race. These AF_UNIX sockets are never network listeners.
-        localListener = LocalServerSocket(socketName)
+        val local = synchronized(resources) {
+            check(running.get())
+            LocalServerSocket(socketName).also { localListener = it }
+        }
         val startup = timer.schedule({ close(SessionStopReason.STARTUP_DEADLINE) }, 8, TimeUnit.SECONDS)
         val command = ShellMain.videoControlCommand(scid)
         // Stock cleanup unlinks its own CLASSPATH JAR. Keep the pinned master for
@@ -246,17 +283,27 @@ private class Session(
         startupStage.set(StartupStage.COPY_JAR)
         ShellMain.copySessionJar(jar, sessionJar)
         startupStage.set(StartupStage.START_SERVER)
-        server = ProcessBuilder(command).apply {
-            environment()["CLASSPATH"] = sessionJar.absolutePath
-            redirectErrorStream(true); redirectOutput(File(directory, "scrcpy-%08x.log".format(scid)))
-        }.start()
+        synchronized(resources) {
+            check(running.get())
+            server = ProcessBuilder(command).apply {
+                environment()["CLASSPATH"] = sessionJar.absolutePath
+                redirectErrorStream(true); redirectOutput(File(directory, "scrcpy-%08x.log".format(scid)))
+            }.start()
+        }
         childStartedMs.set((System.nanoTime() - begin) / 1_000_000)
         if (!running.get()) { server!!.destroyForcibly(); error("Session stopped during startup") }
         startupStage.set(StartupStage.ACCEPT_VIDEO)
-        video = localListener!!.accept().also { if (!running.get()) { it.close(); error("Session stopped") } }
+        local.accept().also { accepted -> synchronized(resources) {
+            if (!running.get()) { accepted.close(); error("Session stopped") }
+            video = accepted
+        } }
         startupStage.set(StartupStage.ACCEPT_CONTROL)
-        control = localListener!!.accept().also { if (!running.get()) { it.close(); error("Session stopped") } }
-        localListener!!.close(); localListener = null
+        local.accept().also { accepted -> synchronized(resources) {
+            if (!running.get()) { accepted.close(); error("Session stopped") }
+            control = accepted
+        } }
+        local.close()
+        synchronized(resources) { localListener = null }
         watchdog = timer.scheduleWithFixedDelay({
             val since = writeStarted.get()
             if (since != 0L && System.nanoTime() - since > 2_000_000_000L) close(SessionStopReason.WRITE_DEADLINE)
@@ -271,7 +318,7 @@ private class Session(
                 while (running.get()) {
                     val frame = Wire.readFrame(input)
                     when (frame.channel) {
-                        Wire.PING -> send(Frame(Wire.PONG, frame.stamp))
+                        Wire.PING -> { lastPingNs.set(System.nanoTime()); send(Frame(Wire.PONG, frame.stamp)) }
                         Wire.SCALE_REQUEST -> {
                             requestScale(frame.stamp, ScaleRequest.from(frame.payload).scale, streamRequest = true)
                         }
@@ -311,6 +358,7 @@ private class Session(
                         send(Frame(Wire.VIDEO, record.stamp, record.data))
                         if (!record.config && frames.incrementAndGet() == 1L) {
                             firstVideoFrameMs.set((System.nanoTime() - begin) / 1_000_000)
+                            firstFrame()
                         }
                     }
                 }
@@ -323,26 +371,37 @@ private class Session(
 
     override fun close() = close(SessionStopReason.OWNER_CLOSE)
 
-    fun close(reason: SessionStopReason) {
-        if (!running.compareAndSet(true, false)) return
+    fun close(reason: SessionStopReason) = release.close {
+        if (running.compareAndSet(true, false)) stopReason = reason
         val stopStartedMs = (System.nanoTime() - begin) / 1_000_000
         val lastStartupStage = startupStage.get()
-        watchdog?.cancel(false)
-        runCatching { peer.close() }; runCatching { localListener?.close() }
-        runCatching { video?.close() }; runCatching { control?.close() }
-        server?.let { process ->
-            runCatching {
-                if (!process.waitFor(2, TimeUnit.SECONDS)) {
-                    process.destroy()
-                    if (!process.waitFor(2, TimeUnit.SECONDS)) process.destroyForcibly()
-                }
-            }
+        val phases = JSONObject()
+        fun phase(name: String, operation: () -> Unit) {
+            val start = System.nanoTime()
+            try { operation() } finally { phases.put(name, (System.nanoTime() - start) / 1_000_000) }
         }
-        if (inputThread !== Thread.currentThread()) runCatching { inputThread?.join(1000) }
+        watchdog?.cancel(false)
+        synchronized(resources) {
+            phase("peerCloseMs") { runCatching { peer.close() } }
+            phase("localListenerCloseMs") { runCatching { localListener?.close() } }
+            // Issue15 inserts HeldInputRelease here, before transport close and independently of controlLock.
+            phase("videoCloseMs") { runCatching { video?.close() } }
+            phase("controlCloseMs") { runCatching { control?.close() } }
+            phase("childReleaseMs") { server?.let { process ->
+                runCatching {
+                    if (!process.waitFor(2, TimeUnit.SECONDS)) {
+                        process.destroy()
+                        if (!process.waitFor(2, TimeUnit.SECONDS)) { process.destroyForcibly(); process.waitFor(2, TimeUnit.SECONDS) }
+                    }
+                }
+            } }
+        }
         val data = JSONObject().put("audio", "system-bluetooth").put("state", "SESSION_STOPPED").put("frames", frames.get()).put("touches", touches.get())
             .put("elapsedMs", (System.nanoTime() - begin) / 1_000_000).put("serverAlive", server?.isAlive ?: false)
-            .put("stopReason", reason.name).put("startupStage", lastStartupStage.name).put("stopStartedMs", stopStartedMs)
+            .put("stopReason", stopReason.name).put("startupStage", lastStartupStage.name).put("stopStartedMs", stopStartedMs)
             .put("childStartedMs", childStartedMs.get()).put("firstVideoFrameMs", firstVideoFrameMs.get())
+            .put("closePhases", phases).put("lastPingMonoNs", lastPingNs.get()).put("lastPongMonoNs", lastPongNs.get())
+            .put("lastWriteChannel", lastWriteChannel.get()).put("writeStartedMonoNs", writeStarted.get())
             .put("tls", tlsProtocol).put("localAddress", localAddress).put("localPort", localPort)
             .put("peerAddress", peerAddress).put("peerPort", peerPort).put("scid", "%08x".format(scid))
         val scaleState = scale.state()
@@ -353,5 +412,6 @@ private class Session(
             .put("appliedScale", scaleState.observed?.let(LayoutScale::applied) ?: JSONObject.NULL)
         File(directory, "last-session.json").writeText(data.toString())
         println(data.toString())
+        check(server?.isAlive != true) { "Owned stock child release incomplete" }
     }
 }

@@ -4,7 +4,7 @@ import java.io.Closeable
 
 /** Readiness belongs to the bound listener; thread creation is only STARTING. */
 internal class OwnedHostLifecycle {
-    enum class State { STOPPED, STARTING, READY, STOPPING, FAILED, STOP_UNVERIFIED }
+    enum class State { STOPPED, STARTING, READY, SESSION_STARTING, STREAMING, STOPPING, FAILED, STOP_UNVERIFIED }
     data class Snapshot(val state: State, val failure: String? = null)
     interface Backend : Closeable { fun run() }
 
@@ -13,6 +13,7 @@ internal class OwnedHostLifecycle {
     private var backend: Backend? = null
     private var wanted = false
     private var snapshot = Snapshot(State.STOPPED)
+    private var backendFailure: String? = null
 
     fun status(): Snapshot = synchronized(lock) { snapshot }
 
@@ -20,6 +21,7 @@ internal class OwnedHostLifecycle {
         // A start during teardown waits for a fresh user Start after teardown completes.
         if (worker != null || backend != null) return@synchronized snapshot
         wanted = true
+        backendFailure = null
         snapshot = Snapshot(State.STARTING)
         worker = Thread({
             var owned: Backend? = null
@@ -38,7 +40,7 @@ internal class OwnedHostLifecycle {
                 synchronized(lock) {
                     snapshot = when {
                         !closed -> Snapshot(State.STOP_UNVERIFIED, "BACKEND_CLOSE_FAILED")
-                        failure != null && wanted -> Snapshot(State.FAILED, failure)
+                        (failure != null || backendFailure != null) && wanted -> Snapshot(State.FAILED, failure ?: backendFailure)
                         else -> Snapshot(State.STOPPED)
                     }
                     wanted = false; backend = if (closed) null else owned; worker = null
@@ -46,6 +48,13 @@ internal class OwnedHostLifecycle {
             }
         }, "eyeprojector-owned-host").also { it.start() }
         snapshot
+    }
+
+    fun report(state: State, failure: String? = null) = synchronized(lock) {
+        if (wanted && worker != null) {
+            if (failure != null) backendFailure = failure
+            snapshot = Snapshot(state, failure)
+        }
     }
 
     fun stop(waitMillis: Long = 5000): Snapshot {

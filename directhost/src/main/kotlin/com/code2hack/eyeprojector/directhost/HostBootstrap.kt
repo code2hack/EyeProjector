@@ -14,13 +14,14 @@ import java.io.File
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.UUID
 import org.json.JSONObject
 import rikka.shizuku.Shizuku
 
 /** One app-scoped route, also used by subsequent launcher/widget integration. */
 class HostBootstrap private constructor(private val context: Context) {
     enum class Setup { MISSING, UNAVAILABLE, UPDATE_REQUIRED, AUTHORIZATION_REQUIRED, SHELL_REQUIRED, AVAILABLE }
-    data class Status(val setup: Setup, val backend: String, val detail: String? = null)
+    data class Status(val setup: Setup, val backend: String, val detail: String? = null, val sessionEpoch: String = "", val rejectedEpoch: String? = null)
     private enum class Action { START, STOP }
     private val main = Handler(Looper.getMainLooper())
     private val forget = HostForgetCompletion { main.post(it) }
@@ -30,6 +31,7 @@ class HostBootstrap private constructor(private val context: Context) {
     private var remote: IHostBootstrap? = null
     private var revokedBinder: IBinder? = null
     private var pending: Action? = null
+    private var pendingEpoch = ""
     private var localDetail: String? = null
     private var connecting = false
     private var bindStarted = 0L
@@ -98,17 +100,20 @@ class HostBootstrap private constructor(private val context: Context) {
     }
 
     fun observe(observer: (Status) -> Unit) { observers.add(observer); main.post { observer(current) } }
+    fun status(): Status = current
     fun removeObserver(observer: (Status) -> Unit) { observers.remove(observer) }
     fun refresh() { executor.execute { runCatching { refreshNow() }.onFailure { publish("UNKNOWN", "STATUS_UNAVAILABLE") } } }
     fun requestAuthorization() {
         runCatching { if (Shizuku.pingBinder()) Shizuku.requestPermission(5001) }.onFailure { refresh() }
     }
-    fun start() { executor.execute {
-        if (forget.pending()) { publish(current.backend, "FORGET_PENDING"); return@execute }
-        if (revokedBinder != null || pending == Action.STOP) { publish("STOPPING"); return@execute }
-        if (setup() != Setup.AVAILABLE) { publish(current.backend); return@execute }
+    fun start(sessionEpoch: String = UUID.randomUUID().toString()) { executor.execute {
+        if (forget.pending()) { publish(current.backend, "FORGET_PENDING", rejectedEpoch = sessionEpoch); return@execute }
+        if (revokedBinder != null || pending == Action.STOP) { publish("STOPPING", rejectedEpoch = sessionEpoch); return@execute }
+        if (setup() != Setup.AVAILABLE) { publish(current.backend, "START_SETUP_UNAVAILABLE", rejectedEpoch = sessionEpoch); return@execute }
         localDetail = null
+        pendingEpoch = sessionEpoch
         pending = Action.START
+        publish("STARTING", sessionEpoch = sessionEpoch)
         if (remote != null) performPending() else bind()
     } }
     fun stop() { executor.execute {
@@ -179,13 +184,13 @@ class HostBootstrap private constructor(private val context: Context) {
         runCatching {
             val result = when (action) {
                 Action.START -> {
-                    if (setup() != Setup.AVAILABLE) { publish(current.backend); return }
+                    if (setup() != Setup.AVAILABLE) { publish(current.backend, "START_SETUP_UNAVAILABLE", rejectedEpoch = pendingEpoch); return }
                     val session = File(context.filesDir, "session")
                     val files = BootstrapSessionFiles.read(session)
                     if (files == null) {
-                        localDetail = "SESSION_SETUP_REQUIRED"; publish("STOPPED", localDetail); return
+                        localDetail = "SESSION_SETUP_REQUIRED"; publish("STOPPED", localDetail, rejectedEpoch = pendingEpoch); return
                     }
-                    service.start(files.identity, files.password, files.legacyPeer, files.endpoint, files.pairedPeer)
+                    service.start(files.identity, files.password, files.legacyPeer, files.endpoint, files.pairedPeer, pendingEpoch)
                 }
                 Action.STOP -> service.stop()
             }
@@ -257,10 +262,11 @@ class HostBootstrap private constructor(private val context: Context) {
         catch (error: Exception) { file.failWrite(output); throw error }
         val backend = data.getString("state")
         publish(if (pending == Action.STOP && backend == "STOPPED") "STOPPING" else backend,
-            data.optString("failure").takeIf { it.isNotBlank() && it != "null" } ?: localDetail)
+            data.optString("failure").takeIf { it.isNotBlank() && it != "null" } ?: localDetail,
+            data.optString("sessionEpoch").ifEmpty { current.sessionEpoch })
     }
-    private fun publish(backend: String, detail: String? = null) {
-        val value = Status(setup(), backend, detail)
+    private fun publish(backend: String, detail: String? = null, sessionEpoch: String = current.sessionEpoch, rejectedEpoch: String? = null) {
+        val value = Status(setup(), backend, detail, sessionEpoch, rejectedEpoch)
         if (value == current) return
         current = value
         main.post { observers.forEach { it(value) } }

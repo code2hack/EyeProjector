@@ -175,6 +175,35 @@ fun main() {
         check(response!!.status == ScaleStatus.READY && LayoutScale.applied(response!!.observed!!) == 1.0)
         check(second.starts == 1 && first.starts == 1 && second.scaleRequests.isEmpty())
     }
+    scenario("session epoch survives async bind, actual status and verified Stop") { f ->
+        f.host.start("source8-first"); f.drain()
+        check(f.host.status().sessionEpoch == "source8-first")
+        val service = FakeService(); f.attach(service)
+        check(service.sessionEpoch == "source8-first")
+        check(f.host.status().sessionEpoch == "source8-first")
+        service.state = "SESSION_STARTING"; f.host.refresh(); f.drain()
+        check(f.host.status().backend == "SESSION_STARTING")
+        service.state = "STREAMING"; f.host.refresh(); f.drain()
+        check(f.host.status().backend == "STREAMING")
+        f.host.stop(); f.drain()
+        check(f.host.status().backend == "STOPPED" && f.host.status().sessionEpoch == "source8-first")
+        f.host.start("source8-fresh"); f.drain()
+        val fresh = FakeService(); f.attach(fresh)
+        check(fresh.sessionEpoch == "source8-fresh" && service.starts == 1)
+    }
+    scenario("Stop during pending Start retains epoch even if backend was never created") { f ->
+        f.host.start("source8-canceled"); f.drain()
+        f.host.stop(); f.drain()
+        val service = FakeService(); f.attach(service)
+        check(service.starts == 0 && service.stops == 1)
+        check(f.host.status().backend == "STOPPED" && f.host.status().sessionEpoch == "source8-canceled")
+    }
+    scenario("async setup rejection is correlated to the requested epoch without creating a backend") { f ->
+        Shizuku.available = false
+        f.host.start("source8-rejected"); f.drain()
+        check(f.host.status().rejectedEpoch == "source8-rejected")
+        check(f.host.status().detail == "START_SETUP_UNAVAILABLE" && Shizuku.binds == 0)
+    }
     check(failures == 0) { "$failures adapter scenarios failed" }
-    println("9 adapter scenarios passed; modeled host events, no device/Binder claim")
+    println("12 adapter scenarios passed; modeled host events, no device/Binder claim")
 }
