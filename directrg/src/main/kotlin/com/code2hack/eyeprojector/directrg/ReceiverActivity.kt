@@ -114,7 +114,8 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             ViewConfiguration.getLongPressTimeout().toLong().coerceIn(200, 2000),
             ::dispatchPadAction,
         )
-        heldInput = HeldPointerDispatcher({ pointer.inputPosition() }) {
+        // Admission and position notifications already refresh the model; observing must not publish again.
+        heldInput = HeldPointerDispatcher({ pointer.position }) {
             if (!usable()) null
             else if (connectionView.visibility == View.VISIBLE) localInput::touch
             else {
