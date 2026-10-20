@@ -37,6 +37,8 @@ if not java:
 actual = args.source_dir.resolve() if args.source_dir else root / 'directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost'
 sources = sorted((suite / 'doubles').glob('*.kt')) + [suite / 'Scenarios.kt']
 sources += [actual / name for name in ('HostBootstrap.kt', 'HostForgetCompletion.kt', 'BootstrapSessionFiles.kt')]
+protocol = root / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
+sources += [protocol / name for name in ('Wire.kt', 'LayoutScale.kt')]
 jar = output / 'adapter-regressions.jar'
 compile_command = [java, '-cp', classpath, 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler',
                    '-no-stdlib', '-no-reflect', '-classpath', classpath, '-d', str(jar)] + list(map(str, sources))

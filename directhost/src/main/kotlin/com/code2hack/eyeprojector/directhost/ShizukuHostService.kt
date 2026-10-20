@@ -12,6 +12,7 @@ import org.json.JSONObject
 @Keep
 class ShizukuHostService @Keep constructor(private val context: Context) : IHostBootstrap.Stub() {
     private val lifecycle = OwnedHostLifecycle()
+    @Volatile private var projectionBridge: Bridge? = null
     private val sessions = OwnedShellSessions(File("/data/local/tmp", "eyeprojector-${context.packageName}-${context.applicationInfo.uid}"))
     @Volatile private var revokeFailed = false
     @Volatile private var attribution = JSONObject()
@@ -45,9 +46,12 @@ class ShizukuHostService @Keep constructor(private val context: Context) : IHost
             val bridge = Bridge(session, jar, reportStatus = { state ->
                 if (state == "HOST_READY") ready()
             })
+            projectionBridge = bridge
             object : OwnedHostLifecycle.Backend {
                 override fun run() = bridge.run()
-                override fun close() = bridge.close()
+                override fun close() {
+                    try { bridge.close() } finally { if (projectionBridge === bridge) projectionBridge = null }
+                }
             }
         }
         return status()
@@ -61,6 +65,11 @@ class ShizukuHostService @Keep constructor(private val context: Context) : IHost
         }
         return status()
     }
+
+    override fun requestScale(requestId: Long, scale: Double): ByteArray =
+        (projectionBridge?.requestScale(requestId, scale) ?: LiveScale.unavailable(requestId, scale)).bytes()
+
+    override fun scaleState(): ByteArray = (projectionBridge?.scaleState() ?: LiveScale.unavailable()).bytes()
 
     override fun destroy() {
         stop()

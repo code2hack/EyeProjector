@@ -19,6 +19,8 @@ class VideoBackendTest {
         assertEquals("false", options["send_device_meta"]); assertEquals("false", options["send_dummy_byte"])
         assertEquals("false", options["tunnel_forward"])
         assertEquals("true", options["send_stream_meta"]); assertEquals("true", options["send_frame_meta"])
+        assertEquals("480x640/160", options["new_display"]); assertEquals("true", options["flex_display"])
+        assertEquals("local", options["display_ime_policy"])
         assertFalse(options.keys.any { it.startsWith("audio_") || it == "send_codec_meta" })
     }
 

@@ -77,7 +77,7 @@ data class Frame(val channel: Int, val stamp: Long = 0, val payload: ByteArray =
 
 object Wire {
     const val MAGIC = 0x50415631
-    const val VERSION = 3
+    const val VERSION = 4
     const val SCRCPY_VERSION = "5.0.1"
     const val H264 = 0x68323634
     const val MAX_PAYLOAD = 1024 * 1024
@@ -91,6 +91,8 @@ object Wire {
     // Channel 7 (forwarded audio codec) is retired.
     const val SCROLL = 8
     const val NAVIGATE = 9
+    const val SCALE_REQUEST = 10
+    const val SCALE_STATE = 11
     const val STREAM = 1
     const val STOP_HOST = 2
 
@@ -111,12 +113,14 @@ object Wire {
         require(input.readUTF() == SCRCPY_VERSION && input.readInt() == H264)
     }
     private fun validate(channel: Int, length: Int) {
-        require(channel in GEOMETRY..NAVIGATE && length in 0..MAX_PAYLOAD)
+        require(channel in GEOMETRY..SCALE_STATE && length in 0..MAX_PAYLOAD)
         when (channel) {
             GEOMETRY -> require(length == 8)
             TAP -> require(length == 16)
             SCROLL -> require(length == 20)
             NAVIGATE -> require(length == 12)
+            SCALE_REQUEST -> require(length == 8)
+            SCALE_STATE -> require(length == 40)
             VIDEO -> require(length > 0)
             PING, PONG, END -> require(length == 0)
             else -> error("Unsupported channel")
@@ -147,6 +151,10 @@ sealed interface ScrcpyRecord {
 object Scrcpy {
     const val CONFIG = 1L shl 62
     const val KEY_FRAME = 1L shl 61
+    /** Upstream 5.0.1 TYPE_RESIZE_DISPLAY: virtual-display bounds, with DPI retained. */
+    fun resize(geometry: Geometry): ByteArray = bytes {
+        writeByte(21); writeShort(geometry.width); writeShort(geometry.height)
+    }
     fun readRecord(input: DataInputStream): ScrcpyRecord {
         val stamp = input.readLong(); val last = input.readInt()
         if (stamp < 0) {

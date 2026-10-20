@@ -40,7 +40,7 @@ class WireTest {
         val result = Wire.readFrame(input { Wire.writeFrame(this, original) })
         assertEquals(original.channel, result.channel); assertEquals(original.stamp, result.stamp)
         assertArrayEquals(original.payload, result.payload)
-        for (channel in listOf(2, 7, 10, 255)) {
+        for (channel in listOf(2, 7, 12, 255)) {
             assertThrows(Exception::class.java) { Wire.readFrame(input {
                 writeByte(channel); writeLong(0); writeInt(4); writeInt(0)
             }) }
@@ -56,8 +56,8 @@ class WireTest {
         }) }
     }
 
-    @Test fun revisionThreeAgreesOnVideoAndControlWithoutAnyAudioHeader() {
-        assertEquals(3, Wire.VERSION)
+    @Test fun revisionFourAgreesOnVideoScaleAndControlWithoutAnyAudioHeader() {
+        assertEquals(4, Wire.VERSION)
         val request = input { Wire.writeRequest(this, Wire.STREAM) }
         assertEquals(Wire.STREAM, Wire.readRequest(request)); assertEquals(-1, request.read())
         val size = Geometry(480, 640)
@@ -68,6 +68,8 @@ class WireTest {
             Frame(Wire.TAP, payload = Tap(25, 40, size).bytes()),
             Frame(Wire.SCROLL, payload = Scroll(Tap(25, 40, size), 160).bytes()),
             Frame(Wire.NAVIGATE, payload = Navigate(Navigation.BACK, size).bytes()),
+            Frame(Wire.SCALE_REQUEST, 17, ScaleRequest(1.25).bytes()),
+            Frame(Wire.SCALE_STATE, 17, ScaleState(17, 1.25, size, Geometry(384, 512), ScaleStatus.PENDING, false).bytes()),
             Frame(Wire.PING, 55), Frame(Wire.PONG, 55), Frame(Wire.END),
         )
         val stream = input { Wire.writeWelcome(this); frames.forEach { Wire.writeFrame(this, it) } }
@@ -83,7 +85,7 @@ class WireTest {
     }
 
     @Test fun incompatibleVersionsAndVideoCodecsAreRejected() {
-        for (revision in listOf(1, 2, 4, 999)) {
+        for (revision in listOf(1, 2, 3, 999)) {
             assertThrows(Exception::class.java) { Wire.readRequest(input {
                 writeInt(Wire.MAGIC); writeInt(revision); writeByte(Wire.STREAM)
             }) }
@@ -95,6 +97,21 @@ class WireTest {
         assertThrows(Exception::class.java) { Wire.readWelcome(input {
             writeInt(Wire.MAGIC); writeInt(Wire.VERSION); writeUTF(Wire.SCRCPY_VERSION); writeInt(0)
         }) }
+    }
+
+    @Test fun resizeUsesExactPinnedUnsignedShortFormat() {
+        assertArrayEquals(byteArrayOf(21, 1, -128, 2, 0), Scrcpy.resize(Geometry(384, 512)))
+        val stream = DataInputStream(Scrcpy.resize(Geometry(4096, 2048)).inputStream())
+        assertEquals(21, stream.readUnsignedByte())
+        assertEquals(4096, stream.readUnsignedShort()); assertEquals(2048, stream.readUnsignedShort())
+        assertEquals(-1, stream.read())
+        for (channel in listOf(Wire.SCALE_REQUEST, Wire.SCALE_STATE)) {
+            for (length in listOf(0, 7, 9, 39, 41)) {
+                assertThrows(Exception::class.java) { Wire.readFrame(input {
+                    writeByte(channel); writeLong(0); writeInt(length)
+                }) }
+            }
+        }
     }
 
     @Test fun coordinateMappingRejectsLetterboxAndUsesCurrentGeometry() {
