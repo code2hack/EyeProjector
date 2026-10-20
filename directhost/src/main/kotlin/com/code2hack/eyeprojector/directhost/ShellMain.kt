@@ -349,10 +349,11 @@ private class Session(
             while (running.get()) {
                 when (val record = Scrcpy.readRecord(videoInput)) {
                     is ScrcpyRecord.Session -> {
-                        geometry.set(record.geometry)
                         startup.cancel(false)
-                        send(Frame(Wire.GEOMETRY, payload = record.geometry.bytes()))
-                        scale.observe(record)
+                        scale.observe(record, this) {
+                            synchronized(controlLock) { geometry.set(record.geometry) }
+                            send(Frame(Wire.GEOMETRY, payload = record.geometry.bytes()))
+                        }
                     }
                     is ScrcpyRecord.Packet -> {
                         send(Frame(Wire.VIDEO, record.stamp, record.data))

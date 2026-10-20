@@ -31,16 +31,26 @@ internal class LiveScale(
         return value
     }
 
-    @Synchronized fun observe(record: ScrcpyRecord.Session) {
+    /** Lock order: this controller, publicationLock, then any input/control update in beforePublish. */
+    @Synchronized fun observe(
+        record: ScrcpyRecord.Session,
+        publicationLock: Any = this,
+        beforePublish: () -> Unit = {},
+    ) {
         value = value.copy(observed = record.geometry, clientResize = record.clientResize,
             status = when {
                 value.target == null -> ScaleStatus.READY
                 !record.clientResize && value.status == ScaleStatus.PENDING -> ScaleStatus.INTERRUPTED
                 else -> ScaleStatus.OBSERVED
             })
-        // Stock has no request IDs. This is an actual geometry observation, not an
-        // acknowledgment that the latest requested target was applied exactly.
-        publish(value)
+        synchronized(publicationLock) {
+            // Commit input geometry and send GEOMETRY after updating the model, while
+            // requests/state reads wait. Keep its scale feedback in the same output turn.
+            beforePublish()
+            // Stock has no request IDs. This is an actual geometry observation, not an
+            // acknowledgment that the latest requested target was applied exactly.
+            publish(value)
+        }
     }
 
     companion object {
