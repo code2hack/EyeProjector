@@ -44,11 +44,13 @@ class PairingInstrumentation : Instrumentation() {
     }
 
     private fun loopback(report: Bundle) {
+        stage("IDENTITY_SETUP")
         val phone = sandbox("phone")
         val glasses = sandbox("glasses")
         val listener = ServerSocket(0, 2, InetAddress.getLoopbackAddress()).apply { soTimeout = 10_000 }
         val executor = Executors.newSingleThreadExecutor()
         try {
+            stage("JPAKE_PAIRING")
             val future = executor.submit(Callable {
                 listener.accept().use { PairingExchange.pairGlasses(it, PairingCode({ 0L }, { "0123" }), glasses, listener.localPort) }
             })
@@ -56,8 +58,10 @@ class PairingInstrumentation : Instrumentation() {
                 PairingExchange.pairPhone(it, "0123", phone, listener.localPort, glasses.identityId())
             }
             future.get(40, TimeUnit.SECONDS)
+            stage("PERSISTENCE")
             check(PeerStore(phone.directory).pairedPeer()!!.identityId == glasses.identityId())
             check(PeerStore(glasses.directory).pairedPeer()!!.identityId == phone.identityId())
+            stage("MTLS_SETUP")
             val tls = Tls.context(phone.directory).serverSocketFactory.createServerSocket(0, 2, InetAddress.getLoopbackAddress()) as javax.net.ssl.SSLServerSocket
             tls.needClientAuth = true; tls.soTimeout = 10_000
             tls.use {
@@ -67,14 +71,21 @@ class PairingInstrumentation : Instrumentation() {
                         socket.outputStream.write(42)
                     }
                 })
-                glasses.writeTransportEndpoint("127.0.0.1", tls.localPort, PeerStore.tlsName(phone.identityCertificate()))
+                // Android selects IPv6 loopback; connect to the listener's actual family.
+                glasses.writeTransportEndpoint(tls.inetAddress.hostAddress!!, tls.localPort, PeerStore.tlsName(phone.identityCertificate()))
+                stage("MTLS_CONNECT")
                 Tls.connect(glasses.directory).use { socket -> check(socket.inputStream.read() == 42) }
                 server.get(25, TimeUnit.SECONDS)
             }
+            stage("FORGET")
             glasses.forget()
             check(PeerStore(glasses.directory).pairedPeer() == null)
             report.putString("checks", "Android PKCS12; J-PAKE; persisted mutual identity; mTLS current IP/stable SAN; Forget")
         } finally { listener.close(); executor.shutdownNow() }
+    }
+
+    private fun stage(label: String) {
+        sendStatus(1, Bundle().apply { putString("stage", label) })
     }
 
     private fun lan(report: Bundle) {
