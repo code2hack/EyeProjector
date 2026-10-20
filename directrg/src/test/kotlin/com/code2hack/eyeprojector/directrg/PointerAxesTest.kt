@@ -85,6 +85,46 @@ class PointerAxesTest {
         }
     }
 
+    @Test fun offFrameGainChangesPreserveOtherAxisElapsedMotion() {
+        for (changeX in listOf(true, false)) {
+            val baseline = pointer(2.0, 2.0)
+            val changed = pointer(2.0, 2.0)
+            // The unchanged axis is still smoothing when the other gain changes
+            // halfway between display frames (21ms, change at31ms, next frame41ms).
+            val yaw = if (changeX) 0.0 else -8.0
+            val pitch = if (changeX) -8.0 else 0.0
+            val before = move(changed, 21, yaw, pitch)
+            assertEquals(move(baseline, 21, yaw, pitch), before)
+            changed.sensitivity(if (changeX) 4.0 else 2.0, if (changeX) 2.0 else 4.0, 31_000_000)
+            assertEquals("Changing gain must not jump either axis", before, changed.position)
+            for (ms in 41L..201L step 20) {
+                val expected = move(baseline, ms, yaw, pitch)
+                val actual = move(changed, ms, yaw, pitch)
+                assertEquals("Unchanged axis at ${ms}ms, changeX=$changeX",
+                    if (changeX) expected.y else expected.x, if (changeX) actual.y else actual.x, .001f)
+            }
+        }
+    }
+
+    @Test fun repeatedOffFrameChangesAndNoOpKeepOtherAxisAlignedThroughSettlement() {
+        for (changedAxis in listOf("X", "Y", "none")) {
+            val baseline = pointer(2.0, 2.0)
+            val changed = pointer(2.0, 2.0)
+            move(baseline, 21, -10.0, -8.0); move(changed, 21, -10.0, -8.0)
+            for (ms in 41L..1001L step 20) {
+                val before = changed.position
+                val gain = if (ms % 40 == 1L) 4.0 else 3.0
+                changed.sensitivity(if (changedAxis == "X") gain else 2.0,
+                    if (changedAxis == "Y") gain else 2.0, (ms - 10) * 1_000_000)
+                assertEquals("Off-frame setter at ${ms - 10}ms", before, changed.position)
+                val expected = move(baseline, ms, -10.0, -8.0)
+                val actual = move(changed, ms, -10.0, -8.0)
+                if (changedAxis != "X") assertEquals("X at ${ms}ms, changed=$changedAxis", expected.x, actual.x, .0001f)
+                if (changedAxis != "Y") assertEquals("Y at ${ms}ms, changed=$changedAxis", expected.y, actual.y, .0001f)
+            }
+        }
+    }
+
     @Test fun disablingActiveHeadScrollStopsBothEdgesAndReenableStartsFresh() {
         val bounds = PointerBounds(0f, 0f, 480f, 640f)
         for (y in listOf(-10f, 650f)) {

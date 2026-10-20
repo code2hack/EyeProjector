@@ -1,6 +1,6 @@
 # EP-10 — Preserve ordinary tap counts and native pad scrolling
 
-**Canonical issue:** [#14](https://github.com/code2hack/EyeProjector/issues/14). **Blocked by:** None.
+**Canonical issue:** [#14](https://github.com/code2hack/EyeProjector/issues/14). **Blocked by:** [#7](https://github.com/code2hack/EyeProjector/issues/7), [#13](https://github.com/code2hack/EyeProjector/issues/13) for the composed input candidate. Feature-local work began independently.
 
 **SPEC:** [Glasses-native interaction](../../../../SPEC.md#glasses-native-interaction).
 

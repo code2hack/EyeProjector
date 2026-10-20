@@ -11,7 +11,7 @@ The breakdown contains 18 core implementation or focused verification issues, on
 | Plan ID / canonical issue | Deliverable | Blocked by |
 | --- | --- | --- |
 | [EP-01](issues/01-shizuku-startup.md) / [#5](https://github.com/code2hack/EyeProjector/issues/5) | Start and stop the Phone backend through Shizuku | — |
-| [EP-02](issues/02-lan-pairing.md) / [#6](https://github.com/code2hack/EyeProjector/issues/6) | Pair and remember a peer using the rotating LAN code | — |
+| [EP-02](issues/02-lan-pairing.md) / [#6](https://github.com/code2hack/EyeProjector/issues/6) | Pair and remember a peer using the rotating LAN code | 01, 05 |
 | [EP-03](issues/03-bluetooth-video.md) / [#7](https://github.com/code2hack/EyeProjector/issues/7) | Video/control projection with all audio left to Bluetooth | — |
 | [EP-04](issues/04-session-controls.md) / [#8](https://github.com/code2hack/EyeProjector/issues/8) | Phone Start and Glasses Connect operate one session lifecycle | 01, 02, 03 |
 | [EP-05](issues/05-selected-apps.md) / [#9](https://github.com/code2hack/EyeProjector/issues/9) | Maintain the Phone's chosen-app list | — |
@@ -19,7 +19,7 @@ The breakdown contains 18 core implementation or focused verification issues, on
 | [EP-07](issues/07-live-scale-backend.md) / [#11](https://github.com/code2hack/EyeProjector/issues/11) | Apply live scale to the actual projected app layout | 03 |
 | [EP-08](issues/08-per-app-scale.md) / [#12](https://github.com/code2hack/EyeProjector/issues/12) | Pinch and save scale through the Phone gesture panel | 06, 07 |
 | [EP-09](issues/09-pointer-settings.md) / [#13](https://github.com/code2hack/EyeProjector/issues/13) | Independent X/Y gains and head-scroll toggle | — |
-| [EP-10](issues/10-native-taps-scroll.md) / [#14](https://github.com/code2hack/EyeProjector/issues/14) | Ordinary tap counts and pointer-targeted pad scrolling | — |
+| [EP-10](issues/10-native-taps-scroll.md) / [#14](https://github.com/code2hack/EyeProjector/issues/14) | Ordinary tap counts and pointer-targeted pad scrolling | 03, 09 |
 | [EP-11](issues/11-long-press-drag.md) / [#15](https://github.com/code2hack/EyeProjector/issues/15) | Continuous long press and head-driven dragging | 03, 10 |
 | [EP-12](issues/12-function-button.md) / [#16](https://github.com/code2hack/EyeProjector/issues/16) | Function-button sequences and contextual navigation | 06, 10 |
 | [EP-13](issues/13-hid-bindings.md) / [#17](https://github.com/code2hack/EyeProjector/issues/17) | Configure the four Glasses-connected HID bindings | 11, 12 |
@@ -31,11 +31,13 @@ The breakdown contains 18 core implementation or focused verification issues, on
 | [EP-19](issues/19-version-acceptance.md) / [#23](https://github.com/code2hack/EyeProjector/issues/23) | Verify the assembled version with the four target apps | 08, 09, 13, 15, 16, 17, 18 |
 | [EP-20](issues/20-camera-experiment.md) / [#24](https://github.com/code2hack/EyeProjector/issues/24) | Late virtual-camera investigation and evidence | 19, by Owner-requested order |
 
-An issue's blockers apply to dispatch and acceptance, not just merge order. Work progresses when its own prerequisites land; there is no whole-wave barrier.
+During implementation, #6 acquired source-composition dependencies on #5/#9, and #14 on #7/#13. Their feature-local work was already underway; the composed candidates retain explicit prerequisite commits and wait for those issues' accepted corrections and integration. These working branches do not establish acceptance.
+
+An issue's blockers apply to new dispatch and acceptance, not just merge order. Work progresses when its own prerequisites land; there is no whole-wave barrier.
 
 ## Concurrency and write ownership
 
-The initial independent lanes are **EP-01, EP-02, EP-03, EP-05, EP-09 and EP-10**. The Owner chose unlimited Worker and Reviewer concurrency. Every role uses Codex / `gpt-6.1-sol` / `ultra` / Full Access. Shared-file integration, available build resources and exclusive device windows are scheduled separately. The [version run record](../../runs/v0.1.md) records the remaining runtime decisions.
+The initial independent lanes were **EP-01, EP-02, EP-03, EP-05, EP-09 and EP-10**. The Owner chose unlimited Worker and Reviewer concurrency. Every role uses Codex / `gpt-6.1-sol` / `ultra` / Full Access. Shared-file integration, available build resources and exclusive device windows are scheduled separately. The [version run record](../../runs/v0.1.md) records the remaining runtime decisions.
 
 | Shared area | Coordination |
 | --- | --- |

@@ -17,3 +17,5 @@ Split the current scalar pointer gain into independent X/Y settings. Retain the 
 - Invalid/stale sensor data and focus changes retain the existing cancellation behavior.
 
 **Verification:** axis, persistence/migration and scroll-toggle tests plus an on-Glasses settings check.
+
+The Owner-selected live route is function-button triple click to the existing control panel while retaining the session, with local Back returning to projection. Session/view ownership belongs to [#8](https://github.com/code2hack/EyeProjector/issues/8), and function classification to [#16](https://github.com/code2hack/EyeProjector/issues/16); this issue owns settings and immediate scroll-state cancellation. Verify the connected user flow in assembled acceptance [#23](https://github.com/code2hack/EyeProjector/issues/23). No separate Settings overlay entry is part of the chosen design.

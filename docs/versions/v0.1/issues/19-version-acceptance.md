@@ -12,6 +12,7 @@ Verify the assembled version branch on the actual Phone/Glasses/HID combination.
 
 - ChatGPT, Paseo, Comet and WeChat have explicit installation/version and workflow results: launch/switch/Home, native input, text entry, scale and relevant media behavior.
 - Shared Wi-Fi/hotspot pairing, remembered reconnect and Forget work through the specified panels.
+- Function triple opens the local control panel without disconnecting; Connect becomes Disconnect, local Back returns to live projection, and changing head-scroll settings has immediate effect without leaking local input to the target app. Explicit Disconnect/app exit releases the session.
 - Both widget actions, Glasses exits, HID bindings and saved settings work together on the integrated build.
 - Declared sustained/no-input runs cover required unlocked/locked Awake cases before/after panel OFF; record actual restoration and failure cleanup.
 - EyeProjector black/light UI and each app's native dark presentation are physically readable, with remaining limitations documented.
