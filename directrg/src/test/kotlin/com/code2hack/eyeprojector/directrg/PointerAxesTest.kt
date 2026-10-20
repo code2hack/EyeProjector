@@ -9,7 +9,9 @@ import kotlin.math.sin
 class PointerAxesTest {
     private fun pose(ms: Long, yaw: Double = 0.0, pitch: Double = 0.0): RotationSample {
         val y = Math.toRadians(yaw) / 2; val p = Math.toRadians(pitch) / 2
-        return RotationSample(ms * 1_000_000, sin(p).toFloat(), sin(y).toFloat(), 0f, (cos(y) * cos(p)).toFloat())
+        // Ry(yaw) * Rx(pitch), including the cross term for a proper unit quaternion.
+        return RotationSample(ms * 1_000_000, (cos(y) * sin(p)).toFloat(), (sin(y) * cos(p)).toFloat(),
+            (-sin(y) * sin(p)).toFloat(), (cos(y) * cos(p)).toFloat())
     }
     private fun pointer(x: Double, y: Double, rotation: Int = 0) = HeadPointerModel().apply {
         resize(PointerBounds(0f, 0f, 480f, 640f), rotation, 32f)
