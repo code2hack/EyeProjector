@@ -30,7 +30,7 @@ version and fresh role-specific participant identifiers. Those identifiers inclu
 the full local certificate fingerprint and a fresh UUID. Each encrypted identity
 record contains the role, certificate, pairing/projection ports and a signature
 over the record plus this exchange binding. The receiver checks certificate
-validity, its self-signature, the expected role/fingerprint, stable TLS DNS name,
+validity, the expected role/fingerprint, stable TLS DNS name,
 and possession of the corresponding private key. An encrypted confirmation precedes
 trust persistence on the Glasses; its encrypted acknowledgment precedes Phone
 persistence. An interrupted final acknowledgment can leave only the Glasses paired;

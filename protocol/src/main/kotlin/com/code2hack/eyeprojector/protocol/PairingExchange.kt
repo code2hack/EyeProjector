@@ -143,7 +143,8 @@ object PairingExchange {
             require(data.readId() == expected.name)
             val certificate = PeerStore.decodeCertificate(data.blob(8192))
             certificate.checkValidity()
-            certificate.verify(certificate.publicKey)
+            // PAKE plus the signed record authenticates this exact leaf, including
+            // an existing CA-issued identity. It need not be self-signed.
             require(otherId.startsWith("${expected.name}:${PeerStore.fingerprint(certificate)}:")) { "Peer identity changed during pairing" }
             PeerStore.tlsName(certificate)
             val verifier = Signature.getInstance(signatureAlgorithm(certificate.publicKey)).apply { initVerify(certificate); update(binding); update(body) }

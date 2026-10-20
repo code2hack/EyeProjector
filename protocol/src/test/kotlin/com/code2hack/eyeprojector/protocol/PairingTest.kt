@@ -11,6 +11,18 @@ import javax.net.ssl.SSLServerSocket
 import javax.net.ssl.SSLSocket
 import org.junit.Assert.*
 import org.junit.Test
+import java.math.BigInteger
+import java.security.KeyPairGenerator
+import java.security.KeyStore
+import java.util.Date
+import org.bouncycastle.asn1.x500.X500Name
+import org.bouncycastle.asn1.x509.Extension
+import org.bouncycastle.asn1.x509.GeneralName
+import org.bouncycastle.asn1.x509.GeneralNames
+import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
+import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
+import org.bouncycastle.jce.provider.BouncyCastleProvider
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 
 class PairingTest {
     private fun store(name: String) = PeerStore(File("build/tmp/pairing-${System.nanoTime()}/$name")).apply { ensureIdentity() }
@@ -95,6 +107,32 @@ class PairingTest {
         assertEquals("192.168.43.1", PeerStore(glasses.directory).pairedPeer()!!.endpoint.host)
         assertFalse(glasses.updateEndpoint("0".repeat(64), PeerEndpoint("192.168.43.9", 28700)))
         assertEquals("192.168.43.1", glasses.pairedPeer()!!.endpoint.host)
+    }
+
+    @Test fun codeAuthenticatesExistingCaIssuedLeafWithProofOfItsPrivateKey() {
+        val phone = store("ca-phone")
+        val original = phone.identityCertificate()
+        val ca = KeyPairGenerator.getInstance("EC").apply { initialize(256) }.generateKeyPair()
+        val provider = BouncyCastleProvider()
+        val certificate = JcaX509CertificateConverter().setProvider(provider).getCertificate(
+            JcaX509v3CertificateBuilder(X500Name("CN=Existing private CA"), BigInteger.ONE,
+                Date(System.currentTimeMillis() - 1000), Date(System.currentTimeMillis() + 86_400_000),
+                X500Name(original.subjectX500Principal.name), original.publicKey)
+                .addExtension(Extension.subjectAlternativeName, false, GeneralNames(GeneralName(GeneralName.dNSName, PeerStore.tlsName(original))))
+                .build(JcaContentSignerBuilder("SHA256withECDSA").setProvider(provider).build(ca.private)))
+        val password = File(phone.directory, "password").readText().toCharArray()
+        try {
+            val keys = KeyStore.getInstance("PKCS12")
+            File(phone.directory, "identity.p12").inputStream().use { keys.load(it, password) }
+            val alias = keys.aliases().nextElement()
+            val key = keys.getKey(alias, password)
+            keys.setKeyEntry(alias, key, password, arrayOf(certificate))
+            File(phone.directory, "identity.p12").outputStream().use { keys.store(it, password) }
+        } finally { password.fill('\u0000') }
+        val result = pair(phone = phone)
+        assertTrue(result.clientAccepted); assertTrue(result.serverAccepted)
+        assertEquals(PeerStore.fingerprint(certificate), result.glasses.pairedPeer()!!.identityId)
+        assertMutualTls(result)
     }
 
     @Test fun wrongCodeEstablishesNoTrustOnEitherSide() {
@@ -188,13 +226,19 @@ class PairingTest {
     }
 
     @Test fun pairedIdentitiesMutuallyAuthenticateUsingStableNamesOnCurrentIp() {
-        val result = pair()
+        assertMutualTls(pair())
+    }
+
+    private fun assertMutualTls(result: Result) {
         val listener = Tls.context(result.phone.directory).serverSocketFactory.createServerSocket(0, 2, InetAddress.getLoopbackAddress()) as SSLServerSocket
         listener.needClientAuth = true; listener.soTimeout = 5000
         result.glasses.writeTransportEndpoint("127.0.0.1", listener.localPort, PeerStore.tlsName(result.phone.identityCertificate()))
         val executor = Executors.newSingleThreadExecutor()
         val future = executor.submit(Callable {
-            (listener.accept() as SSLSocket).use { it.soTimeout = 5000; it.startHandshake(); it.outputStream.write(42) }
+            (listener.accept() as SSLSocket).use {
+                it.soTimeout = 5000; it.startHandshake(); Tls.requireTrustedPeer(it, result.phone.directory)
+                it.outputStream.write(42)
+            }
         })
         try {
             Tls.connect(result.glasses.directory).use { assertEquals(42, it.inputStream.read()) }
