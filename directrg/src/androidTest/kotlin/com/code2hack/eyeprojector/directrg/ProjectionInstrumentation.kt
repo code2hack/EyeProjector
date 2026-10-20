@@ -176,10 +176,21 @@ class ProjectionInstrumentation : Instrumentation() {
             val operation = args.getString("operation") ?: "stream"
             report.put("operation", operation)
             if (operation == "local-input-replay") {
+                val widgets = WidgetCheckDiagnostics.nativeReport()
+                report.put("localWidgets", widgets)
+                val diagnostics = WidgetCheckDiagnostics(widgets)
                 val intent = Intent().setClassName(targetContext.packageName, ReceiverActivity::class.java.name)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                activity = startActivitySync(intent); waitForIdleSync()
-                report.put("localWidgets", NativeInputWidgetChecks.run(activity, ::runOnMainSync))
+                diagnostics.enter(WidgetCheckDiagnostics.Check.ACTIVITY_START)
+                activity = startActivitySync(intent)
+                diagnostics.completed(WidgetCheckDiagnostics.Check.ACTIVITY_START)
+                diagnostics.enter(WidgetCheckDiagnostics.Check.ACTIVITY_IDLE)
+                waitForIdleSync()
+                diagnostics.completed(WidgetCheckDiagnostics.Check.ACTIVITY_IDLE)
+                NativeInputWidgetChecks.run(activity,
+                    { task -> WidgetCheckDiagnostics.mainSync(::runOnMainSync, task) }, widgets)
+                diagnostics.enter(WidgetCheckDiagnostics.Check.LOCAL_INPUT_REPLAY_COMPLETE)
+                diagnostics.completed(WidgetCheckDiagnostics.Check.LOCAL_INPUT_REPLAY_COMPLETE)
             } else if (operation == "tls-diagnostic") {
                 report.put("phase", "LOAD_PLATFORM_TLS_CONTEXT")
                 Tls.context(File(targetContext.filesDir, "session"))
