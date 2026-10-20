@@ -35,7 +35,7 @@ import org.json.JSONObject
 
 internal fun fixtureBootstrapReady(
     state: String, tls: String?, peerAddress: String?, localAddress: String?, width: Int, height: Int, touchesSent: Long,
-): Boolean = state in listOf("WAITING_FOR_VIDEO", "STREAMING", "WAITING_FOR_AUDIO", "WAITING_FOR_AUDIO_CLOCK") && tls in listOf("TLSv1.2", "TLSv1.3") &&
+): Boolean = state in listOf("WAITING_FOR_VIDEO", "STREAMING") && tls in listOf("TLSv1.2", "TLSv1.3") &&
     !peerAddress.isNullOrBlank() && !localAddress.isNullOrBlank() && width in 1..4096 && height in 1..4096 && touchesSent == 0L
 
 /** Explicit bounded on-RG test driver. No input/media loop runs on a computer. */
@@ -63,7 +63,7 @@ class ProjectionInstrumentation : Instrumentation() {
     }
     private fun status(): JSONObject = JSONObject(File(targetContext.filesDir, "status.json").readText()).also {
         check(freshAfterNs == 0L || it.optLong("startedMonoNs", 0) >= freshAfterNs) { "Historical session status" }
-        check(it.optString("state") !in listOf("STREAMING", "CONNECTING", "WAITING_FOR_VIDEO", "WAITING_FOR_AUDIO", "WAITING_FOR_AUDIO_CLOCK") || System.nanoTime() - it.optLong("startedMonoNs", 0) - it.optLong("elapsedMs", 0) * 1_000_000 < 3_000_000_000L) { "Stale session telemetry" }
+        check(it.optString("state") !in listOf("STREAMING", "CONNECTING", "WAITING_FOR_VIDEO") || System.nanoTime() - it.optLong("startedMonoNs", 0) - it.optLong("elapsedMs", 0) * 1_000_000 < 3_000_000_000L) { "Stale session telemetry" }
     }
     private fun surfaces(view: View): List<SurfaceView> = when (view) {
         is SurfaceView -> listOf(view)
@@ -243,7 +243,7 @@ class ProjectionInstrumentation : Instrumentation() {
                         }
                         if (elapsed >= nextSample) {
                             val sample = status(); require(sample.getString("state") == "STREAMING")
-                            require(sample.optJSONObject("audio")?.optLong("decodedBuffers", 0) ?: 0 > 0)
+                            require(sample.getString("audio") == "system-bluetooth")
                             val previous = samples.optJSONObject(samples.length() - 1)
                             require(previous == null || sample.getLong("elapsedMs") >= previous.getLong("elapsedMs"))
                             samples.put(sample); nextSample = elapsed + 1000
@@ -258,8 +258,7 @@ class ProjectionInstrumentation : Instrumentation() {
                     val first = report.getJSONObject("first")
                     require(last.getLong("elapsedMs") - first.getLong("elapsedMs") >= seconds * 1000L - 2500)
                     require(last.getLong("rendered") > first.getLong("rendered")) { "No actual video progress" }
-                    require(last.getJSONObject("audio").getLong("decodedBuffers") > first.getJSONObject("audio").getLong("decodedBuffers")) { "No actual audio progress" }
-                    require(last.getJSONObject("audio").getLong("lastSourcePtsUs") > first.getJSONObject("audio").getLong("lastSourcePtsUs")) { "No source audio PTS progress" }
+                    require(last.getLong("changingPackets") > first.getLong("changingPackets")) { "No changing encoded video" }
                     report.put("observedStreamingMs", SystemClock.elapsedRealtime() - start).put("last", last).put("samples", samples)
                     if (operation == "audio-volume") {
                         audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
@@ -273,10 +272,11 @@ class ProjectionInstrumentation : Instrumentation() {
                             .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).build())
                             .setOnAudioFocusChangeListener { }.build()
                         require(audioManager.requestAudioFocus(testFocus!!) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED)
-                        val deadline = SystemClock.elapsedRealtime() + 3000
-                        while (status().getString("state") == "STREAMING" && SystemClock.elapsedRealtime() < deadline) Thread.sleep(50)
-                        require(status().getString("state") == "AUDIO_FAILED")
-                        report.put("focusLossStopped", status())
+                        Thread.sleep(1500)
+                        val afterFocus = status()
+                        require(afterFocus.getString("state") == "STREAMING")
+                        require(afterFocus.getLong("rendered") > last.getLong("rendered"))
+                        report.put("independentAudioFocus", afterFocus)
                     }
                     if (operation == "pause") {
                         targetContext.startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
@@ -296,7 +296,7 @@ class ProjectionInstrumentation : Instrumentation() {
                         }
                         val deadline = SystemClock.elapsedRealtime() + 5000
                         while (status().getString("state") == "STREAMING" && SystemClock.elapsedRealtime() < deadline) Thread.sleep(100)
-                        require(status().getString("state") in listOf("CONNECTION_OR_REQUIRED_AUDIO_FAILED", "DISCONNECTED", "AUDIO_FAILED"))
+                        require(status().getString("state") in listOf("CONNECTION_OR_VIDEO_FAILED", "DISCONNECTED"))
                         report.put("hostStop", status())
                     }
                 }

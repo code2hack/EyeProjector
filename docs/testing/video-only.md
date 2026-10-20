@@ -1,0 +1,22 @@
+# Video and control without forwarded audio
+
+Worker: Worker-EyeProjector-7 · issue [#7](https://github.com/code2hack/EyeProjector/issues/7)
+
+The Phone starts pinned scrcpy 5.0.1 with `audio=false`, `video=true`, `control=true`, `send_stream_meta=true` and `send_frame_meta=true`. Reverse Unix socket acceptance is video then control. The video stream begins with the four-byte H.264 codec ID, followed by the existing session/geometry records and encoded packets. No audio socket or audio codec header is read. This matches upstream [DesktopConnection](https://github.com/Genymobile/scrcpy/blob/a60891aea193d92e7e5c3942700eca63f9d19a5f/server/src/main/java/com/genymobile/scrcpy/device/DesktopConnection.java) and [Streamer](https://github.com/Genymobile/scrcpy/blob/a60891aea193d92e7e5c3942700eca63f9d19a5f/server/src/main/java/com/genymobile/scrcpy/device/Streamer.java).
+
+Wire revision 3 keeps the native control channel IDs and requires H.264. Its welcome has no audio-required flag, and retired audio channel IDs 2 and 7 are rejected. Both endpoints must update together; revisions 1 and 2 are incompatible. Mutual TLS, peer trust, framing bounds and geometry bounds retain their existing requirements.
+
+Each Surface decoder maps the first non-config packet's video PTS to its local monotonic packet-receipt time. Later frames preserve source PTS intervals. Reconnect and geometry replacement allocate a new decoder and timing origin. Config packets do not start that clock. The existing 16-frame tracking bounds, 50 ms decoder input wait, 100 ms late-frame drop and 500 ms presentation lookahead remain. STREAMING requires a render callback from the current video decoder; it has no audio or Bluetooth readiness dependency. Static UI needs no periodic audio-clock updates. Startup and writes remain bounded; elapsed active-session time does not cause expiry.
+
+Status identifies audio as `system-bluetooth`, which describes the selected system-managed path and does not claim a Bluetooth connection or audible playback. Audio focus, playback, recording and Bluetooth routing are outside the projection transport. There is no Receiver AudioTrack or forwarded Opus decoder. Physical Bluetooth AV offset and microphone routing require separate evidence under #21/#22.
+
+Host verification uses the RUNBOOK JDK 17/SDK 35 build command, including all APKs, Receiver test APK assembly, the three JVM suites and all four lint tasks. Regression fixtures cover revision/header compatibility, retired audio rejection, malformed sizes, video PTS scheduling, late drops, buffering, video-only session readiness, decoder failure, geometry replacement, reconnect and repeated Stop. Codec doubles establish host logic and resource-release behavior; they do not decode real H.264 or establish Glasses hardware stability.
+
+Physical checks require a Manager-recorded reservation for both devices and their exact debugging route:
+
+1. Install and hash both updated endpoints and the test APK, preserving existing experimental applications/private state. Bootstrap through the authorized Phone path and record source/artifact/config identities.
+2. With Bluetooth disconnected, connect and launch an owned changing-video fixture on the actual new virtual display. Check changing packets, render progress, actual Glasses output and a visible native-control effect. Collect receiver and host diagnostics.
+3. Repeat with Bluetooth connected, then disconnect its audio route during changing video. Confirm video and controls continue. These observations do not establish AV synchronization or microphone routing.
+4. Exercise a current geometry change, Stop/Disconnect and reconnect. Relaunch the fixture on the fresh display, verify fresh timing/progress and inspect actual socket, child, display and codec teardown.
+
+The device driver no longer demands Opus packets. Its audio-focus case checks continued rendered video after independent system focus acquisition. Its volume case changes Receiver system music volume only; it does not prove the Phone's active Bluetooth route. Bluetooth transitions and optical output still need direct observation. Device and human evidence must be reported separately from the host checks.
