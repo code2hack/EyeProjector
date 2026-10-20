@@ -38,7 +38,8 @@ class HeadPointerModel(val settings: Settings = Settings()) {
     private var running = false
     private var reference: HeadOrientation? = null
     private var sourceTimeNs = 0L
-    private var frameTimeNs = 0L
+    private var frameTimeXNs = 0L
+    private var frameTimeYNs = 0L
     private var x = .5
     private var y = .5
     private var targetX = .5
@@ -59,7 +60,7 @@ class HeadPointerModel(val settings: Settings = Settings()) {
 
     fun start() { stop();running=true }
     fun stop() {
-        running=false;fresh=false;reference=null;sourceTimeNs=0;frameTimeNs=0
+        running=false;fresh=false;reference=null;sourceTimeNs=0;frameTimeXNs=0;frameTimeYNs=0
         targetX=x;targetY=y
     }
     fun resize(value: PointerBounds, displayRotation: Int, verticalPadding: Float = 0f) {
@@ -78,7 +79,7 @@ class HeadPointerModel(val settings: Settings = Settings()) {
         val rebase=reference==null || !fresh || sample.timestampNs-sourceTimeNs>=settings.staleNs
         sourceTimeNs=sample.timestampNs;fresh=true
         if (rebase) {
-            reference=current;x=.5;y=.5;targetX=.5;targetY=.5;frameTimeNs=nowNs
+            reference=current;x=.5;y=.5;targetX=.5;targetY=.5;frameTimeXNs=nowNs;frameTimeYNs=nowNs
             yaw=0.0;pitch=0.0;quietYaw=0.0;quietPitch=0.0
         } else {
             // Express the reference ray in the current head frame. The inverse order
@@ -118,10 +119,9 @@ class HeadPointerModel(val settings: Settings = Settings()) {
     fun sensitivity(xGain: Double, yGain: Double, nowNs: Long) {
         require(xGain in .1..6.0 && yGain in .1..6.0)
         if (xGain==sensitivityX && yGain==sensitivityY) return
-        if (xGain!=sensitivityX) { targetX=x;quietYaw=yaw }
-        if (yGain!=sensitivityY) { targetY=y;quietPitch=pitch }
+        if (xGain!=sensitivityX) { targetX=x;quietYaw=yaw;frameTimeXNs=nowNs }
+        if (yGain!=sensitivityY) { targetY=y;quietPitch=pitch;frameTimeYNs=nowNs }
         sensitivityX=xGain;sensitivityY=yGain
-        frameTimeNs=nowNs
     }
 
     /** Advance on RG display frames, independent of the remote video cadence. */
@@ -129,15 +129,24 @@ class HeadPointerModel(val settings: Settings = Settings()) {
         if (!running || sourceTimeNs==0L || nowNs-sourceTimeNs>=settings.staleNs) {
             fresh=false;return position // Freeze; the next good sample establishes a new reference.
         }
-        if (nowNs<=frameTimeNs) return position
-        val dt=(nowNs-frameTimeNs).coerceAtMost(50_000_000L);frameTimeNs=nowNs
-        val alpha=1-exp(-dt.toDouble()/settings.smoothingNs)
-        // Limit each displayed axis separately so changing X cannot accelerate or slow Y.
-        val limit=settings.maxSpanPerSecond*dt/1e9
-        val dx=((targetX-x)*alpha).coerceIn(-limit*sensitivityX,limit*sensitivityX)
-        val dy=((targetY-y)*alpha).coerceIn(-limit*sensitivityY,limit*sensitivityY)
-        x=(x+dx).coerceIn(0.0,1.0);y=(y+dy).coerceIn(minY,maxY)
-        if (!settling) { x=targetX;y=targetY }
+        fun axis(current: Double, target: Double, gain: Double, elapsed: Long,
+                 minimum: Double, maximum: Double, pixels: Float): Double {
+            val dt=elapsed.coerceAtMost(50_000_000L)
+            val alpha=1-exp(-dt.toDouble()/settings.smoothingNs)
+            val limit=settings.maxSpanPerSecond*gain*dt/1e9
+            val next=(current+((target-current)*alpha).coerceIn(-limit,limit)).coerceIn(minimum,maximum)
+            return if (abs(target-next)*pixels<=.05) target else next
+        }
+        // Clocks, rate limits and final settling are independent: an off-frame
+        // gain change on X must not discard elapsed Y motion (or vice versa).
+        if (nowNs>frameTimeXNs) {
+            x=axis(x,targetX,sensitivityX,nowNs-frameTimeXNs,0.0,1.0,bounds.width)
+            frameTimeXNs=nowNs
+        }
+        if (nowNs>frameTimeYNs) {
+            y=axis(y,targetY,sensitivityY,nowNs-frameTimeYNs,minY,maxY,bounds.height)
+            frameTimeYNs=nowNs
+        }
         return position
     }
 
