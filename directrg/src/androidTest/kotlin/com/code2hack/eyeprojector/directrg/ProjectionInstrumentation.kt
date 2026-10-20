@@ -188,7 +188,7 @@ class ProjectionInstrumentation : Instrumentation() {
             } else if (operation == "unauthenticated") {
                 require(unauthenticated()); report.put("unauthenticatedRefused", true).put("mediaWelcomeReceived", false)
             } else {
-                require(operation in listOf("stream", "pause", "reconnect", "local-stop", "host-stop", "surface-diagnostic", "input-observation", "audio-focus", "audio-volume"))
+                require(operation in listOf("stream", "static-content", "pause", "reconnect", "local-stop", "host-stop", "surface-diagnostic", "input-observation", "audio-focus", "audio-volume"))
                 val seconds = args.getString("seconds")?.toInt() ?: 10
                 require(seconds in 1..660)
                 val waitForFixture = args.getString("waitForGo") == "true"
@@ -262,8 +262,13 @@ class ProjectionInstrumentation : Instrumentation() {
                     val last = status()
                     val first = report.getJSONObject("first")
                     require(last.getLong("elapsedMs") - first.getLong("elapsedMs") >= seconds * 1000L - 2500)
-                    require(last.getLong("rendered") > first.getLong("rendered")) { "No actual video progress" }
-                    require(last.getLong("changingPackets") > first.getLong("changingPackets")) { "No changing encoded video" }
+                    if (operation == "static-content") {
+                        require(last.getString("state") == "STREAMING")
+                        report.put("staticScope", "Session survives after initial render; packet silence does not establish producer health. Verify the separate source fixture record.")
+                    } else {
+                        require(last.getLong("rendered") > first.getLong("rendered")) { "No actual video progress" }
+                        require(last.getLong("changingPackets") > first.getLong("changingPackets")) { "No changing encoded video" }
+                    }
                     report.put("observedStreamingMs", SystemClock.elapsedRealtime() - start).put("last", last).put("samples", samples)
                     if (operation == "audio-volume") {
                         audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)

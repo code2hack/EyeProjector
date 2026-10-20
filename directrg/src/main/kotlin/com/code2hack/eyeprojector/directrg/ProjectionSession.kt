@@ -55,6 +55,7 @@ class ProjectionSession(
 
     @Synchronized private fun record(state: String? = null) {
         if (state != null) stats.put("state", state)
+        decoder?.let { stats.put("decoderProgress", it.snapshot()) }
         val seconds = (System.nanoTime() - started) / 1e9
         fun p95(values: ArrayDeque<Double>): Double = values.sorted().let { if (it.isEmpty()) 0.0 else it[((it.size - 1) * .95).toInt()] }
         stats.put("startedMonoNs", started).put("elapsedMs", (seconds * 1000).toLong()).put("packets", packets).put("changingPackets", changes)
@@ -248,6 +249,7 @@ class ProjectionSession(
             decoder.also { decoder = null }
         }
         runCatching { socket?.close() }; timer.shutdownNow(); controls.close()
+        synchronized(this) { old?.let { stats.put("decoderProgress", it.snapshot()) } }
         runCatching { old?.close() }
         state(value)
     }
