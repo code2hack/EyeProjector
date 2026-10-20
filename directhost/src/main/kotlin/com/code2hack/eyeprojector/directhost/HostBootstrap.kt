@@ -22,10 +22,12 @@ class HostBootstrap private constructor(private val context: Context) {
     data class Status(val setup: Setup, val backend: String, val detail: String? = null)
     private enum class Action { START, STOP }
     private val main = Handler(Looper.getMainLooper())
+    private val forget = HostForgetCompletion { main.post(it) }
     private val executor = Executors.newSingleThreadScheduledExecutor()
     private val observers = CopyOnWriteArraySet<(Status) -> Unit>()
     @Volatile private var current = Status(Setup.UNAVAILABLE, "UNKNOWN")
     private var remote: IHostBootstrap? = null
+    private var revokedBinder: IBinder? = null
     private var pending: Action? = null
     private var localDetail: String? = null
     private var connecting = false
@@ -42,7 +44,8 @@ class HostBootstrap private constructor(private val context: Context) {
                 connecting = false
                 remote = IHostBootstrap.Stub.asInterface(binder)
                 binder.linkToDeath({ executor.execute {
-                    if (remote?.asBinder() == binder) { remote = null; publish("UNKNOWN", "SERVICE_DIED") }
+                    if (revokedBinder == binder) finishRevokedStop(binder)
+                    else if (remote?.asBinder() == binder) { remote = null; publish("UNKNOWN", "SERVICE_DIED") }
                 } }, 0)
                 performPending()
                 refreshNow()
@@ -77,18 +80,34 @@ class HostBootstrap private constructor(private val context: Context) {
         runCatching { if (Shizuku.pingBinder()) Shizuku.requestPermission(5001) }.onFailure { refresh() }
     }
     fun start() { executor.execute {
+        if (forget.pending()) { publish(current.backend, "FORGET_PENDING"); return@execute }
+        if (revokedBinder != null) { publish("STOPPING"); return@execute }
         if (setup() != Setup.AVAILABLE) { publish(current.backend); return@execute }
         localDetail = null
         pending = Action.START
         if (remote != null) performPending() else bind()
     } }
     fun stop() { executor.execute {
+        requestStop()
+    } }
+
+    /** PairingPanel.beforeForget hook: completion and the caller's trust deletion run on main. */
+    fun stopBeforeForget(complete: () -> Unit) { executor.execute {
+        forget.request(complete)
+        requestStop()
+    } }
+
+    private fun requestStop() {
         localDetail = null
+        revokedBinder?.let { binder ->
+            if (!binder.isBinderAlive) finishRevokedStop(binder) else publish("STOPPING")
+            return
+        }
         pending = Action.STOP
         if (remote != null) performPending()
         else if (setup() == Setup.AVAILABLE) bind()
         else publish("UNKNOWN", "RESTORE_SHIZUKU_TO_VERIFY_STOP")
-    } }
+    }
 
     private fun setup(): Setup {
         val installed = runCatching { context.packageManager.getPackageInfo("moe.shizuku.privileged.api", 0) }.isSuccess
@@ -116,40 +135,61 @@ class HostBootstrap private constructor(private val context: Context) {
         val service = remote ?: return
         val action = pending ?: return
         pending = null
+        var stopRevoked = false
         runCatching {
             val result = when (action) {
                 Action.START -> {
                     if (setup() != Setup.AVAILABLE) { publish(current.backend); return }
                     val session = File(context.filesDir, "session")
-                    val files = listOf("identity.p12", "password", "peer.crt", "endpoint.properties").map { File(session, it) }
-                    if (files.any { !it.isFile }) {
+                    val files = BootstrapSessionFiles.read(session)
+                    if (files == null) {
                         localDetail = "SESSION_SETUP_REQUIRED"; publish("STOPPED", localDetail); return
                     }
-                    service.start(files[0].readBytes(), files[1].readBytes(), files[2].readBytes(), files[3].readBytes())
+                    service.start(files.identity, files.password, files.legacyPeer, files.endpoint, files.pairedPeer)
                 }
                 Action.STOP -> service.stop()
             }
             readStatus(result)
-            if (action == Action.STOP && current.backend == "STOPPED") {
+            stopRevoked = action == Action.STOP && current.backend == "STOPPED" && JSONObject(result).optBoolean("sessionRevoked")
+            if (stopRevoked) {
                 val binder = service.asBinder()
+                revokedBinder = binder
                 service.destroy()
-                remote = null
-                publish(if (binder.isBinderAlive) "STOPPING" else "STOPPED")
+                if (!binder.isBinderAlive) finishRevokedStop(binder) else publish("STOPPING")
             }
         }.onFailure {
             // destroy exits before replying; binder death confirms that exact process ended.
-            if (action == Action.STOP && !service.asBinder().isBinderAlive) {
+            if (action == Action.STOP && stopRevoked) {
+                val binder = service.asBinder()
+                if (!binder.isBinderAlive) finishRevokedStop(binder) else publish("STOPPING")
+            } else if (action == Action.STOP && !service.asBinder().isBinderAlive) {
                 remote = null; publish("STOPPED")
             } else publish("UNKNOWN", "OPERATION_FAILED")
         }
     }
 
+    private fun finishRevokedStop(binder: IBinder) {
+        if (revokedBinder != binder || binder.isBinderAlive) return
+        revokedBinder = null
+        if (remote?.asBinder() == binder) remote = null
+        publish("STOPPED")
+        forget.revoked()
+    }
+
     private fun refreshNow() {
+        revokedBinder?.let { binder ->
+            if (!binder.isBinderAlive) finishRevokedStop(binder) else publish("STOPPING")
+            return
+        }
         val service = remote
         if (service != null) {
+            if (forget.awaitingTeardown()) { pending = Action.STOP; performPending(); return }
             runCatching { readStatus(service.status()) }.onFailure { remote = null; publish("UNKNOWN", "SERVICE_UNREACHABLE") }
         } else if (!connecting && setup() == Setup.AVAILABLE) {
-            if (pending != null) { bind(); return }
+            if (pending != null || forget.awaitingTeardown()) {
+                if (forget.awaitingTeardown()) pending = Action.STOP
+                bind(); return
+            }
             // Reattach after app recreation without silently starting projection.
             runCatching { Shizuku.peekUserService(args, connection) }.onSuccess { version ->
                 if (version != -1) { connecting = true; bindStarted = System.nanoTime() }
