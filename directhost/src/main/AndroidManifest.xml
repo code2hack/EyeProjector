@@ -1,6 +1,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <queries><package android:name="moe.shizuku.privileged.api" /></queries>
     <application android:theme="@android:style/Theme.Material.NoActionBar" android:label="EyeProjector host" android:allowBackup="false" android:dataExtractionRules="@xml/no_backup" android:icon="@android:drawable/ic_media_play" android:usesCleartextTraffic="false">
+        <provider android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku" android:multiprocess="false"
+            android:enabled="true" android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
         <activity android:name=".InputFixtureActivity" android:exported="true" />
         <activity android:name=".AvFixtureActivity" android:exported="true" />
         <activity android:name=".FixtureActivity" android:exported="true" />
