@@ -5,7 +5,9 @@ import android.graphics.Color
 import android.os.Bundle
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
+import com.code2hack.eyeprojector.directhost.apps.ChosenAppsPanel
 import com.code2hack.eyeprojector.protocol.Tls
 import com.code2hack.eyeprojector.protocol.Wire
 import java.io.DataOutputStream
@@ -34,9 +36,12 @@ class HostActivity : Activity() {
                 }.start()
             }
         }
-        setContentView(LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.BLACK); setPadding(24, 24, 24, 24)
-            addView(status); addView(stop)
+        setContentView(ScrollView(this).apply {
+            addView(LinearLayout(this@HostActivity).apply {
+                orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.BLACK); setPadding(24, 24, 24, 24)
+                addView(status); addView(stop)
+                addView(ChosenAppsPanel(this@HostActivity))
+            })
         })
     }
 }
