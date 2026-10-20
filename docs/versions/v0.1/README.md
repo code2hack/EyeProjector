@@ -33,7 +33,15 @@ The breakdown contains 18 core implementation or focused verification issues, on
 
 During implementation, #6 acquired source-composition dependencies on #5/#9, and #14 on #7/#13. Their feature-local work was already underway; the composed candidates retain explicit prerequisite commits and wait for those issues' accepted corrections and integration. These working branches do not establish acceptance.
 
-An issue's blockers apply to new dispatch and acceptance, not just merge order. Work progresses when its own prerequisites land; there is no whole-wave barrier.
+An issue's implementation blockers apply to new dispatch and integration, not just merge order. Work progresses when its required implementation interfaces land; there is no whole-wave barrier. The Owner's later autonomous-work direction below distinguishes implementation readiness from deferred human-only acceptance.
+
+## Autonomous work while the Owner sleeps
+
+The Owner authorized ADB controls, UI automation, logs, dumps and screenshots on both devices, asked agents to continue implementation, and directed genuinely Owner-only gates to be recorded for the next actual Owner message. Routine wake/music alarms and human prompts are suppressed during this period. The Manager retains exclusive device scheduling and installed-state preservation.
+
+An exact independently reviewed source/host candidate can be accepted for **implementation integration** on `version/v0.1` with its outstanding evidence recorded explicitly. Dependent implementation can then proceed against that integrated interface. This scope does not close an issue's unresolved acceptance or claim a device pass. Open machine failures receive their own diagnosis and affected verification; deferred genuine pad/HID, optical, hearing and ergonomic judgments stay visible in the canonical issue and run record. Synthetic ADB evidence states what it actually exercised.
+
+The Manager records integration readiness, full issue acceptance and assembled-version acceptance separately. Reviewers remain associated with open issues. Core product criteria and the final assembled-version gate in #23 are retained. New guard proposals still follow the Owner-approval procedure; unanswered proposals expire as denied, with any Owner question deferred until the Owner returns. Protected-document and final publication approvals remain their existing gates.
 
 ## Concurrency and write ownership
 
