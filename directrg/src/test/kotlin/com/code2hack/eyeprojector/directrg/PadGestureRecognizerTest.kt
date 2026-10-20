@@ -65,10 +65,10 @@ class PadGestureRecognizerTest {
         r.marker(1000, position = point)
         r.marker(1170, position = point)
         r.key(PadGestureRecognizer.Key.FORWARD, 1280)
-        r.key(PadGestureRecognizer.Key.SWIPE_TAIL, 1350)
+        r.key(PadGestureRecognizer.Key.FORWARD_TAIL, 1350)
         r.key(PadGestureRecognizer.Key.FORWARD_ALIAS, 1400)
         r.marker(1500, position = point); r.key(PadGestureRecognizer.Key.BACKWARD, 1630)
-        r.key(PadGestureRecognizer.Key.SWIPE_TAIL, 1700)
+        r.key(PadGestureRecognizer.Key.BACKWARD_TAIL, 1700)
         r.pad.confirm(3000)
         assertEquals(1, r.taps().size)
         assertEquals(listOf(160, -160), r.actions.filterIsInstance<PadGestureRecognizer.Action.Scroll>().map { it.pixels })
@@ -175,5 +175,32 @@ class PadGestureRecognizerTest {
         assertEquals(1, r.taps().size)
         assertEquals(1, r.actions.filterIsInstance<PadGestureRecognizer.Action.Scroll>().size)
         assertEquals(1200L, r.taps().single().downTimeMs)
+    }
+    @Test fun documentedTwoDownSwipeSequenceNeedsNoFirstKeyUpAndEmitsOnce() {
+        for ((first, tail, pixels) in listOf(
+            Triple(PadGestureRecognizer.Key.FORWARD, PadGestureRecognizer.Key.FORWARD_TAIL, 160),
+            Triple(PadGestureRecognizer.Key.BACKWARD, PadGestureRecognizer.Key.BACKWARD_TAIL, -160))) {
+            val r = Replay(); r.marker(1000)
+            r.pad.accept(PadGestureRecognizer.Event(first, PadGestureRecognizer.Phase.DOWN, 1100, 1100), 1100)
+            r.pad.accept(PadGestureRecognizer.Event(tail, PadGestureRecognizer.Phase.DOWN, 1300, 1300), 1300)
+            r.pad.accept(PadGestureRecognizer.Event(first, PadGestureRecognizer.Phase.UP, 1320, 1100), 1320)
+            r.pad.confirm(2500)
+            assertTrue(r.taps().isEmpty())
+            assertEquals(listOf(pixels), r.actions.filterIsInstance<PadGestureRecognizer.Action.Scroll>().map { it.pixels })
+        }
+    }
+    @Test fun missingDirectionalSequenceTailExpiresWithoutAPreliminaryTap() {
+        val r = Replay(); r.marker(1000)
+        r.pad.accept(PadGestureRecognizer.Event(PadGestureRecognizer.Key.FORWARD, PadGestureRecognizer.Phase.DOWN, 1100, 1100), 1100)
+        assertEquals(1600L, r.pad.deadline)
+        r.pad.confirm(3000)
+        assertTrue(r.actions.isEmpty()); assertFalse(r.pad.hasWork)
+    }
+    @Test fun aNewContactInvalidatesIncompleteSwipeWithoutLosingTheNewTap() {
+        val r = Replay(); r.marker(1000)
+        r.pad.accept(PadGestureRecognizer.Event(PadGestureRecognizer.Key.FORWARD, PadGestureRecognizer.Phase.DOWN, 1100, 1100), 1100)
+        r.marker(1200); r.pad.confirm(3000)
+        assertEquals(1200L, r.taps().single().downTimeMs)
+        assertEquals(1, r.actions.size)
     }
 }

@@ -20,7 +20,8 @@ internal fun nativePadKey(deviceName: String?, source: Int, keyCode: Int): PadGe
         21 -> PadGestureRecognizer.Key.BACKWARD
         292 -> PadGestureRecognizer.Key.FORWARD_ALIAS
         293 -> PadGestureRecognizer.Key.BACKWARD_ALIAS
-        20, 19 -> PadGestureRecognizer.Key.SWIPE_TAIL
+        20 -> PadGestureRecognizer.Key.FORWARD_TAIL
+        19 -> PadGestureRecognizer.Key.BACKWARD_TAIL
         else -> null
     }
 }

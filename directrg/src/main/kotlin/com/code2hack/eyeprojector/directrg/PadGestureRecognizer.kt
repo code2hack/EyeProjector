@@ -10,7 +10,7 @@ internal class PadGestureRecognizer(
     private val longPressMs: Long,
     private val emit: (Action) -> Unit,
 ) {
-    enum class Key { CONTACT, TAP, DOUBLE, BACK, FORWARD, BACKWARD, FORWARD_ALIAS, BACKWARD_ALIAS, SWIPE_TAIL, HELD_CONTACT }
+    enum class Key { CONTACT, TAP, DOUBLE, BACK, FORWARD, BACKWARD, FORWARD_ALIAS, BACKWARD_ALIAS, FORWARD_TAIL, BACKWARD_TAIL, HELD_CONTACT }
     enum class Phase { DOWN, MOVE, UP, CANCEL }
     enum class Timing { CONTACT_MARKER, INFERRED_SUMMARY }
     data class Event(
@@ -43,8 +43,9 @@ internal class PadGestureRecognizer(
     private var epoch = 0L
     private var held: Event? = null
     private var lastSwipe: Event? = null
+    private var swipeFirst: Event? = null
     val deadline: Long? get() = (pending.map { it.due } + presses.values
-        .map { it.event.downTimeMs + CLASSIFICATION_MS }).minOrNull()
+        .map { pressDeadline(it.event) }).minOrNull()
     val hasWork get() = pending.isNotEmpty() || presses.isNotEmpty() || held != null
 
     init { require(doubleTapMs in 100..600 && longPressMs in 200..2_000) }
@@ -52,7 +53,6 @@ internal class PadGestureRecognizer(
     fun accept(event: Event, receiptUptimeMs: Long) {
         // Related summaries can arrive after a UI transition or with an earlier timestamp.
         if (contactReports && event.key in listOf(Key.TAP, Key.DOUBLE)) return
-        if (event.key == Key.SWIPE_TAIL) return
         if (event.key != Key.HELD_CONTACT && event.downTimeMs <= (completed[event.key] ?: -1L)) return
         if (event.downTimeMs <= canceledThrough) return
         if (event.timeMs <= 0 || event.timeMs < lastEventMs || event.timeMs > receiptUptimeMs ||
@@ -68,9 +68,26 @@ internal class PadGestureRecognizer(
         if (event.repeat != 0) return
         if (event.key == Key.HELD_CONTACT) { contact(event); return }
         if (event.phase == Phase.MOVE) return
+        if (event.key == Key.FORWARD_TAIL || event.key == Key.BACKWARD_TAIL) {
+            if (event.phase == Phase.DOWN) {
+                completed[event.key] = event.downTimeMs
+                val first = swipeFirst
+                swipeFirst = null
+                if (first != null && event.timeMs - first.timeMs in 0..500 &&
+                    (first.key == Key.FORWARD) == (event.key == Key.FORWARD_TAIL)) {
+                    presses.remove(first.key); completed[first.key] = first.downTimeMs
+                    // Legacy first-key UP may already have classified this same sequence.
+                    if (lastSwipe?.downTimeMs != first.downTimeMs) swipe(first, event)
+                    confirm(receiptUptimeMs)
+                } else if (first != null) retireUnclassifiedSwipe(first, event.timeMs)
+            }
+            return
+        }
         if (event.key == Key.CONTACT) { contactReports = true; summarySingles.clear() }
         if (event.phase == Phase.DOWN) {
             if (presses[event.key]?.event?.downTimeMs == event.downTimeMs) return
+            swipeFirst?.let { retireUnclassifiedSwipe(it, event.timeMs) }
+            swipeFirst = if (event.key == Key.FORWARD || event.key == Key.BACKWARD) event else null
             presses.remove(event.key) // A missing UP cannot be completed by another DOWN.
             presses[event.key] = Press(event)
             return
@@ -125,7 +142,7 @@ internal class PadGestureRecognizer(
             up.timeMs - old.timeMs in 0..500 &&
             (old.key in listOf(Key.FORWARD, Key.FORWARD_ALIAS)) == (pixels > 0)) return
         val marker = takeMarker(up.timeMs, old?.timeMs ?: -1)
-        lastSwipe = up
+        lastSwipe = down.copy(timeMs = up.timeMs)
         val origin = marker?.origin ?: down.timeMs
         val due = marker?.due ?: up.timeMs + if (contactReports) CLASSIFICATION_MS else doubleTapMs
         pending.add(Pending(origin, due, Action.Scroll(pixels,
@@ -166,7 +183,16 @@ internal class PadGestureRecognizer(
     }
 
     fun confirm(nowUptimeMs: Long) {
-        presses.entries.removeAll { nowUptimeMs >= it.value.event.downTimeMs + CLASSIFICATION_MS }
+        val expired = presses.values.map { it.event }.filter { nowUptimeMs >= pressDeadline(it) }
+        for (event in expired) {
+            presses.remove(event.key)
+            completed[event.key] = maxOf(completed[event.key] ?: -1L, event.downTimeMs)
+            if (event.key == Key.FORWARD || event.key == Key.BACKWARD) {
+                // An incomplete directional sequence is not a marker tap.
+                takeMarker(pressDeadline(event))
+                swipeFirst = null
+            }
+        }
         val generation = epoch
         while (epoch == generation) {
             val next = pending.minWithOrNull(compareBy<Pending> { it.due }.thenBy { it.origin }) ?: break
@@ -178,7 +204,7 @@ internal class PadGestureRecognizer(
 
     fun cancel(nowUptimeMs: Long = lastEventMs) {
         val old = held
-        held = null; pending.clear(); presses.clear(); summarySingles.clear(); lastSwipe = null
+        held = null; pending.clear(); presses.clear(); summarySingles.clear(); lastSwipe = null; swipeFirst = null
         canceledThrough = maxOf(canceledThrough, nowUptimeMs); epoch++
         if (old != null) emit(Action.Contact(old.copy(phase = Phase.CANCEL, timeMs = nowUptimeMs)))
     }
@@ -188,5 +214,13 @@ internal class PadGestureRecognizer(
         // Two measured AI classifications arrived ~815 ms after the initial 22 ms marker.
         // This is a replay choice for that firmware evidence, not a measured universal bound.
         const val CLASSIFICATION_MS = 1_000L
+    }
+    private fun pressDeadline(event: Event) = event.downTimeMs +
+        if (event.key == Key.FORWARD || event.key == Key.BACKWARD) 500L else CLASSIFICATION_MS
+
+    private fun retireUnclassifiedSwipe(first: Event, at: Long) {
+        if (presses[first.key]?.event?.downTimeMs != first.downTimeMs) return
+        presses.remove(first.key); completed[first.key] = first.downTimeMs
+        takeMarker(minOf(at, pressDeadline(first)))
     }
 }
