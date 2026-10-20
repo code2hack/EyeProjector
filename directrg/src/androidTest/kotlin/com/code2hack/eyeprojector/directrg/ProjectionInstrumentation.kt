@@ -175,7 +175,12 @@ class ProjectionInstrumentation : Instrumentation() {
             ownsRecord = true
             val operation = args.getString("operation") ?: "stream"
             report.put("operation", operation)
-            if (operation == "tls-diagnostic") {
+            if (operation == "local-input-replay") {
+                val intent = Intent().setClassName(targetContext.packageName, ReceiverActivity::class.java.name)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                activity = startActivitySync(intent); waitForIdleSync()
+                report.put("localWidgets", NativeInputWidgetChecks.run(activity, ::runOnMainSync))
+            } else if (operation == "tls-diagnostic") {
                 report.put("phase", "LOAD_PLATFORM_TLS_CONTEXT")
                 Tls.context(File(targetContext.filesDir, "session"))
                 report.put("contextLoaded", true).put("phase", "AUTHENTICATED_HANDSHAKE")
