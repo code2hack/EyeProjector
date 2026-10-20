@@ -1,6 +1,8 @@
 # Native pad taps and scroll — issue #14
 
-Worker: Worker-EyeProjector-14. This change replaces touchpad double-tap Back and triple-tap Disconnect with ordinary touches. Function-button navigation belongs to its own issue.
+Worker: Worker-EyeProjector-14. This change replaces the retired touchpad double-tap Back and triple-tap Disconnect bindings with ordinary touches. Function-button navigation belongs to its own issue.
+
+The current [Owner contract](../../SPEC.md#glasses-native-interaction), published at `3e389e62ffe8e786cdaad1f7c47ebdeed3d893be`, makes a physical-function triple during projection open the existing control panel while retaining the session, decoder and Surface. Connect becomes Disconnect while connected; ordinary local Back returns to live projection. A function triple in the local panel exits EyeProjector and releases the session. The connected view/session flow belongs to #8, function classification to #16, settings/cancellation to #13 and assembled physical flow to #23. This input candidate supplies normalization and dispatch; it does not claim those other issues' connected-panel behavior. No separate Settings overlay or periodic encoder reset is selected or added.
 
 ## Reports and actions
 
