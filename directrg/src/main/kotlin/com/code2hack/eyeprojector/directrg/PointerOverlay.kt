@@ -26,8 +26,8 @@ class PointerOverlay(context: Context, attrs: AttributeSet?=null) : View(context
     internal val cursorVisible get() = position.y>=visibleBounds.top && position.y<visibleBounds.bottom
     internal val expiresAtNs get() = model.expiresAtNs
     internal var onPositionChanged: (() -> Unit)? = null
-    internal fun sensitivity(value: Double) {
-        model.sensitivity(value,SystemClock.elapsedRealtimeNanos());publish();requestFrame()
+    internal fun sensitivity(xGain: Double, yGain: Double) {
+        model.sensitivity(xGain,yGain,SystemClock.elapsedRealtimeNanos());publish();requestFrame()
     }
     val sourceRegistered get() = source.registered
     val sourceDescription get() = source.description
