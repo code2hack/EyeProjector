@@ -23,6 +23,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import com.code2hack.eyeprojector.protocol.Touch
 import com.code2hack.eyeprojector.protocol.Fit
 import com.code2hack.eyeprojector.protocol.Geometry
 import com.code2hack.eyeprojector.protocol.Navigation
@@ -45,10 +46,11 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var gestures: PadGestureRecognizer
     private lateinit var localInput: LocalPointerDispatcher
     private lateinit var longTouch: NativePadLongTouch
+    private lateinit var heldInput: HeldPointerDispatcher
+    private lateinit var padContact: NativePadContact
     private var nativeActionsSubmitted = 0L
     private var nativeActionsRejected = 0L
     private var longClassifications = 0L
-    private var unsupportedHeldEvents = 0L
     private var tapDelaySamples = 0L
     private var tapDelayTotalMs = 0L
     private var tapDelayMaxMs = 0L
@@ -102,6 +104,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             sensitivity(settings.pointerXGain, settings.pointerYGain)
             onPositionChanged = {
                 if (!position.available) cancelInput()
+                else if (::heldInput.isInitialized) heldInput.move(SystemClock.uptimeMillis())
                 updateEdgeScroll()
             }
         }
@@ -111,6 +114,28 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             ViewConfiguration.getLongPressTimeout().toLong().coerceIn(200, 2000),
             ::dispatchPadAction,
         )
+        // Admission and position notifications already refresh the model; observing must not publish again.
+        heldInput = HeldPointerDispatcher({ pointer.position }) {
+            if (!usable()) null
+            else if (connectionView.visibility == View.VISIBLE) localInput::touch
+            else {
+                val source = session
+                val size = currentGeometry
+                if (source == null || size == null || !streaming) null
+                else { event ->
+                    val fit = Fit.inside(root.width, root.height, size)
+                    val point = event.position
+                    val target = if (event.phase == Touch.Phase.DOWN) fit.touch(point.x, point.y, size)
+                        else fit.touch(point.x.coerceIn(fit.left.toFloat(), (fit.left + fit.width - 1).toFloat()),
+                            point.y.coerceIn(fit.top.toFloat(), (fit.top + fit.height - 1).toFloat()), size)
+                    target != null && source.touch(Touch(event.phase, event.contactId, target), event.timeMs)
+                }
+            }
+        }
+        padContact = NativePadContact(this, { pointer.inputPosition() }, { event ->
+            if (usable()) gestures.accept(event, SystemClock.uptimeMillis()) else cancelInput()
+            schedulePadConfirmation()
+        }, ::cancelInput)
         longTouch = NativePadLongTouch(this) { at ->
             if (usable()) gestures.classifyLongPress(at) else gestures.cancel(at)
             schedulePadConfirmation()
@@ -173,9 +198,10 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         when (action) {
             is PadGestureRecognizer.Action.LongPress -> { longClassifications++; return }
             is PadGestureRecognizer.Action.Contact -> {
-                // EP-11 receives genuine DOWN/MOVE/UP/CANCEL here; never replace a hold by a tap.
-                unsupportedHeldEvents++
-                return
+                val accepted = if (action.event.phase == PadGestureRecognizer.Phase.CANCEL || usable())
+                    heldInput.accept(action.event) else false
+                if (accepted) nativeActionsSubmitted++ else nativeActionsRejected++
+                updateEdgeScroll(); return
             }
             is PadGestureRecognizer.Action.Back -> { remoteBack(); return }
             else -> Unit
@@ -205,7 +231,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun updateEdgeScroll() {
-        if (!usable() || !streaming ||
+        if (!usable() || !streaming || (::heldInput.isInitialized && heldInput.holding) ||
             edgeMotion.direction(pointer.position, pointer.visibleBounds, pointer.expiresAtNs, SystemClock.elapsedRealtimeNanos()) == 0) {
             root.removeCallbacks(edgeTick); edgeScheduled = false; edgeMotion.stop()
             session?.cancelHeadScroll()
@@ -234,10 +260,17 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     }
     private fun cancelInput() {
         if (::gestures.isInitialized) gestures.cancel(SystemClock.uptimeMillis())
+        if (::heldInput.isInitialized) heldInput.cancel(SystemClock.uptimeMillis())
+        if (::padContact.isInitialized) padContact.clear()
         if (::screen.isInitialized) screen.cancelTouch()
         if (::localInput.isInitialized) localInput.cancel()
         session?.cancelPendingInput()
         root.removeCallbacks(confirmTap); root.removeCallbacks(edgeTick); edgeScheduled = false; edgeMotion.stop()
+    }
+
+    override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+        if (::padContact.isInitialized && padContact.accept(event)) return true
+        return super.dispatchGenericMotionEvent(event)
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -275,7 +308,13 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         .put("hardwarePadUps", padUps).put("tapContinuationMs", gestures.doubleTapMs)
         .put("nativeMarkerReplayDelayMs", PadGestureRecognizer.CLASSIFICATION_MS)
         .put("nativeActionsSubmitted", nativeActionsSubmitted).put("nativeActionsRejected", nativeActionsRejected)
-        .put("longClassifications", longClassifications).put("unsupportedHeldEvents", unsupportedHeldEvents)
+        .put("longClassifications", longClassifications)
+        .put("heldInputAccepted", heldInput.accepted).put("heldInputRejected", heldInput.rejected)
+        .put("heldInputCanceled", heldInput.canceled).put("holdingInput", heldInput.holding)
+        .put("padMotionDowns", padContact.downs).put("padMotionReleases", padContact.releases)
+        .put("padMotionCancels", padContact.cancels).put("padMotionDeviceLosses", padContact.deviceLosses)
+        .put("padContinuousSource", if (padContact.downs > 0) "android-touchpad-edges-observed" else "not-observed")
+        .put("physicalPadHoldReleaseDragPass", false)
         .put("nativeTapNormalizationSamples", tapDelaySamples).put("nativeTapNormalizationMaxMs", tapDelayMaxMs)
         .put("nativeTapNormalizationMeanMs", if (tapDelaySamples == 0L) 0.0 else tapDelayTotalMs.toDouble() / tapDelaySamples)
         .put("pointerXGain", settings.pointerXGain).put("pointerYGain", settings.pointerYGain)
@@ -323,16 +362,16 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         resize()
     }
-    override fun onResume() { super.onResume(); resumed = true; pointer.start(); longTouch.start() }
+    override fun onResume() { super.onResume(); resumed = true; pointer.start(); longTouch.start(); padContact.start() }
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (::root.isInitialized) {
-            if (!hasFocus) { cancelInput(); pointer.stop(); if (::longTouch.isInitialized) longTouch.stop() }
-            else if (resumed) { pointer.start(); longTouch.start() }
+            if (!hasFocus) { cancelInput(); pointer.stop(); if (::longTouch.isInitialized) longTouch.stop(); if (::padContact.isInitialized) padContact.stop() }
+            else if (resumed) { pointer.start(); longTouch.start(); padContact.start() }
         }
     }
-    override fun onPause() { resumed = false; longTouch.stop(); pointer.stop(); disconnect(); super.onPause() }
-    override fun onDestroy() { longTouch.stop(); disconnect(); pairingPanel.close(); super.onDestroy() }
+    override fun onPause() { resumed = false; longTouch.stop(); padContact.stop(); pointer.stop(); disconnect(); super.onPause() }
+    override fun onDestroy() { longTouch.stop(); padContact.stop(); disconnect(); pairingPanel.close(); super.onDestroy() }
     override fun surfaceCreated(holder: SurfaceHolder) = Unit
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) { resize() }
     override fun surfaceDestroyed(holder: SurfaceHolder) { disconnect() }

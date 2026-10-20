@@ -188,7 +188,7 @@ class ProjectionInstrumentation : Instrumentation() {
             } else if (operation == "unauthenticated") {
                 require(unauthenticated()); report.put("unauthenticatedRefused", true).put("mediaWelcomeReceived", false)
             } else {
-                require(operation in listOf("stream", "scale", "static-content", "pause", "reconnect", "local-stop", "host-stop", "surface-diagnostic", "input-observation", "audio-focus", "audio-volume"))
+                require(operation in listOf("stream", "static-content", "scale", "pause", "reconnect", "local-stop", "host-stop", "surface-diagnostic", "input-observation", "audio-focus", "audio-volume"))
                 val seconds = args.getString("seconds")?.toInt() ?: 10
                 require(seconds in 1..660)
                 val waitForFixture = args.getString("waitForGo") == "true"

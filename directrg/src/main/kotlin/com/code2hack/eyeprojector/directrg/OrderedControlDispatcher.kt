@@ -8,7 +8,7 @@ import java.util.concurrent.TimeUnit
 internal class OrderedControlDispatcher(private val onFailure: (Exception) -> Unit) : Closeable {
     data class Snapshot(val accepted: Long, val written: Long, val canceled: Long, val failed: Long, val rejected: Long,
         val pending: Long, val inFlight: Long, val meanWriteDelayMs: Double, val maxWriteDelayMs: Double)
-    private data class Job(val future: java.util.concurrent.ScheduledFuture<*>, val category: String, val timeMs: Long, val dueNs: Long)
+    private data class Job(val future: java.util.concurrent.ScheduledFuture<*>, val category: String, val timeMs: Long, val dueNs: Long, val preserveTiming: Boolean)
     private val executor = ScheduledThreadPoolExecutor(1).apply { removeOnCancelPolicy = true }
     private val jobs = mutableMapOf<Long, Job>()
     private var sequence = 0L
@@ -30,20 +30,20 @@ internal class OrderedControlDispatcher(private val onFailure: (Exception) -> Un
     @Synchronized fun snapshot() = Snapshot(accepted, written, canceled, failed, rejected, jobs.size.toLong(), inFlight,
         if (written == 0L) 0.0 else totalWriteDelayNs / written / 1e6, maxWriteDelayNs / 1e6)
 
-    @Synchronized fun submit(eventTimeMs: Long, isCurrent: () -> Boolean, category: String = "input", write: () -> Unit): Boolean {
+    @Synchronized fun submit(eventTimeMs: Long, isCurrent: () -> Boolean, category: String = "input", preserveTiming: Boolean = true, write: () -> Unit): Boolean {
         if (closed) { rejected++; return false }
         val now = System.nanoTime()
-        val delta = lastEventMs?.let { (eventTimeMs - it).coerceAtLeast(0) * 1_000_000 } ?: 0L
-        val due = maxOf(now, lastDueNs + delta)
+        val delta = if (!preserveTiming) 0L else lastEventMs?.let { (eventTimeMs - it).coerceAtLeast(0) * 1_000_000 } ?: 0L
+        val due = if (preserveTiming) maxOf(now, lastDueNs + delta) else now
         val id = ++sequence
         val epoch = generation
-        lastEventMs = eventTimeMs; lastDueNs = due
+        if (preserveTiming) { lastEventMs = eventTimeMs; lastDueNs = due }
         val job = executor.schedule({
             var started = false
             try {
                 // Backpressure must not compress a delayed multi-tap into simultaneous clicks.
                 val waitNs = synchronized(this) {
-                    lastWrittenEventMs?.let { lastWriteEndNs +
+                    if (!preserveTiming) 0L else lastWrittenEventMs?.let { lastWriteEndNs +
                         (eventTimeMs - it).coerceAtLeast(0) * 1_000_000 - System.nanoTime() } ?: 0L
                 }
                 if (waitNs > 0) TimeUnit.NANOSECONDS.sleep(waitNs)
@@ -60,7 +60,7 @@ internal class OrderedControlDispatcher(private val onFailure: (Exception) -> Un
                     written++; inFlight--
                     val delay = System.nanoTime() - now
                     totalWriteDelayNs += delay; maxWriteDelayNs = maxOf(maxWriteDelayNs, delay)
-                    if (epoch == generation) { lastWrittenEventMs = eventTimeMs; lastWriteEndNs = System.nanoTime() }
+                    if (epoch == generation && preserveTiming) { lastWrittenEventMs = eventTimeMs; lastWriteEndNs = System.nanoTime() }
                 }
             } catch (error: Exception) {
                 val report = synchronized(this) {
@@ -71,7 +71,7 @@ internal class OrderedControlDispatcher(private val onFailure: (Exception) -> Un
                 if (report) onFailure(error)
             }
         }, due - now, TimeUnit.NANOSECONDS)
-        jobs[id] = Job(job, category, eventTimeMs, due); accepted++
+        jobs[id] = Job(job, category, eventTimeMs, due, preserveTiming); accepted++
         return true
     }
 
@@ -80,7 +80,7 @@ internal class OrderedControlDispatcher(private val onFailure: (Exception) -> Un
         val removed = jobs.filterValues { category == null || it.category == category }
         removed.forEach { (id, job) -> jobs.remove(id); job.future.cancel(true) }
         canceled += removed.size
-        val tail = jobs.maxByOrNull { it.key }?.value
+        val tail = jobs.filterValues { it.preserveTiming }.maxByOrNull { it.key }?.value
         lastEventMs = tail?.timeMs; lastDueNs = tail?.dueNs ?: 0
         if (category == null) { lastWrittenEventMs = null; lastWriteEndNs = 0 }
     }

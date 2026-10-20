@@ -37,6 +37,7 @@ internal class PadGestureRecognizer(
     private val completed = mutableMapOf<Key, Long>()
     private val pending = mutableListOf<Pending>()
     private val summarySingles = mutableListOf<SummarySingle>()
+    private var continuousReports = false
     private var contactReports = false
     private var lastEventMs = 0L
     private var canceledThrough = -1L
@@ -52,6 +53,7 @@ internal class PadGestureRecognizer(
 
     fun accept(event: Event, receiptUptimeMs: Long) {
         // Related summaries can arrive after a UI transition or with an earlier timestamp.
+        if (continuousReports && event.key in listOf(Key.CONTACT, Key.TAP, Key.DOUBLE)) return
         if (contactReports && event.key in listOf(Key.TAP, Key.DOUBLE)) return
         if (event.key != Key.HELD_CONTACT && event.downTimeMs <= (completed[event.key] ?: -1L)) return
         if (event.downTimeMs <= canceledThrough) return
@@ -135,6 +137,11 @@ internal class PadGestureRecognizer(
     }
 
     private fun swipe(down: Event, up: Event) {
+        val contact = held
+        if (contact != null) {
+            held = null
+            emit(Action.Contact(contact.copy(phase = Phase.CANCEL, timeMs = up.timeMs)))
+        }
         val pixels = if (down.key in listOf(Key.FORWARD, Key.FORWARD_ALIAS)) 160 else -160
         val old = lastSwipe
         // Retain legacy alternate key reports, without counting their companion twice.
@@ -173,7 +180,10 @@ internal class PadGestureRecognizer(
         when (event.phase) {
             Phase.DOWN -> {
                 if (held != null) return
-                takeMarker(event.timeMs)
+                continuousReports = true
+                presses.remove(Key.CONTACT); presses.remove(Key.TAP); presses.remove(Key.DOUBLE)
+                pending.removeAll { it.action is Action.Tap }
+                summarySingles.clear()
                 held = event
             }
             Phase.MOVE, Phase.UP, Phase.CANCEL -> if (held?.downTimeMs != event.downTimeMs) return
@@ -204,7 +214,7 @@ internal class PadGestureRecognizer(
 
     fun cancel(nowUptimeMs: Long = lastEventMs) {
         val old = held
-        held = null; pending.clear(); presses.clear(); summarySingles.clear(); lastSwipe = null; swipeFirst = null
+        held = null; continuousReports = false; pending.clear(); presses.clear(); summarySingles.clear(); lastSwipe = null; swipeFirst = null
         canceledThrough = maxOf(canceledThrough, nowUptimeMs); epoch++
         if (old != null) emit(Action.Contact(old.copy(phase = Phase.CANCEL, timeMs = nowUptimeMs)))
     }
