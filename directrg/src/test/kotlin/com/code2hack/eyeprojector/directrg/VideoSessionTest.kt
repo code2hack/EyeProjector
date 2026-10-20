@@ -8,6 +8,7 @@ import java.io.DataOutputStream
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -80,5 +81,44 @@ class VideoSessionTest {
             assertEquals(1, codec.releases.get())
             assertFalse(session.navigate(Navigation.HOME))
         } finally { session.close() }
+    }
+
+    @Test fun codecAndSurfaceReleaseFailuresEndSessionAndAllowFreshReconnect() {
+        for (stage in listOf("output", "surface-release")) {
+            val states = LinkedBlockingQueue<String>()
+            val broken = AtomicBoolean()
+            val first = codec()
+            val originalRelease = first.releasedOutput
+            first.at = { if (it == "dequeueOutput" && stage == "output" && broken.get()) error("codec failure") }
+            first.releasedOutput = {
+                if (stage == "surface-release" && broken.get()) error("Surface release failed")
+                originalRelease(it)
+            }
+            val directory = temporary.newFolder().resolve("session")
+            val session = ProjectionSession(directory, Surface(), { _, state -> states.add(state) }, { _, _ -> })
+            try {
+                deliver(session, Frame(Wire.GEOMETRY, payload = Geometry(480, 640).bytes()),
+                    Frame(Wire.VIDEO, 0, byteArrayOf(1)))
+                assertEquals("WAITING_FOR_VIDEO", states.poll(2, TimeUnit.SECONDS))
+                assertEquals("STREAMING", states.poll(2, TimeUnit.SECONDS))
+                broken.set(true)
+                if (stage == "surface-release") deliver(session, Frame(Wire.VIDEO, 33_333, byteArrayOf(2)))
+                assertEquals("DECODE_FAILED", states.poll(2, TimeUnit.SECONDS))
+                assertEquals(1, first.releases.get())
+                assertFalse(session.navigate(Navigation.HOME))
+                assertTrue(directory.parentFile!!.resolve("status.json").readText().contains("decoderProgress"))
+            } finally { session.close() }
+
+            val second = codec()
+            val fresh = ProjectionSession(directory, Surface(), { _, state -> states.add(state) }, { _, _ -> })
+            try {
+                deliver(fresh, Frame(Wire.GEOMETRY, payload = Geometry(480, 640).bytes()),
+                    Frame(Wire.VIDEO, 9_000_000, byteArrayOf(3)))
+                assertEquals("WAITING_FOR_VIDEO", states.poll(2, TimeUnit.SECONDS))
+                assertEquals("STREAMING", states.poll(2, TimeUnit.SECONDS))
+            } finally { fresh.close() }
+            assertEquals(1, second.releases.get())
+            assertEquals("STOPPED", states.poll(2, TimeUnit.SECONDS))
+        }
     }
 }
