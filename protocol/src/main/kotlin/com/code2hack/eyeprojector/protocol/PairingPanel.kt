@@ -4,6 +4,8 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.annotation.SuppressLint
 import android.graphics.Color
+import android.content.res.ColorStateList
+import android.graphics.drawable.GradientDrawable
 import android.text.InputFilter
 import android.text.InputType
 import android.view.Gravity
@@ -59,6 +61,17 @@ class PairingPanel(
     }
 
     fun isPaired(): Boolean = runCatching { store.pairedPeer() != null }.getOrDefault(false)
+
+    override fun onViewAdded(child: View) {
+        super.onViewAdded(child)
+        if (role == PeerRole.GLASSES && child is Button) {
+            child.setTextColor(ColorStateList(
+                arrayOf(intArrayOf(android.R.attr.state_enabled), intArrayOf()),
+                intArrayOf(Color.WHITE, Color.LTGRAY),
+            ))
+            child.background = GradientDrawable().apply { setColor(Color.BLACK); setStroke(1, Color.WHITE) }
+        }
+    }
 
     private fun refresh() {
         val peer = runCatching { store.pairedPeer() }.getOrNull()
