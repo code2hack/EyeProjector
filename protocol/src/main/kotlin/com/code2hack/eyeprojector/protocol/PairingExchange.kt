@@ -42,16 +42,20 @@ object PairingExchange {
 
     fun pairGlasses(socket: Socket, codes: PairingCode, store: PeerStore, localPairingPort: Int): RememberedPeer {
         val revision = store.pairingRevision()
-        val displayed = codes.display()
-        val channel = authenticate(socket, displayed.code, store, PeerRole.GLASSES)
-        val peer = channel.receiveIdentity(socket)
-        channel.sendIdentity(store, localPairingPort)
-        require(channel.receive().contentEquals(byteArrayOf(1)))
-        require(codes.isCurrent(displayed)) { "Pairing code expired" }
-        // An interrupted acknowledgment may be retried by that same authenticated peer.
-        store.completePairing(revision, peer, peer.endpoint.host, peer.tlsName)
-        channel.send(byteArrayOf(2))
-        return peer
+        val displayed = codes.beginAttempt() ?: error("Five pairing attempts used; wait for code rotation")
+        var success = false
+        try {
+            val channel = authenticate(socket, displayed.code, store, PeerRole.GLASSES)
+            val peer = channel.receiveIdentity(socket)
+            channel.sendIdentity(store, localPairingPort)
+            require(channel.receive().contentEquals(byteArrayOf(1)))
+            require(codes.isCurrent(displayed)) { "Pairing code expired" }
+            // An interrupted acknowledgment may be retried by that same authenticated peer.
+            store.completePairing(revision, peer, peer.endpoint.host, peer.tlsName)
+            channel.send(byteArrayOf(2))
+            success = true
+            return peer
+        } finally { codes.finishAttempt(displayed, success) }
     }
 
     private fun authenticate(socket: Socket, code: String, store: PeerStore, role: PeerRole): Channel {

@@ -16,6 +16,14 @@ offline code-testing opportunity of a code-derived HMAC over public certificates
 An active participant can still guess a code online; four digits provide 10,000
 possibilities. The displayed code is a temporary authorization secret.
 
+The Owner-approved attempt policy allows at most five failed or in-progress
+handshakes per displayed code. Each accepted pairing attempt reserves a slot
+before the PAKE exchange; failure retains that used slot. A successful exchange
+releases its in-progress slot and the panel changes to paired. When the budget is
+exhausted, the Glasses show an explicit wait message and the remaining countdown.
+Code rotation resets the budget; late completions from the old code cannot alter
+the new budget. This policy affects pairing admission, not an existing projection.
+
 After key confirmation, HKDF-SHA256 derives separate Phone-to-Glasses and
 Glasses-to-Phone AES-256-GCM keys. The KDF and authenticated data bind the protocol
 version and fresh role-specific participant identifiers. Those identifiers include

@@ -67,8 +67,13 @@ class PairingPanel(
             caption.text = "${code.code}  ·  ${code.remainingSeconds / 60}:${"%02d".format(java.util.Locale.ROOT, code.remainingSeconds % 60)}"
         } else caption.text = "No paired display device"
         val label = if (!paired && role == PeerRole.GLASSES) pairing.identityId?.let { "Display ${it.take(12)}\n" } ?: "" else ""
-        val state = if (paired && pairing.availablePeers().none { it.identityId == peer?.identityId })
-            "Paired device unavailable. Open EyeProjector on both devices and check Wi-Fi or the Phone hotspot." else pairing.status
+        val state = when {
+            !paired && role == PeerRole.GLASSES && pairing.codes.display().attemptsRemaining == 0 ->
+                "Five pairing attempts used. Wait for the code to rotate; the countdown shows when pairing resumes."
+            paired && pairing.availablePeers().none { it.identityId == peer?.identityId } ->
+                "Paired device unavailable. Open EyeProjector on both devices and check Wi-Fi or the Phone hotspot."
+            else -> pairing.status
+        }
         information.text = label + (panelError ?: state)
         if (lastPaired != paired) { lastPaired = paired; pairedChanged(paired) }
         updateChoices()

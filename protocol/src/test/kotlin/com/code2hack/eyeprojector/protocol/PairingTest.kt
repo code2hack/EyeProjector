@@ -32,18 +32,45 @@ class PairingTest {
         assertEquals("8901", code.display().code)
     }
 
+    @Test fun fiveFailedOrInProgressAttemptsExhaustCodeAndRotationResetsBudget() {
+        var now = 0L
+        var next = 1000
+        val codes = PairingCode({ now }, { (next++).toString() })
+        val pending = (1..5).map { checkNotNull(codes.beginAttempt()) }
+        assertEquals(0, codes.display().attemptsRemaining)
+        assertNull(codes.beginAttempt())
+        pending.forEach { codes.finishAttempt(it, false) }
+        assertNull(codes.beginAttempt())
+        now = 300_000
+        assertEquals("1001", codes.display().code)
+        assertEquals(5, codes.display().attemptsRemaining)
+        assertNotNull(codes.beginAttempt())
+        // A late success from an expired code cannot replenish the new code.
+        codes.finishAttempt(pending.first(), true)
+        assertEquals(4, codes.display().attemptsRemaining)
+    }
+
+    @Test fun successfulAttemptReleasesItsInProgressSlot() {
+        val codes = PairingCode({ 0L }, { "0123" })
+        val attempt = checkNotNull(codes.beginAttempt())
+        assertEquals(4, codes.display().attemptsRemaining)
+        codes.finishAttempt(attempt, true)
+        assertEquals(5, codes.display().attemptsRemaining)
+    }
+
     private data class Result(val phone: PeerStore, val glasses: PeerStore, val clientAccepted: Boolean, val serverAccepted: Boolean)
 
     private fun pair(
         clientCode: String = "0123", serverCode: String = "0123",
         expected: String? = null, phone: PeerStore = store("phone"), glasses: PeerStore = store("glasses"),
         serverClock: () -> Long = { 0L },
+        sharedCodes: PairingCode? = null,
     ): Result {
         val server = ServerSocket(0, 2, InetAddress.getLoopbackAddress()).apply { soTimeout = 5000 }
         val executor = Executors.newSingleThreadExecutor()
         val future = executor.submit(Callable {
             var generation = 0
-            val codes = PairingCode(serverClock) { if (generation++ == 0) serverCode else "%04d".format((serverCode.toInt() + 1) % 10_000) }
+            val codes = sharedCodes ?: PairingCode(serverClock) { if (generation++ == 0) serverCode else "%04d".format((serverCode.toInt() + 1) % 10_000) }
             runCatching { server.accept().use { PairingExchange.pairGlasses(it, codes, glasses, 28002) } }.isSuccess
         })
         return try {
@@ -74,6 +101,23 @@ class PairingTest {
         val result = pair(clientCode = "0124")
         assertFalse(result.clientAccepted); assertFalse(result.serverAccepted)
         assertNull(result.phone.pairedPeer()); assertNull(result.glasses.pairedPeer())
+    }
+
+    @Test fun networkExchangeRejectsSixthAttemptEvenWithRightCodeThenAcceptsRotatedCode() {
+        var now = 0L
+        var generation = 0
+        val codes = PairingCode({ now }, { if (generation++ == 0) "0123" else "4567" })
+        val glasses = store("budget-glasses")
+        repeat(5) {
+            val rejected = pair(clientCode = "9999", glasses = glasses, sharedCodes = codes)
+            assertFalse(rejected.clientAccepted); assertFalse(rejected.serverAccepted)
+        }
+        val exhausted = pair(glasses = glasses, sharedCodes = codes)
+        assertFalse(exhausted.clientAccepted); assertFalse(exhausted.serverAccepted)
+        assertNull(glasses.pairedPeer())
+        now = 300_000
+        val rotated = pair(clientCode = "4567", glasses = glasses, sharedCodes = codes)
+        assertTrue(rotated.clientAccepted); assertTrue(rotated.serverAccepted)
     }
 
     @Test fun discoveryIdentitySubstitutionEstablishesNoTrust() {
