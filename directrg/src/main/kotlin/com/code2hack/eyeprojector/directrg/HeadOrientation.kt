@@ -4,18 +4,25 @@ package com.code2hack.eyeprojector.directrg
 
 import kotlin.math.*
 
-/** Normalized rotation and display-axis projection for the local pointer. */
+/** Normalized sensor rotation and device-local angular motion for the pointer. */
 internal data class HeadOrientation(val x: Double,val y: Double,val z: Double,val w: Double) {
     fun inverse() = HeadOrientation(-x,-y,-z,w)
     operator fun times(b: HeadOrientation) = HeadOrientation(
         w*b.x+x*b.w+y*b.z-z*b.y,w*b.y-x*b.z+y*b.w+z*b.x,
         w*b.z+x*b.y-y*b.x+z*b.w,w*b.w-x*b.x-y*b.y-z*b.z)
-    fun angles(rotation: Int): Pair<Double,Double> {
-        val deviceX=-2*(x*z+w*y);val deviceY=2*(w*x-y*z);val forwardZ=2*(x*x+y*y)-1
-        val (right,up)=when(rotation) { 1->deviceY to -deviceX;2->-deviceX to -deviceY;3->-deviceY to deviceX;else->deviceX to deviceY }
-        // This is the reference ray in the current head frame: aiming moves
-        // opposite that ray, with display-axis remapping applied first.
-        return Math.toDegrees(-atan2(right,-forwardZ)) to Math.toDegrees(atan2(up,hypot(right,forwardZ)))
+    /** This quaternion is current.inverse() * previous, not a fixed startup ray. */
+    fun motion(rotation: Int): Pair<Double,Double> {
+        // q and -q describe the same rotation. Use the shorter increment even
+        // when a sensor changes quaternion sign between otherwise equal poses.
+        val length=sqrt(x*x+y*y+z*z)
+        val scale=if (length==0.0) 0.0 else 2*atan2(length,abs(w))/length
+        // At exactly 180° w can be either signed zero; choose a consistent
+        // representative using the first nonzero vector component as the tie-break.
+        val leading=when { w!=0.0->w;x!=0.0->x;y!=0.0->y;else->z }
+        val sign=if (leading<0) -1 else 1
+        val right=Math.toDegrees(sign*y*scale)
+        val down=Math.toDegrees(sign*x*scale)
+        return when(rotation) { 1->-down to right;2->-right to -down;3->down to -right;else->right to down }
     }
     companion object {
         fun from(sample: RotationSample): HeadOrientation? {

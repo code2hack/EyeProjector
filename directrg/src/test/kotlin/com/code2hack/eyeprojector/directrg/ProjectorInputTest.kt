@@ -10,7 +10,8 @@ class ProjectorInputTest {
     private fun pose(ms: Long, yaw: Double = 0.0, pitch: Double = 0.0): RotationSample {
         val y = Math.toRadians(yaw) / 2
         val p = Math.toRadians(pitch) / 2
-        return RotationSample(ms * 1_000_000, sin(p).toFloat(), sin(y).toFloat(), 0f, (cos(y) * cos(p)).toFloat())
+        return RotationSample(ms * 1_000_000, (cos(y) * sin(p)).toFloat(), (sin(y) * cos(p)).toFloat(),
+            (-sin(y) * sin(p)).toFloat(), (cos(y) * cos(p)).toFloat())
     }
     private fun pointer(rotation: Int = 0, gain: Double = 2.0) = HeadPointerModel().apply {
         resize(PointerBounds(8f, 8f, 472f, 632f), rotation, 32f)
