@@ -144,5 +144,6 @@ class VideoSessionTest {
         } finally { session.close() }
         assertEquals(1, codec.releases.get())
         assertFalse(session.requestScale(1.0))
+
     }
 }
