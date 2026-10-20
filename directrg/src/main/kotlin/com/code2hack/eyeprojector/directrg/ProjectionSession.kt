@@ -11,8 +11,6 @@ import java.io.DataOutputStream
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.Executors
-import java.util.concurrent.SynchronousQueue
-import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -29,32 +27,28 @@ class ProjectionSession(
 ) : Closeable {
     private val running = AtomicBoolean(true)
     private val timer = Executors.newScheduledThreadPool(2)
-    private val controls = ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS, SynchronousQueue())
+    private val controls = OrderedControlDispatcher { error -> failure(error); closeWithState("DISCONNECTED") }
     private val outputLock = Any()
     private val lifecycleLock = Any()
     private val writing = AtomicLong()
     @Volatile private var socket: SSLSocket? = null
     @Volatile private var output: DataOutputStream? = null
     @Volatile private var decoder: SurfaceDecoder? = null
-    @Volatile private var audio: AudioDecoder? = null
-    private val playbackClock = PlaybackClock()
-    private var audioCodec = 0
-    private val avSamples = ArrayDeque<JSONObject>()
-    private var lastAvSampleNs = 0L
+    private var decoderEpoch: Any? = null
     private var droppedVideo = 0L
-    private var mediaStartedNs = 0L
-    private var stoppedAudio: JSONObject? = null
+    @Volatile private var mediaStartedNs = 0L
     @Volatile var geometry: Geometry? = null
         private set
     @Volatile private var readyForTouch = false
     private val started = System.nanoTime()
-    private val stats = JSONObject().put("state", "CONNECTING").put("audio", "required-waiting")
+    private val stats = JSONObject().put("state", "CONNECTING").put("audio", "system-bluetooth")
     private var packets = 0L
     private var changes = 0L
     private var rendered = 0L
     private var touches = 0L
     private var scrolls = 0L
     private var navigations = 0L
+    private var inputRejected = 0L
     private var lastHash: ByteArray? = null
     private val renderDelayMs = ArrayDeque<Double>()
     private val roundTripMs = ArrayDeque<Double>()
@@ -69,10 +63,16 @@ class ProjectionSession(
             .put("scrollsSent", scrolls).put("navigationsSent", navigations)
             .put("packetReadToCallbackP95Ms", p95(renderDelayMs)).put("networkRoundTripP95Ms", p95(roundTripMs))
             .put("latencyScope", "RG System.nanoTime packet-read to render-callback receipt; network echo RTT; no optical/input end-to-end claim")
-            .put("maxEncodedPacketBytes", Wire.MAX_PAYLOAD).put("maxInflightFrames", 16).put("queuedTaps", 0)
-        stats.put("audio", audio?.snapshot() ?: stoppedAudio ?: "required-waiting")
-            .put("videoLateDrops", droppedVideo).put("avSample", avSamples.lastOrNull())
-            .put("avScope", "Phone source PTS compared using RG AudioTimestamp clock and RG render-callback receipt; not optical/acoustic offset")
+            .put("maxEncodedPacketBytes", Wire.MAX_PAYLOAD).put("maxInflightFrames", 16)
+        stats.put("videoLateDrops", droppedVideo)
+            .put("videoTiming", "Video PTS relative to first frame receipt in each decoder stream; Receiver monotonic clock")
+            .put("avScope", "Native Bluetooth audio is independent; physical AV offset is unmeasured")
+        val input = controls.snapshot()
+        stats.put("controlsAccepted", input.accepted).put("controlsWritten", input.written)
+            .put("controlsCanceled", input.canceled).put("controlsFailed", input.failed)
+            .put("controlsRejected", input.rejected + inputRejected).put("controlsPending", input.pending).put("controlsInFlight", input.inFlight)
+            .put("controlSubmissionToWriteMeanMs", input.meanWriteDelayMs).put("controlSubmissionToWriteMaxMs", input.maxWriteDelayMs)
+            .put("controlDeliveryScope", "written means TLS write returned; no target-injection acknowledgment")
         val writeBegin = System.nanoTime()
         val file = AtomicFile(File(directory.parentFile, "status.json"))
         val out = file.startWrite()
@@ -85,7 +85,7 @@ class ProjectionSession(
     }
 
     @Synchronized private fun state(value: String) {
-        if (!running.get() && value in listOf("CONNECTING", "WAITING_FOR_VIDEO", "WAITING_FOR_AUDIO", "WAITING_FOR_AUDIO_CLOCK", "STREAMING")) return
+        if (!running.get() && value in listOf("CONNECTING", "WAITING_FOR_VIDEO", "STREAMING")) return
         record(value); onState(this, value)
     }
 
@@ -125,16 +125,8 @@ class ProjectionSession(
                 timer.scheduleWithFixedDelay({
                     try {
                         send(Frame(Wire.PING, System.nanoTime()))
-                        val current = audio
-                        if ((current == null && System.nanoTime() - mediaStartedNs > 5_000_000_000L) || current?.stalled() == true) {
-                            closeWithState("AUDIO_STALLED")
-                        } else if (current != null) {
-                            val audioStatus = current.snapshot()
-                            if (current.clockStalled()) {
-                                closeWithState("AUDIO_CLOCK_UNAVAILABLE")
-                            } else if (readyForTouch && audioStatus.optLong("decodedBuffers", 0) > 0 && audioStatus.optBoolean("timestampValid")) {
-                                state("STREAMING")
-                            } else record()
+                        if (!readyForTouch && System.nanoTime() - mediaStartedNs > 5_000_000_000L) {
+                            closeWithState("VIDEO_STALLED")
                         } else record()
                     }
                     catch (_: Exception) { closeWithState("DISCONNECTED") }
@@ -150,65 +142,54 @@ class ProjectionSession(
                         if (ms > 1000) Log.w("EyeProjector", "Frame read took ${ms}ms")
                     }
                     val handleBegin = System.nanoTime()
-                    try { when (frame.channel) {
-                        Wire.GEOMETRY -> {
-                            val data = DataInputStream(frame.payload.inputStream())
-                            val size = Geometry(data.readInt(), data.readInt())
-                            replaceDecoder(size)
-                        }
-                        Wire.VIDEO -> {
-                            require(frame.stamp >= 0)
-                            val packet = ScrcpyRecord.Packet(frame.stamp, frame.payload)
-                            if (!packet.config) synchronized(this) {
-                                packets++
-                                val hash = MessageDigest.getInstance("SHA-256").digest(frame.payload)
-                                if (lastHash?.contentEquals(hash) != true) changes++
-                                lastHash = hash
-                            }
-                            (decoder ?: error("Missing geometry")).enqueue(packet, System.nanoTime())
-                        }
-                        Wire.AUDIO_CODEC -> {
-                            require(audioCodec == 0) { "Repeated audio codec" }
-                            audioCodec = DataInputStream(frame.payload.inputStream()).readInt()
-                            check(audioCodec == Wire.OPUS) { "Required audio capture unavailable: $audioCodec" }
-                        }
-                        Wire.AUDIO -> {
-                            require(audioCodec == Wire.OPUS && frame.stamp >= 0)
-                            val packet = ScrcpyRecord.Packet(frame.stamp, frame.payload)
-                            if (packet.config) {
-                                check(audio == null) { "Repeated audio config" }
-                                val next = AudioDecoder(context ?: error("Audio context unavailable"), packet.data, playbackClock) { error ->
-                                    failure(error); closeWithState("AUDIO_FAILED")
-                                }
-                                val installed = synchronized(lifecycleLock) {
-                                    if (running.get()) { audio = next; true } else false
-                                }
-                                if (!installed) next.close()
-                            } else (audio ?: error("Missing audio configuration")).enqueue(packet)
-                        }
-                        Wire.PONG -> synchronized(this) {
-                            val delay = (System.nanoTime() - frame.stamp) / 1e6
-                            require(delay in 0.0..5000.0)
-                            roundTripMs.addLast(delay); if (roundTripMs.size > 256) roundTripMs.removeFirst()
-                        }
-                        Wire.END -> break
-                        else -> error("Unnegotiated media")
-                    } } finally {
+                    try { receive(frame) } finally {
                         val ms = (System.nanoTime() - handleBegin) / 1_000_000
                         if (ms > 500) Log.w("EyeProjector", "Frame handling channel=${frame.channel} took ${ms}ms")
                     }
                 }
                 closeWithState("DISCONNECTED")
-            } catch (error: Exception) { failure(error); closeWithState("CONNECTION_OR_REQUIRED_AUDIO_FAILED") }
+            } catch (error: Exception) { failure(error); closeWithState("CONNECTION_OR_VIDEO_FAILED") }
         }, "eyeprojector-receiver").start()
     }
 
+    internal fun receive(frame: Frame) {
+        when (frame.channel) {
+            Wire.GEOMETRY -> {
+                val data = DataInputStream(frame.payload.inputStream())
+                val size = Geometry(data.readInt(), data.readInt())
+                replaceDecoder(size)
+            }
+            Wire.VIDEO -> {
+                require(frame.stamp >= 0)
+                val packet = ScrcpyRecord.Packet(frame.stamp, frame.payload)
+                if (!packet.config) synchronized(this) {
+                    packets++
+                    val hash = MessageDigest.getInstance("SHA-256").digest(frame.payload)
+                    if (lastHash?.contentEquals(hash) != true) changes++
+                    lastHash = hash
+                }
+                (decoder ?: error("Missing geometry")).enqueue(packet, System.nanoTime())
+            }
+            Wire.PONG -> synchronized(this) {
+                val delay = (System.nanoTime() - frame.stamp) / 1e6
+                require(delay in 0.0..5000.0)
+                roundTripMs.addLast(delay); if (roundTripMs.size > 256) roundTripMs.removeFirst()
+            }
+            Wire.END -> closeWithState("DISCONNECTED")
+            else -> error("Unnegotiated media")
+        }
+    }
+
     internal fun replaceDecoder(size: Geometry) {
+        controls.cancelPending()
+        val epoch = Any()
         val old = synchronized(lifecycleLock) {
+            decoderEpoch = epoch
             readyForTouch = false
             decoder.also { decoder = null }
         }
         old?.close()
+        mediaStartedNs = System.nanoTime()
         state("WAITING_FOR_VIDEO")
         geometry = size
         onGeometry(this, size)
@@ -218,51 +199,46 @@ class ProjectionSession(
                 rendered++; renderDelayMs.addLast(delay)
                 if (renderDelayMs.size > 256) renderDelayMs.removeFirst()
             }
-            if (!readyForTouch && running.get()) { readyForTouch = true; state(if (audio != null) "WAITING_FOR_AUDIO_CLOCK" else "WAITING_FOR_AUDIO") }
+            synchronized(lifecycleLock) {
+                if (decoderEpoch === epoch && running.get() && !readyForTouch) {
+                    readyForTouch = true; state("STREAMING")
+                }
+            }
         }, { name -> synchronized(this) { stats.put("decoder", name) } },
             { format -> synchronized(this) { stats.put("decoderFormat", format) } }, { error -> failure(error); closeWithState("DECODE_FAILED") },
-            { pts -> playbackClock.videoTimeNs(pts, System.nanoTime()) },
-            { pts, now -> synchronized(this) {
-                if (now - lastAvSampleNs >= 1_000_000_000L) {
-                    playbackClock.ptsAt(now)?.let { audioPts ->
-                        avSamples.addLast(JSONObject().put("elapsedMs", (now - started) / 1_000_000)
-                            .put("videoPtsUs", pts).put("audioPtsUs", audioPts).put("videoMinusAudioMs", (pts - audioPts) / 1000.0))
-                        if (avSamples.size > 2) avSamples.removeFirst()
-                        lastAvSampleNs = now
-                    }
-                }
-            } }, { synchronized(this) { droppedVideo++ } })
+            dropped = { synchronized(this) { droppedVideo++ } })
         val installed = synchronized(lifecycleLock) {
-            if (running.get()) { decoder = next; true } else false
+            if (running.get() && decoderEpoch === epoch) { decoder = next; true } else false
         }
         if (!installed) next.close()
     }
 
-    fun tap(tap: Tap): Boolean = input(Wire.TAP, tap.geometry, tap.bytes())
-    fun scroll(scroll: Scroll): Boolean = input(Wire.SCROLL, scroll.target.geometry, scroll.bytes())
+    /** True means queued, not an acknowledgment from the Phone's target widget. */
+    fun tap(tap: Tap, eventTimeMs: Long = System.nanoTime() / 1_000_000): Boolean =
+        input(Wire.TAP, tap.geometry, tap.bytes(), eventTimeMs)
+    fun scroll(scroll: Scroll, eventTimeMs: Long = System.nanoTime() / 1_000_000, headMotion: Boolean = false): Boolean =
+        input(Wire.SCROLL, scroll.target.geometry, scroll.bytes(), eventTimeMs, if (headMotion) "head-scroll" else "input")
     fun navigate(action: Navigation): Boolean {
         val size = geometry ?: return false
-        return input(Wire.NAVIGATE, size, Navigate(action, size).bytes())
+        return input(Wire.NAVIGATE, size, Navigate(action, size).bytes(), System.nanoTime() / 1_000_000)
     }
 
-    private fun input(channel: Int, size: Geometry, payload: ByteArray): Boolean {
-        if (!running.get() || !readyForTouch || size != geometry) return false
-        return try {
-            // SynchronousQueue retains no command. Pause/loss closes the socket and rejects later work.
-            controls.execute {
-                try {
-                    if (running.get() && readyForTouch && size == geometry) {
-                        send(Frame(channel, payload = payload))
-                        synchronized(this) { when (channel) {
-                            Wire.TAP -> touches++
-                            Wire.SCROLL -> scrolls++
-                            Wire.NAVIGATE -> navigations++
-                        } }
-                    }
-                } catch (_: Exception) { closeWithState("DISCONNECTED") }
-            }
-            true
-        } catch (_: java.util.concurrent.RejectedExecutionException) { false }
+    fun cancelPendingInput() = controls.cancelPending()
+    fun cancelHeadScroll() = controls.cancelPending("head-scroll")
+
+    private fun input(channel: Int, size: Geometry, payload: ByteArray, eventTimeMs: Long, category: String = "input"): Boolean {
+        if (!running.get() || !readyForTouch || size != geometry) {
+            synchronized(this) { inputRejected++ }
+            return false
+        }
+        return controls.submit(eventTimeMs, { running.get() && readyForTouch && size == geometry }, category) {
+            send(Frame(channel, payload = payload))
+            synchronized(this) { when (channel) {
+                Wire.TAP -> touches++
+                Wire.SCROLL -> scrolls++
+                Wire.NAVIGATE -> navigations++
+            } }
+        }
     }
 
     private fun closeWithState(value: String) {
@@ -271,10 +247,7 @@ class ProjectionSession(
             readyForTouch = false
             decoder.also { decoder = null }
         }
-        val oldAudio = synchronized(lifecycleLock) { audio.also { audio = null } }
-        runCatching { socket?.close() }; timer.shutdownNow(); controls.shutdownNow()
-        runCatching { oldAudio?.close() }
-        stoppedAudio = oldAudio?.snapshot()
+        runCatching { socket?.close() }; timer.shutdownNow(); controls.close()
         runCatching { old?.close() }
         state(value)
     }

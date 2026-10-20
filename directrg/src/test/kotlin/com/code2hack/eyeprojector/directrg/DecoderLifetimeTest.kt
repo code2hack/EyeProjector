@@ -2,7 +2,7 @@ package com.code2hack.eyeprojector.directrg
 
 import android.media.MediaCodec
 import android.view.Surface
-import com.code2hack.eyeprojector.protocol.Geometry
+import com.code2hack.eyeprojector.protocol.*
 import com.code2hack.eyeprojector.protocol.Navigation
 import com.code2hack.eyeprojector.protocol.Scroll
 import com.code2hack.eyeprojector.protocol.Tap
@@ -22,21 +22,24 @@ class DecoderLifetimeTest {
     private fun session() = ProjectionSession(temporary.root.resolve("session"), Surface(), { _, _ -> }, { _, _ -> })
     private fun decoder() = SurfaceDecoder(Surface(), size, {}, {}, {}, {})
 
-    @Test fun nativeUiFrameWithObserved335msLeadWaitsForTheAudioClock() {
+    @Test fun videoPtsSchedulesAFrameWithoutAnAudioClock() {
         val codec = MediaCodec().also { MediaCodec.created = it }
         val delivered = CountDownLatch(1)
-        val once = AtomicBoolean()
+        val available = AtomicBoolean()
         val failure = AtomicReference<Exception>()
+        codec.queuedInput = { pts, _ -> if (pts == 335_000L) available.set(true) }
         codec.output = { info ->
-            if (once.compareAndSet(false, true)) { info.presentationTimeUs = 1_000_000; 0 } else -1
+            if (available.compareAndSet(true, false)) { info.presentationTimeUs = 335_000; 0 } else -1
         }
         codec.releasedOutput = { if (it) delivered.countDown() }
-        val decoder = SurfaceDecoder(Surface(), size, {}, {}, {}, { failure.set(it) },
-            { System.nanoTime() + 335_000_000L })
+        val decoder = SurfaceDecoder(Surface(), size, {}, {}, {}, { failure.set(it) })
         try {
-            val rendered = delivered.await(1, TimeUnit.SECONDS)
-            assertNull("A native UI update must fit the bounded future-frame wait", failure.get())
-            assertTrue(rendered)
+            val origin = System.nanoTime()
+            decoder.enqueue(ScrcpyRecord.Packet(0, byteArrayOf(1)), origin)
+            decoder.enqueue(ScrcpyRecord.Packet(335_000, byteArrayOf(2)), origin)
+            assertFalse("Presentation must follow video PTS", delivered.await(100, TimeUnit.MILLISECONDS))
+            assertTrue(delivered.await(1, TimeUnit.SECONDS))
+            assertNull(failure.get())
         } finally { decoder.close() }
     }
 
@@ -45,15 +48,20 @@ class DecoderLifetimeTest {
             val codec = MediaCodec().also { MediaCodec.created = it }
             val entered = CountDownLatch(1)
             val failed = CountDownLatch(1)
-            val once = AtomicBoolean()
+            val available = AtomicBoolean()
             val rendered = AtomicBoolean()
+            codec.queuedInput = { pts, _ -> if (pts == aheadMs * 1000) available.set(true) }
             codec.output = { info ->
-                if (once.compareAndSet(false, true)) { info.presentationTimeUs = 1_000_000; 0 } else -1
+                if (available.compareAndSet(true, false)) {
+                    info.presentationTimeUs = aheadMs * 1000; entered.countDown(); 0
+                } else -1
             }
             codec.releasedOutput = { if (it) rendered.set(true) }
-            val decoder = SurfaceDecoder(Surface(), size, {}, {}, {}, { failed.countDown() },
-                { entered.countDown(); System.nanoTime() + aheadMs * 1_000_000 })
+            val decoder = SurfaceDecoder(Surface(), size, {}, {}, {}, { failed.countDown() })
             try {
+                val origin = System.nanoTime()
+                decoder.enqueue(ScrcpyRecord.Packet(0, byteArrayOf(1)), origin)
+                decoder.enqueue(ScrcpyRecord.Packet(aheadMs * 1000, byteArrayOf(2)), origin)
                 assertTrue(entered.await(1, TimeUnit.SECONDS))
                 if (aheadMs > 500) assertTrue(failed.await(1, TimeUnit.SECONDS))
                 decoder.close()
@@ -61,6 +69,26 @@ class DecoderLifetimeTest {
                 assertEquals(1, codec.releases.get())
             } finally { decoder.close() }
         }
+    }
+
+    @Test fun lateFramesDropAndDecoderBacklogRemainsBounded() {
+        val codec = MediaCodec().also { MediaCodec.created = it }
+        val available = AtomicBoolean()
+        val dropped = CountDownLatch(1)
+        codec.queuedInput = { _, _ -> available.set(true) }
+        codec.output = { info -> if (available.compareAndSet(true, false)) { info.presentationTimeUs = 1; 0 } else -1 }
+        val decoder = SurfaceDecoder(Surface(), size, {}, {}, {}, {}, dropped = { dropped.countDown() })
+        try {
+            decoder.enqueue(ScrcpyRecord.Packet(1, byteArrayOf(1)), System.nanoTime() - 200_000_000)
+            assertTrue(dropped.await(1, TimeUnit.SECONDS))
+        } finally { decoder.close() }
+        val blocked = MediaCodec().also { MediaCodec.created = it }
+        val next = decoder()
+        try {
+            for (pts in 1L..16L) next.enqueue(ScrcpyRecord.Packet(pts, byteArrayOf(1)), System.nanoTime())
+            assertThrows(IllegalStateException::class.java) { next.enqueue(ScrcpyRecord.Packet(17, byteArrayOf(1)), System.nanoTime()) }
+        } finally { next.close() }
+        assertEquals(1, blocked.releases.get())
     }
 
     @Test fun everyInputKindIsRejectedBeforeRenderedVideoAndAfterStop() {

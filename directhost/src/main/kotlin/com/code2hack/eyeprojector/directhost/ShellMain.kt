@@ -34,10 +34,10 @@ import org.json.JSONObject
 internal enum class SessionStopReason {
     OWNER_CLOSE, SESSION_ERROR, HOST_STOP, STARTUP_DEADLINE, WRITE_DEADLINE,
     CONTROL_END, CONTROL_EOF, CONTROL_TIMEOUT, CONTROL_IO, CONTROL_ERROR,
-    AUDIO_END, AUDIO_ERROR, AUDIO_STALLED, VIDEO_END, VIDEO_EOF, VIDEO_TIMEOUT, VIDEO_IO, VIDEO_ERROR,
+    VIDEO_END, VIDEO_EOF, VIDEO_TIMEOUT, VIDEO_IO, VIDEO_ERROR,
 }
 
-private enum class StartupStage { CREATED, COPY_JAR, START_SERVER, ACCEPT_VIDEO, ACCEPT_AUDIO, ACCEPT_CONTROL, READ_CODEC, VIDEO_STREAM }
+private enum class StartupStage { CREATED, COPY_JAR, START_SERVER, ACCEPT_VIDEO, ACCEPT_CONTROL, READ_CODEC, VIDEO_STREAM }
 
 /** Fixed categories only; exception messages and private payloads never enter telemetry. */
 internal fun sessionFailureReason(error: Exception, control: Boolean): SessionStopReason = when (error) {
@@ -64,6 +64,12 @@ object ShellMain {
         }
         require(digest.digest().joinToString("") { "%02x".format(it) } == expectedSHA256) { "Unqualified session server" }
     }
+
+    internal fun videoControlCommand(scid: Int): List<String> = listOf("/system/bin/app_process", "/", "com.genymobile.scrcpy.Server", Wire.SCRCPY_VERSION,
+            "scid=%08x".format(scid), "log_level=debug", "tunnel_forward=false", "send_dummy_byte=false",
+            "send_device_meta=false", "send_stream_meta=true", "send_frame_meta=true", "video=true", "audio=false",
+            "control=true", "video_codec=h264", "video_bit_rate=2000000", "max_fps=30", "new_display=480x640/160",
+            "display_ime_policy=local", "vd_destroy_content=true", "clipboard_autosync=false", "power_on=false", "keep_active=true", "cleanup=true")
 
     @JvmStatic fun main(args: Array<String>) {
         require(Process.myUid() == 2000 && args.size == 2)
@@ -96,7 +102,7 @@ internal class Bridge(
             .put("pid", Process.myPid()).put("shellUid", Process.myUid()).put("refused", refused.get())
             .put("unauthenticatedRefused", unauthenticatedRefused.get())
             .put("bind", settings.getProperty("host")).put("port", boundPort)
-            .put("scrcpy", Wire.SCRCPY_VERSION).put("audio", "required-output-opus")
+            .put("scrcpy", Wire.SCRCPY_VERSION).put("audio", "system-bluetooth")
         val file = AtomicFile(File(directory, "bridge-status.json"))
         val out = file.startWrite()
         try { out.write(data.toString().toByteArray()); file.finishWrite(out) }
@@ -179,10 +185,6 @@ private class Session(
     private val output = DataOutputStream(peer.outputStream)
     private var localListener: LocalServerSocket? = null
     private var video: LocalSocket? = null
-    private var audio: LocalSocket? = null
-    private var audioThread: Thread? = null
-    private val audioPackets = AtomicLong()
-    private val lastAudio = AtomicLong(System.nanoTime())
     private var control: LocalSocket? = null
     private var server: java.lang.Process? = null
     private var inputThread: Thread? = null
@@ -211,11 +213,7 @@ private class Session(
         // Reverse local sockets avoid a retry race. These AF_UNIX sockets are never network listeners.
         localListener = LocalServerSocket(socketName)
         val startup = timer.schedule({ close(SessionStopReason.STARTUP_DEADLINE) }, 8, TimeUnit.SECONDS)
-        val command = listOf("/system/bin/app_process", "/", "com.genymobile.scrcpy.Server", Wire.SCRCPY_VERSION,
-            "scid=%08x".format(scid), "log_level=debug", "tunnel_forward=false", "send_dummy_byte=false",
-            "send_device_meta=false", "send_codec_meta=true", "send_frame_meta=true", "video=true", "audio=true", "audio_source=output", "audio_codec=opus", "audio_bit_rate=128000",
-            "control=true", "video_codec=h264", "video_bit_rate=2000000", "max_fps=30", "new_display=480x640/160",
-            "display_ime_policy=local", "vd_destroy_content=true", "clipboard_autosync=false", "power_on=false", "keep_active=true", "cleanup=true")
+        val command = ShellMain.videoControlCommand(scid)
         // Stock cleanup unlinks its own CLASSPATH JAR. Keep the pinned master for
         // reconnects and let each stock session consume its own verified copy.
         val sessionJar = File(directory, "scrcpy-%08x.jar".format(scid))
@@ -230,37 +228,17 @@ private class Session(
         if (!running.get()) { server!!.destroyForcibly(); error("Session stopped during startup") }
         startupStage.set(StartupStage.ACCEPT_VIDEO)
         video = localListener!!.accept().also { if (!running.get()) { it.close(); error("Session stopped") } }
-        startupStage.set(StartupStage.ACCEPT_AUDIO)
-        audio = localListener!!.accept().also { if (!running.get()) { it.close(); error("Session stopped") } }
         startupStage.set(StartupStage.ACCEPT_CONTROL)
         control = localListener!!.accept().also { if (!running.get()) { it.close(); error("Session stopped") } }
-        localListener!!.close(); localListener = null; startup.cancel(false)
-        lastAudio.set(System.nanoTime())
+        localListener!!.close(); localListener = null
         watchdog = timer.scheduleWithFixedDelay({
             val since = writeStarted.get()
             if (since != 0L && System.nanoTime() - since > 2_000_000_000L) close(SessionStopReason.WRITE_DEADLINE)
-            if (System.nanoTime() - lastAudio.get() > 5_000_000_000L) close(SessionStopReason.AUDIO_STALLED)
         }, 250, 250, TimeUnit.MILLISECONDS)
         Wire.writeWelcome(output)
         val videoInput = DataInputStream(video!!.inputStream)
         startupStage.set(StartupStage.READ_CODEC)
         require(videoInput.readInt() == Wire.H264)
-        val audioInput = DataInputStream(audio!!.inputStream)
-        val audioCodec = audioInput.readInt()
-        send(Frame(Wire.AUDIO_CODEC, payload = bytes { writeInt(audioCodec) }))
-        require(audioCodec == Wire.OPUS) { "Required Opus capture unavailable" }
-        audioThread = Thread({
-            var audioReason = SessionStopReason.AUDIO_END
-            try {
-                while (running.get()) {
-                    val packet = Scrcpy.readRecord(audioInput) as? ScrcpyRecord.Packet ?: error("Unexpected audio session header")
-                    lastAudio.set(System.nanoTime())
-                    send(Frame(Wire.AUDIO, packet.stamp, packet.data))
-                    if (!packet.config) audioPackets.incrementAndGet()
-                }
-            } catch (_: Exception) { audioReason = SessionStopReason.AUDIO_ERROR }
-            finally { close(audioReason) }
-        }, "eyeprojector-audio-bridge").apply { start() }
         inputThread = Thread({
             var reason = SessionStopReason.CONTROL_END
             try {
@@ -297,6 +275,7 @@ private class Session(
                 when (val record = Scrcpy.readRecord(videoInput)) {
                     is ScrcpyRecord.Session -> {
                         geometry.set(record.geometry)
+                        startup.cancel(false)
                         send(Frame(Wire.GEOMETRY, payload = record.geometry.bytes()))
                     }
                     is ScrcpyRecord.Packet -> {
@@ -321,7 +300,7 @@ private class Session(
         val lastStartupStage = startupStage.get()
         watchdog?.cancel(false)
         runCatching { peer.close() }; runCatching { localListener?.close() }
-        runCatching { video?.close() }; runCatching { audio?.close() }; runCatching { control?.close() }
+        runCatching { video?.close() }; runCatching { control?.close() }
         server?.let { process ->
             runCatching {
                 if (!process.waitFor(2, TimeUnit.SECONDS)) {
@@ -331,8 +310,7 @@ private class Session(
             }
         }
         if (inputThread !== Thread.currentThread()) runCatching { inputThread?.join(1000) }
-        if (audioThread !== Thread.currentThread()) runCatching { audioThread?.join(1000) }
-        val data = JSONObject().put("audioPackets", audioPackets.get()).put("audioSource", "output").put("audioCodec", "opus").put("state", "SESSION_STOPPED").put("frames", frames.get()).put("touches", touches.get())
+        val data = JSONObject().put("audio", "system-bluetooth").put("state", "SESSION_STOPPED").put("frames", frames.get()).put("touches", touches.get())
             .put("elapsedMs", (System.nanoTime() - begin) / 1_000_000).put("serverAlive", server?.isAlive ?: false)
             .put("stopReason", reason.name).put("startupStage", lastStartupStage.name).put("stopStartedMs", stopStartedMs)
             .put("childStartedMs", childStartedMs.get()).put("firstVideoFrameMs", firstVideoFrameMs.get())

@@ -18,18 +18,20 @@ class MediaCodec {
     var at: (String) -> Unit = {}
     var output: (BufferInfo) -> Int = { -1 }
     var releasedOutput: (Boolean) -> Unit = {}
+    var queuedInput: (Long, Int) -> Unit = { _, _ -> }
+    var frameListener: OnFrameRenderedListener? = null
     val releases = AtomicInteger()
     var releaseFailure: Throwable? = null
     val name: String get() { at("name"); return "test-avc" }
     fun configure(format: MediaFormat, surface: Surface, crypto: android.media.MediaCrypto?, flags: Int) { at("configure") }
-    fun setOnFrameRenderedListener(listener: OnFrameRenderedListener, handler: Handler) { at("listener") }
+    fun setOnFrameRenderedListener(listener: OnFrameRenderedListener, handler: Handler) { at("listener"); frameListener = listener }
     fun start() { at("start") }
     fun dequeueOutputBuffer(info: BufferInfo, timeout: Long): Int { at("dequeueOutput"); Thread.sleep(1); return output(info) }
     val outputFormat: MediaFormat get() = MediaFormat()
     fun releaseOutputBuffer(index: Int, render: Boolean) { releasedOutput(render) }
     fun dequeueInputBuffer(timeout: Long) = 0
     fun getInputBuffer(index: Int): ByteBuffer = ByteBuffer.allocate(1024)
-    fun queueInputBuffer(index: Int, offset: Int, size: Int, pts: Long, flags: Int) = Unit
+    fun queueInputBuffer(index: Int, offset: Int, size: Int, pts: Long, flags: Int) { queuedInput(pts, flags) }
     fun stop() = Unit
     fun release() { releases.incrementAndGet(); releaseFailure?.let { throw it } }
 }
