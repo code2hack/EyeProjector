@@ -33,6 +33,10 @@ class PhoneSessionController private constructor(context: Context) {
 
     fun stop(): SessionState = controller.stop()
 
+    fun requestPanelOff(complete: (PanelPowerState?) -> Unit) = bootstrap.requestPanelOff(complete)
+
+    fun panelState(complete: (PanelPowerState?) -> Unit) = bootstrap.panelState(complete)
+
     private fun command(request: SessionControl.Request): SessionState {
         val unavailable = if (request.operation == SessionControl.Operation.START)
             bootstrap.status().setup.takeIf { it != HostBootstrap.Setup.AVAILABLE }?.name else null

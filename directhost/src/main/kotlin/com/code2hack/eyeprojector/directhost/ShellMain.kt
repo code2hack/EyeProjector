@@ -48,6 +48,11 @@ internal fun sessionFailureReason(error: Exception, control: Boolean): SessionSt
     else -> if (control) SessionStopReason.CONTROL_ERROR else SessionStopReason.VIDEO_ERROR
 }
 
+internal fun panelPowerJson(state: PanelPowerState): JSONObject = JSONObject()
+    .put("requestId", state.requestId).put("offSubmission", state.off.name)
+    .put("restorationSubmission", state.restoration.name).put("physicalObservation", state.observation.name)
+    .put("sessionActive", state.sessionActive)
+
 /** Explicit shell bootstrap only. An ordinary installed APK never acquires shell authority. */
 object ShellMain {
     const val SERVER_SHA256 = "764eb6f79811d5211fe9df341120882ba9994c7a61b897d7bf3fb662e53bc536"
@@ -93,6 +98,7 @@ internal class Bridge(
     private val release = OwnedRelease()
     private val admission = Any()
     private val active = AtomicReference<Session?>()
+    @Volatile private var lastPanelState = PanelPowerState.unavailable()
     private val peers = ConcurrentHashMap.newKeySet<SSLSocket>()
     private val workers = ThreadPoolExecutor(2, 2, 0, TimeUnit.SECONDS, ArrayBlockingQueue(2))
     private val settings = Tls.settings(directory)
@@ -185,6 +191,11 @@ internal class Bridge(
 
     fun scaleState(): ScaleState = active.get()?.scaleState() ?: LiveScale.unavailable()
 
+    fun requestPanelOff(requestId: Long): PanelPowerState =
+        active.get()?.requestPanelOff(requestId) ?: PanelPowerState.unavailable(requestId)
+
+    fun panelState(): PanelPowerState = active.get()?.panelState() ?: lastPanelState
+
     private fun close(reason: SessionStopReason) = release.close {
         running.set(false)
         runCatching { listener.close() }
@@ -192,7 +203,10 @@ internal class Bridge(
         peers.filterNot { owned?.owns(it) == true }.forEach { runCatching { it.close() } }
         peers.clear()
         try { owned?.close(reason) }
-        finally { workers.shutdownNow(); timer.shutdownNow() }
+        finally {
+            lastPanelState = owned?.panelState() ?: lastPanelState
+            workers.shutdownNow(); timer.shutdownNow()
+        }
         active.compareAndSet(owned, null)
         status("HOST_STOPPED")
     }
@@ -227,6 +241,9 @@ private class Session(
     private var inputThread: Thread? = null
     private var watchdog: java.util.concurrent.ScheduledFuture<*>? = null
     private val frames = AtomicLong()
+    private val panelPower = SessionPanelPower(controlLock, { running.get() && frames.get() > 0 }) {
+        control!!.outputStream.write(it)
+    }
     private val touches = AtomicLong()
     private val heldTouchFrames = AtomicLong()
     private val rejectedHeldTouchFrames = AtomicLong()
@@ -255,6 +272,17 @@ private class Session(
         }
     }
     fun scaleState(): ScaleState = if (running.get()) scale.state() else LiveScale.unavailable()
+
+    fun requestPanelOff(id: Long): PanelPowerState {
+        val result = panelPower.requestOff(id)
+        if (result.off == PanelSubmission.FAILED) {
+            close(SessionStopReason.CONTROL_IO)
+            return panelPower.state()
+        }
+        return result
+    }
+
+    fun panelState(): PanelPowerState = panelPower.state()
 
     private fun writeControl(payload: ByteArray) = synchronized(controlLock) {
         check(running.get())
@@ -396,7 +424,12 @@ private class Session(
         synchronized(resources) {
             phase("peerCloseMs") { runCatching { peer.close() } }
             phase("localListenerCloseMs") { runCatching { localListener?.close() } }
-            HeldInputRelease.beforeTransportClose { inputControls.close() }
+            // Reuse the bounded held-release turn: a stuck writer must not prevent socket/child release.
+            phase("inputAndPanelReleaseMs") {
+                HeldInputRelease.beforeTransportClose {
+                    try { inputControls.close() } finally { panelPower.close() }
+                }
+            }
             phase("videoCloseMs") { runCatching { video?.close() } }
             phase("controlCloseMs") { runCatching { control?.close() } }
             phase("childReleaseMs") { server?.let { process ->
@@ -414,6 +447,7 @@ private class Session(
             .put("stopReason", stopReason.name).put("startupStage", lastStartupStage.name).put("stopStartedMs", stopStartedMs)
             .put("childStartedMs", childStartedMs.get()).put("firstVideoFrameMs", firstVideoFrameMs.get())
             .put("closePhases", phases).put("lastPingMonoNs", lastPingNs.get()).put("lastPongMonoNs", lastPongNs.get())
+            .put("panelPower", panelPowerJson(panelPower.state()))
             .put("lastWriteChannel", lastWriteChannel.get()).put("writeStartedMonoNs", writeStarted.get())
             .put("tls", tlsProtocol).put("localAddress", localAddress).put("localPort", localPort)
             .put("peerAddress", peerAddress).put("peerPort", peerPort).put("scid", "%08x".format(scid))

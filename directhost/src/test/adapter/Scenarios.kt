@@ -252,6 +252,45 @@ fun main() {
         val fresh = FakeService(); f.attach(fresh)
         check(fresh.starts == 1 && model.state().phase == SessionPhase.AVAILABLE)
     }
+    scenario("panel without attachment reports unknown transport and never starts projection") { f ->
+        var replies = 0
+        f.host.requestPanelOff { check(it == null); replies++ }
+        f.host.panelState { check(it == null); replies++ }
+        f.drain()
+        check(replies == 2 && Shizuku.binds == 0)
+    }
+    scenario("panel adapter retains submission versus observation and malformed/dead transport") { f ->
+        f.host.start(); f.drain()
+        val service = FakeService(); f.attach(service)
+        var result: PanelPowerState? = null
+        f.host.requestPanelOff { result = it }; f.drain()
+        check(result!!.requestId == service.panelRequests.single())
+        check(result!!.off == PanelSubmission.SUBMITTED && result!!.restoration == PanelRestoration.PENDING)
+        check(result!!.observation == PanelObservation.UNVERIFIED)
+        service.currentPanel = service.currentPanel.copy(restoration = PanelRestoration.FAILED, sessionActive = false)
+        f.host.panelState { result = it }; f.drain()
+        check(result!!.restoration == PanelRestoration.FAILED && !result!!.sessionActive)
+        service.panelPayloadOverride = ByteArray(7)
+        f.host.panelState { result = it }; f.drain()
+        check(result == null)
+        service.panelPayloadOverride = null; service.die(); f.drain()
+        f.host.requestPanelOff { result = it }; f.drain()
+        check(result == null && service.panelRequests.size == 1)
+    }
+    scenario("fresh panel attachment cannot inherit preceding session submission") { f ->
+        f.host.start(); f.drain()
+        val first = FakeService(); f.attach(first)
+        f.host.requestPanelOff {}; f.drain()
+        f.host.stop(); f.drain()
+        check(first.revoked && first.destroys == 1 && f.backend() == "STOPPED")
+        var result: PanelPowerState? = null
+        f.host.panelState { result = it }; f.drain()
+        check(result == null)
+        f.host.start(); f.drain()
+        val fresh = FakeService(); f.attach(fresh)
+        f.host.panelState { result = it }; f.drain()
+        check(result!!.off == PanelSubmission.NOT_REQUESTED && fresh.panelRequests.isEmpty())
+    }
     check(failures == 0) { "$failures adapter scenarios failed" }
-    println("13 adapter scenarios passed; modeled host events, no device/Binder claim")
+    println("16 adapter scenarios passed; modeled host events, no device/Binder claim")
 }

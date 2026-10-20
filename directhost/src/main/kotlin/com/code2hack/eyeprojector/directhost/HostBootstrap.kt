@@ -126,6 +126,19 @@ class HostBootstrap private constructor(private val context: Context) {
 
     fun scaleState(complete: (ScaleState?) -> Unit) = scaleOperation({ it.scaleState() }, complete)
 
+    /** Fixed active-session OFF only; a submitted command is never a physical observation. */
+    fun requestPanelOff(complete: (PanelPowerState?) -> Unit) =
+        panelOperation({ it.requestPanelOff(System.nanoTime()) }, complete)
+
+    fun panelState(complete: (PanelPowerState?) -> Unit) = panelOperation({ it.panelState() }, complete)
+
+    private fun panelOperation(operation: (IHostBootstrap) -> ByteArray, complete: (PanelPowerState?) -> Unit) {
+        executor.execute {
+            val result = runCatching { remote?.let { PanelPowerState.from(operation(it)) } }.getOrNull()
+            main.post { complete(result) }
+        }
+    }
+
     private fun scaleOperation(operation: (IHostBootstrap) -> ByteArray, complete: (ScaleState?) -> Unit) {
         executor.execute {
             val result = runCatching { remote?.let { ScaleState.from(operation(it)) } }.getOrNull()

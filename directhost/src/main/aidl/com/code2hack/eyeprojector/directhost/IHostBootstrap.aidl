@@ -7,5 +7,7 @@ interface IHostBootstrap {
     String stop() = 2;
     byte[] requestScale(long requestId, double scale) = 3;
     byte[] scaleState() = 4;
+    byte[] requestPanelOff(long requestId) = 5;
+    byte[] panelState() = 6;
     void destroy() = 16777114;
 }

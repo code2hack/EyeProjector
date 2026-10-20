@@ -17,6 +17,7 @@ class ShizukuHostService @Keep constructor(private val context: Context) : IHost
     @Volatile private var revokeFailed = false
     @Volatile private var attribution = JSONObject()
     @Volatile private var sessionEpoch = ""
+    @Volatile private var lastPanelState = PanelPowerState.unavailable()
 
     override fun status(): String {
         val snapshot = lifecycle.status()
@@ -24,6 +25,7 @@ class ShizukuHostService @Keep constructor(private val context: Context) : IHost
             .put("failure", if (revokeFailed) "SESSION_REVOKE_FAILED" else snapshot.failure)
             .put("sessionRevoked", sessions.isRevoked())
             .put("sessionEpoch", sessionEpoch)
+            .put("panelPower", panelPowerJson(currentPanelState()))
             .put("shellUid", Process.myUid()).put("pid", Process.myPid())
             .put("serverSha256", ShellMain.SERVER_SHA256).put("attribution", attribution).toString()
     }
@@ -31,6 +33,7 @@ class ShizukuHostService @Keep constructor(private val context: Context) : IHost
     @Synchronized override fun start(identity: ByteArray, password: ByteArray, legacyPeer: ByteArray?, endpoint: ByteArray, pairedPeer: ByteArray?, sessionEpoch: String): String {
         if (lifecycle.status().state !in setOf(OwnedHostLifecycle.State.STOPPED, OwnedHostLifecycle.State.FAILED)) return status()
         this.sessionEpoch = sessionEpoch
+        lastPanelState = PanelPowerState.unavailable()
         lifecycle.start { ready ->
             // The existing backend contract requires shell, including on rooted Shizuku hosts.
             require(Process.myUid() == 2000)
@@ -59,7 +62,10 @@ class ShizukuHostService @Keep constructor(private val context: Context) : IHost
             object : OwnedHostLifecycle.Backend {
                 override fun run() = bridge.run()
                 override fun close() {
-                    try { bridge.close() } finally { if (projectionBridge === bridge) projectionBridge = null }
+                    try { bridge.close() } finally {
+                        lastPanelState = bridge.panelState()
+                        if (projectionBridge === bridge) projectionBridge = null
+                    }
                 }
             }
         }
@@ -79,6 +85,13 @@ class ShizukuHostService @Keep constructor(private val context: Context) : IHost
         (projectionBridge?.requestScale(requestId, scale) ?: LiveScale.unavailable(requestId, scale)).bytes()
 
     override fun scaleState(): ByteArray = (projectionBridge?.scaleState() ?: LiveScale.unavailable()).bytes()
+
+    override fun requestPanelOff(requestId: Long): ByteArray =
+        (projectionBridge?.requestPanelOff(requestId) ?: PanelPowerState.unavailable(requestId)).bytes()
+
+    override fun panelState(): ByteArray = currentPanelState().bytes()
+
+    private fun currentPanelState(): PanelPowerState = projectionBridge?.panelState() ?: lastPanelState
 
     override fun destroy() {
         stop()
