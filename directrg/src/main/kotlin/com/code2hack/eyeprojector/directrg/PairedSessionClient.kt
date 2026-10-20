@@ -12,7 +12,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.UUID
 
-/** One resumed Receiver owns one control poll; every exchange is bounded and closes its socket. */
+/** One resumed Receiver owns one control poll. Delivery shares the UI queue with local control actions. */
 internal class PairedSessionClient(
     private val directory: File,
     private val onState: (SessionState) -> Unit,
@@ -20,6 +20,7 @@ internal class PairedSessionClient(
     private val transport: (SessionControl.Request, (Socket) -> Unit) -> SessionState? = { request, opened ->
         PeerStore(directory).pairedPeer()?.let { SessionControl.exchange(directory, it, request, opened) }
     },
+    private val deliver: (() -> Unit) -> Unit = { it() },
 ) : Closeable {
     private val executor = Executors.newSingleThreadScheduledExecutor()
     private val closed = AtomicBoolean()
@@ -27,6 +28,8 @@ internal class PairedSessionClient(
     private var active: Socket? = null
     private var commandGeneration = 0L
     private var pendingStart: String? = null
+    // A reply may be authenticated before its queued UI callback updates the Activity's peer/session fields.
+    private var observedActiveEpoch: String? = null
     private var connectWanted = false
 
     fun start() {
@@ -36,6 +39,7 @@ internal class PairedSessionClient(
     fun connect() {
         synchronized(lock) {
             if (closed.get()) return
+            commandGeneration++
             connectWanted = true
             executor.execute(::poll)
         }
@@ -60,7 +64,7 @@ internal class PairedSessionClient(
             commandGeneration++
             connectWanted = false
             runCatching { active?.close() }
-            listOfNotNull(epoch, pendingStart).distinct().also { pendingStart = null }
+            listOfNotNull(epoch, pendingStart, observedActiveEpoch).distinct().also { pendingStart = null }
         }
         synchronized(lock) {
             if (!closed.get()) executor.execute {
@@ -87,12 +91,27 @@ internal class PairedSessionClient(
                     active = socket
                 }
             } ?: return null
-            if (notify && !closed.get() && generation == synchronized(lock) { commandGeneration }) onState(state)
+            val current = synchronized(lock) {
+                if (closed.get() || generation != commandGeneration) false
+                else {
+                    if (state.phase != SessionPhase.UNKNOWN) observedActiveEpoch = state.epoch.takeIf { state.phase.active }
+                    true
+                }
+            }
+            if (notify && current) dispatch(generation) { onState(state) }
             state
         } catch (_: Exception) {
-            if (!closed.get() && generation == synchronized(lock) { commandGeneration }) onUnavailable()
+            dispatch(generation, onUnavailable)
             null
         } finally { synchronized(lock) { active = null } }
+    }
+
+    private fun dispatch(generation: Long, action: () -> Unit) {
+        deliver {
+            // Validate after asynchronous UI delivery, including errors; posting alone does not complete delivery.
+            val current = synchronized(lock) { !closed.get() && generation == commandGeneration }
+            if (current) action()
+        }
     }
 
     fun close(epoch: String?) {
@@ -103,12 +122,14 @@ internal class PairedSessionClient(
             runCatching { active?.close() }
             active = null
             executor.shutdownNow()
-            listOfNotNull(epoch, pendingStart).distinct().also { pendingStart = null }
+            listOfNotNull(epoch, pendingStart, observedActiveEpoch).distinct().also { pendingStart = null }
         }
         // The stream socket closes immediately. This final bounded command also cancels pre-stream startup.
-        if (targets.isNotEmpty()) Thread({ runCatching {
-            targets.forEach { transport(SessionControl.Request(SessionControl.Operation.STOP, it)) {} }
-        } }, "eyeprojector-session-stop").start()
+        if (targets.isNotEmpty()) Thread({
+            targets.forEach { target -> runCatching {
+                transport(SessionControl.Request(SessionControl.Operation.STOP, target)) {}
+            } }
+        }, "eyeprojector-session-stop").start()
     }
 
     override fun close() = close(null)

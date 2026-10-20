@@ -429,14 +429,14 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     override fun onResume() {
         super.onResume(); resumed = true; pointer.start(); longTouch.start()
         val generation = ++clientGeneration
-        sessionClient = PairedSessionClient(File(filesDir, "session"), { state -> runOnUiThread {
+        sessionClient = PairedSessionClient(File(filesDir, "session"), { state ->
             if (resumed && generation == clientGeneration) observePeer(state)
-        } }, { runOnUiThread {
+        }, {
             if (resumed && generation == clientGeneration && session == null) {
                 connectRequested = false; connectButton.text = getString(R.string.connect)
                 showStatus("Paired Phone unavailable. Open EyeProjector on the Phone and check its setup and network.")
             }
-        } }).also { it.start() }
+        }, deliver = { action -> runOnUiThread { action() } }).also { it.start() }
     }
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
