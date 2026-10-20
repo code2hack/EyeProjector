@@ -29,6 +29,7 @@ class ProjectionSession(
     private val running = AtomicBoolean(true)
     private val timer = Executors.newScheduledThreadPool(2)
     private val controls = OrderedControlDispatcher { error -> failure(error); closeWithState("DISCONNECTED") }
+    private val scaleControls = OrderedControlDispatcher { error -> failure(error); closeWithState("DISCONNECTED") }
     private val outputLock = Any()
     private val lifecycleLock = Any()
     private val writing = AtomicLong()
@@ -224,7 +225,7 @@ class ProjectionSession(
     /** Acceptance here means queued locally; onScale/scaleState supplies backend observations. */
     fun requestScale(value: Double, requestId: Long = System.nanoTime()): Boolean {
         if (!running.get() || geometry == null) return false
-        return controls.submit(System.nanoTime() / 1_000_000, { running.get() && geometry != null }, "scale") {
+        return scaleControls.submit(System.nanoTime() / 1_000_000, { running.get() && geometry != null }, "scale") {
             send(Frame(Wire.SCALE_REQUEST, requestId, ScaleRequest(value).bytes()))
         }
     }
@@ -264,6 +265,7 @@ class ProjectionSession(
             decoder.also { decoder = null }
         }
         runCatching { socket?.close() }; timer.shutdownNow(); controls.close()
+        scaleControls.close()
         runCatching { old?.close() }
         state(value)
     }

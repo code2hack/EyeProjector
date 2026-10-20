@@ -11,12 +11,16 @@ internal class LiveScale(
 
     @Synchronized fun state(): ScaleState = value
 
-    @Synchronized fun request(id: Long, scale: Double): ScaleState {
+    @Synchronized fun request(id: Long, scale: Double, publishUnavailable: Boolean = false): ScaleState {
         val observed = value.observed
         val target = LayoutScale.target(scale, observed?.let { it.width > it.height } == true)
         if (target == null || observed == null) {
-            return value.copy(requestId = id, requested = scale, target = target,
+            val reply = value.copy(requestId = id, requested = scale, target = target,
                 status = if (target == null) ScaleStatus.REJECTED else ScaleStatus.UNAVAILABLE)
+            // Keep replies ordered with observations. Local startup callers must not
+            // emit a frame before the stream welcome; stream callers have read it.
+            if (observed != null || publishUnavailable) publish(reply)
+            return reply
         }
         value = value.copy(requestId = id, requested = scale, target = target, status = ScaleStatus.PENDING)
         publish(value)

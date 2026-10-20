@@ -3,8 +3,51 @@ package com.code2hack.eyeprojector.directhost
 import com.code2hack.eyeprojector.protocol.*
 import org.junit.Assert.*
 import org.junit.Test
+import java.util.Collections
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 
 class LiveScaleTest {
+    @Test fun localStartupDoesNotPublishBeforeWelcomeButEstablishedStreamGetsUnavailableReply() {
+        val frames = mutableListOf<ScaleState>()
+        val scale = LiveScale({}, frames::add)
+        assertEquals(ScaleStatus.UNAVAILABLE, scale.request(1, 1.25).status)
+        assertEquals(ScaleStatus.REJECTED, scale.request(2, Double.NaN).status)
+        assertTrue(frames.isEmpty())
+        val reply = scale.request(3, 1.25, publishUnavailable = true)
+        assertEquals(listOf(reply), frames)
+        assertEquals(ScaleStatus.UNAVAILABLE, reply.status)
+    }
+
+    @Test fun rejectedReplyCannotOvertakeANewerGeometryObservation() {
+        val enteredReply = CountDownLatch(1)
+        val releaseReply = CountDownLatch(1)
+        val observerStarted = CountDownLatch(1)
+        val frames = Collections.synchronizedList(mutableListOf<ScaleState>())
+        val scale = LiveScale({}, { value ->
+            if (value.status == ScaleStatus.REJECTED) {
+                enteredReply.countDown()
+                check(releaseReply.await(2, TimeUnit.SECONDS))
+            }
+            frames.add(value)
+        })
+        scale.observe(ScrcpyRecord.Session(Geometry(480, 640), false))
+        val request = thread { scale.request(1, -1.0) }
+        assertTrue(enteredReply.await(2, TimeUnit.SECONDS))
+        val observation = thread {
+            observerStarted.countDown()
+            scale.observe(ScrcpyRecord.Session(Geometry(384, 512), true))
+        }
+        try { assertTrue(observerStarted.await(2, TimeUnit.SECONDS)) }
+        finally { releaseReply.countDown() }
+        request.join(2000); observation.join(2000)
+        assertFalse(request.isAlive); assertFalse(observation.isAlive)
+        assertEquals(listOf(Geometry(480, 640), Geometry(480, 640), Geometry(384, 512)), frames.map { it.observed })
+        assertEquals(ScaleStatus.REJECTED, frames[1].status)
+        assertEquals(Geometry(384, 512), scale.state().observed)
+    }
+
     @Test fun pendingControlWriteDoesNotBecomeAppliedUntilBackendGeometryArrives() {
         val writes = mutableListOf<Geometry>()
         val states = mutableListOf<ScaleState>()

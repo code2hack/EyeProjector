@@ -212,9 +212,9 @@ private class Session(
     private val peerAddress = peer.inetAddress.hostAddress
     private val peerPort = peer.port
 
-    fun requestScale(id: Long, value: Double): ScaleState {
+    fun requestScale(id: Long, value: Double, streamRequest: Boolean = false): ScaleState {
         if (!running.get()) return LiveScale.unavailable(id, value)
-        return try { scale.request(id, value) }
+        return try { scale.request(id, value, publishUnavailable = streamRequest) }
         catch (error: Exception) {
             close(sessionFailureReason(error, control = true))
             LiveScale.unavailable(id, value)
@@ -272,11 +272,7 @@ private class Session(
                     when (frame.channel) {
                         Wire.PING -> send(Frame(Wire.PONG, frame.stamp))
                         Wire.SCALE_REQUEST -> {
-                            val result = requestScale(frame.stamp, ScaleRequest.from(frame.payload).scale)
-                            // Rejections are replies, while valid requests publish their pending/observed transitions.
-                            if (result.status in listOf(ScaleStatus.REJECTED, ScaleStatus.UNAVAILABLE)) {
-                                send(Frame(Wire.SCALE_STATE, result.requestId, result.bytes()))
-                            }
+                            requestScale(frame.stamp, ScaleRequest.from(frame.payload).scale, streamRequest = true)
                         }
                         Wire.TAP -> {
                             val tap = Tap.from(frame.payload)
