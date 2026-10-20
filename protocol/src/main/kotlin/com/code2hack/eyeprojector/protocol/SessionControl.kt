@@ -12,7 +12,12 @@ object SessionControl {
     private const val MAGIC = 0x45505331 // EPS1; separate from pairing and media framing.
     private const val VERSION = 1
     enum class Operation { STATUS, START, STOP, CONNECTING, RENDERED, FAILED }
-    data class Request(val operation: Operation, val epoch: String = "", val startEpoch: String = "")
+    // STOP with startEpoch cancels that specific START proposal from baseline epoch; empty retains ordinary owner STOP.
+    data class Request(val operation: Operation, val epoch: String = "", val startEpoch: String = "") {
+        companion object {
+            fun cancelStart(baseline: String, proposal: String) = Request(Operation.STOP, baseline, proposal)
+        }
+    }
 
     fun exchange(directory: File, peer: RememberedPeer, request: Request, opened: (Socket) -> Unit = {}): SessionState {
         Socket().use { raw ->

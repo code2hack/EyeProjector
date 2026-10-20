@@ -13,6 +13,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--output-dir', type=Path, required=True)
 parser.add_argument('--source-dir', type=Path, help='Optional exact repository snapshot for before/after source checks')
 parser.add_argument('--expect-fail', action='store_true', help='Require an actual compiled baseline regression failure')
+parser.add_argument('--expected-failure', action='append', help='Required FAIL scenario prefix (repeatable); defaults to the original review01 cases')
 args = parser.parse_args()
 suite = Path(__file__).resolve().parent
 root = suite.parents[3]
@@ -68,6 +69,6 @@ print(text)
 if not manifest['inputsUnchanged']:
     sys.exit('Inputs changed during the check; retain this run and repeat at a fixed source')
 if args.expect_fail:
-    expected = ['FAIL R8-01 queued AVAILABLE', 'FAIL R8-02 first final Stop']
+    expected = args.expected_failure or ['FAIL R8-01 queued AVAILABLE', 'FAIL R8-02 first final Stop']
     sys.exit(0 if run.returncode != 0 and all(name in text for name in expected) else 1)
 sys.exit(run.returncode)

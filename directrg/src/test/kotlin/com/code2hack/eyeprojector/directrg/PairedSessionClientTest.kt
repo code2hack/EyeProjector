@@ -57,7 +57,8 @@ class PairedSessionClientTest {
                     }
                 }
                 SessionControl.Operation.STOP -> {
-                    targets.add(request.epoch); stopped.countDown()
+                    if (request.startEpoch.isNotEmpty()) assertEquals("observed-inactive", request.epoch)
+                    targets.add(request.startEpoch.ifEmpty { request.epoch }); stopped.countDown()
                     SessionState("retired", SessionPhase.INACTIVE)
                 }
                 else -> error("Unexpected command")

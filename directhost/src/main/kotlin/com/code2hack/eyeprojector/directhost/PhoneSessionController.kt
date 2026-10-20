@@ -9,7 +9,9 @@ import java.io.File
 class PhoneSessionController private constructor(context: Context) {
     val bootstrap = HostBootstrap.get(context)
     val store = PeerStore(File(context.filesDir, "session"))
-    private val controller = SessionController({ epoch -> bootstrap.start(epoch) }, { bootstrap.stop() }, initialPhase = SessionPhase.UNKNOWN)
+    private val attempts = SessionAttemptStore(File(context.filesDir, "session-attempts.properties"))
+    private val controller = SessionController({ epoch -> bootstrap.start(epoch) }, { bootstrap.stop() }, initialPhase = SessionPhase.UNKNOWN,
+        initialCorrelation = attempts.read(), retainCorrelation = attempts::write)
     val pairing = LanPairing(store, PeerRole.PHONE, {}, { socket ->
         SessionControl.serve(store.directory, socket, ::command)
     })
@@ -35,16 +37,10 @@ class PhoneSessionController private constructor(context: Context) {
 
     fun stop(): SessionState = controller.stop()
 
-    private fun command(request: SessionControl.Request): SessionState = when (request.operation) {
-        SessionControl.Operation.STATUS -> controller.state()
-        SessionControl.Operation.START -> start(request.epoch, request.startEpoch)
-        SessionControl.Operation.STOP -> controller.stop(request.epoch)
-        SessionControl.Operation.CONNECTING -> controller.receiverConnecting(request.epoch)
-        SessionControl.Operation.RENDERED -> controller.receiverRendered(request.epoch)
-        SessionControl.Operation.FAILED -> {
-            if (controller.state().epoch == request.epoch) controller.backend(request.epoch, "FAILED", "RECEIVER_FAILED")
-            controller.state()
-        }
+    private fun command(request: SessionControl.Request): SessionState {
+        val unavailable = if (request.operation == SessionControl.Operation.START)
+            bootstrap.status().setup.takeIf { it != HostBootstrap.Setup.AVAILABLE }?.name else null
+        return controller.command(request, unavailable)
     }
 
     companion object {

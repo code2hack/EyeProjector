@@ -27,7 +27,10 @@ internal class PairedSessionClient(
     private val lock = Any()
     private var active: Socket? = null
     private var commandGeneration = 0L
-    private var pendingStart: String? = null
+    private data class StartAttempt(val baseline: String, val proposal: String, val knownOwner: String?)
+    private var pendingStart: StartAttempt? = null
+    private val cancelingStarts = linkedMapOf<String, StartAttempt>()
+    private val canceledOwners = mutableSetOf<String>()
     // A reply may be authenticated before its queued UI callback updates the Activity's peer/session fields.
     private var observedActiveEpoch: String? = null
     private var connectWanted = false
@@ -47,14 +50,24 @@ internal class PairedSessionClient(
 
     private fun poll() {
         val generation = synchronized(lock) { commandGeneration }
+        reconcileStarts()
         val state = exchange(SessionControl.Request(SessionControl.Operation.STATUS)) ?: return
         if (state.phase != SessionPhase.UNKNOWN) {
             val epoch = synchronized(lock) {
-                if (closed.get() || generation != commandGeneration || !connectWanted) return
+                if (closed.get() || generation != commandGeneration || !connectWanted || cancelingStarts.values.any { it.knownOwner == null }) return
                 connectWanted = false
-                UUID.randomUUID().toString().also { pendingStart = it }
+                StartAttempt(state.epoch, UUID.randomUUID().toString(), state.epoch.takeIf { state.phase.active }).also { pendingStart = it }
             }
-            exchange(SessionControl.Request(SessionControl.Operation.START, state.epoch, epoch))
+            exchange(SessionControl.Request(SessionControl.Operation.START, epoch.baseline, epoch.proposal))
+        }
+    }
+
+    private fun reconcileStarts() {
+        val attempts = synchronized(lock) { cancelingStarts.values.toList() }
+        attempts.forEach { attempt ->
+            val state = exchange(SessionControl.Request.cancelStart(attempt.baseline, attempt.proposal), notify = false)
+            if (state != null && state.phase != SessionPhase.UNKNOWN)
+                synchronized(lock) { cancelingStarts.remove(attempt.proposal, attempt) }
         }
     }
 
@@ -64,11 +77,20 @@ internal class PairedSessionClient(
             commandGeneration++
             connectWanted = false
             runCatching { active?.close() }
-            listOfNotNull(epoch, pendingStart, observedActiveEpoch).distinct().also { pendingStart = null }
+            pendingStart?.let { cancelingStarts[it.proposal] = it }
+            listOfNotNull(epoch, pendingStart?.proposal, observedActiveEpoch).distinct().also {
+                canceledOwners.addAll(listOfNotNull(epoch, observedActiveEpoch))
+                pendingStart = null
+            }
         }
         synchronized(lock) {
             if (!closed.get()) executor.execute {
-                try { targets.forEach { exchange(SessionControl.Request(SessionControl.Operation.STOP, it)) } }
+                try {
+                    targets.filterNot { synchronized(lock) { it in cancelingStarts } }.forEach {
+                        exchange(SessionControl.Request(SessionControl.Operation.STOP, it), notify = false)
+                    }
+                    reconcileStarts()
+                }
                 finally { complete?.invoke() }
             } else complete?.invoke()
         }
@@ -98,7 +120,14 @@ internal class PairedSessionClient(
                     true
                 }
             }
-            if (notify && current) dispatch(generation) { onState(state) }
+            // STOP is reconciliation, never a new projection request. Unresolved canceled attempts
+            // also fence availability until the Phone has processed their correlated cancellation.
+            if (notify && current && request.operation != SessionControl.Operation.STOP) dispatch(generation) {
+                val attachable = synchronized(lock) {
+                    !state.phase.active || (cancelingStarts.values.none { it.knownOwner == null } && state.epoch !in canceledOwners)
+                }
+                if (attachable) onState(state)
+            }
             state
         } catch (_: Exception) {
             dispatch(generation, onUnavailable)
@@ -122,12 +151,17 @@ internal class PairedSessionClient(
             runCatching { active?.close() }
             active = null
             executor.shutdownNow()
-            listOfNotNull(epoch, pendingStart, observedActiveEpoch).distinct().also { pendingStart = null }
+            pendingStart?.let { cancelingStarts[it.proposal] = it }
+            val proposals = cancelingStarts.keys.toSet()
+            val known = listOfNotNull(epoch, observedActiveEpoch).distinct().filterNot { it in proposals }
+                .map { SessionControl.Request(SessionControl.Operation.STOP, it) }
+            (known + cancelingStarts.values.map { SessionControl.Request.cancelStart(it.baseline, it.proposal) })
+                .also { pendingStart = null }
         }
         // The stream socket closes immediately. This final bounded command also cancels pre-stream startup.
         if (targets.isNotEmpty()) Thread({
             targets.forEach { target -> runCatching {
-                transport(SessionControl.Request(SessionControl.Operation.STOP, target)) {}
+                transport(target) {}
             } }
         }, "eyeprojector-session-stop").start()
     }

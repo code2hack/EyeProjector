@@ -30,6 +30,10 @@ class SessionControlTest {
             SessionControl.writeRequest(DataOutputStream(bytes), request)
             assertEquals(request, SessionControl.readRequest(DataInputStream(bytes.toByteArray().inputStream())))
         }
+        val bytes = ByteArrayOutputStream()
+        val cancellation = SessionControl.Request.cancelStart("baseline", "proposal")
+        SessionControl.writeRequest(DataOutputStream(bytes), cancellation)
+        assertEquals(cancellation, SessionControl.readRequest(DataInputStream(bytes.toByteArray().inputStream())))
     }
 
     @Test fun pairedControlUsesBothRememberedIdentityPins() {

@@ -1,6 +1,7 @@
 package com.code2hack.eyeprojector.directhost
 
 import com.code2hack.eyeprojector.protocol.SessionPhase
+import com.code2hack.eyeprojector.protocol.SessionControl
 import org.junit.Assert.*
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
@@ -12,6 +13,64 @@ class SessionControllerTest {
     private val starts = mutableListOf<String>()
     private var stops = 0
     private val controller = SessionController({ starts.add(it) }, { stops++ }, { "epoch-${sequence++}" })
+
+    @Test fun canceledProposalResolvesConcurrentOwnerWithoutDependingOnStartReply() {
+        val initial = controller.state().epoch
+        val owner = controller.start().epoch
+        controller.backend(owner, "READY")
+        assertEquals(owner, controller.command(SessionControl.Request(SessionControl.Operation.START, initial, "proposal")).epoch)
+        assertEquals(SessionPhase.STOPPING, controller.command(SessionControl.Request.cancelStart(initial, "proposal")).phase)
+        assertEquals(1, stops)
+        controller.command(SessionControl.Request.cancelStart(initial, "proposal"))
+        assertEquals(1, stops)
+    }
+
+    @Test fun cancelBeforeStartAdmissionPreventsLateStartButPreservesLaterPhoneStart() {
+        val initial = controller.state().epoch
+        val cancel = SessionControl.Request.cancelStart(initial, "proposal")
+        controller.command(cancel)
+        controller.command(SessionControl.Request(SessionControl.Operation.START, initial, "proposal"))
+        assertTrue(starts.isEmpty())
+        val fresh = controller.start().epoch
+        controller.backend(fresh, "READY")
+        controller.command(cancel)
+        controller.command(SessionControl.Request(SessionControl.Operation.START, initial, "proposal"))
+        assertEquals(fresh, controller.state().epoch)
+        assertEquals(SessionPhase.AVAILABLE, controller.state().phase)
+        assertEquals(0, stops)
+        assertEquals(1, starts.size)
+    }
+
+    @Test fun lateCancelAndDuplicateStartNeverRebindToNewerOwner() {
+        val initial = controller.state().epoch
+        val owner = controller.start().epoch
+        controller.backend(owner, "READY")
+        val proposal = SessionControl.Request(SessionControl.Operation.START, initial, "proposal")
+        val cancel = SessionControl.Request.cancelStart(initial, "proposal")
+        controller.command(proposal)
+        controller.command(cancel)
+        controller.backend(owner, "STOPPED")
+        val fresh = controller.start().epoch
+        controller.backend(fresh, "READY")
+        controller.command(proposal)
+        controller.command(cancel)
+        controller.stop("proposal")
+        assertEquals(fresh, controller.state().epoch)
+        assertEquals(SessionPhase.AVAILABLE, controller.state().phase)
+        assertEquals(1, stops)
+        assertEquals(2, starts.size)
+    }
+
+    @Test fun cancelOvertakesStartAdmissionAfterConcurrentPhoneOwnerExists() {
+        val initial = controller.state().epoch
+        val owner = controller.start().epoch
+        controller.backend(owner, "READY")
+        controller.command(SessionControl.Request.cancelStart(initial, "proposal"))
+        controller.command(SessionControl.Request(SessionControl.Operation.START, initial, "proposal"))
+        assertEquals(SessionPhase.STOPPING, controller.state().phase)
+        assertEquals(1, stops)
+        assertEquals(1, starts.size)
+    }
 
     @Test fun concurrentPhoneAndGlassesStartsCreateOneOwner() {
         val creates = AtomicInteger()

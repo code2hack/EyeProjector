@@ -36,8 +36,35 @@ private class UiQueue {
 private class Host {
     private val sequence = AtomicInteger()
     private val owned = AtomicReference<String>()
+    private val correlation = AtomicReference<Any>()
+    val starts = AtomicInteger()
     val stops = AtomicInteger()
-    val controller = SessionController({ owned.set(it) }, { stops.incrementAndGet() }, { "host-${sequence.incrementAndGet()}" })
+    var controller = create(SessionPhase.INACTIVE)
+        private set
+    private fun create(phase: SessionPhase): SessionController {
+        val constructor = SessionController::class.java.declaredConstructors.single {
+            it.parameterCount in setOf(4, 6) && it.parameterTypes.last().simpleName != "DefaultConstructorMarker"
+        }
+        val arguments = mutableListOf<Any>({ value: String -> owned.set(value); starts.incrementAndGet(); Unit },
+            { stops.incrementAndGet(); Unit }, { "host-${sequence.incrementAndGet()}" }, phase)
+        if (constructor.parameterCount == 6) {
+            arguments.add(correlation.get() ?: constructor.parameterTypes[4].getDeclaredConstructor().newInstance())
+            arguments.add({ value: Any -> correlation.set(value) })
+        }
+        return constructor.newInstance(*arguments.toTypedArray()) as SessionController
+    }
+    fun restartUnknown() { controller = create(SessionPhase.UNKNOWN) }
+    // Compile preserved parents too; the candidate uses the same actual dispatcher as PhoneSessionController.
+    fun command(request: SessionControl.Request): SessionState {
+        val dispatch = controller.javaClass.methods.singleOrNull { it.name == "command" && it.parameterCount == 2 }
+        if (dispatch != null) return dispatch.invoke(controller, request, null) as SessionState
+        return when (request.operation) {
+            SessionControl.Operation.STATUS -> controller.state()
+            SessionControl.Operation.START -> controller.start(request.epoch, request.startEpoch)
+            SessionControl.Operation.STOP -> controller.stop(request.epoch)
+            else -> error("Unexpected operation")
+        }
+    }
     fun ready(): SessionState {
         val epoch = controller.start().epoch
         controller.backend(epoch, "READY")
@@ -87,9 +114,8 @@ private fun queuedAvailableAndContinuedPolling() {
         SessionControl.Operation.STOP -> {
             if (request.epoch == old.epoch) {
                 stopAttempt.countDown()
-                throw IOException("Synthetic unavailable remote Stop; no success is claimed")
             }
-            host.controller.stop(request.epoch)
+            throw IOException("All remote cleanup transports unavailable; no success is claimed")
         }
         else -> error("Unexpected operation")
     } }
@@ -129,7 +155,7 @@ private fun concurrentStartReplyCarriesDifferentOwner() {
             active.set(host.ready()) // A Phone Start wins after the preceding inactive STATUS.
             host.controller.start(request.epoch, request.startEpoch).also { check(it.epoch == active.get().epoch) }
         }
-        SessionControl.Operation.STOP -> host.controller.stop(request.epoch).also {
+        SessionControl.Operation.STOP -> host.command(request).also {
             if (request.epoch == active.get().epoch) stopApplied.countDown()
         }
         else -> error("Unexpected operation")
@@ -157,9 +183,9 @@ private fun failedFirstFinalStopDoesNotSkipAcceptedStart() {
             canceledReply(opened, accepted)
         }
         SessionControl.Operation.STOP -> {
-            attempts.add(request.epoch)
+            attempts.add(request.startEpoch.ifEmpty { request.epoch })
             if (request.epoch == "stale-attached") throw IOException("First independent STOP failed")
-            host.controller.stop(request.epoch).also { stopThread.set(Thread.currentThread()); stopped.countDown() }
+            host.command(request).also { stopThread.set(Thread.currentThread()); stopped.countDown() }
         }
         else -> error("Unexpected operation")
     } }
@@ -184,7 +210,7 @@ private fun staleFailureAndFreshConnect(disconnectFirst: Boolean) {
             host.controller.state()
         }
         SessionControl.Operation.START -> host.controller.start(request.epoch, request.startEpoch)
-        SessionControl.Operation.STOP -> host.controller.stop(request.epoch)
+        SessionControl.Operation.STOP -> host.command(request)
         else -> error("Unexpected operation")
     } }
     val session = client(ui, { attachment.available(it) }, { errors.incrementAndGet() }, transport)
@@ -204,7 +230,7 @@ private fun currentDeliveryCanDisconnectReentrantly() {
     val stopped = CountDownLatch(1); lateinit var session: PairedSessionClient
     val transport: Transport = { request, _ -> when (request.operation) {
         SessionControl.Operation.STATUS -> host.controller.state()
-        SessionControl.Operation.STOP -> host.controller.stop(request.epoch).also { stopped.countDown() }
+        SessionControl.Operation.STOP -> host.command(request).also { stopped.countDown() }
         else -> error("Unexpected operation")
     } }
     session = client(ui, {
@@ -215,6 +241,115 @@ private fun currentDeliveryCanDisconnectReentrantly() {
         ui.until { delivered.get() == 1 }; await(stopped)
         check(host.controller.state().phase == SessionPhase.STOPPING)
     } finally { session.close() }
+}
+
+private fun inFlightOwnerAfterDisconnect(mode: String) {
+    val host = Host(); val ui = UiQueue(); val attachment = SessionAttachment()
+    val entered = CountDownLatch(1); val stopped = CountDownLatch(1); val firstFailure = CountDownLatch(1); val allowStatus = CountDownLatch(1)
+    val actual = AtomicReference<SessionState>(); val proposed = AtomicReference<String>()
+    val attached = mutableListOf<String>(); val errors = AtomicInteger(); val starts = AtomicInteger(); val attempts = AtomicInteger()
+    val fresh = AtomicReference<SessionState>()
+    val transport: Transport = { request, opened -> when (request.operation) {
+        SessionControl.Operation.STATUS -> {
+            if (starts.get() > 0) await(allowStatus)
+            host.controller.state()
+        }
+        SessionControl.Operation.START -> {
+            if (starts.incrementAndGet() == 1) {
+                proposed.set(request.startEpoch)
+                actual.set(host.ready()) // Phone A wins between STATUS(I) and START(B).
+                val result = host.command(request).also { check(it.epoch == actual.get().epoch) }
+                Socket().use { socket ->
+                    opened(socket); entered.countDown()
+                    val end = System.nanoTime() + TimeUnit.SECONDS.toNanos(4)
+                    while (!socket.isClosed && System.nanoTime() < end) Thread.sleep(1)
+                    check(socket.isClosed)
+                    if (mode == "late-success") result else throw IOException("Canceled START reply before A reached client")
+                }
+            } else host.command(request).let { result ->
+                host.controller.backend(result.epoch, "READY"); host.controller.state()
+            }
+        }
+        SessionControl.Operation.STOP -> {
+            val attempt = attempts.incrementAndGet()
+            if (mode == "phone-process-restart" && attempt == 1) host.restartUnknown()
+            if (mode == "phone-process-restart" && attempt == 2) host.controller.restore(actual.get().epoch, "READY")
+            if (mode == "failed-before" && attempt == 1) {
+                firstFailure.countDown(); throw IOException("Cancellation failed before server admission")
+            }
+            if (mode == "newer-owner" && attempt == 1) {
+                host.controller.stop(actual.get().epoch); host.release(); fresh.set(host.ready())
+            }
+            host.command(request).also {
+                if (mode == "failed-after" && attempt == 1) {
+                    firstFailure.countDown(); throw IOException("Reply lost after cancellation was applied")
+                }
+                if (it.phase != SessionPhase.UNKNOWN) stopped.countDown()
+            }
+        }
+        else -> error("Unexpected operation")
+    } }
+    val session = client(ui, { if (attachment.available(it)) attached.add(it.epoch) }, { errors.incrementAndGet() }, transport)
+    try {
+        session.connect(); await(entered)
+        val suppressed = session.disconnect(null).also { it.forEach(attachment::suppress) }
+        check(suppressed == listOf(proposed.get())) // A is genuinely unknown at Disconnect.
+        if (mode.startsWith("failed-")) {
+            await(firstFailure); ui.until { errors.get() > 0 }
+            check(attached.isEmpty())
+        }
+        session.start(); await(stopped); ui.drain()
+        check(attached.isEmpty()) { "STOP reply or canceled START attached A/C: $attached" }
+        if (mode == "newer-owner") {
+            check(host.controller.state() == fresh.get()) { "Cancellation chased the newer owner C" }
+            check(host.stops.get() == 1)
+        } else {
+            check(host.controller.state().phase == SessionPhase.STOPPING) { "Preexisting A survived canceled B" }
+            check(host.stops.get() == 1)
+            host.release()
+            if (mode == "glasses-restart") session.connect() else fresh.set(host.ready())
+        }
+        allowStatus.countDown()
+        ui.until { attached.isNotEmpty() }
+        check(attached.single() != actual.get().epoch)
+        if (mode != "glasses-restart") check(attached.single() == fresh.get().epoch)
+        check(host.starts.get() == 2)
+    } finally { allowStatus.countDown(); session.close(attachment.release()) }
+}
+
+private fun finalCancelOvertakesStartAdmission() {
+    val host = Host(); val ui = UiQueue(); val entered = CountDownLatch(1); val canceled = CountDownLatch(1); val admitted = CountDownLatch(1)
+    val delayed = AtomicReference<SessionControl.Request>(); val cancelRequest = AtomicReference<SessionControl.Request>()
+    val delivered = AtomicInteger()
+    val serverError = AtomicReference<Throwable>()
+    val transport: Transport = { request, opened -> when (request.operation) {
+        SessionControl.Operation.STATUS -> host.controller.state()
+        SessionControl.Operation.START -> Socket().use { socket ->
+            delayed.set(request); opened(socket); entered.countDown()
+            // The Phone server is independent of the interrupted Receiver executor.
+            Thread({
+                try { await(canceled); host.command(request) }
+                catch (error: Throwable) { serverError.set(error) }
+                finally { admitted.countDown() }
+            }, "synthetic-phone-admission").start()
+            val end = System.nanoTime() + TimeUnit.SECONDS.toNanos(4)
+            while (!socket.isClosed && System.nanoTime() < end) Thread.sleep(1)
+            throw IOException("Canceled reply; server admission remains independent")
+        }
+        SessionControl.Operation.STOP -> host.command(request).also { cancelRequest.set(request); canceled.countDown() }
+        else -> error("Unexpected operation")
+    } }
+    val session = client(ui, { delivered.incrementAndGet() }, {}, transport)
+    try {
+        session.connect(); await(entered); session.close(); await(admitted); ui.drain()
+        check(serverError.get() == null)
+        check(host.starts.get() == 0) { "Canceled B started after STOP overtook admission" }
+        check(host.controller.state().phase == SessionPhase.INACTIVE)
+        check(delivered.get() == 0)
+        val fresh = host.ready()
+        host.command(cancelRequest.get()); host.command(delayed.get())
+        check(host.controller.state() == fresh && host.stops.get() == 0)
+    } finally { canceled.countDown(); session.close() }
 }
 
 fun main() {
@@ -229,6 +364,10 @@ fun main() {
     scenario("R8-01 obsolete unavailable after Disconnect", { staleFailureAndFreshConnect(true) })
     scenario("R8-01 obsolete unavailable after explicit Connect", { staleFailureAndFreshConnect(false) })
     scenario("R8-01 current delivery supports reentrant Disconnect", ::currentDeliveryCanDisconnectReentrantly)
+    for (mode in listOf("canceled-reply", "late-success", "failed-before", "failed-after", "newer-owner", "glasses-restart", "phone-process-restart")) {
+        scenario("R8-01 in-flight owner $mode", { inFlightOwnerAfterDisconnect(mode) })
+    }
+    scenario("R8-01 final cancellation overtakes START admission", ::finalCancelOvertakesStartAdmission)
     check(failures == 0) { "$failures actual-client/controller scheduling scenarios failed" }
-    println("6 actual-client/controller scheduling scenarios passed; modeled network/UI, no device claim")
+    println("14 actual-client/controller scheduling scenarios passed; modeled network/UI, no device claim")
 }
