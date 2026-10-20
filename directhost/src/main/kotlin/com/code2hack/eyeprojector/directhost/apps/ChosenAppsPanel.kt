@@ -107,7 +107,6 @@ class ChosenAppsPanel @JvmOverloads constructor(
         tag = entry.app.packageName
         val availability = when (entry.availability) {
             AppAvailability.AVAILABLE -> null
-            AppAvailability.NOT_INSTALLED -> context.getString(R.string.chosen_apps_not_installed)
             AppAvailability.UNAVAILABLE -> context.getString(R.string.chosen_apps_unavailable)
         }
         contentDescription = if (availability == null) entry.app.label else

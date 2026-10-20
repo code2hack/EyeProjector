@@ -23,6 +23,7 @@ class InstalledAppCatalog(private val packages: PackageManager) : AppCatalog {
         ).isNotEmpty()
         InstalledApp(packageName, info.loadLabel(packages).toString(), launchable)
     } catch (_: PackageManager.NameNotFoundException) {
+        // The package may still be installed but no longer match our visibility declaration.
         null
     }
 

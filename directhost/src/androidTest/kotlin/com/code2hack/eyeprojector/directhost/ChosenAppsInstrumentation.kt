@@ -2,6 +2,7 @@ package com.code2hack.eyeprojector.directhost
 
 import android.app.Activity
 import android.app.Instrumentation
+import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.os.Bundle
@@ -15,12 +16,13 @@ import com.code2hack.eyeprojector.directhost.apps.*
 /** Platform-only Phone UI driver. Selection fixtures use a separate test-only private preference file. */
 class ChosenAppsInstrumentation : Instrumentation() {
     private lateinit var arguments: Bundle
-    private val fixtureContext by lazy {
-        object : ContextWrapper(targetContext) {
+    private val fixtureContext by lazy { fixturePreferences(targetContext) }
+
+    private fun fixturePreferences(base: Context) =
+        object : ContextWrapper(base) {
             override fun getSharedPreferences(name: String, mode: Int) =
                 super.getSharedPreferences("instrumentation_fixture_$name", mode)
         }
-    }
 
     override fun onCreate(arguments: Bundle?) {
         this.arguments = arguments ?: Bundle()
@@ -62,8 +64,11 @@ class ChosenAppsInstrumentation : Instrumentation() {
         store.read().forEach { store.remove(it.packageName) }
         val catalog = object : AppCatalog {
             var available = listOf(InstalledApp("example.ui.alpha", "Alpha"), InstalledApp("example.ui.beta", "Beta"))
-            override fun launchableApps() = available
-            override fun find(packageName: String) = available.firstOrNull { it.packageName == packageName }
+            var invisiblePackages = emptySet<String>()
+            override fun launchableApps() = available.filter { it.packageName !in invisiblePackages }
+            override fun find(packageName: String) = available.firstOrNull {
+                it.packageName == packageName && it.packageName !in invisiblePackages
+            }
         }
         val installed = InstalledAppCatalog(targetContext.packageManager)
         val actual = installed.launchableApps()
@@ -72,18 +77,28 @@ class ChosenAppsInstrumentation : Instrumentation() {
         check(installed.find("example.not.installed.eyeprojector") == null)
 
         val activity = startActivitySync(Intent(targetContext, HostActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        var observedChanges = 0
-        val subscription = ChosenApps.observe(fixtureContext) { observedChanges++ }
         lateinit var panel: ChosenAppsPanel
         fun replacePanel() {
             runOnMainSync {
-                panel = ChosenAppsPanel(activity, ChosenApps.open(fixtureContext), catalog)
+                // Preserve the Activity theme/window, with the same preference namespace for store and observer.
+                val panelContext = fixturePreferences(activity)
+                panel = ChosenAppsPanel(panelContext, ChosenApps.open(panelContext), catalog)
                 activity.setContentView(panel)
             }
             waitForIdleSync()
         }
         try {
             replacePanel()
+            val otherConsumer = ChosenApps.open(fixtureContext)
+            runOnMainSync { otherConsumer.add(InstalledApp("example.ui.alpha", "Alpha")) }
+            waitForIdleSync()
+            runOnMainSync {
+                // No refresh, recreation or callback setter between this external write and assertion.
+                check((0 until grid(panel).childCount).map { grid(panel).getChildAt(it).tag } ==
+                    listOf(ChosenAppsPanel.ADD_TAG, "example.ui.alpha"))
+                otherConsumer.remove("example.ui.alpha")
+            }
+            waitForIdleSync()
             runOnMainSync {
                 check(grid(panel).childCount == 1)
                 check(grid(panel).getChildAt(0).tag == ChosenAppsPanel.ADD_TAG)
@@ -107,22 +122,29 @@ class ChosenAppsInstrumentation : Instrumentation() {
                 check(selected == ChosenApp("example.ui.alpha", "Alpha"))
                 catalog.available = listOf(InstalledApp("example.ui.beta", "Beta", false))
                 panel.refresh()
-                check(panel.findViewWithTag<View>("example.ui.alpha").contentDescription.toString().contains("Not installed"))
+                check(panel.findViewWithTag<View>("example.ui.alpha").contentDescription.toString().contains("Unavailable"))
                 check(panel.findViewWithTag<View>("example.ui.beta").contentDescription.toString().contains("Unavailable"))
                 check(!panel.findViewWithTag<View>("example.ui.alpha").isClickable)
                 check(!panel.findViewWithTag<View>("example.ui.beta").isClickable)
+                catalog.available = listOf(InstalledApp("example.ui.alpha", "Alpha"), InstalledApp("example.ui.beta", "Beta"))
+                panel.refresh()
+                check(panel.findViewWithTag<View>("example.ui.alpha").contentDescription == "Alpha")
+                check(panel.findViewWithTag<View>("example.ui.beta").contentDescription == "Beta")
+                catalog.invisiblePackages = setOf("example.ui.alpha")
+                panel.refresh()
+                check(catalog.available.size == 2) // Installed but hidden by the catalog lookup.
+                check(panel.findViewWithTag<View>("example.ui.alpha").contentDescription.toString().contains("Unavailable"))
+                check(store.read().map { it.packageName } == listOf("example.ui.alpha", "example.ui.beta"))
                 panel.findViewWithTag<View>("example.ui.alpha").performLongClick()
             }
             clickText("Remove")
             waitForIdleSync()
             check(store.read().map { it.packageName } == listOf("example.ui.beta"))
-            check(catalog.available.size == 1)
-            check(observedChanges >= 3)
+            check(catalog.available.size == 2)
             runOnMainSync { check(grid(panel).getChildAt(0).tag == ChosenAppsPanel.ADD_TAG) }
             // These fake selections never enter the Phone host's real selection or touch real apps.
             check(ChosenApps.open(targetContext).read().none { it.packageName.startsWith("example.ui.") })
         } finally {
-            subscription.close()
             runOnMainSync { activity.finish() }
         }
     }

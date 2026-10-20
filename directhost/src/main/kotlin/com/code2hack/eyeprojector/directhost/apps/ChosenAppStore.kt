@@ -8,10 +8,11 @@ data class InstalledApp(val packageName: String, val label: String, val launchab
 interface AppCatalog {
     /** One entry per launchable package, including apps with multiple launcher activities. */
     fun launchableApps(): List<InstalledApp>
+    /** Null means not observable by this catalog, including missing or visibility-filtered apps. */
     fun find(packageName: String): InstalledApp?
 }
 
-enum class AppAvailability { AVAILABLE, NOT_INSTALLED, UNAVAILABLE }
+enum class AppAvailability { AVAILABLE, UNAVAILABLE }
 
 data class ChosenAppEntry(val app: ChosenApp, val availability: AppAvailability)
 
@@ -42,14 +43,11 @@ class ChosenAppStore(private val storage: ChosenAppStorage) {
     }
 
     fun entries(catalog: AppCatalog): List<ChosenAppEntry> = read().map { saved ->
-        val installed = catalog.find(saved.packageName)
+        val observed = catalog.find(saved.packageName)
         ChosenAppEntry(
-            if (installed == null) saved else saved.copy(label = installed.label),
-            when {
-                installed == null -> AppAvailability.NOT_INSTALLED
-                installed.launchable -> AppAvailability.AVAILABLE
-                else -> AppAvailability.UNAVAILABLE
-            },
+            if (observed == null) saved else saved.copy(label = observed.label),
+            // A failed package lookup cannot distinguish removal from lost package visibility.
+            if (observed?.launchable == true) AppAvailability.AVAILABLE else AppAvailability.UNAVAILABLE,
         )
     }
 
