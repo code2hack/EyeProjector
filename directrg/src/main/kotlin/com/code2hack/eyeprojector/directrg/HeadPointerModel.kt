@@ -36,9 +36,10 @@ class HeadPointerModel(val settings: Settings = Settings()) {
     private val maxY get() = 1.0-minY
     private var rotation = 0
     private var running = false
-    private var reference: HeadOrientation? = null
+    private var previousOrientation: HeadOrientation? = null
     private var sourceTimeNs = 0L
-    private var frameTimeNs = 0L
+    private var frameTimeXNs = 0L
+    private var frameTimeYNs = 0L
     private var x = .5
     private var y = .5
     private var targetX = .5
@@ -48,7 +49,9 @@ class HeadPointerModel(val settings: Settings = Settings()) {
     private var pitch = 0.0
     private var quietYaw = 0.0
     private var quietPitch = 0.0
-    var sensitivity = 2.0
+    var sensitivityX = 2.0
+        private set
+    var sensitivityY = 2.0
         private set
     val position get() = PointerPosition((bounds.left+x*bounds.width).toFloat(),
         (bounds.top+y*bounds.height).toFloat(),running && fresh && bounds.width>0 && bounds.height>0)
@@ -57,13 +60,13 @@ class HeadPointerModel(val settings: Settings = Settings()) {
 
     fun start() { stop();running=true }
     fun stop() {
-        running=false;fresh=false;reference=null;sourceTimeNs=0;frameTimeNs=0
+        running=false;fresh=false;previousOrientation=null;sourceTimeNs=0;frameTimeXNs=0;frameTimeYNs=0
         targetX=x;targetY=y
     }
     fun resize(value: PointerBounds, displayRotation: Int, verticalPadding: Float = 0f) {
         require(displayRotation in 0..3)
         require(verticalPadding.isFinite() && verticalPadding>=0)
-        if (displayRotation!=rotation) { reference=null;fresh=false;x=.5;y=.5;targetX=.5;targetY=.5 }
+        if (displayRotation!=rotation) { previousOrientation=null;fresh=false;x=.5;y=.5;targetX=.5;targetY=.5 }
         rotation=displayRotation;bounds=value;this.verticalPadding=verticalPadding
         y=y.coerceIn(minY,maxY);targetY=targetY.coerceIn(minY,maxY)
     }
@@ -73,46 +76,55 @@ class HeadPointerModel(val settings: Settings = Settings()) {
         if (!running || nowNs<=0 || sample.timestampNs<=sourceTimeNs || sample.timestampNs>nowNs ||
             nowNs-sample.timestampNs>=settings.staleNs) return false
         val current=HeadOrientation.from(sample) ?: return false
-        val rebase=reference==null || !fresh || sample.timestampNs-sourceTimeNs>=settings.staleNs
+        val previous=previousOrientation
+        val rebase=previous==null || !fresh || sample.timestampNs-sourceTimeNs>=settings.staleNs
         sourceTimeNs=sample.timestampNs;fresh=true
         if (rebase) {
-            reference=current;x=.5;y=.5;targetX=.5;targetY=.5;frameTimeNs=nowNs
+            x=.5;y=.5;targetX=.5;targetY=.5;frameTimeXNs=nowNs;frameTimeYNs=nowNs
             yaw=0.0;pitch=0.0;quietYaw=0.0;quietPitch=0.0
         } else {
-            // Express the reference ray in the current head frame. The inverse order
-            // keeps using the startup axes and can reverse/swap aiming after roll.
-            aim(current.inverse()*checkNotNull(reference))
+            // Integrate motion in the current device frame. Projecting a fixed
+            // startup ray can reverse Y after moving from a backward startup pose.
+            aim(current.inverse()*checkNotNull(previous))
         }
+        previousOrientation=current
         return true
     }
 
     private fun aim(q: HeadOrientation) {
-        val (nextYaw,nextPitch)=q.angles(rotation)
+        val (yawStep,pitchStep)=q.motion(rotation)
+        val nextYaw=yaw+yawStep;val nextPitch=pitch+pitchStep
         fun delta(next: Double, previous: Double) = (next-previous+540.0)%360.0-180.0
         fun axis(next: Double, previous: Double, quiet: Double, current: Double,
-                 target: Double, halfRange: Double, minimum: Double, maximum: Double): Pair<Double,Double> {
+                 target: Double, halfRange: Double, gain: Double, minimum: Double, maximum: Double): Pair<Double,Double> {
             val movement=delta(next,previous)
             // Discard angular excess at saturation and filtered travel against the new direction.
             // Even a slow first inward sample moves immediately, independent of the old overshoot.
             val reversing=movement*(target-current)<0
             if (target==minimum || target==maximum || reversing) {
                 val origin=if (reversing) current else target
-                return (origin+movement*sensitivity/(2*halfRange)).coerceIn(minimum,maximum) to next
+                return (origin+movement*gain/(2*halfRange)).coerceIn(minimum,maximum) to next
             }
             val travel=delta(next,quiet)
             val accepted=sign(travel)*max(0.0,abs(travel)-settings.deadbandDegrees)
-            return (target+accepted*sensitivity/(2*halfRange)).coerceIn(minimum,maximum) to (quiet+accepted)
+            return (target+accepted*gain/(2*halfRange)).coerceIn(minimum,maximum) to (quiet+accepted)
         }
-        val horizontal=axis(nextYaw,yaw,quietYaw,x,targetX,settings.horizontalHalfRangeDegrees,0.0,1.0)
-        val vertical=axis(nextPitch,pitch,quietPitch,y,targetY,settings.verticalHalfRangeDegrees,minY,maxY)
+        val horizontal=axis(nextYaw,yaw,quietYaw,x,targetX,settings.horizontalHalfRangeDegrees,sensitivityX,0.0,1.0)
+        val vertical=axis(nextPitch,pitch,quietPitch,y,targetY,settings.verticalHalfRangeDegrees,sensitivityY,minY,maxY)
         targetX=horizontal.first;quietYaw=horizontal.second;yaw=nextYaw
         targetY=vertical.first;quietPitch=vertical.second;pitch=nextPitch
     }
 
     /** Change future gain without moving the cursor or retaining an old filtered destination. */
     fun sensitivity(value: Double, nowNs: Long) {
-        require(value in .1..6.0)
-        sensitivity=value;targetX=x;targetY=y;quietYaw=yaw;quietPitch=pitch;frameTimeNs=nowNs
+        sensitivity(value,value,nowNs)
+    }
+    fun sensitivity(xGain: Double, yGain: Double, nowNs: Long) {
+        require(xGain in .1..6.0 && yGain in .1..6.0)
+        if (xGain==sensitivityX && yGain==sensitivityY) return
+        if (xGain!=sensitivityX) { targetX=x;quietYaw=yaw;frameTimeXNs=nowNs }
+        if (yGain!=sensitivityY) { targetY=y;quietPitch=pitch;frameTimeYNs=nowNs }
+        sensitivityX=xGain;sensitivityY=yGain
     }
 
     /** Advance on RG display frames, independent of the remote video cadence. */
@@ -120,14 +132,24 @@ class HeadPointerModel(val settings: Settings = Settings()) {
         if (!running || sourceTimeNs==0L || nowNs-sourceTimeNs>=settings.staleNs) {
             fresh=false;return position // Freeze; the next good sample establishes a new reference.
         }
-        if (nowNs<=frameTimeNs) return position
-        val dt=(nowNs-frameTimeNs).coerceAtMost(50_000_000L);frameTimeNs=nowNs
-        val alpha=1-exp(-dt.toDouble()/settings.smoothingNs)
-        var dx=(targetX-x)*alpha;var dy=(targetY-y)*alpha
-        val distance=hypot(dx,dy);val limit=settings.maxSpanPerSecond*sensitivity*dt/1e9
-        if (distance>limit) { dx*=limit/distance;dy*=limit/distance }
-        x=(x+dx).coerceIn(0.0,1.0);y=(y+dy).coerceIn(minY,maxY)
-        if (!settling) { x=targetX;y=targetY }
+        fun axis(current: Double, target: Double, gain: Double, elapsed: Long,
+                 minimum: Double, maximum: Double, pixels: Float): Double {
+            val dt=elapsed.coerceAtMost(50_000_000L)
+            val alpha=1-exp(-dt.toDouble()/settings.smoothingNs)
+            val limit=settings.maxSpanPerSecond*gain*dt/1e9
+            val next=(current+((target-current)*alpha).coerceIn(-limit,limit)).coerceIn(minimum,maximum)
+            return if (abs(target-next)*pixels<=.05) target else next
+        }
+        // Clocks, rate limits and final settling are independent: an off-frame
+        // gain change on X must not discard elapsed Y motion (or vice versa).
+        if (nowNs>frameTimeXNs) {
+            x=axis(x,targetX,sensitivityX,nowNs-frameTimeXNs,0.0,1.0,bounds.width)
+            frameTimeXNs=nowNs
+        }
+        if (nowNs>frameTimeYNs) {
+            y=axis(y,targetY,sensitivityY,nowNs-frameTimeYNs,minY,maxY,bounds.height)
+            frameTimeYNs=nowNs
+        }
         return position
     }
 
