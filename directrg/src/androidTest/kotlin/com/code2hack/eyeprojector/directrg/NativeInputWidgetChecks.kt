@@ -104,6 +104,6 @@ internal object NativeInputWidgetChecks {
             report.put("mainAfterDown", afterDown).put("mainAfterUp", outer.scrollY)
             local.cancel()
         })
-        return report.put("passed", true)
+        return report.put("heldWidgets", HeldInputWidgetChecks.run(activity, main)).put("passed", true)
     }
 }
