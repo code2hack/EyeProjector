@@ -10,6 +10,7 @@ Only the projection modules and their fixtures are included. Source import and m
 | Shizuku API/provider 13.1.5 | Phone-controlled shell UserService bootstrap | Copyright 2021 RikkaW; [MIT](Shizuku-LICENSE.txt), copied from [upstream](https://github.com/RikkaApps/Shizuku-API/blob/master/LICENSE). |
 | AndroidX annotation 1.9.1 | Keep the Shizuku-reflected service constructor and class | Apache 2.0; [AndroidX source](https://android.googlesource.com/platform/frameworks/support/+/refs/heads/androidx-main/annotation/). |
 | JetBrains annotations 13.0 | Kotlin standard library transitive dependency | Apache 2.0; [upstream](https://github.com/JetBrains/java-annotations). |
+| Bouncy Castle Java 1.83 (`bcpkix-jdk18on`, `bcprov-jdk18on`, `bcutil-jdk18on`) | J-PAKE password-authenticated pairing and local self-signed X.509 identity generation | Copyright The Legion of the Bouncy Castle Inc.; [upstream MIT-style license](https://github.com/bcgit/bc-java/blob/r1rv83/LICENSE.html). License retained in dependency JARs. |
 | JUnit 4.13.2 | JVM tests only | Eclipse Public License 1.0; [source/license](https://github.com/junit-team/junit4/tree/r4.13.2). |
 | Hamcrest Core 1.3 | JUnit transitive test dependency | BSD 3-Clause; [source/license](https://github.com/hamcrest/JavaHamcrest/tree/hamcrest-java-1.3). |
 

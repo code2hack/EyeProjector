@@ -139,6 +139,7 @@ internal class Bridge(
             socket.soTimeout = 3500; socket.tcpNoDelay = true
             socket.sendBufferSize = 65536; socket.receiveBufferSize = 4096
             socket.startHandshake() // No scrcpy process, display, media or input exists before mTLS.
+            Tls.requireTrustedPeer(socket, directory)
             authenticated = true
             val input = DataInputStream(socket.inputStream)
             when (Wire.readRequest(input)) {

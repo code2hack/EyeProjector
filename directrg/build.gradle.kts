@@ -6,6 +6,7 @@ plugins {
 android {
     namespace = "com.code2hack.eyeprojector.directrg"
     compileSdk = 35
+    packaging.resources.excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
     defaultConfig {
         applicationId = "com.code2hack.eyeprojector.directrg"
         minSdk = 32
