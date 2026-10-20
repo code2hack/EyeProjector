@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicReference
 /** Standalone library test APK: never reads/writes either installed app's session. */
 class PairingInstrumentation : Instrumentation() {
     private lateinit var arguments: Bundle
+    private var currentStage: String? = null
     override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); this.arguments = arguments ?: Bundle(); start() }
 
     override fun onStart() {
@@ -33,6 +34,7 @@ class PairingInstrumentation : Instrumentation() {
             report.putString("result", "FAIL")
             // Fixed classification only; no keys/passwords or exception text.
             report.putString("failureType", error.javaClass.simpleName)
+            currentStage?.let { report.putString("failureStage", it) }
             finish(0, report)
         }
     }
@@ -85,10 +87,12 @@ class PairingInstrumentation : Instrumentation() {
     }
 
     private fun stage(label: String) {
+        currentStage = label
         sendStatus(1, Bundle().apply { putString("stage", label) })
     }
 
     private fun lan(report: Bundle) {
+        stage("LAN_IDENTITY_SETUP")
         val role = PeerRole.valueOf(arguments.getString("role", "GLASSES")!!)
         val store = sandbox("lan-${role.name}")
         val listener = ServerSocket(0).apply { soTimeout = 90_000 }
@@ -100,20 +104,31 @@ class PairingInstrumentation : Instrumentation() {
             if (peer.identityId.startsWith(label) && discovered.compareAndSet(null, peer)) found.countDown()
         })
         try {
+            stage("LAN_DISCOVERY_START")
             discovery.start()
             if (role == PeerRole.GLASSES) {
+                stage("LAN_CODE_DISPLAY")
                 val shown = codes.display()
                 sendStatus(1, Bundle().apply { putString("code", shown.code); putString("display", store.identityId().take(12)) })
-                listener.accept().use { PairingExchange.pairGlasses(it, codes, store, listener.localPort) }
+                stage("LAN_ACCEPT")
+                listener.accept().use {
+                    stage("LAN_AUTHENTICATE")
+                    PairingExchange.pairGlasses(it, codes, store, listener.localPort)
+                }
             } else {
+                stage("LAN_DISCOVERY_WAIT")
                 check(found.await(60, TimeUnit.SECONDS)) { "No display discovered" }
+                stage("LAN_PEER_SELECT")
                 val candidate = discovered.get() ?: error("No candidate")
                 val code = arguments.getString("code") ?: error("Supply displayed code")
                 Socket().use {
+                    stage("LAN_CONNECT")
                     it.connect(InetSocketAddress(candidate.endpoint.host, candidate.endpoint.pairingPort), 5000)
+                    stage("LAN_AUTHENTICATE")
                     PairingExchange.pairPhone(it, code, store, listener.localPort, candidate.identityId)
                 }
             }
+            stage("LAN_PEER_RELOAD")
             val peer = PeerStore(store.directory).pairedPeer() ?: error("Peer not persisted")
             report.putString("peerIdentity", peer.identityId)
             report.putString("peerHost", peer.endpoint.host)

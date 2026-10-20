@@ -47,10 +47,10 @@ class LanDiscovery(
         }, "EyeProjector-discovery").start()
         ticker.scheduleWithFixedDelay({
             if (!closed) runCatching {
-                for (address in broadcastAddresses()) {
+                sendToEachAddress(broadcastAddresses(), { address ->
                     send("EPD1?", address)
                     sendAnnouncement(address)
-                }
+                }, { if (!closed) onFailure() })
             }.onFailure { if (!closed) onFailure() }
         }, 0, 2, TimeUnit.SECONDS)
     }
@@ -71,6 +71,11 @@ class LanDiscovery(
             require(fields[2].matches(Regex("[0-9a-f]{64}")))
             DiscoveredPeer(fields[2], PeerRole.valueOf(fields[1]), PeerEndpoint(sourceHost, fields[3].toInt(), fields[4].toInt()))
         }.getOrNull()
+
+        /** A route failure for one destination must not suppress the other LANs. */
+        internal fun sendToEachAddress(addresses: Iterable<InetAddress>, send: (InetAddress) -> Unit, failed: () -> Unit) {
+            for (address in addresses) runCatching { send(address) }.onFailure { failed() }
+        }
 
         private fun broadcastAddresses(): Set<InetAddress> {
             val result = mutableSetOf(InetAddress.getByName("255.255.255.255"))
