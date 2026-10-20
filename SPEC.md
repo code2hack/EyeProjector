@@ -50,7 +50,7 @@ The Phone app must show the actual host and Shizuku availability and explain the
 
 ### Pairing and control panels
 
-While unpaired, the Glasses display a four-digit pairing code and its remaining validity, starting at five minutes. At expiry, the old code expires and a new code appears with a fresh five-minute countdown. The Phone's **Pair with display device** action opens a code-entry prompt and pairs with the Glasses over the LAN.
+While unpaired, the Glasses display a four-digit pairing code and its remaining validity, starting at five minutes. At expiry, the old code expires and a new code appears with a fresh five-minute countdown. The Phone's **Pair with display device** action opens a code-entry prompt and pairs with the Glasses over the LAN. A displayed code permits at most five pairing attempts; further attempts wait for the next code. Rotation resets the limit, and existing projection is unaffected.
 
 Successful code pairing establishes a remembered EyeProjector peer identity for video, control and camera forwarding. Subsequent connections use that pairing without code re-entry. Stop and Disconnect retain pairing. Forget removes that peer identity and returns the device's EyeProjector panel to its unpaired state. System Bluetooth pairing is managed independently through the devices' ordinary settings.
 
