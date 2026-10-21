@@ -5,6 +5,15 @@ This suite compiles production
 `ProjectedHomeActivity`, the feature coordinator/store/preferences, and their actual
 context/display/scale wire types. `PhoneSessionController` is never replaced by a double.
 
+For the combined widget/scale production controller, `PhoneWidgetUpdates.attach`
+is an explicit host attachment boundary that records the real controller call.
+It does not subscribe widget observers, render launcher views or deliver widget
+actions. The controlled bootstrap also supplies the context-bound panel-off
+facade used by the actual controller, returning null without claiming panel
+admission or completion. Actual widget/controller/scale behavior belongs to the
+separate widget composition suite; this closure retains every original common
+and focused scale regression unchanged.
+
 The controlled bootstrap records pending launch/display/read/request calls and delivers
 their callbacks explicitly. Android Activity/view/preferences APIs and pairing/network
 boundaries are inert doubles. Scenarios exercise both ordinary Phone launch overloads,

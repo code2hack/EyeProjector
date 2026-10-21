@@ -1,0 +1,18 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical" android:padding="12dp" android:background="@drawable/phone_widget_background">
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="@string/phone_widget_name" android:textStyle="bold" android:textColor="#FFFFFF" android:textSize="16sp" />
+    <TextView android:id="@+id/phone_widget_status" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="@string/phone_widget_unknown" android:textColor="#FFFFFF" android:textSize="13sp" android:maxLines="3" />
+    <LinearLayout style="?android:attr/buttonBarStyle" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+        <Button style="?android:attr/buttonBarButtonStyle" android:id="@+id/phone_widget_primary" android:layout_width="0dp" android:layout_height="48dp"
+            android:background="@drawable/phone_widget_button" android:backgroundTint="@null" android:textColor="#FFFFFF"
+            android:layout_weight="1" android:text="@string/phone_widget_stop" android:textAllCaps="false" />
+        <Button style="?android:attr/buttonBarButtonStyle" android:id="@+id/phone_widget_panel" android:layout_width="0dp" android:layout_height="48dp"
+            android:background="@drawable/phone_widget_button" android:backgroundTint="@null" android:textColor="#FFFFFF"
+            android:layout_weight="1" android:text="@string/phone_widget_panel_off" android:textAllCaps="false" android:enabled="false" />
+    </LinearLayout>
+    <TextView android:id="@+id/phone_widget_panel_status" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="@string/phone_widget_panel_unavailable" android:textColor="#CCCCCC" android:textSize="12sp" android:maxLines="3" />
+</LinearLayout>

@@ -28,6 +28,9 @@ class HostBootstrap(initialContext: ProjectionContext, initialPublishedContext: 
     private var scale = ScaleState(0, 1.0, Geometry(480, 640), null, ScaleStatus.READY, false)
 
     fun requestPanelOff(complete: (PanelPowerState?) -> Unit) { complete(null) }
+    // Compile boundary for the combined controller's context-bound panel facade.
+    // Panel admission and command completion are outside these scale scenarios.
+    fun requestPanelOff(expected: ProjectionContext, complete: (PanelPowerState?) -> Unit) = requestPanelOff(complete)
     fun panelState(complete: (PanelPowerState?) -> Unit) { complete(null) }
     fun status() = current
     fun observe(observer: (Status) -> Unit) { observers.add(observer); observer(current) }

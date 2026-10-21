@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile actual common Phone/Home launch sources against inert, controlled boundaries."""
+"""Compile actual common Phone/Home launch sources against controlled host boundaries."""
 
 import argparse
 import datetime
@@ -66,7 +66,13 @@ manifest = {
     'sources': [{'path': str(path), 'sha256': sha256(path)} for path in sources],
     'toolJars': [{'path': str(path), 'sha256': sha256(path)} for path in jars],
     'compileExit': None, 'scenariosExit': None, 'timedOut': None,
-    'scope': 'Actual HostActivity/AppScaleActivity/PhoneSessionController/SessionController/ProjectedHomeActivity/scale sources; inert Android widgets/ScalePanelView/protocol and controlled bootstrap doubles; no Android Binder/UI/gesture/device proof',
+    'scope': 'Actual combined HostActivity/AppScaleActivity/PhoneSessionController/SessionController/ProjectedHomeActivity/scale sources; inert Android widgets/ScalePanelView/protocol, widget-attachment boundary and controlled bootstrap/panel facade doubles; no actual widget publication/actions or Android Binder/UI/gesture/device proof',
+    'compositionBoundaries': {
+        'phoneController': 'Complete actual combined production source; no substitute controller, core or scale coordinator',
+        'widgetAttachment': 'PhoneWidgetUpdates.attach records calls only; no widget observer subscription, launcher publication or widget action delivery',
+        'panelFacade': 'Context-bound requestPanelOff compiles the actual controller delegation and returns controlled null; no panel admission or completion proof',
+        'androidScheduling': 'Existing host Handler boundary executes posts immediately and retains delayed ticks without automatic delivery; no Android main-loop proof',
+    },
 }
 
 
