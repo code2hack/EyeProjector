@@ -223,35 +223,82 @@ class HostBootstrap private constructor(private val context: Context) {
         launchApp(packageName, current.projectionContext, complete)
 
     fun launchApp(packageName: String, expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit) =
-        displayOperation(expected, { service, requestId -> service.launchApp(requestId, packageName, expected.ownerEpoch, expected.projectionToken) }, complete)
+        displayOperation(expected, LaunchOperationDiagnostics.Kind.LAUNCH, packageName,
+            { service, requestId -> service.launchApp(requestId, packageName, expected.ownerEpoch, expected.projectionToken) }, complete)
 
     fun projectionDisplayState(complete: (ProjectionDisplayState?) -> Unit) =
         projectionDisplayState(current.projectionContext, complete)
 
     fun projectionDisplayState(expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit) =
-        displayOperation(expected, { service, _ -> service.projectionDisplayState(expected.ownerEpoch, expected.projectionToken) }, complete)
+        displayOperation(expected, LaunchOperationDiagnostics.Kind.DISPLAY_QUERY, null,
+            { service, _ -> service.projectionDisplayState(expected.ownerEpoch, expected.projectionToken) }, complete)
 
-    private fun displayOperation(expected: ProjectionContext, operation: (IHostBootstrap, Long) -> ByteArray, complete: (ProjectionDisplayState?) -> Unit) {
+    private fun displayOperation(expected: ProjectionContext, kind: LaunchOperationDiagnostics.Kind, selectedPackage: String?,
+        operation: (IHostBootstrap, Long) -> ByteArray, complete: (ProjectionDisplayState?) -> Unit) {
         // Capture before the first queue hop. The server independently validates these
         // same identities when selecting its exact Bridge/Session, including Binder reuse.
         val service = remote
         val binding = bindingGeneration
         val originalStatus = current
         val requestId = System.nanoTime()
+        var match: LaunchOperationDiagnostics.Match? = null
         fun matches(): Boolean {
             val observed = current
             // Home already carries an actual context even before the first status poll.
             // Only that unchanged, not-yet-observed snapshot may defer token validation
             // to the server. A new published snapshot cannot rebind the original intent.
-            val sameProjection = observed.projectionContext == expected ||
+            val exactContext = observed.projectionContext == expected
+            val sameProjection = exactContext ||
                 (originalStatus.projectionToken.isEmpty() && observed === originalStatus && observed.sessionEpoch == expected.ownerEpoch)
-            return service != null && remote === service && bindingGeneration == binding && sameProjection
+            var sameService: Boolean? = null
+            var sameBinding: Boolean? = null
+            val servicePresent = service != null
+            val accepted = servicePresent && (remote === service).also { sameService = it } &&
+                (bindingGeneration == binding).also { sameBinding = it } && sameProjection
+            try { match = LaunchOperationDiagnostics.Match(servicePresent, sameService, sameBinding, exactContext, sameProjection, accepted) }
+            catch (_: Throwable) { match = null } // Diagnostic allocation cannot affect this original decision.
+            return accepted
         }
         displayExecutor.execute {
+            var available: Boolean? = null
+            var calling = false
+            var decoding = false
             val result = runCatching {
-                if (!expected.available || !matches()) null else ProjectionDisplayState.from(operation(service!!, requestId))
+                val expectedAvailable = expected.available.also { available = it }
+                if (!expectedAvailable || !matches()) {
+                    LaunchOperationDiagnostics.emit({ LaunchOperationDiagnostics.Event(requestId, kind, selectedPackage,
+                        LaunchOperationDiagnostics.Stage.PRE_CALL, LaunchOperationDiagnostics.Outcome.SKIPPED, available, match,
+                        if (!expectedAvailable) LaunchOperationDiagnostics.Reason.EXPECTED_CONTEXT_UNAVAILABLE else null) })
+                    null
+                } else {
+                    LaunchOperationDiagnostics.emit({ LaunchOperationDiagnostics.Event(requestId, kind, selectedPackage,
+                        LaunchOperationDiagnostics.Stage.PRE_CALL, LaunchOperationDiagnostics.Outcome.ADMITTED, available, match) })
+                    calling = true
+                    val payload = operation(service!!, requestId)
+                    decoding = true
+                    ProjectionDisplayState.from(payload).also {
+                        LaunchOperationDiagnostics.emit({ LaunchOperationDiagnostics.Event(requestId, kind, selectedPackage,
+                            LaunchOperationDiagnostics.Stage.RESULT, LaunchOperationDiagnostics.Outcome.RETURNED, available, match, result = it) })
+                    }
+                }
+            }.onFailure {
+                LaunchOperationDiagnostics.emit({ LaunchOperationDiagnostics.Event(requestId, kind, selectedPackage,
+                    LaunchOperationDiagnostics.Stage.RESULT, if (decoding) LaunchOperationDiagnostics.Outcome.DECODE_EXCEPTION
+                    else if (calling) LaunchOperationDiagnostics.Outcome.OPERATION_EXCEPTION
+                    else LaunchOperationDiagnostics.Outcome.PRE_CALL_EXCEPTION, available, match, error = it) })
             }.getOrNull()
-            main.post { complete(result.takeIf { matches() && it?.context == expected }) }
+            main.post {
+                val selected = result.takeIf {
+                    var resultContextMatch: Boolean? = null
+                    val accepted = matches() && (it?.context == expected).also { same -> resultContextMatch = same }
+                    LaunchOperationDiagnostics.emit({ LaunchOperationDiagnostics.Event(requestId, kind, selectedPackage,
+                        LaunchOperationDiagnostics.Stage.BEFORE_CALLBACK,
+                        if (accepted && it != null) LaunchOperationDiagnostics.Outcome.VALUE_SELECTED else LaunchOperationDiagnostics.Outcome.NULL_SELECTED,
+                        available, match, result = it, resultContextMatch = resultContextMatch) })
+                    accepted
+                }
+                complete(selected)
+            }
         }
     }
 
