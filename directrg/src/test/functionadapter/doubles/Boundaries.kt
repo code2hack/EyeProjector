@@ -7,6 +7,7 @@ internal class Boundary {
     var text = ""
     var calls = 0
     val surface = Any()
+    fun refresh() { calls++ }
     fun start() { calls++ }
     fun stop() { calls++ }
     fun cancel() { calls++ }

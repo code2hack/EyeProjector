@@ -16,6 +16,7 @@ import java.util.Locale
 internal class LocalInputSettingsPanel(
     context: Context,
     private val settings: LocalInputSettings,
+    private val hidBindings: () -> Unit,
     private val changed: () -> Unit,
 ) : LinearLayout(context) {
     val buttons = mutableListOf<Button>()
@@ -41,6 +42,7 @@ internal class LocalInputSettingsPanel(
                 changed()
             }
         })
+        addView(button().apply { text = "HID key bindings"; setOnClickListener { hidBindings() } })
     }
 
     private fun button() = Button(context).apply {

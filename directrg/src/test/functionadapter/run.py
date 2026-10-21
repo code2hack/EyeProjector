@@ -33,7 +33,7 @@ def main():
     init = re.search(r'        val functionNavigation = FunctionNavigation\(.*?\n        \)\n', source, re.S)
     if not init:
         parser.error('Missing unique Function initialization in actual Activity')
-    names = ['remoteBack', 'showControlPanel', 'projectionHome', 'contextualBack', 'exitToLauncher',
+    names = ['remoteBack', 'showHidBindings', 'showControlPanel', 'projectionHome', 'contextualBack', 'exitToLauncher',
              'cancelInput', 'disconnect', 'onResume', 'onWindowFocusChanged', 'onPause', 'onDestroy']
     blocks = {name: module.block(source, rf'\bfun {name}\(') for name in names}
     signatures = {}
@@ -56,6 +56,11 @@ import java.io.File
 // Boundary types do not model Android navigation, decoder operation or framework dispatch.
 internal class ActivityFunctionWiring : Activity() {
     lateinit var functionInput: NativeFunctionInput
+    lateinit var hidInput: Boundary
+    val hidDevices = Boundary()
+    lateinit var heldOwner: Boundary
+    lateinit var hidPanel: Boundary
+    val mainControls = Boundary()
     lateinit var gestures: Boundary
     lateinit var heldInput: Boundary
     lateinit var padContact: Boundary
@@ -80,6 +85,7 @@ internal class ActivityFunctionWiring : Activity() {
     var connectRequested = false
     var clientGeneration = 0L
     var edgeScheduled = false
+    var inputGeneration = 0L
     val confirmTap = Runnable {}
     val edgeTick = Runnable {}
     var resizes = 0
@@ -88,6 +94,8 @@ internal class ActivityFunctionWiring : Activity() {
         root = Boundary(); longTouch = Boundary()
         gestures = Boundary(); heldInput = Boundary(); padContact = Boundary()
         screen = Boundary(); localInput = Boundary()
+        hidPanel = Boundary().apply { visibility = View.GONE }
+        hidInput = Boundary()
 ''' + init[0] + '''
     }
     private fun usable() = resumed && hasWindowFocus()
@@ -97,6 +105,7 @@ internal class ActivityFunctionWiring : Activity() {
     private fun showStatus(text: String) {}
     private fun getString(id: Int) = "resource-$id"
     fun invalidate() = cancelInput()
+    fun openBindings() = showHidBindings()
     internal val projectionContext: Boolean get() = ''' + projection + '\n' +
         '\n'.join(signatures[n] + ' {' + blocks[n] + '}\n' for n in names) + '\n}\n')
     production = [actual / n for n in ('FunctionGestureRecognizer.kt', 'NativeFunctionInput.kt', 'SessionPresentation.kt')]
@@ -125,6 +134,14 @@ internal class ActivityFunctionWiring : Activity() {
                 'gitStatus': subprocess.check_output(['git', '-C', str(root), 'status', '--short'], text=True),
                 'sources': [{'path': str(p), 'sha256': digest(p)} for p in sources + [activity, helper, suite / 'run.py']],
                 'activityBlocks': blocks, 'initialization': init[0], 'compiler': [{'path': str(p), 'sha256': digest(p)} for p in jars]}
+    snapshots = []
+    for index, source_file in enumerate(sources):
+        snapshot = out / 'inputs' / str(index) / source_file.name
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        snapshot.write_bytes(source_file.read_bytes())
+        snapshots.append(snapshot)
+    compile_cmd[-len(sources):] = list(map(str, snapshots))
+    manifest['compiledSnapshots'] = [{'path': str(p), 'sha256': digest(p)} for p in snapshots]
     (out / 'source-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     result = {'scope': 'Actual Function adapter/recognizer/router and extracted Activity methods on host boundaries; no Android/firmware/device destination proof',
               'compileExit': None, 'scenariosExit': None, 'commands': [compile_cmd, run_cmd]}
