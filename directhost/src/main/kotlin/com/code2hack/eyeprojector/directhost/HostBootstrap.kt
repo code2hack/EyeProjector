@@ -142,12 +142,19 @@ class HostBootstrap private constructor(private val context: Context) {
         panelOperation(id, false, { service, context -> service.requestPanelOff(id, context.ownerEpoch, context.projectionToken) }, complete)
     }
 
+    fun requestPanelOff(expected: ProjectionContext, complete: (PanelPowerState?) -> Unit) {
+        val id = System.nanoTime()
+        panelOperation(id, false, { service, context -> service.requestPanelOff(id, context.ownerEpoch, context.projectionToken) },
+            complete, PanelContext(expected.ownerEpoch, expected.projectionToken))
+    }
+
     fun panelState(complete: (PanelPowerState?) -> Unit) = panelOperation(0, true,
         { service, context -> service.panelState(context.ownerEpoch, context.projectionToken) }, complete)
 
-    private fun panelOperation(id: Long, query: Boolean, operation: (IHostBootstrap, PanelContext) -> ByteArray, complete: (PanelPowerState?) -> Unit) {
+    private fun panelOperation(id: Long, query: Boolean, operation: (IHostBootstrap, PanelContext) -> ByteArray, complete: (PanelPowerState?) -> Unit,
+        expectedContext: PanelContext? = null) {
         val atEntry = current
-        val context = PanelContext(atEntry.sessionEpoch, atEntry.projectionToken)
+        val context = expectedContext ?: PanelContext(atEntry.sessionEpoch, atEntry.projectionToken)
         executor.execute {
             val service = remote
             val generation = bindingGeneration
