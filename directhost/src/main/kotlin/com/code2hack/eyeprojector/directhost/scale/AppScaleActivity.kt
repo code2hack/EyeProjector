@@ -27,7 +27,10 @@ class AppScaleActivity : Activity() {
         target = coordinator.state()?.target?.takeIf {
             it.id == intent.getStringExtra(TARGET) && it.packageName == intent.getStringExtra(PACKAGE)
         }
-        panel = ScalePanelView(this, { factor -> target?.let { coordinator.pinch(it, factor, attachmentOwner) } }, { finish() })
+        panel = ScalePanelView(this, { factor -> target?.let { coordinator.pinch(it, factor, attachmentOwner) } }, {
+            releasePanel()
+            finish()
+        })
         setContentView(panel)
     }
     override fun onStart() {
@@ -37,10 +40,13 @@ class AppScaleActivity : Activity() {
         main.post(tick)
     }
     override fun onStop() {
+        releasePanel()
+        super.onStop()
+    }
+    private fun releasePanel() {
         main.removeCallbacks(tick)
         subscription?.close(); subscription = null
         target?.let { coordinator.detach(it, attachmentOwner) }
-        super.onStop()
     }
 
     companion object {

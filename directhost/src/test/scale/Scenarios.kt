@@ -211,4 +211,5 @@ fun main() {
     }
     runPhoneActivityScenarios()
     runScaleActivityScenarios()
+    runP2Scenarios()
 }

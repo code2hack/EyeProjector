@@ -49,3 +49,19 @@ This is host model evidence. It does not establish actual Android Binder admissi
 Activity/manifest/menu behavior, durable Android preference I/O, physical video/input,
 or wearer observations. Keep the existing actual bootstrap/server suites and compiled
 Phone instrumentation as complementary evidence.
+
+P2 remediation regressions preserve attribution to Reviewer-EyeProjector-12's
+independent EP12-R1/EP12-R2 findings. They run both failed command statuses with
+matching display foreground, identity/foreground rejection, Close before onStop
+with held automatic poll or foreground callbacks, dispatched-versus-unsent writes,
+and recreated attachment ownership. The focused entrypoint continues after each
+case failure and exits unsuccessfully if any case fails, so original RED evidence
+can show both restoration statuses and exact Close intervals in one run.
+
+```sh
+python3 run.py --repo /path/to/exact/worktree --output-dir /path/to/fresh/private/output --p2-only
+```
+
+The default entrypoint also includes these P2 cases. Callback success remains
+request-return/controlled observation evidence, with observed geometry retained
+independently of the requested value.

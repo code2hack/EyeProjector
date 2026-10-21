@@ -2,7 +2,6 @@ package com.code2hack.eyeprojector.directhost.scale
 
 import com.code2hack.eyeprojector.directhost.ProjectionContext
 import com.code2hack.eyeprojector.directhost.ProjectionDisplayState
-import com.code2hack.eyeprojector.directhost.ProjectionLaunchStatus
 import com.code2hack.eyeprojector.protocol.LayoutScale
 import com.code2hack.eyeprojector.protocol.ScaleState
 import com.code2hack.eyeprojector.protocol.ScaleStatus
@@ -88,7 +87,7 @@ class AppScaleCoordinator(private val store: AppScaleStore, private val backend:
                 try {
                     if (current(target)) {
                         val confirmed = result?.context == expected && result.requestedPackage == packageName &&
-                            result.foregroundPackage == packageName && result.status == ProjectionLaunchStatus.STARTED
+                            result.foregroundPackage == packageName
                         publish(state!!.copy(launch = result, detail = if (confirmed) "RESTORING" else "LAUNCH_UNCONFIRMED"))
                         if (confirmed) request(target, store.read(packageName), save = false, kind = "restore")
                     }

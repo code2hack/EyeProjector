@@ -73,6 +73,56 @@ class AppScaleCoordinatorTest {
         assertEquals(1.0, store.read("a"), 0.0)
     }
 
+    // EP12-R1: regression for Reviewer12's matching-foreground FAILED/TIMED_OUT finding.
+    @Test fun matchingForegroundRestoresSavedProfileAndKeepsOriginalCommandResult() {
+        for (status in listOf(ProjectionLaunchStatus.FAILED, ProjectionLaunchStatus.TIMED_OUT)) {
+            val storage = Storage().apply { values["a"] = 1.75 }
+            val backend = Backend(); val coordinator = AppScaleCoordinator(AppScaleStore(storage), backend)
+            val replies = mutableListOf<ProjectionDisplayState?>()
+            coordinator.launch("a", context) { replies.add(it) }
+            val launch = backend.calls.removeFirst()
+            backend.foreground = "a"
+            val result = ProjectionDisplayState(requestedPackage = "a", foregroundPackage = "a", status = status, context = context)
+            launch.finish(result)
+            assertEquals(listOf(result), replies)
+            assertEquals(1.75, backend.calls.single().value!!, 0.0)
+            assertEquals(context, backend.calls.single().context)
+            backend.scaleResult(ScaleStatus.PENDING, Geometry(480, 640))
+            assertEquals(1.0, coordinator.state()!!.applied!!, 0.0)
+            assertEquals(1.75, storage.values["a"]!!, 0.0)
+            assertTrue(backend.calls.isEmpty())
+        }
+    }
+
+    @Test fun failedCommandStillRequiresMatchingContextRequestedPackageAndForeground() {
+        for (status in listOf(ProjectionLaunchStatus.FAILED, ProjectionLaunchStatus.TIMED_OUT)) {
+            val valid = ProjectionDisplayState(requestedPackage = "a", foregroundPackage = "a", status = status, context = context)
+            for (invalid in listOf(valid.copy(context = context.copy(projectionToken = "other")),
+                valid.copy(requestedPackage = "b"), valid.copy(foregroundPackage = "b"), valid.copy(foregroundPackage = null))) {
+                val backend = Backend(); val coordinator = AppScaleCoordinator(AppScaleStore(Storage()), backend)
+                coordinator.launch("a", context) {}
+                backend.calls.removeFirst().finish(invalid)
+                assertTrue(backend.calls.isEmpty())
+                assertFalse(coordinator.state()!!.canPinch)
+            }
+        }
+    }
+
+    @Test fun matchingFailedLaunchStillRechecksFreshForegroundBeforeRestoration() {
+        val storage = Storage().apply { values["a"] = 1.75 }
+        val backend = Backend(); val coordinator = AppScaleCoordinator(AppScaleStore(storage), backend)
+        coordinator.launch("a", context) {}
+        val launch = backend.calls.removeFirst()
+        backend.holdDisplay = true; backend.foreground = "a"
+        launch.finish(ProjectionDisplayState(requestedPackage = "a", foregroundPackage = "a",
+            status = ProjectionLaunchStatus.FAILED, context = context))
+        assertNotNull(backend.pendingDisplay)
+        backend.foreground = "b"; backend.pendingDisplay!!()
+        assertTrue(backend.calls.isEmpty())
+        assertEquals("TARGET_CHANGED", coordinator.state()!!.detail)
+        assertEquals(1.75, storage.values["a"]!!, 0.0)
+    }
+
     @Test fun oldDispatchedResizeDrainsBeforeNewAppLaunchAndCannotSaveAsTheNewPackage() {
         val storage = Storage(); val backend = Backend(); val coordinator = AppScaleCoordinator(AppScaleStore(storage), backend)
         val a = coordinator.launch("a", context) {}; backend.launchResult(); backend.scaleResult()

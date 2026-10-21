@@ -19,6 +19,7 @@ def sha256(path):
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--repo', type=Path, default=Path.cwd(), help='Exact worktree whose actual sources are compiled')
 parser.add_argument('--output-dir', type=Path, required=True)
+parser.add_argument('--p2-only', action='store_true', help='Run only the independently reported P2 remediation regressions; retain all individual results')
 args = parser.parse_args()
 suite = Path(__file__).resolve().parent
 repo = args.repo.resolve()
@@ -26,7 +27,7 @@ output = args.output_dir.resolve()
 output.mkdir(parents=True, exist_ok=True)
 host = repo / 'directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost'
 protocol = repo / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
-sources = sorted((suite / 'doubles').glob('*.kt')) + [suite / 'Scenarios.kt', suite / 'PhoneActivityScenarios.kt', suite / 'ScaleActivityScenarios.kt']
+sources = sorted((suite / 'doubles').glob('*.kt')) + [suite / 'Scenarios.kt', suite / 'PhoneActivityScenarios.kt', suite / 'ScaleActivityScenarios.kt', suite / 'P2Scenarios.kt']
 sources += [host / name for name in (
     'PhoneSessionController.kt', 'SessionController.kt', 'SessionAttemptStore.kt',
     'ProjectionContext.kt', 'ProjectionDisplayState.kt', 'ProjectedHomeActivity.kt', 'HostActivity.kt',
@@ -60,6 +61,7 @@ artifact = output / 'common-launch-regressions.jar'
 manifest = {
     'startedUtc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
     'worktree': str(repo),
+    'suiteMode': 'p2-only' if args.p2_only else 'all',
     'runner': {'path': str(Path(__file__).resolve()), 'sha256': sha256(Path(__file__).resolve())},
     'sources': [{'path': str(path), 'sha256': sha256(path)} for path in sources],
     'toolJars': [{'path': str(path), 'sha256': sha256(path)} for path in jars],
@@ -96,13 +98,22 @@ try:
         print(manifest['executionSkipped'])
     else:
         run_command = [java, '-cp', str(artifact) + os.pathsep + classpath,
+                       'com.code2hack.eyeprojector.directhost.commonharness.P2ScenariosKt' if args.p2_only else
                        'com.code2hack.eyeprojector.directhost.commonharness.ScenariosKt']
         manifest['scenariosCommand'] = run_command
         with (output / 'scenarios.log').open('w') as log:
             run = subprocess.run(run_command, stdout=log, stderr=subprocess.STDOUT, timeout=60)
         manifest['scenariosExit'] = run.returncode
+        scenario_text = (output / 'scenarios.log').read_text()
+        manifest['p2CaseResults'] = [
+            {'outcome': line.split(' ', 1)[0], 'detail': line.split(' ', 1)[1]}
+            for line in scenario_text.splitlines()
+            if line.startswith(('PASS EP12-', 'FAIL EP12-', 'ERROR EP12-'))
+        ]
+        manifest['p2Summary'] = next((line for line in scenario_text.splitlines()
+                                      if line.startswith('P2 RESULT ')), None)
         exit_code = run.returncode
-        print((output / 'scenarios.log').read_text())
+        print(scenario_text)
 except subprocess.TimeoutExpired as error:
     manifest['timedOut'] = 'compile' if manifest['compileExit'] is None else 'scenarios'
     manifest['timeoutSeconds'] = error.timeout
