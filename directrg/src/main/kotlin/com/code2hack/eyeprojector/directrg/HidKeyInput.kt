@@ -24,6 +24,8 @@ internal class HidKeyInput(
     private val presses = mutableMapOf<Key, Press>()
     // A pending DOWN owns its transition before any old-target or pointer callback runs.
     private val admissions = mutableMapOf<Key, Press>()
+    // Independent physical keys still replace one shared contact, including pending DOWNs.
+    private var contactAdmission: Press? = null
     // A canceled capture still owns its release; it must never become ordinary Back/input.
     private val suppressed = mutableMapOf<Key, Long>()
     private var capture: Capture? = null
@@ -33,7 +35,10 @@ internal class HidKeyInput(
     private val recognizer = FunctionGestureRecognizer(now,
         { context()?.let { Pair(it, functionAttachment) } }, schedule, function)
 
-    fun owns(owner: Any): Boolean = presses.values.any { it.owner === owner && it.context == context() }
+    fun owns(owner: Any): Boolean = presses.values.any {
+        it.owner === owner && it.context == context() &&
+            (it.action != HidAction.TAP || contactAdmission === it)
+    }
 
     fun beginCapture(action: HidAction) {
         cancel()
@@ -87,6 +92,7 @@ internal class HidKeyInput(
             val admitted = generation
             val press = Press(event, action, current)
             admissions[key] = press
+            if (action == HidAction.TAP) contactAdmission = press
             presses.remove(key)
             old?.let { cancelPress(it, event.timeMs) }
             if (!currentAdmission(key, press, admitted)) { abandon(key, press); return true }
@@ -115,6 +121,7 @@ internal class HidKeyInput(
         if (admitted != generation || presses[key] !== old) return true
         presses.remove(key) // Retire before callbacks.
         if (admissions[key] === old) admissions.remove(key)
+        if (contactAdmission === old) contactAdmission = null
         if (event.phase == Phase.CANCEL || old.context != context() || event.timeMs < event.downTimeMs) {
             cancelPress(old, event.timeMs)
             return true
@@ -176,6 +183,7 @@ internal class HidKeyInput(
 
     fun cancel() {
         generation++
+        contactAdmission = null
         val oldCapture = capture
         val wasSelected = selected != null
         capture = null; selected = null
@@ -190,11 +198,13 @@ internal class HidKeyInput(
     }
 
     private fun currentAdmission(key: Key, press: Press, admitted: Long): Boolean =
-        admissions[key] === press && generation == admitted && context() == press.context
+        admissions[key] === press && generation == admitted && context() == press.context &&
+            (press.action != HidAction.TAP || contactAdmission === press)
 
     private fun abandon(key: Key, press: Press) {
         if (admissions[key] !== press) return
         admissions.remove(key)
+        if (contactAdmission === press) contactAdmission = null
         suppressed[key] = press.event.downTimeMs
     }
     private fun cancelPress(press: Press, at: Long) {

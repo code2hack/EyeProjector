@@ -15,6 +15,7 @@ class HidAdmissionReentrancyTest {
         var point = PointerPosition(12f, 34f, true)
         var onPosition: () -> Unit = {}
         var onOutput: (HeldPointerDispatcher.Event) -> Unit = {}
+        var onContact: (Any, PadGestureRecognizer.Event) -> Unit = { _, _ -> }
         val output = mutableListOf<HeldPointerDispatcher.Event>()
         val offeredOwners = mutableListOf<Any>()
         val timers = mutableListOf<Timer>()
@@ -40,6 +41,7 @@ class HidAdmissionReentrancyTest {
             point
         }, { token, event ->
             offeredOwners.add(token)
+            onContact(token, event)
             // The Activity also admits a DOWN only while this exact HID owner remains current.
             if (event.phase != PadGestureRecognizer.Phase.DOWN || inputOwns(token)) owner.accept(token, event)
         }, { token, at -> owner.cancel(token, at) }, { _, _, _ -> error("unexpected scroll") }, { actions.add(it) })
@@ -52,9 +54,10 @@ class HidAdmissionReentrancyTest {
         // Keep constructor callbacks independent of property initialization inference.
         private fun inputOwns(token: Any): Boolean = input.owns(token)
 
-        fun edge(phase: Phase, down: Long, at: Long = down, binding: HidBinding = tap): Boolean {
+        fun edge(phase: Phase, down: Long, at: Long = down, binding: HidBinding = tap,
+                 attachment: Int = 7): Boolean {
             now = at
-            return input.accept(HidKeyInput.Event(7, binding, phase, down, at))
+            return input.accept(HidKeyInput.Event(attachment, binding, phase, down, at))
         }
 
         fun advance(to: Long) {
@@ -256,5 +259,195 @@ class HidAdmissionReentrancyTest {
         assertTrue(r.actions.isEmpty())
         r.advance(1_660)
         assertEquals(listOf(Action.SINGLE), r.actions)
+    }
+
+    @Test fun otherAttachmentCancelCallbackAdmissionOwnsSharedContactAndItsActualUp() {
+        val r = Rig()
+        assertTrue(r.edge(Phase.DOWN, 1_000))
+        val oldOwner = r.offeredOwners.single()
+        r.onOutput = {
+            if (it.phase == Touch.Phase.CANCEL && it.contactId == 1_000L) {
+                assertFalse(r.input.owns(oldOwner))
+                assertTrue(r.edge(Phase.DOWN, 1_200, attachment = 8))
+            }
+        }
+        assertTrue(r.edge(Phase.DOWN, 1_100))
+        val newerOwner = r.offeredOwners.last()
+        assertTrue(r.input.owns(newerOwner))
+        assertTrue(r.dispatcher.holding)
+        assertTrue(r.edge(Phase.UP, 1_100, 1_220))
+        assertTrue(r.input.owns(newerOwner))
+        assertTrue(r.dispatcher.holding)
+        assertTrue(r.edge(Phase.UP, 1_200, 1_230, attachment = 8))
+        r.assertEdges(Touch.Phase.DOWN to 1_000L, Touch.Phase.CANCEL to 1_000L,
+            Touch.Phase.DOWN to 1_200L, Touch.Phase.UP to 1_200L)
+        assertEquals(listOf(1_000L, 1_100L, 1_200L, 1_230L), r.output.map { it.timeMs })
+        assertFalse(r.dispatcher.holding)
+        assertTrue(r.offeredOwners.none { r.input.owns(it) })
+    }
+
+    @Test fun completedOtherAttachmentPressStillSupersedesOlderPendingReplacement() {
+        val r = Rig()
+        assertTrue(r.edge(Phase.DOWN, 1_000))
+        r.onOutput = {
+            if (it.phase == Touch.Phase.CANCEL && it.contactId == 1_000L) {
+                assertTrue(r.edge(Phase.DOWN, 1_200, attachment = 8))
+                assertTrue(r.edge(Phase.UP, 1_200, 1_230, attachment = 8))
+            }
+        }
+        assertTrue(r.edge(Phase.DOWN, 1_100))
+        assertTrue(r.edge(Phase.UP, 1_100, 1_240))
+        r.assertEdges(Touch.Phase.DOWN to 1_000L, Touch.Phase.CANCEL to 1_000L,
+            Touch.Phase.DOWN to 1_200L, Touch.Phase.UP to 1_200L)
+        assertFalse(r.dispatcher.holding)
+        assertTrue(r.offeredOwners.none { r.input.owns(it) })
+    }
+
+    @Test fun explicitlyCanceledOtherAttachmentPressCannotRestoreOlderPendingReplacement() {
+        val r = Rig()
+        assertTrue(r.edge(Phase.DOWN, 1_000))
+        r.onOutput = {
+            if (it.phase == Touch.Phase.CANCEL && it.contactId == 1_000L) {
+                assertTrue(r.edge(Phase.DOWN, 1_200, attachment = 8))
+                // This is the actual press's CANCEL edge, not input.cancel()/a context change.
+                assertTrue(r.edge(Phase.CANCEL, 1_200, 1_230, attachment = 8))
+            }
+        }
+        assertTrue(r.edge(Phase.DOWN, 1_100))
+        assertTrue(r.edge(Phase.UP, 1_200, 1_240, attachment = 8))
+        assertTrue(r.edge(Phase.UP, 1_100, 1_250))
+        r.assertEdges(Touch.Phase.DOWN to 1_000L, Touch.Phase.CANCEL to 1_000L)
+        assertFalse(r.dispatcher.holding)
+        assertTrue(r.offeredOwners.none { r.input.owns(it) })
+    }
+
+    @Test fun otherAttachmentPendingExactTerminalRetiresOnlyItsAdmission() {
+        for (terminal in listOf(Phase.UP, Phase.CANCEL)) {
+            for (matchingTerminal in listOf(true, false)) {
+                val r = Rig()
+                assertTrue(r.edge(Phase.DOWN, 1_000))
+                r.onOutput = {
+                    if (it.phase == Touch.Phase.CANCEL && it.contactId == 1_000L) {
+                        r.onPosition = {
+                            assertTrue(r.edge(terminal, if (matchingTerminal) 1_200 else 1_199,
+                                1_210, attachment = 8))
+                        }
+                        assertTrue(r.edge(Phase.DOWN, 1_200, attachment = 8))
+                    }
+                }
+                assertTrue(r.edge(Phase.DOWN, 1_100))
+                assertEquals(!matchingTerminal, r.dispatcher.holding)
+                assertTrue(r.edge(Phase.UP, 1_100, 1_220))
+                assertEquals(!matchingTerminal, r.dispatcher.holding)
+                assertTrue(r.edge(Phase.UP, 1_200, 1_230, attachment = 8))
+                if (matchingTerminal) {
+                    r.assertEdges(Touch.Phase.DOWN to 1_000L, Touch.Phase.CANCEL to 1_000L)
+                } else {
+                    r.assertEdges(Touch.Phase.DOWN to 1_000L, Touch.Phase.CANCEL to 1_000L,
+                        Touch.Phase.DOWN to 1_200L, Touch.Phase.UP to 1_200L)
+                }
+                assertFalse(r.dispatcher.holding)
+                assertTrue(r.offeredOwners.none { r.input.owns(it) })
+                assertTrue(r.timers.isEmpty())
+            }
+        }
+    }
+
+    @Test fun otherAttachmentPointerPublicationAdmissionSupersedesInitialAndReplacementDowns() {
+        for (replacement in listOf(false, true)) {
+            val r = Rig()
+            if (replacement) assertTrue(r.edge(Phase.DOWN, 1_000))
+            r.onPosition = { assertTrue(r.edge(Phase.DOWN, 1_200, attachment = 8)) }
+            assertTrue(r.edge(Phase.DOWN, 1_100))
+            assertTrue(r.edge(Phase.UP, 1_100, 1_220))
+            assertTrue(r.dispatcher.holding)
+            assertTrue(r.edge(Phase.UP, 1_200, 1_230, attachment = 8))
+            if (replacement) {
+                r.assertEdges(Touch.Phase.DOWN to 1_000L, Touch.Phase.CANCEL to 1_000L,
+                    Touch.Phase.DOWN to 1_200L, Touch.Phase.UP to 1_200L)
+            } else r.assertEdges(Touch.Phase.DOWN to 1_200L, Touch.Phase.UP to 1_200L)
+            assertFalse(r.dispatcher.holding)
+            assertTrue(r.offeredOwners.none { r.input.owns(it) })
+        }
+    }
+
+    @Test fun callbackBeforeOwnerCheckCannotDeliverAnOlderAttachmentDown() {
+        val r = Rig()
+        r.onContact = { oldOwner, event ->
+            if (event.phase == PadGestureRecognizer.Phase.DOWN && event.downTimeMs == 1_100L) {
+                r.onContact = { _, _ -> }
+                // Like Receiver's synchronous native cancellation before hidInput.owns(owner).
+                assertTrue(r.edge(Phase.DOWN, 1_200, attachment = 8))
+                assertFalse(r.input.owns(oldOwner))
+            }
+        }
+        assertTrue(r.edge(Phase.DOWN, 1_100))
+        assertTrue(r.edge(Phase.UP, 1_100, 1_220))
+        assertTrue(r.dispatcher.holding)
+        assertTrue(r.edge(Phase.UP, 1_200, 1_230, attachment = 8))
+        r.assertEdges(Touch.Phase.DOWN to 1_200L, Touch.Phase.UP to 1_200L)
+        assertFalse(r.dispatcher.holding)
+    }
+
+    @Test fun staleOtherAttachmentOwnerReleaseCannotRetireNewerSharedAdmission() {
+        val r = Rig()
+        assertTrue(r.edge(Phase.DOWN, 1_000))
+        val oldOwner = r.offeredOwners.single()
+        assertTrue(r.edge(Phase.DOWN, 1_100, attachment = 8))
+        val newerOwner = r.offeredOwners.last()
+        assertFalse(r.input.owns(oldOwner))
+        assertTrue(r.input.owns(newerOwner))
+        assertTrue(r.edge(Phase.UP, 1_000, 1_120))
+        assertTrue(r.dispatcher.holding)
+        assertTrue(r.input.owns(newerOwner))
+        assertTrue(r.edge(Phase.UP, 1_100, 1_130, attachment = 8))
+        r.assertEdges(Touch.Phase.DOWN to 1_000L, Touch.Phase.CANCEL to 1_000L,
+            Touch.Phase.DOWN to 1_100L, Touch.Phase.UP to 1_100L)
+        assertFalse(r.dispatcher.holding)
+        assertTrue(r.offeredOwners.none { r.input.owns(it) })
+    }
+
+    @Test fun otherAttachmentFunctionAdmissionRemainsIndependentOfTapReplacement() {
+        val r = Rig()
+        assertTrue(r.edge(Phase.DOWN, 1_000))
+        r.onOutput = {
+            if (it.phase == Touch.Phase.CANCEL && it.contactId == 1_000L) {
+                assertTrue(r.edge(Phase.DOWN, 1_120, binding = r.function, attachment = 8))
+            }
+        }
+        assertTrue(r.edge(Phase.DOWN, 1_100))
+        assertTrue(r.dispatcher.holding)
+        assertTrue(r.edge(Phase.UP, 1_100, 1_150))
+        assertTrue(r.edge(Phase.UP, 1_120, 1_160, binding = r.function, attachment = 8))
+        r.assertEdges(Touch.Phase.DOWN to 1_000L, Touch.Phase.CANCEL to 1_000L,
+            Touch.Phase.DOWN to 1_100L, Touch.Phase.UP to 1_100L)
+        r.advance(1_659)
+        assertTrue(r.actions.isEmpty())
+        r.advance(1_660)
+        assertEquals(listOf(Action.SINGLE), r.actions)
+        assertFalse(r.dispatcher.holding)
+    }
+
+    @Test fun reassignedDifferentKeyTapSupersedesOldKeysRetainedAdmittedAction() {
+        val r = Rig()
+        assertTrue(r.edge(Phase.DOWN, 1_000))
+        // A real mapping move leaves the held old key's already admitted action intact.
+        assertTrue(r.bindings.assign(HidAction.TAP, r.function))
+        assertNull(r.bindings.action(r.tap.button))
+        assertEquals(HidAction.TAP, r.bindings.action(r.function.button))
+        r.onOutput = {
+            if (it.phase == Touch.Phase.CANCEL && it.contactId == 1_000L) {
+                assertTrue(r.edge(Phase.DOWN, 1_200, binding = r.function, attachment = 8))
+            }
+        }
+        assertTrue(r.edge(Phase.DOWN, 1_100))
+        assertTrue(r.edge(Phase.UP, 1_100, 1_220))
+        assertTrue(r.dispatcher.holding)
+        assertTrue(r.edge(Phase.UP, 1_200, 1_230, binding = r.function, attachment = 8))
+        r.assertEdges(Touch.Phase.DOWN to 1_000L, Touch.Phase.CANCEL to 1_000L,
+            Touch.Phase.DOWN to 1_200L, Touch.Phase.UP to 1_200L)
+        assertFalse(r.dispatcher.holding)
+        assertTrue(r.timers.isEmpty())
+        assertTrue(r.actions.isEmpty())
     }
 }

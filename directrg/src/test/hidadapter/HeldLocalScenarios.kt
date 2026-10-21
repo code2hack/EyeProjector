@@ -11,6 +11,7 @@ private fun edge(phase: PadGestureRecognizer.Phase, down: Long = 1_000L, at: Lon
 internal class TargetRoot : View() {
     val first = mutableListOf<Int>()
     val second = mutableListOf<Int>()
+    val events = mutableListOf<MotionEvent>()
     var onFirstDown: () -> Unit = {}
     var onFirstCancel: () -> Unit = {}
     var scrolls = 0
@@ -18,12 +19,14 @@ internal class TargetRoot : View() {
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         if (event.action == MotionEvent.ACTION_DOWN) {
             val next = if (event.x < 50) first else second
+            events.add(event)
             next.add(event.action)
             if (next === first) onFirstDown()
             target = next
             return true
         }
         val current = target ?: return false
+        events.add(event)
         current.add(event.action)
         if (current === first && event.action == MotionEvent.ACTION_CANCEL) onFirstCancel()
         if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) target = null

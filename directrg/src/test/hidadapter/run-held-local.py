@@ -103,11 +103,12 @@ internal class IngressBoundary {
 }
 internal class IngressSession {
     val touches = mutableListOf<Touch>()
+    val touchTimes = mutableListOf<Long>()
     val taps = mutableListOf<Tap>()
     val scrolls = mutableListOf<Scroll>()
     var onTouch: (Touch) -> Unit = {}
     var pendingCanceled = 0
-    fun touch(touch: Touch, at: Long): Boolean { touches.add(touch); onTouch(touch); return true }
+    fun touch(touch: Touch, at: Long): Boolean { touches.add(touch); touchTimes.add(at); onTouch(touch); return true }
     fun tap(tap: Tap, at: Long): Boolean { taps.add(tap); return true }
     fun scroll(scroll: Scroll, at: Long, headMotion: Boolean): Boolean { scrolls.add(scroll); return true }
     fun cancelPendingInput() { pendingCanceled++ }
