@@ -1,0 +1,315 @@
+{
+  "format_version": 1,
+  "kind": "assembled_qualification_run_template",
+  "author": "Worker: Worker-EyeProjector-23",
+  "issue": 23,
+  "version": "v0.1",
+  "execution_status": "NOT_EXECUTED",
+  "preparation": {
+    "production_source_basis": "a1492b754bcd538e453cf4e5ca955784f3822758",
+    "production_tree": "ad0df2ecb5b0c1fa5544260090e724cb61f2bc53",
+    "artifact_bindings": "README.md#exact-source-and-artifact-basis",
+    "matrix": "matrix.csv",
+    "app_reports": "compatibility-template.json",
+    "scope": "Host-only preparation; later separately issued reservations and executable scope required",
+    "evidence_references": "README.md#evidence-references-and-retained-outcomes",
+    "one_next_window": "README.md#one-proposed-next-window-installed-candidate-readback",
+    "audio_packet": "../bluetooth/README.md",
+    "audio_measurement": "../bluetooth/measurement-template.json",
+    "preservation_return": "E8 and E15 by reference; UNKNOWN finality, per-facet ownership and one original-return transaction; no new executor"
+  },
+  "conventions": {
+    "current_result_values": [
+      "NOT_EXECUTED",
+      "UNKNOWN",
+      "FAIL",
+      "PASS_LIMITED",
+      "PASS"
+    ],
+    "retained_evidence_classes": [
+      "HOST_CHECK",
+      "ANDROID_OBSERVATION",
+      "OWNER_OBSERVATION",
+      "PHYSICAL_MEASUREMENT",
+      "INFERENCE"
+    ],
+    "availability_values": [
+      "available",
+      "unsupported",
+      "unavailable",
+      "unknown"
+    ],
+    "action_origin_values": [
+      "genuine_glasses_touchpad",
+      "genuine_glasses_function",
+      "genuine_glasses_hid",
+      "phone_system_ui",
+      "host_command",
+      "injected_input"
+    ],
+    "timing": "Record actual start/end/timebase and every attempt. Changing video and no-input are separate. Finite success establishes only its interval.",
+    "actual_facts": "All actual leaves remain null until observed in a later granted window; expected names/packages and inherited evidence are not actual facts."
+  },
+  "planned": {
+    "selected_case_ids": null,
+    "shared_workflows": [
+      "Pair code Wi-Fi and hotspot; five-minute countdown/rotation/expiry; remembered reconnect; Forget preserves independent system Bluetooth; existing max-five attempts per code, reset on rotation and existing projection unaffected",
+      "Both panels and launchers; chosen subset and leading +; hold Remove/Scale; Phone Start/Stop; Glasses Connect/Disconnect",
+      "Both widget buttons; starting/projecting/inactive from either device/failure; setup recovery and actual reboot limitations",
+      "Genuine pointer/taps/long-contact/head drag; both scroll directions/main+nested/local widgets; separate X/Y and head-scroll toggle including Scroll-minus; persisted scroll speed; upright/sideways/upside-down startup then wear; focus/relaunch/rotation directions; invalid sensor reset; fitted current video geometry/out-of-image tap rejection; preserve relative tap timing, suppress duplicate firmware reports and no extra contact-marker tap after swipe/long press",
+      "Four HID captures; reassignment; restart/reconnect; single/double/multiple/hold/repeat; disconnect/focus/context cancellation",
+      "Native and HID contextual Function; final action only; long no-op; no competing AI/pairing; connected triple-panel return preserves session/Surface and local Back restores projection",
+      "Stop/Disconnect/exit/pause/Surface/video/control failure release actual owned resources; fresh reconnect and independent Bluetooth",
+      "Current trusted direct endpoints; wrong/missing identity/incompatible/malformed/out-of-bounds refusal applicability",
+      "Per-app launch/native controls/text/scale/style/media in compatibility-template; reuse #22 audio packet"
+    ],
+    "intervals": {
+      "changing_video": {
+        "duration_seconds": null,
+        "source_identity_and_hash": null,
+        "visible_progress_method": null,
+        "codec_dimension_readback": null
+      },
+      "separate_no_input": {
+        "duration_seconds": null,
+        "content_identity": null,
+        "no_touch_or_head_movement_method": null,
+        "before_after_input_and_av_method": null
+      },
+      "former_lifetime_boundary_regression": {
+        "duration_seconds": null,
+        "boundary_reference": null,
+        "method": null
+      }
+    },
+    "awake_cases": [
+      {
+        "case_id": "POWER_UNLOCKED_ON",
+        "keyguard": "unlocked",
+        "physical_panel_sequence": "on",
+        "observations": [
+          "actual physical panels",
+          "Android wakefulness",
+          "keyguard",
+          "virtual display",
+          "changing video",
+          "audio",
+          "genuine input",
+          "separate no-input interval",
+          "teardown restores display power and releases inactivity prevention"
+        ]
+      },
+      {
+        "case_id": "POWER_UNLOCKED_OFF_AFTER_START",
+        "keyguard": "unlocked",
+        "physical_panel_sequence": "off_after_start",
+        "observations": [
+          "actual physical panels",
+          "Android wakefulness",
+          "keyguard",
+          "virtual display",
+          "changing video",
+          "audio",
+          "genuine input",
+          "separate no-input interval",
+          "teardown restores display power and releases inactivity prevention"
+        ]
+      },
+      {
+        "case_id": "POWER_SECURELY_LOCKED_ON",
+        "keyguard": "securely_locked",
+        "physical_panel_sequence": "on",
+        "observations": [
+          "actual physical panels",
+          "Android wakefulness",
+          "keyguard",
+          "virtual display",
+          "changing video",
+          "audio",
+          "genuine input",
+          "separate no-input interval",
+          "teardown restores display power and releases inactivity prevention"
+        ]
+      },
+      {
+        "case_id": "POWER_SECURELY_LOCKED_OFF_AFTER_START",
+        "keyguard": "securely_locked",
+        "physical_panel_sequence": "off_after_start",
+        "observations": [
+          "actual physical panels",
+          "Android wakefulness",
+          "keyguard",
+          "virtual display",
+          "changing video",
+          "audio",
+          "genuine input",
+          "separate no-input interval",
+          "teardown restores display power and releases inactivity prevention"
+        ]
+      }
+    ],
+    "human_cases": [
+      "genuine pad/HID and competing firmware",
+      "wearer readability/ergonomics/subjective latency",
+      "hearing/microphone attribution or calibrated physical AV capture",
+      "Owner-controlled unlock/login/consent when a selected case requires it"
+    ],
+    "next_window_limits": {
+      "phase_count": 3,
+      "max_adb_invocations": 8,
+      "max_attempts_each": 1,
+      "total_wall_seconds": 120,
+      "device_writes": 0,
+      "scope": "Only production installed identity/metadata/path/hash reads; actual route and dynamic operands materialized by Manager; no installation or workflow expansion"
+    }
+  },
+  "actual": {
+    "run": {
+      "run_id": null,
+      "started_at": null,
+      "ended_at": null,
+      "operator_identity": null,
+      "physical_observer_identity": null
+    },
+    "authorization": {
+      "assignment_request_id": null,
+      "scope_reference": null,
+      "grant_reference": null,
+      "reservation_reference": null,
+      "reserved_targets": null,
+      "authorized_operations": null,
+      "resolved_exact_argv_and_limits": null
+    },
+    "source_and_artifacts": {
+      "production_source_sha": null,
+      "production_tree": null,
+      "documentation_base_head_tree": null,
+      "observed_remote_version_tip": null,
+      "remote_observed_at": null,
+      "worktree_cleanliness": null,
+      "tracked_source_archive_manifest": null,
+      "retained_artifacts_hashes_sizes_manifests": null,
+      "fresh_checks": null,
+      "reused_checks_and_exact_input_equality": null,
+      "uncovered_checks_and_limits": null,
+      "installed_apk_paths_hashes_sizes_versions_signatures": null
+    },
+    "phone": {
+      "device_identity": null,
+      "model": null,
+      "os_version": null,
+      "sdk": null,
+      "build_fingerprint": null,
+      "firmware": null,
+      "android_user_profile": null,
+      "adb_route": null,
+      "permissions": null
+    },
+    "glasses": {
+      "device_identity": null,
+      "model": null,
+      "os_version": null,
+      "sdk": null,
+      "build_fingerprint": null,
+      "firmware": null,
+      "android_user_profile": null,
+      "adb_route": null,
+      "permissions": null
+    },
+    "hid": {
+      "identity": null,
+      "firmware": null,
+      "connection": null,
+      "four_bindings": null,
+      "capture_reassignment": null,
+      "restart_reconnect_persistence": null,
+      "repeat_and_cancel_results": null
+    },
+    "baseline": {
+      "observed_at": null,
+      "private_configuration_revision": null,
+      "installed_apps": null,
+      "target_app_versions_login_availability": null,
+      "selected_system_ime_identity_version_layout": null,
+      "projection_session_surface_display": null,
+      "EyeProjector_pairing_and_settings": null,
+      "system_bluetooth_state": null,
+      "panel_wake_keyguard_states": null,
+      "foreground_and_owned_resources": null,
+      "original_state_preservation_and_return_reference": null
+    },
+    "attempts": {
+      "selected_case_ids": null,
+      "command_argv_and_raw_outputs": null,
+      "action_origins": null,
+      "start_end_timebases": null,
+      "exit_timeout_command_finality_and_effect_separately": null,
+      "every_intermediate_failure_and_partial_result": null
+    },
+    "shared_results": {
+      "pairing_wifi_hotspot_code_expiry": null,
+      "remembered_reconnect_forget": null,
+      "panels_launchers_and_chosen_apps": null,
+      "startup_widget_buttons_states_recovery": null,
+      "pointer_settings_and_genuine_Scroll_minus": null,
+      "native_pad_contact_taps_scroll": null,
+      "native_function_and_competing_firmware": null,
+      "hid_workflows": null,
+      "triple_panel_local_back_session_surface_preservation": null,
+      "release_failure_cleanup_fresh_reconnect": null,
+      "security_case_applicability_and_results": null
+    },
+    "applications": {
+      "compatibility_report_path_hash": null,
+      "current_inventory": null,
+      "concrete_feature_entry_points": null,
+      "per_app_case_results_and_limits": null
+    },
+    "intervals": {
+      "changing_video_interval_progress_codec_dimensions": null,
+      "separate_no_input_interval_and_after_input": null,
+      "former_lifetime_boundary_regression": null,
+      "all_stalls_and_failure_cleanup": null
+    },
+    "power": {
+      "unlocked_awake_panel_on": null,
+      "unlocked_awake_off_after_start": null,
+      "securely_locked_awake_panel_on": null,
+      "securely_locked_awake_off_after_start": null,
+      "physical_panels_wake_keyguard_display_per_case": null,
+      "video_audio_genuine_input_before_after": null,
+      "teardown_power_and_inactivity_restoration": null
+    },
+    "physical": {
+      "optical_style_readability": null,
+      "subjective_latency_ergonomics": null,
+      "bluetooth_packet_run_reference": null,
+      "actual_output_microphone_corroboration": null,
+      "physical_AV_measurement_method_calibration_uncertainty_and_events": null,
+      "signed_audio_minus_visual_ms_and_100ms_relation": null
+    },
+    "return_and_cleanup": {
+      "writes_and_owned_facets": null,
+      "original_return_transaction_reference": null,
+      "command_finality_unknowns": null,
+      "actions_and_actual_readbacks": null,
+      "baseline_differences_unresolved_state": null,
+      "reservation_release_reference": null
+    },
+    "evidence": {
+      "private_directory": null,
+      "manifest_path_hash": null,
+      "raw_attempts_and_failures": null,
+      "inherited_evidence_exact_applicability": null,
+      "unknowns_and_deferred_human_cases": null
+    },
+    "review_and_acceptance": {
+      "independent_reviewer_identity": null,
+      "exact_base_head_tree_reviewed": null,
+      "verdict_and_evidence": null,
+      "manager_host_preparation_acceptance": null,
+      "physical_full_issue_acceptance": null,
+      "assembled_version_acceptance": null
+    }
+  }
+}
