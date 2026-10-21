@@ -57,11 +57,12 @@ object Tls {
         val settings = settings(directory)
         val host = settings.getProperty("host") ?: error("Endpoint missing")
         val port = settings.getProperty("port").toInt().also { require(it in 1024..65535) }
+        val factory = context(directory).socketFactory
         val raw = Socket()
         try {
             raw.connect(InetSocketAddress(host, port), 3000)
             val peerName = settings.getProperty("peerName") ?: host
-            val socket = context(directory).socketFactory.createSocket(raw, peerName, port, true) as SSLSocket
+            val socket = factory.createSocket(raw, peerName, port, true) as SSLSocket
             try {
                 socket.soTimeout = 4000; socket.tcpNoDelay = true; socket.sendBufferSize = 4096; socket.receiveBufferSize = 65536
                 socket.enabledProtocols = socket.supportedProtocols.filter { it in listOf("TLSv1.3", "TLSv1.2") }.toTypedArray()
