@@ -21,7 +21,7 @@ internal object ProjectionLaunchCommands {
     const val HOME_COMPONENT = "$HOME_PACKAGE/.ProjectedHomeActivity"
 
     fun launch(displayId: Int, packageName: String, home: Boolean, context: ProjectionContext = ProjectionContext()): List<String> =
-        listOf("/system/bin/cmd", "activity", "start-activity", "-W", "--display", displayId.toString(), "--activity-new-task") +
+        listOf("/system/bin/cmd", "activity", "start-activity", "-W", "--display", displayId.toString(), "-f", "0x10000000") +
             if (home) listOf("--activity-clear-top", "-n", HOME_COMPONENT,
                 "--es", ProjectionContext.OWNER_EXTRA, context.ownerEpoch,
                 "--es", ProjectionContext.TOKEN_EXTRA, context.projectionToken)
