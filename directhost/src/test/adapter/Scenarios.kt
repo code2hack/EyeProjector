@@ -540,6 +540,9 @@ fun main() {
         f.host.launchApp("example.precheck.race") { response=it };f.drain()
         check(service.launches.isEmpty() && response!!.status==ProjectionLaunchStatus.UNAVAILABLE)
         check(response!!.context==original && response!!.commandExit==null && response!!.foregroundPackage==null)
+        val diagnostic = android.util.Log.entries.map { it.second }.filter { it.contains("selectedPackage=example.precheck.race ") }
+        check(diagnostic.any { it.contains("stage=RESULT outcome=RETURNED") && it.contains("resultStatus=UNAVAILABLE") })
+        check(diagnostic.any { it.contains("stage=BEFORE_CALLBACK outcome=VALUE_SELECTED") && it.contains("resultStatus=UNAVAILABLE") })
         f.host.projectionDisplayState { check(it!!.context==original && it.foregroundPackage==null) };f.drain()
         check(service.displayReads==0)
     }
@@ -556,6 +559,9 @@ fun main() {
         var result:ProjectionDisplayState?=null
         f.host.launchApp("example.explicit.home",homeContext) { result=it };f.drain()
         check(result!!.context==homeContext && service.launches==listOf("example.explicit.home"))
+        val diagnostic = android.util.Log.entries.map { it.second }.filter { it.contains("selectedPackage=example.explicit.home ") }
+        check(diagnostic.any { it.contains("stage=PRE_CALL outcome=ADMITTED") && it.contains("exactContext=false acceptedContext=true accepted=true") })
+        check(diagnostic.any { it.contains("stage=BEFORE_CALLBACK outcome=VALUE_SELECTED") && it.contains("resultContextMatch=true") })
         service.display=service.display.copy(context=ProjectionContext("","replacement-before-poll"),displayId=88)
         f.host.launchApp("example.old.explicit.home",homeContext) { result=it };f.drain()
         check(service.launches==listOf("example.explicit.home"))
@@ -609,6 +615,118 @@ fun main() {
         f.host.requestScale(1.5, fixed) { result = it }; f.drain()
         check(result == null || result?.status == ScaleStatus.UNAVAILABLE)
         check(service.scaleRequests.size == 1)
+    }
+    scenario("launch diagnostics preserve short-circuited missing context and missing service callbacks") { f ->
+        android.util.Log.entries.clear()
+        var replies = 0
+        f.host.launchApp("example.no.context") { check(it == null); replies++ }
+        f.host.launchApp("example.no.service", ProjectionContext("original-owner", "original-token")) { check(it == null); replies++ }
+        f.drain()
+        val rows = android.util.Log.entries.map { it.second }
+        check(replies == 2 && Shizuku.binds == 0 && rows.size == 4)
+        check(rows.any { it.contains("reason=EXPECTED_CONTEXT_UNAVAILABLE servicePresent=not_evaluated") })
+        check(rows.any { it.contains("reason=NO_SERVICE servicePresent=false sameService=not_evaluated sameBinding=not_evaluated") })
+        check(rows.none { it.contains("outcome=RETURNED") })
+    }
+    scenario("launch diagnostics retain the original failed reply even when its context filters delivery") { f ->
+        f.host.start(); f.drain()
+        val service = FakeService().apply { state = "STREAMING" }; f.attach(service)
+        service.displayPayloadOverride = ProjectionDisplayState(991, "private-token:scrcpy-00000001", 145, "example.failed",
+            ProjectionLaunchStatus.FAILED, 255, "example.failed/.Main", "example.home", ProjectionContext("wrong-owner", "private-token")).bytes()
+        android.util.Log.entries.clear()
+        var replies = 0
+        f.host.launchApp("example.failed") { check(it == null); replies++ }; f.drain()
+        val rows = android.util.Log.entries.map { it.second }
+        check(replies == 1 && service.launches == listOf("example.failed") && service.displayReads == 0 && rows.size == 3)
+        check(rows.any { it.contains("stage=RESULT outcome=RETURNED") && it.contains("resultStatus=FAILED resultRequestId=991") && it.contains("commandExit=255 displayId=145") })
+        check(rows.any { it.contains("stage=BEFORE_CALLBACK outcome=NULL_SELECTED") && it.contains("resultStatus=FAILED") && it.contains("resultContextMatch=false") })
+        check(rows.none { it.contains("private-token") || it.contains("wrong-owner") })
+        check(rows.map { it.substringAfter("operationId=").substringBefore(' ') }.distinct().size == 1)
+    }
+    scenario("launch diagnostics distinguish operation exceptions from decode failures without a query or retry") { f ->
+        f.host.start(); f.drain()
+        val service = FakeService().apply { state = "STREAMING" }; f.attach(service)
+        var calls = 0; var replies = 0
+        service.beforeLaunch = { calls++; throw SecurityException("private exception message and stack") }
+        android.util.Log.entries.clear()
+        f.host.launchApp("example.operation.error") { check(it == null); replies++ }; f.drain()
+        service.beforeLaunch = { calls++ }; service.displayPayloadOverride = ByteArray(4)
+        f.host.launchApp("example.decode.error") { check(it == null); replies++ }; f.drain()
+        val rows = android.util.Log.entries.map { it.second }
+        check(calls == 2 && replies == 2 && service.displayReads == 0 && service.launches == listOf("example.decode.error"))
+        check(rows.any { it.contains("outcome=OPERATION_EXCEPTION") && it.contains("exceptionFamily=SECURITY") })
+        check(rows.any { it.contains("outcome=DECODE_EXCEPTION") && it.contains("exceptionFamily=ARGUMENT") })
+        check(rows.none { it.contains("private exception") || it.contains("SecurityException") })
+    }
+    scenario("launch diagnostic sink failures preserve successful result and callback exception propagation") { f ->
+        f.host.start(); f.drain()
+        val service = FakeService().apply { state = "STREAMING" }; f.attach(service)
+        var replies = 0
+        android.util.Log.failWrites = true
+        try {
+            f.host.launchApp("example.sink.error") { check(it?.foregroundPackage == "example.sink.error"); replies++ }; f.drain()
+            check(replies == 1 && service.launches == listOf("example.sink.error") && service.displayReads == 0)
+            android.os.Handler.defer = true
+            val expected = IllegalStateException("synthetic callback exception")
+            f.host.launchApp("example.callback.error") { replies++; throw expected }; f.drain()
+            var caught: Throwable? = null
+            try { android.os.Handler.flush() } catch (error: Throwable) { caught = error }
+            check(caught === expected && replies == 2 && service.launches.size == 2 && service.displayReads == 0)
+        } finally {
+            android.util.Log.failWrites = false
+            android.os.Handler.defer = false
+            android.os.Handler.flush()
+        }
+    }
+    scenario("launch diagnostics keep returned success separate from a context changed before main delivery") { f ->
+        f.host.start(); f.drain()
+        val service = FakeService().apply { state = "STREAMING" }; f.attach(service)
+        android.util.Log.entries.clear(); android.os.Handler.defer = true
+        var replies = 0
+        try {
+            f.host.launchApp("example.before.delivery") { check(it == null); replies++ }; f.drain()
+            check(replies == 0 && service.launches == listOf("example.before.delivery"))
+            HostBootstrap::class.java.getDeclaredField("current").apply { isAccessible = true }
+                .set(f.host, f.host.status().copy(projectionToken = "replaced-before-delivery"))
+            android.os.Handler.flush()
+            val rows = android.util.Log.entries.map { it.second }
+            check(replies == 1 && service.displayReads == 0)
+            check(rows.any { it.contains("stage=RESULT outcome=RETURNED") && it.contains("resultStatus=STARTED") })
+            check(rows.any { it.contains("stage=BEFORE_CALLBACK outcome=NULL_SELECTED") && it.contains("reason=CONTEXT_CHANGED") &&
+                it.contains("resultStatus=STARTED") && it.contains("resultContextMatch=not_evaluated") })
+        } finally { android.os.Handler.defer = false; android.os.Handler.flush() }
+    }
+    scenario("launch diagnostics preserve binding and service identity short circuits before the remote call") { f ->
+        f.host.start(); f.drain()
+        val service = FakeService().apply { state = "STREAMING" }; f.attach(service)
+        for (changeService in listOf(false, true)) {
+            val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            (f.field("displayExecutor") as ExecutorService).submit { entered.countDown(); check(release.await(3, TimeUnit.SECONDS)) }
+            check(entered.await(2, TimeUnit.SECONDS))
+            android.util.Log.entries.clear(); var replies = 0
+            try {
+                f.host.launchApp("example.pre.call") { check(it == null); replies++ }
+                if (changeService) HostBootstrap::class.java.getDeclaredField("remote").apply { isAccessible = true }.set(f.host, FakeService())
+                else HostBootstrap::class.java.getDeclaredField("bindingGeneration").apply { isAccessible = true }
+                    .setLong(f.host, (f.field("bindingGeneration") as Long) + 1)
+                release.countDown(); f.drain()
+                val rows = android.util.Log.entries.map { it.second }
+                check(replies == 1 && service.launches.isEmpty() && service.displayReads == 0 && rows.size == 2)
+                check(rows.any { it.contains("stage=PRE_CALL outcome=SKIPPED") && it.contains(if (changeService)
+                    "reason=SERVICE_CHANGED servicePresent=true sameService=false sameBinding=not_evaluated"
+                    else "reason=BINDING_CHANGED servicePresent=true sameService=true sameBinding=false") })
+            } finally { release.countDown() }
+        }
+    }
+    scenario("launch diagnostics identify only an explicitly requested display query") { f ->
+        f.host.start(); f.drain()
+        val service = FakeService().apply { state = "STREAMING" }; f.attach(service)
+        android.util.Log.entries.clear(); var replies = 0
+        f.host.projectionDisplayState { check(it?.displayId == 47); replies++ }; f.drain()
+        val rows = android.util.Log.entries.map { it.second }
+        check(replies == 1 && service.displayReads == 1 && service.launches.isEmpty() && rows.size == 3)
+        check(rows.all { it.contains("kind=DISPLAY_QUERY selectedPackage=none") })
+        check(rows.any { it.contains("stage=BEFORE_CALLBACK outcome=VALUE_SELECTED") && it.contains("resultContextMatch=true") })
     }
     check(failures == 0) { "$failures adapter scenarios failed" }
     println("$scenarios adapter scenarios passed; modeled host events, no device/Binder claim")

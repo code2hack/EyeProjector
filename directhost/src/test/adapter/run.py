@@ -71,6 +71,10 @@ else:
     sources += [actual / name for name in ('HostBootstrap.kt', 'HostForgetCompletion.kt', 'BootstrapSessionFiles.kt', 'SessionController.kt', 'SessionAttemptStore.kt', 'PanelPower.kt', 'ProjectionDisplayState.kt', 'ProjectionContext.kt', 'ProjectedHomeActivity.kt')]
     sources += [actual / 'apps/ChosenAppStore.kt']
 protocol = root / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
+if not args.panel and (actual / 'LaunchOperationDiagnostics.kt').exists():
+    sources += [actual / 'LaunchOperationDiagnostics.kt']
+    if args.composed:
+        sources += [suite / 'doubles/Log.kt']
 sources += [protocol / name for name in ('Wire.kt', 'LayoutScale.kt', 'Touch.kt')]
 # Retain exact compiler inputs even for preparation failures and later test corrections.
 archive = output / 'compiled-sources'
