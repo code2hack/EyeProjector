@@ -32,6 +32,9 @@ class ChosenAppsPanel @JvmOverloads constructor(
     var onAppSelected: ((ChosenApp) -> Unit)? = null
         set(value) { field = value; refresh() }
 
+    var onAppScale: ((ChosenApp) -> Unit)? = null
+        set(value) { dialog?.dismiss(); field = value; refresh() }
+
     private val packageChanges = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             dialog?.dismiss()
@@ -130,10 +133,18 @@ class ChosenAppsPanel @JvmOverloads constructor(
             setOnClickListener { onAppSelected?.invoke(entry.app) }
         }
         setOnLongClickListener {
+            val canScale = entry.availability == AppAvailability.AVAILABLE && onAppScale != null
+            val labels = mutableListOf(context.getString(R.string.chosen_apps_remove))
+            if (canScale) labels.add(context.getString(R.string.app_scale_menu))
             dialog = AlertDialog.Builder(context).setTitle(entry.app.label)
-                .setItems(arrayOf(context.getString(R.string.chosen_apps_remove))) { _, _ ->
-                    store.remove(entry.app.packageName)
-                    refresh()
+                .setItems(labels.toTypedArray()) { _, which ->
+                    if (which == 0) {
+                        store.remove(entry.app.packageName)
+                        refresh()
+                    } else if (catalog.find(entry.app.packageName)?.launchable == true &&
+                        store.read().any { it.packageName == entry.app.packageName }) {
+                        onAppScale?.invoke(entry.app)
+                    }
                 }.show()
             true
         }

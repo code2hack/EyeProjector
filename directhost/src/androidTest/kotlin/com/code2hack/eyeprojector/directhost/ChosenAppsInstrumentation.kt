@@ -35,6 +35,9 @@ class ChosenAppsInstrumentation : Instrumentation() {
         try {
             when (arguments.getString("operation", "ui")) {
                 "ui" -> testUi()
+                "app-scale" -> AppScaleChecks.run(this, targetContext)
+                "app-scale-persist-write" -> AppScaleChecks.persistence(targetContext, true)
+                "app-scale-persist-read" -> AppScaleChecks.persistence(targetContext, false)
                 "projected-home" -> ProjectedHomeChecks.run(this, targetContext, arguments)
                 "persist-write" -> {
                     val store = ChosenApps.open(fixtureContext)

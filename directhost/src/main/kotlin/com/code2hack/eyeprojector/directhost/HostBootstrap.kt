@@ -128,12 +128,20 @@ class HostBootstrap private constructor(private val context: Context) {
     } }
 
     /** Local typed Binder operations; no peer TLS keys or new network trust are involved. */
-    fun requestScale(value: Double, complete: (ScaleState?) -> Unit) {
+    fun requestScale(value: Double, complete: (ScaleState?) -> Unit) = requestScaleOperation(value, null, complete)
+
+    fun requestScale(value: Double, expected: ProjectionContext, complete: (ScaleState?) -> Unit) =
+        requestScaleOperation(value, expected, complete)
+
+    private fun requestScaleOperation(value: Double, expected: ProjectionContext?, complete: (ScaleState?) -> Unit) {
         val id = System.nanoTime()
-        scaleOperation({ service, context -> service.requestScale(id, value, context.ownerEpoch, context.projectionToken) }, complete)
+        scaleOperation(expected, { service, context -> service.requestScale(id, value, context.ownerEpoch, context.projectionToken) }, complete)
     }
 
-    fun scaleState(complete: (ScaleState?) -> Unit) = scaleOperation(
+    fun scaleState(complete: (ScaleState?) -> Unit) = scaleOperation(null,
+        { service, context -> service.scaleState(context.ownerEpoch, context.projectionToken) }, complete)
+
+    fun scaleState(expected: ProjectionContext, complete: (ScaleState?) -> Unit) = scaleOperation(expected,
         { service, context -> service.scaleState(context.ownerEpoch, context.projectionToken) }, complete)
 
     /** Capture context on the lifecycle lane; Binder work cannot occupy that lane. */
@@ -173,14 +181,19 @@ class HostBootstrap private constructor(private val context: Context) {
         }
     }
 
-    private fun scaleOperation(operation: (IHostBootstrap, PanelContext) -> ByteArray, complete: (ScaleState?) -> Unit) {
+    private fun scaleOperation(expected: ProjectionContext?, operation: (IHostBootstrap, PanelContext) -> ByteArray, complete: (ScaleState?) -> Unit) {
         val atEntry = current
-        val context = PanelContext(atEntry.sessionEpoch, atEntry.projectionToken)
+        val selected = expected ?: atEntry.projectionContext
+        val context = PanelContext(selected.ownerEpoch, selected.projectionToken)
+        fun matchesContext(): Boolean {
+            val observed = current
+            return observed.projectionContext == selected ||
+                (expected != null && atEntry.projectionToken.isEmpty() && observed === atEntry && observed.sessionEpoch == selected.ownerEpoch)
+        }
         executor.execute {
             val service = remote
             val generation = bindingGeneration
-            if (service == null || !context.resolved ||
-                context != PanelContext(current.sessionEpoch, current.projectionToken) ||
+            if (service == null || !context.resolved || !matchesContext() ||
                 pending == Action.STOP || revokedBinder != null) {
                 main.post { complete(null) }; return@execute
             }
@@ -191,8 +204,7 @@ class HostBootstrap private constructor(private val context: Context) {
                 executor.execute {
                     val reply = result?.takeIf {
                         remote?.asBinder() == binder && bindingGeneration == generation &&
-                            PanelContext(current.sessionEpoch, current.projectionToken) == context &&
-                            pending != Action.STOP && revokedBinder == null
+                            matchesContext() && pending != Action.STOP && revokedBinder == null
                     }
                     main.post { complete(reply) }
                 }

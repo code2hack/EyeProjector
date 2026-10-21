@@ -28,12 +28,14 @@ class HostActivity : Activity() {
     private lateinit var pairingPanel: PairingPanel
     private lateinit var chosenApps: ChosenAppsPanel
     private lateinit var launcherStatus: TextView
+    private var launchFeedbackIntent = 0L
     private var launchEnabled = false
     private var launchContext = ProjectionContext()
     private fun launchChosenApp(app: ChosenApp, expected: ProjectionContext) {
+        val feedbackIntent = ++launchFeedbackIntent
         launcherStatus.text = getString(R.string.projected_home_opening, app.label)
         sessions.launchApp(app.packageName, expected) { result ->
-            if (launchContext != expected) return@launchApp
+            if (launchContext != expected || launchFeedbackIntent != feedbackIntent) return@launchApp
             launcherStatus.text = getString(when {
                 result?.foregroundPackage == app.packageName -> R.string.projected_home_opened
                 result?.status == ProjectionLaunchStatus.TIMED_OUT -> R.string.projected_home_timeout
@@ -41,6 +43,20 @@ class HostActivity : Activity() {
                 else -> R.string.projected_home_unavailable
             }, app.label)
         }
+    }
+    private fun scaleChosenApp(app: ChosenApp, expected: ProjectionContext) {
+        val feedbackIntent = ++launchFeedbackIntent
+        launcherStatus.text = getString(R.string.projected_home_opening, app.label)
+        val target = sessions.launchAppForScale(app.packageName, expected) { result ->
+            if (launchContext != expected || launchFeedbackIntent != feedbackIntent) return@launchAppForScale
+            launcherStatus.text = getString(when {
+                result?.foregroundPackage == app.packageName -> R.string.projected_home_opened
+                result?.status == ProjectionLaunchStatus.TIMED_OUT -> R.string.projected_home_timeout
+                result?.status == ProjectionLaunchStatus.STARTED -> R.string.projected_home_unconfirmed
+                else -> R.string.projected_home_unavailable
+            }, app.label)
+        }
+        startActivity(com.code2hack.eyeprojector.directhost.scale.AppScaleActivity.intent(this, target))
     }
     private val observer: (HostBootstrap.Status) -> Unit = { state ->
         val session = sessions.state()
@@ -66,6 +82,7 @@ class HostActivity : Activity() {
             launchEnabled = canLaunch
             launchContext = expected
             chosenApps.onAppSelected = if (canLaunch) { app -> launchChosenApp(app, expected) } else null
+            chosenApps.onAppScale = if (canLaunch) { app -> scaleChosenApp(app, expected) } else null
         }
     }
     private val sessionTick = object : Runnable {

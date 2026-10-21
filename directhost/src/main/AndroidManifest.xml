@@ -11,6 +11,7 @@
         <activity android:name=".ProjectedHomeActivity" android:exported="true"
             android:taskAffinity="com.code2hack.eyeprojector.directhost.projectedhome"
             android:launchMode="singleTask" android:resizeableActivity="true" />
+        <activity android:name=".scale.AppScaleActivity" android:exported="false" />
         <activity android:name=".ScaleFixtureActivity" android:exported="true" />
         <provider android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku" android:multiprocess="false"

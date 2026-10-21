@@ -3,6 +3,7 @@ package com.code2hack.eyeprojector.directhost
 import android.annotation.SuppressLint
 import android.content.Context
 import com.code2hack.eyeprojector.protocol.*
+import com.code2hack.eyeprojector.directhost.scale.*
 import java.io.File
 
 /** App-scoped owner survives panel recreation and supplies the same commands to later Phone controls. */
@@ -16,9 +17,20 @@ class PhoneSessionController private constructor(context: Context) {
         SessionControl.serve(store.directory, socket, ::command)
     })
 
+    val appScales = AppScaleCoordinator(AppScalePreferences.open(context), object : AppScaleBackend {
+        override fun launch(packageName: String, expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit) =
+            bootstrap.launchApp(packageName, expected, complete)
+        override fun display(expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit) =
+            bootstrap.projectionDisplayState(expected, complete)
+        override fun request(value: Double, expected: ProjectionContext, complete: (ScaleState?) -> Unit) =
+            bootstrap.requestScale(value, expected, complete)
+        override fun read(expected: ProjectionContext, complete: (ScaleState?) -> Unit) = bootstrap.scaleState(expected, complete)
+    })
+
     init {
         bootstrap.observe { state ->
             controller.observeBackend(state.sessionEpoch, state.backend, state.detail.orEmpty(), state.rejectedEpoch)
+            appScales.contextChanged(state.projectionContext, state.backend in setOf("SESSION_STARTING", "STREAMING"))
         }
         pairing.start()
     }
@@ -34,8 +46,14 @@ class PhoneSessionController private constructor(context: Context) {
     fun stop(): SessionState = controller.stop()
 
     /** Both launchers consume the owning backend's actual display/generation and result. */
-    fun launchApp(packageName: String, complete: (ProjectionDisplayState?) -> Unit) = bootstrap.launchApp(packageName, complete)
-    fun launchApp(packageName: String, expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit) = bootstrap.launchApp(packageName, expected, complete)
+    fun launchApp(packageName: String, complete: (ProjectionDisplayState?) -> Unit) {
+        launchApp(packageName, bootstrap.status().projectionContext, complete)
+    }
+    fun launchApp(packageName: String, expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit) {
+        appScales.launch(packageName, expected, complete)
+    }
+    fun launchAppForScale(packageName: String, expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit): AppScaleTarget =
+        appScales.launch(packageName, expected, complete)
     fun projectionDisplayState(complete: (ProjectionDisplayState?) -> Unit) = bootstrap.projectionDisplayState(complete)
 
     fun requestPanelOff(complete: (PanelPowerState?) -> Unit) = bootstrap.requestPanelOff(complete)
