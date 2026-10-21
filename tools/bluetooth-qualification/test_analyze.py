@@ -4,6 +4,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -42,7 +43,50 @@ def analyze(document):
     return ANALYSIS.analyze_document(json.dumps(document))
 
 
+def escaped_surrogate_input():
+    document = synthetic()
+    document["record_id"] = "SYNTHETIC-语音"
+    document["samples"][0]["sample_id"] = "SYNTHETIC-surrogate-placeholder"
+    raw = json.dumps(document, ensure_ascii=False, indent=2)
+    raw = raw.replace("SYNTHETIC-surrogate-placeholder", r"\ud800")
+    return (raw.replace("\n", "\r\n") + "\r\n").encode("utf-8")
+
+
 class OffsetTests(unittest.TestCase):
+    def assert_surrogate_cli_report(self, run, raw):
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stderr, b"")
+        report = json.loads(run.stdout.decode("utf-8"))
+        self.assertEqual(report["raw_document_text"], raw.decode("utf-8"))
+        self.assertEqual(report["input_sha256"], hashlib.sha256(raw).hexdigest())
+        self.assertEqual(report["samples"][0]["sample_id"], "\ud800")
+        self.assertEqual(report["samples"][0]["measured_audio_minus_visual_ms"], ["63", "79"])
+        self.assertEqual(report["samples"][0]["corrected_audio_minus_visual_ms"], ["51", "71"])
+        self.assertEqual(report["samples"][0]["numeric_target_relation"], "WITHIN_TARGET")
+        self.assertEqual(report["measurement_validity"], "ANALYZED")
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(report["physical_acceptance"], "OPEN")
+        self.assertIsNone(report["physical_target_relation"])
+        self.assertIsNone(report["qualification_result"])
+
+    def test_cli_escaped_surrogate_identifier_file(self):
+        raw = escaped_surrogate_input()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "SYNTHETIC-surrogate.json"
+            path.write_bytes(raw)
+            run = subprocess.run([sys.executable, "-B", str(HERE / "analyze.py"), str(path)],
+                                 capture_output=True, timeout=10,
+                                 env={**os.environ, "PYTHONIOENCODING": "utf-8:strict"})
+            self.assert_surrogate_cli_report(run, raw)
+            self.assertEqual(path.read_bytes(), raw)
+
+    def test_cli_escaped_surrogate_identifier_stdin(self):
+        raw = escaped_surrogate_input()
+        run = subprocess.run([sys.executable, "-B", str(HERE / "analyze.py"), "-"], input=raw,
+                             capture_output=True, timeout=10,
+                             env={**os.environ, "PYTHONIOENCODING": "utf-8:strict"})
+        self.assert_surrogate_cli_report(run, raw)
+
     def test_positive_interval_and_calibration_sign(self):
         # A=[70,74], V=[0,2], quantization adds +/-5: raw=[63,79].
         # Instrument bias=[8,12] must be subtracted: physical=[51,71].

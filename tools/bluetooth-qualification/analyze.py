@@ -309,7 +309,7 @@ def main():
         print(json.dumps({"measurement_validity": "INPUT_UNREADABLE", "physical_acceptance": "OPEN", "qualification_result": None, "errors": [str(error)]}))
         return 2
     report = analyze_document(raw_text)
-    print(json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False))
+    print(json.dumps(report, indent=2, ensure_ascii=True, allow_nan=False))
     return 2 if report["errors"] else 0
 
 
