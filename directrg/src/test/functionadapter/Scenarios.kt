@@ -91,6 +91,19 @@ fun main() {
         send(a, "CLICK"); Handler.advance(500); check(a.connectionView.scrollY == 0 && !a.finished)
         press(a); send(a, "LONG"); Handler.advance(1000); check(!a.finished && a.launch == null)
     }
+    scenario("actual binding view single and Back restore main before the retained projection") {
+        val a = activity(true); val s = a.session!!; val decoder = s.decoder; val surface = a.screen.surface
+        a.showControlPanel(); a.openBindings()
+        check(a.hidPanel.visibility == 0 && a.mainControls.visibility == 8)
+        val canceled = a.hidInput.calls
+        press(a); Handler.advance(500)
+        check(a.hidPanel.visibility == 8 && a.mainControls.visibility == 0 && a.hidInput.calls > canceled)
+        check(a.session === s && !s.closed && s.decoder === decoder && a.screen.surface === surface)
+        a.openBindings(); a.contextualBack()
+        check(a.hidPanel.visibility == 8 && !a.projectionContext && a.session === s)
+        a.contextualBack()
+        check(a.projectionContext && a.session === s && !s.closed)
+    }
     scenario("actual local triple releases and explicitly requests Home before late peer callback") {
         val a = activity(true); val s = a.session!!; a.showControlPanel()
         val client = a.sessionClient!!; val observer = client.observer

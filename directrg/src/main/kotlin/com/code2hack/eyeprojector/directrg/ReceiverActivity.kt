@@ -59,6 +59,11 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var longTouch: NativePadLongTouch
     private lateinit var heldInput: HeldPointerDispatcher
     private lateinit var padContact: NativePadContact
+    private lateinit var hidInput: HidKeyInput
+    private lateinit var hidDevices: AndroidHidInput
+    private lateinit var hidPanel: HidBindingsPanel
+    private lateinit var mainControls: LinearLayout
+    private lateinit var heldOwner: HeldInputOwner
     private lateinit var functionInput: NativeFunctionInput
     private var nativeActionsSubmitted = 0L
     private var nativeActionsRejected = 0L
@@ -73,11 +78,14 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     private var resumed = false
     private var edgeScheduled = false
     private var padUps = 0L
+    private var inputGeneration = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val preferences = getSharedPreferences("projector-input", MODE_PRIVATE)
         settings = LocalInputSettings({ preferences.getString(it, null) }, { k, v -> preferences.edit().putString(k, v).commit() })
+        val hidBindings = HidBindings({ preferences.getString("hid.bindings", null) },
+            { value -> preferences.edit().putString("hid.bindings", value).commit() })
         root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         localInput = LocalPointerDispatcher(root)
         screen = ProjectorSurface(this,
@@ -105,7 +113,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         })
         pairingPanel.addView(connectButton, 2)
         localButtons.add(pairingPanel.forgetButton)
-        val settingsPanel = LocalInputSettingsPanel(this, settings) {
+        val settingsPanel = LocalInputSettingsPanel(this, settings, ::showHidBindings) {
             pointer.sensitivity(settings.pointerXGain, settings.pointerYGain)
             edgeMotion.enabled = settings.headScrollEnabled
             updateEdgeScroll()
@@ -117,7 +125,11 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             isFillViewport = true; setBackgroundColor(Color.BLACK)
             addView(LinearLayout(this@ReceiverActivity).apply {
                 orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setBackgroundColor(Color.BLACK)
-                addView(pairingPanel); addView(status); addView(settingsPanel)
+                mainControls = LinearLayout(this@ReceiverActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(pairingPanel); addView(status); addView(settingsPanel)
+                }
+                addView(mainControls)
             })
         }
         root.addView(connectionView, FrameLayout.LayoutParams(-1, -1))
@@ -153,6 +165,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
                 }
             }
         }
+        heldOwner = HeldInputOwner(heldInput)
         padContact = NativePadContact(this, { pointer.inputPosition() }, { event ->
             if (usable()) gestures.accept(event, SystemClock.uptimeMillis()) else cancelInput()
             schedulePadConfirmation()
@@ -166,6 +179,33 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             { if (usable()) Pair(session, projectionContext) else null },
             { action -> functionNavigation.dispatch(action, projectionContext) },
         )
+        hidInput = HidKeyInput(hidBindings, SystemClock::uptimeMillis,
+            { if (usable()) Pair(session, projectionContext) else null },
+            { deadline, action ->
+                val task = Runnable(action)
+                val handler = android.os.Handler(android.os.Looper.getMainLooper())
+                handler.postAtTime(task, deadline)
+                val cancel: () -> Unit = { handler.removeCallbacks(task) }
+                cancel
+            }, { pointer.inputPosition() },
+            { owner, event ->
+                if (event.phase == PadGestureRecognizer.Phase.DOWN) {
+                    gestures.cancel(event.timeMs)
+                    schedulePadConfirmation()
+                }
+                if (event.phase != PadGestureRecognizer.Phase.DOWN || hidInput.owns(owner))
+                    heldOwner.accept(owner, event)
+                updateEdgeScroll()
+            },
+            { owner, at -> heldOwner.cancel(owner, at); updateEdgeScroll() },
+            { pixels, point, at -> dispatchPadAction(PadGestureRecognizer.Action.Scroll(pixels, point, at)) },
+            { action -> functionNavigation.dispatch(action, projectionContext) },
+            { if (::hidPanel.isInitialized) hidPanel.refresh() },
+        )
+        hidDevices = AndroidHidInput(this, hidInput)
+        hidPanel = HidBindingsPanel(this, hidBindings, hidInput, ::showControlPanel).apply { visibility = View.GONE }
+        localButtons.addAll(hidPanel.buttons)
+        (connectionView.getChildAt(0) as LinearLayout).addView(hidPanel)
         root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> resize() }
         setContentView(root)
         showStatus(getString(R.string.disconnected))
@@ -214,7 +254,17 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     internal fun showControlPanel() {
         cancelInput()
         presentation.showPanel()
+        if (::hidPanel.isInitialized) hidPanel.visibility = View.GONE
+        mainControls.visibility = View.VISIBLE
         connectionView.visibility = View.VISIBLE
+        connectionView.scrollTo(0, 0)
+        resize()
+    }
+    private fun showHidBindings() {
+        cancelInput()
+        mainControls.visibility = View.GONE
+        hidPanel.visibility = View.VISIBLE
+        hidPanel.refresh()
         connectionView.scrollTo(0, 0)
         resize()
     }
@@ -224,6 +274,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     }
     internal fun contextualBack() {
         cancelInput()
+        if (presentation.panelVisible && ::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE) { showControlPanel(); return }
         if (presentation.panelVisible) {
             if (presentation.back()) { connectionView.visibility = View.GONE; resize() }
             else { disconnect(); finish() }
@@ -232,7 +283,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     internal fun exitToLauncher() {
         // End local interception and invalidate peer callbacks before leaving this Activity.
         resumed = false
-        functionInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
+        hidDevices.stop(); functionInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
         val epoch = attachment.epoch ?: peerSession?.takeIf { it.phase.active }?.epoch
         disconnect()
         clientGeneration++; sessionClient?.close(epoch); sessionClient = null
@@ -260,7 +311,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             is PadGestureRecognizer.Action.LongPress -> { longClassifications++; return }
             is PadGestureRecognizer.Action.Contact -> {
                 val accepted = if (action.event.phase == PadGestureRecognizer.Phase.CANCEL || usable())
-                    heldInput.accept(action.event) else false
+                    heldOwner.acceptNative(action.event) else false
                 if (accepted) nativeActionsSubmitted++ else nativeActionsRejected++
                 updateEdgeScroll(); return
             }
@@ -268,6 +319,17 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             else -> Unit
         }
         if (!usable()) { nativeActionsRejected++; return }
+        val admittedGeneration = inputGeneration
+        val admittedSession = session
+        val admittedGeometry = currentGeometry
+        val admittedLocal = connectionView.visibility == View.VISIBLE
+        // Pointer publication and old-target CANCEL may synchronously replace the view/session.
+        pointer.inputPosition()
+        if (inputGeneration != admittedGeneration || !usable() || session !== admittedSession ||
+            currentGeometry != admittedGeometry || (connectionView.visibility == View.VISIBLE) != admittedLocal) return
+        heldOwner.cancel(action.timeMs)
+        if (inputGeneration != admittedGeneration || !usable() || session !== admittedSession ||
+            currentGeometry != admittedGeometry || (connectionView.visibility == View.VISIBLE) != admittedLocal) return
         val submitted = when (action) {
             is PadGestureRecognizer.Action.Tap -> {
                 val delay = SystemClock.uptimeMillis() - action.downTimeMs
@@ -320,9 +382,12 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         gestures.deadline?.let { root.postDelayed(confirmTap, (it - SystemClock.uptimeMillis()).coerceAtLeast(0)) }
     }
     private fun cancelInput() {
+        inputGeneration++
+        if (::hidInput.isInitialized) hidInput.cancel()
         if (::functionInput.isInitialized) functionInput.cancel()
         if (::gestures.isInitialized) gestures.cancel(SystemClock.uptimeMillis())
-        if (::heldInput.isInitialized) heldInput.cancel(SystemClock.uptimeMillis())
+        if (::heldOwner.isInitialized) heldOwner.cancel(SystemClock.uptimeMillis())
+        else if (::heldInput.isInitialized) heldInput.cancel(SystemClock.uptimeMillis())
         if (::padContact.isInitialized) padContact.clear()
         if (::screen.isInitialized) screen.cancelTouch()
         if (::localInput.isInitialized) localInput.cancel()
@@ -336,6 +401,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (::hidDevices.isInitialized && hidDevices.accept(event)) return true
         val padKey = nativePadKey(event.device?.name, event.source, event.keyCode)
         // Retired pad summaries must be consumed even after Disconnect. Only an
         // ordinary non-pad Back falls through to the disconnected Activity.
@@ -485,6 +551,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     }
     override fun onResume() {
         super.onResume(); resumed = true; pointer.start(); longTouch.start(); padContact.start()
+        hidDevices.start()
         if (hasWindowFocus()) functionInput.start()
         val generation = ++clientGeneration
         sessionClient = PairedSessionClient(File(filesDir, "session"), { state ->
@@ -504,13 +571,13 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         }
     }
     override fun onPause() {
-        resumed = false; functionInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
+        resumed = false; hidDevices.stop(); functionInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
         val epoch = attachment.epoch ?: peerSession?.takeIf { it.phase.active }?.epoch
         disconnect(notifyPeer = false)
         clientGeneration++; sessionClient?.close(epoch); sessionClient = null
         super.onPause()
     }
-    override fun onDestroy() { functionInput.stop(); longTouch.stop(); padContact.stop(); disconnect(); pairingPanel.close(); super.onDestroy() }
+    override fun onDestroy() { hidDevices.stop(); functionInput.stop(); longTouch.stop(); padContact.stop(); disconnect(); pairingPanel.close(); super.onDestroy() }
     override fun surfaceCreated(holder: SurfaceHolder) { peerSession?.let(::observePeer) }
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) { resize() }
     override fun surfaceDestroyed(holder: SurfaceHolder) { disconnect() }
