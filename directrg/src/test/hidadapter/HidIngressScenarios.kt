@@ -58,6 +58,95 @@ internal object HidIngressScenarios {
         check(!d.heldInput.holding)
     }
 
+    private fun actualOldCancelCallbackKeepsTheNewerHidAdmission() {
+        val d = driver()
+        d.hid(HidKeyInput.Phase.DOWN, down = 1_000)
+        d.pointer.position = d.pointer.position.copy(x = 80f)
+        d.root.onFirstCancel = {
+            d.root.onFirstCancel = {}
+            // Same binding and Activity context; no cancelAll/generation change.
+            d.hid(HidKeyInput.Phase.DOWN, down = 1_200)
+        }
+        d.hid(HidKeyInput.Phase.DOWN, down = 1_100)
+        check(d.root.first == listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_CANCEL))
+        check(d.root.second == listOf(MotionEvent.ACTION_DOWN)) {
+            "older HID replacement displaced admission from actual local CANCEL callback: ${d.root.second}"
+        }
+        d.hid(HidKeyInput.Phase.UP, down = 1_200, at = 1_300)
+        check(d.root.second == listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
+            "newer physical release did not complete its actual local route: ${d.root.second}"
+        }
+        check(!d.heldInput.holding)
+        d.hid(HidKeyInput.Phase.UP, down = 1_100, at = 1_310)
+        check(d.root.second == listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP))
+    }
+
+    private fun actualProjectionCancelCallbackKeepsNewerTimestamps() {
+        val d = driver()
+        val source = IngressSession()
+        d.session = source
+        d.connectionView.visibility = View.GONE
+        d.hid(HidKeyInput.Phase.DOWN, down = 1_000)
+        source.onTouch = {
+            if (it.phase == Touch.Phase.CANCEL && it.contactId == 1_000L) {
+                source.onTouch = {}
+                d.hid(HidKeyInput.Phase.DOWN, down = 1_200)
+            }
+        }
+        d.hid(HidKeyInput.Phase.DOWN, down = 1_100)
+        d.hid(HidKeyInput.Phase.UP, down = 1_200, at = 1_300)
+        check(source.touches.map { it.phase to it.contactId } == listOf(
+            Touch.Phase.DOWN to 1_000L, Touch.Phase.CANCEL to 1_000L,
+            Touch.Phase.DOWN to 1_200L, Touch.Phase.UP to 1_200L,
+        )) { "replacement retargeted original projection ownership: ${source.touches}" }
+        check(!d.heldInput.holding)
+        check(d.root.first.isEmpty() && d.root.second.isEmpty())
+    }
+
+    private fun actualPointerPublicationCannotOverwriteNewerFirstOrReplacementDown() {
+        for (replacement in listOf(false, true)) {
+            val d = driver()
+            if (replacement) {
+                d.hid(HidKeyInput.Phase.DOWN, down = 1_000)
+                d.pointer.position = d.pointer.position.copy(x = 80f)
+            }
+            d.pointer.onRefresh = { d.hid(HidKeyInput.Phase.DOWN, down = 1_200) }
+            d.hid(HidKeyInput.Phase.DOWN, down = 1_100)
+            d.hid(HidKeyInput.Phase.UP, down = 1_200, at = 1_300)
+            val currentTarget = if (replacement) d.root.second else d.root.first
+            check(currentTarget == listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
+                "pointer publication lost newer HID release: replacement=$replacement events=$currentTarget"
+            }
+            if (replacement) check(d.root.first == listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_CANCEL))
+            else check(d.root.second.isEmpty())
+            check(!d.heldInput.holding)
+        }
+    }
+
+    private fun actualDeferredOldCancelCanAdmitAndReleaseTheNewestPhysicalPress() {
+        val d = driver()
+        d.root.onFirstDown = {
+            d.root.onFirstDown = {}
+            d.pointer.position = d.pointer.position.copy(x = 80f)
+            d.hid(HidKeyInput.Phase.DOWN, down = 1_100)
+        }
+        d.root.onFirstCancel = {
+            d.root.onFirstCancel = {}
+            d.hid(HidKeyInput.Phase.DOWN, down = 1_200)
+        }
+        // The old ViewGroup target is attached only after its DOWN callback returns.
+        // The actual local dispatcher defers its CANCEL until then; 1200 supersedes queued 1100.
+        d.hid(HidKeyInput.Phase.DOWN, down = 1_000)
+        d.hid(HidKeyInput.Phase.UP, down = 1_100, at = 1_250)
+        check(d.heldInput.holding)
+        d.hid(HidKeyInput.Phase.UP, down = 1_200, at = 1_300)
+        check(d.root.first == listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_CANCEL))
+        check(d.root.second == listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
+            "deferred old local CANCEL corrupted final new UP: ${d.root.second}"
+        }
+        check(!d.heldInput.holding)
+    }
+
     private fun pointerRefreshCancellationCannotInventDownOrUp() {
         val down = driver()
         down.pointer.onRefresh = { down.cancelAll() }
@@ -195,6 +284,10 @@ internal object HidIngressScenarios {
         pendingNativeActionsAreCanceledByActualHidAdmission()
         actualNativeCancellationCanInvalidateHidBeforeItsDown()
         actualIngressHandsOffNativeAtSameTimestamp()
+        actualOldCancelCallbackKeepsTheNewerHidAdmission()
+        actualProjectionCancelCallbackKeepsNewerTimestamps()
+        actualPointerPublicationCannotOverwriteNewerFirstOrReplacementDown()
+        actualDeferredOldCancelCanAdmitAndReleaseTheNewestPhysicalPress()
         pointerRefreshCancellationCannotInventDownOrUp()
         actualDiscreteNativeActionCancelsHidHeldRoute()
         actualCapturedProjectionRouteUsesOriginalSession()

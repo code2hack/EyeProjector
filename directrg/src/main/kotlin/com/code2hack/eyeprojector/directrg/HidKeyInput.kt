@@ -22,6 +22,8 @@ internal class HidKeyInput(
     private class Press(val event: Event, val action: HidAction, val context: Any) { val owner = Any() }
     private data class Capture(val action: HidAction, val event: Event)
     private val presses = mutableMapOf<Key, Press>()
+    // A pending DOWN owns its transition before any old-target or pointer callback runs.
+    private val admissions = mutableMapOf<Key, Press>()
     // A canceled capture still owns its release; it must never become ordinary Back/input.
     private val suppressed = mutableMapOf<Key, Long>()
     private var capture: Capture? = null
@@ -77,16 +79,19 @@ internal class HidKeyInput(
             return true
         }
         val old = presses[key]
-        val action = old?.action ?: bindings.action(event.binding.button) ?: return false
+        val action = old?.action ?: admissions[key]?.action ?: bindings.action(event.binding.button) ?: return false
         if (context() == null) { cancel(); return true }
         if (event.phase == Phase.DOWN) {
-            if (old?.event?.downTimeMs == event.downTimeMs || event.repeat != 0) return true
-            old?.let { retire(key, it, event.timeMs) }
+            if (admissions[key]?.event?.downTimeMs == event.downTimeMs || event.repeat != 0) return true
             val current = context() ?: return true
             val admitted = generation
-            val point = if (action == HidAction.TAP) position() else null
-            if (admitted != generation || current != context()) return true
             val press = Press(event, action, current)
+            admissions[key] = press
+            presses.remove(key)
+            old?.let { cancelPress(it, event.timeMs) }
+            if (!currentAdmission(key, press, admitted)) { abandon(key, press); return true }
+            val point = if (action == HidAction.TAP) position() else null
+            if (!currentAdmission(key, press, admitted)) { abandon(key, press); return true }
             presses[key] = press // Output may synchronously cancel/change the view.
             when (action) {
                 HidAction.TAP -> contact(press.owner, edge(event, PadGestureRecognizer.Phase.DOWN, point))
@@ -99,12 +104,17 @@ internal class HidKeyInput(
             }
             return true
         }
-        if (old == null || old.event.downTimeMs != event.downTimeMs) return true
+        if (old == null) {
+            admissions[key]?.takeIf { it.event.downTimeMs == event.downTimeMs }?.let { abandon(key, it) }
+            return true
+        }
+        if (old.event.downTimeMs != event.downTimeMs) return true
         val admitted = generation
         // Refresh admission even for a stationary UP. Pointer freshness may synchronously cancel.
         val point = if (event.phase == Phase.UP && old.action != HidAction.FUNCTION) position() else null
         if (admitted != generation || presses[key] !== old) return true
         presses.remove(key) // Retire before callbacks.
+        if (admissions[key] === old) admissions.remove(key)
         if (event.phase == Phase.CANCEL || old.context != context() || event.timeMs < event.downTimeMs) {
             cancelPress(old, event.timeMs)
             return true
@@ -126,13 +136,33 @@ internal class HidKeyInput(
         return true
     }
 
+    /** Correlate the captured physical press before rebuilding its persistent device identity. */
+    fun consumeChangedCapture(
+        attachmentId: Int, keyCode: Int, scanCode: Int, phase: Phase, downTimeMs: Long,
+        descriptor: String, vendorId: Int, productId: Int,
+    ): Boolean {
+        val captured = capture?.event ?: return false
+        val button = captured.binding.button
+        if (captured.attachmentId != attachmentId || button.keyCode != keyCode ||
+            button.scanCode != scanCode || captured.downTimeMs != downTimeMs) return false
+        val device = button.device
+        if (device.descriptor == descriptor && device.vendorId == vendorId && device.productId == productId) return false
+        cancel()
+        consumeRetired(attachmentId, keyCode, scanCode, phase, downTimeMs)
+        return true // A callback cannot undo ownership of this already matched capture edge.
+    }
+
     /** A removed InputDevice may already be absent from KeyEvent.device for a queued release. */
     fun consumeDetached(attachmentId: Int, keyCode: Int, scanCode: Int, phase: Phase, downTimeMs: Long): Boolean {
         fun matches(key: Key) = key.attachment == attachmentId && key.button.keyCode == keyCode && key.button.scanCode == scanCode
         val captured = capture?.event?.let { it.attachmentId == attachmentId &&
             it.binding.button.keyCode == keyCode && it.binding.button.scanCode == scanCode && it.downTimeMs == downTimeMs } == true
-        val active = presses.any { (key, press) -> matches(key) && press.event.downTimeMs == downTimeMs }
-        if (captured || active) cancel()
+        val active = admissions.any { (key, press) -> matches(key) && press.event.downTimeMs == downTimeMs }
+        if (captured || active) {
+            cancel()
+            consumeRetired(attachmentId, keyCode, scanCode, phase, downTimeMs)
+            return true
+        }
         return consumeRetired(attachmentId, keyCode, scanCode, phase, downTimeMs)
     }
 
@@ -151,16 +181,21 @@ internal class HidKeyInput(
         capture = null; selected = null
         if (oldCapture != null) suppressed[Key(oldCapture.event.attachmentId, oldCapture.event.binding.button)] = oldCapture.event.downTimeMs
         val old = presses.values.toList()
-        presses.forEach { (key, press) -> suppressed[key] = press.event.downTimeMs }
+        admissions.forEach { (key, press) -> suppressed[key] = press.event.downTimeMs }
+        admissions.clear()
         presses.clear()
         recognizer.cancel(); functionAttachment = null
         old.forEach { cancelPress(it, now()) }
         if (wasSelected) changed()
     }
 
-    private fun retire(key: Key, press: Press, at: Long) {
-        presses.remove(key)
-        cancelPress(press, at)
+    private fun currentAdmission(key: Key, press: Press, admitted: Long): Boolean =
+        admissions[key] === press && generation == admitted && context() == press.context
+
+    private fun abandon(key: Key, press: Press) {
+        if (admissions[key] !== press) return
+        admissions.remove(key)
+        suppressed[key] = press.event.downTimeMs
     }
     private fun cancelPress(press: Press, at: Long) {
         when (press.action) {

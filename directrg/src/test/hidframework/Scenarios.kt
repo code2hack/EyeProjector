@@ -28,6 +28,7 @@ private class Rig(initialRecord: String? = null, save: Boolean = true) {
     var panel: HidBindingsPanel? = null
     var backs = 0
     var changed = 0
+    var onChanged: () -> Unit = {}
     val android = Context()
     val timers = mutableListOf<Timer>()
     private val queue = PriorityQueue<Timer>(compareBy<Timer> { it.deadline }.thenBy { it.order })
@@ -45,7 +46,7 @@ private class Rig(initialRecord: String? = null, save: Boolean = true) {
     }, { point }, { owner, event -> contacts.add(Contact(owner, event)) },
         { owner, at -> cancels.add(Cancel(owner, at)) },
         { pixels, position, at -> scrolls.add(Scroll(pixels, position, at)) },
-        { functions.add(it) }, { changed++; panel?.refresh() })
+        { functions.add(it) }, { changed++; panel?.refresh(); onChanged() })
     val adapter = AndroidHidInput(android, input)
     val device = InputDevice(41, "actual:descriptor:17", 0x1209, 0x0017, "Actual HID peripheral")
 
@@ -428,6 +429,132 @@ private fun changedDescriptorDoesNotDisownCapturedOldRelease() {
     r.adapter.stop()
 }
 
+private fun changedFactsBeforeListenerRetireOnlyTheCapturedGesture(
+    changeFacts: (InputDevice) -> InputDevice,
+    changedEdge: String,
+) {
+    val r = Rig()
+    val panel = r.showPanel()
+    r.adapter.start()
+    panel.buttons[0].performClick()
+    // These actual runtime facts belong to an otherwise unbound Back press.
+    check(r.edge(KeyEvent.ACTION_DOWN, key = 4, scan = 158))
+    val changed = changeFacts(r.device)
+    // Deliberately do not invoke InputManager.change/remove first. Android can
+    // supply changed persistent facts on the queued event before its listener runs.
+    val consumed = when (changedEdge) {
+        "UP" -> r.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000, key = 4, scan = 158, device = changed)
+        "repeat" -> r.edge(KeyEvent.ACTION_DOWN, at = 1010, down = 1000, key = 4, scan = 158,
+            repeat = 1, flags = KeyEvent.FLAG_LONG_PRESS, device = changed)
+        "canceled UP" -> r.edge(KeyEvent.ACTION_UP, at = 1010, down = 1000, key = 4, scan = 158,
+            flags = KeyEvent.FLAG_CANCELED, device = changed)
+        "unsupported phase" -> r.edge(KeyEvent.ACTION_MULTIPLE, at = 1010, down = 1000, key = 4, scan = 158,
+            device = changed)
+        else -> error("unknown changed-facts edge $changedEdge")
+    }
+    check(consumed) { "active captured Back $changedEdge must be consumed before the changed-device listener" }
+    equal(null, r.input.selected, "changed persistent facts retire active capture selection")
+    equal(null, r.record, "changed-facts edge must not save original or changed identity")
+    check(HidAction.entries.all { r.bindings.binding(it) == null })
+    if (changedEdge != "UP") {
+        check(r.edge(KeyEvent.ACTION_DOWN, at = 1015, down = 1000, key = 4, scan = 158,
+            repeat = 2, flags = KeyEvent.FLAG_LONG_PRESS, device = changed)) {
+            "retired capture still owns its changed-facts repeat"
+        }
+        check(r.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000, key = 4, scan = 158, device = changed)) {
+            "retired capture still owns its changed-facts final release"
+        }
+    }
+    r.advance(1050)
+    r.noOutput()
+    equal(null, r.record, "retired capture never emits a delayed assignment")
+
+    // The same Android attachment can now present actual new persistent facts.
+    // A new real DOWN, after the user selects capture again, owns those new facts.
+    panel.buttons[3].performClick()
+    check(r.edge(KeyEvent.ACTION_DOWN, at = 1100, key = 4, scan = 158, device = changed))
+    check(r.edge(KeyEvent.ACTION_UP, at = 1120, down = 1100, key = 4, scan = 158, device = changed))
+    equal(r.binding(changed, 4, 158), r.bindings.binding(HidAction.FUNCTION), "fresh DOWN captures actual changed facts")
+    equal(null, r.bindings.binding(HidAction.TAP), "retired original capture stays unassigned")
+    equal(null, r.input.selected, "fresh changed-facts capture completes")
+    r.noOutput()
+    check(r.edge(KeyEvent.ACTION_DOWN, at = 1200, key = 4, scan = 158, device = changed))
+    check(r.edge(KeyEvent.ACTION_UP, at = 1220, down = 1200, key = 4, scan = 158, device = changed))
+    r.advance(1720)
+    equal(listOf(FunctionGestureRecognizer.Action.SINGLE), r.functions, "fresh changed-facts binding dispatches")
+    check(r.contacts.isEmpty() && r.cancels.isEmpty() && r.scrolls.isEmpty())
+    r.adapter.stop()
+}
+
+private fun changedFactsUnrelatedRuntimeEdgesDoNotRetireCapture() {
+    data class Unrelated(val key: Int = 4, val scan: Int = 158, val down: Long = 1000,
+                         val attachment: Int = 41, val phase: Int = KeyEvent.ACTION_UP,
+                         val repeat: Int = 0)
+    val cases = linkedMapOf(
+        "key" to Unrelated(key = 5),
+        "scan" to Unrelated(scan = 159),
+        "downTime" to Unrelated(down = 999),
+        "attachment" to Unrelated(attachment = 42),
+        "fresh DOWN" to Unrelated(down = 1010, phase = KeyEvent.ACTION_DOWN),
+    )
+    for ((reason, edge) in cases) {
+        val r = Rig()
+        r.showPanel().buttons[0].performClick()
+        check(r.edge(KeyEvent.ACTION_DOWN, key = 4, scan = 158))
+        val changed = r.device.copy(id = edge.attachment, descriptor = "unrelated:changed:descriptor",
+            vendorId = 99, productId = 100)
+        check(!r.edge(edge.phase, at = 1010, down = edge.down, key = edge.key, scan = edge.scan,
+            repeat = edge.repeat, device = changed, attachmentId = edge.attachment)) {
+            "$reason mismatch with changed facts must retain unrelated event fallthrough"
+        }
+        equal(HidAction.TAP, r.input.selected, "$reason mismatch must not retire the actual capture")
+        equal(null, r.record, "$reason mismatch cannot assign either identity")
+        r.noOutput()
+        check(r.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000, key = 4, scan = 158))
+        equal(r.binding(key = 4, scan = 158), r.bindings.binding(HidAction.TAP),
+            "$reason mismatch preserves original captured DOWN until its actual UP")
+        equal(null, r.input.selected, "original release completes after $reason mismatch")
+        r.noOutput()
+    }
+}
+
+private fun changedFactsReleaseStaysConsumedWhenCancelCallbackStartsFreshCapture() {
+    for (missingDevice in listOf(false, true)) {
+        val reason = if (missingDevice) "missing device" else "changed descriptor"
+        val r = Rig()
+        val panel = r.showPanel()
+        panel.buttons[0].performClick()
+        check(r.edge(KeyEvent.ACTION_DOWN, key = 4, scan = 158))
+        var nestedDownConsumed: Boolean? = null
+        r.onChanged = {
+            // The old capture's cancellation synchronously publishes a selection
+            // change. A newer capture can start in that callback on the same route.
+            r.onChanged = {}
+            check(panel.buttons[2].performClick())
+            // Use the original actual device facts, key and scan. This fresh DOWN
+            // replaces the old 1000 tombstone rather than creating a different key.
+            nestedDownConsumed = r.edge(KeyEvent.ACTION_DOWN, at = 1100, key = 4, scan = 158)
+        }
+        val device = if (missingDevice) null else r.device.copy(descriptor = "actual:changed:descriptor")
+        check(r.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000, key = 4, scan = 158,
+            device = device, attachmentId = r.device.id)) {
+            "$reason: an already matched captured release stays consumed after a nested fresh capture replaces its tombstone"
+        }
+        equal(true, nestedDownConsumed, "$reason cancel callback admits the fresh actual DOWN")
+        equal(HidAction.SCROLL_UP, r.input.selected, "$reason: newer nested capture survives old release retirement")
+        equal(null, r.bindings.binding(HidAction.TAP), "$reason: retired original capture is not assigned")
+        equal(null, r.record, "$reason: old release assigns neither identity")
+        r.noOutput()
+        check(r.edge(KeyEvent.ACTION_UP, at = 1120, down = 1100, key = 4, scan = 158))
+        equal(r.binding(key = 4, scan = 158), r.bindings.binding(HidAction.SCROLL_UP),
+            "$reason: fresh nested capture retains its DOWN facts through its own actual UP")
+        equal(null, r.bindings.binding(HidAction.TAP), "$reason: old capture remains unassigned after nested completion")
+        equal(null, r.input.selected, "$reason: nested fresh capture completes")
+        r.advance(2000)
+        r.noOutput()
+    }
+}
+
 private fun localSettingsPanelPreservesControlsAndOpensHidBindings() {
     val previousLocale = Locale.getDefault()
     Locale.setDefault(Locale.US)
@@ -544,11 +671,33 @@ fun main() {
         "removed capture consumes exact missing-device edges and fresh readdition works" to ::missingDeviceAfterRemovalConsumesOnlyActualCapturedEdges,
         "missing device before listener cancels captured owner without target UP" to ::missingDeviceBeforeListenerCancelsCapturedOwnerWithoutTargetUp,
         "changed descriptor cannot disown an old canceled capture release" to ::changedDescriptorDoesNotDisownCapturedOldRelease,
+        "changed facts preserve unrelated key/scan/downTime/attachment and fresh DOWN fallthrough" to ::changedFactsUnrelatedRuntimeEdgesDoNotRetireCapture,
+        "changed-facts and missing-device captured release stays consumed across nested fresh same-key capture" to ::changedFactsReleaseStaysConsumedWhenCancelCallbackStartsFreshCapture,
         "actual local settings preserve values, bounds and callbacks with HID entrance" to ::localSettingsPanelPreservesControlsAndOpensHidBindings,
     )
-    for ((name, scenario) in scenarios) {
-        scenario()
-        println("PASS: $name")
+    val changedFacts = linkedMapOf<String, (InputDevice) -> InputDevice>(
+        "descriptor" to { it.copy(descriptor = "actual:changed:descriptor") },
+        "vendor" to { it.copy(vendorId = 99) },
+        "product" to { it.copy(productId = 100) },
+    )
+    for ((fact, change) in changedFacts) {
+        for (edge in listOf("UP", "repeat", "canceled UP", "unsupported phase")) {
+            scenarios["pre-listener changed $fact captured $edge retirement and fresh binding"] = {
+                changedFactsBeforeListenerRetireOnlyTheCapturedGesture(change, edge)
+            }
+        }
     }
+    val failures = mutableListOf<String>()
+    for ((name, scenario) in scenarios) {
+        try {
+            scenario()
+            println("PASS: $name")
+        } catch (failure: Throwable) {
+            failures.add(name)
+            System.err.println("FAIL: $name")
+            failure.printStackTrace()
+        }
+    }
+    check(failures.isEmpty()) { "${failures.size}/${scenarios.size} HID Android/panel host scenarios failed: ${failures.joinToString()}" }
     println("PASS: ${scenarios.size} HID Android/panel host scenarios. Android API doubles only; no device delivery or head-pointer proof.")
 }

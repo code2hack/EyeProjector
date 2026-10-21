@@ -32,6 +32,29 @@ held owner cancellation before a listener callback without target UP, exact
 identity matching, unowned missing-device fallthrough, changed descriptor facts,
 and fresh binding/dispatch after readdition.
 
+Pre-listener changed-facts regressions capture an otherwise unbound Back DOWN
+with the actual attachment 41/key 4/scan 158/downTime 1000, then pass matching
+events through the complete actual Android adapter before any device listener
+callback. Descriptor, vendor and product changes are tested independently for
+UP, repeated/long DOWN, canceled UP and unsupported Android phases. Each must
+consume and retire that captured gesture without persisting either identity or
+emitting contact, scroll or Function output. A later selected capture and fresh
+actual DOWN with changed facts must save those facts and dispatch normally.
+Separate key, scan, downTime and attachment mismatches, plus a fresh DOWN from
+the changed identity, preserve unrelated-event fallthrough and the original
+capture until its actual matching release. Existing listener-first and missing-
+device scenarios remain in the same suite. A cancellation publication callback
+also starts a newer selected capture and fresh DOWN 1100 with the original
+device/key/scan facts, replacing the old DOWN 1000 retirement record. The old
+changed-descriptor UP must stay consumed, while the newer capture survives and
+saves only its own DOWN facts on its actual UP with downTime 1100 without
+emitting output. The same reentrant sequence also runs with a missing-device old
+UP carrying only the actual attachment 41/key/scan/downTime; its already matched
+release must stay consumed after the callback replaces the old retirement record.
+Every named scenario runs even when another fails; the process
+fails after reporting all named failures, so matched
+parent RED evidence retains both new failures and existing control outcomes.
+
 The actual settings panel checks preserve independent axis values, scroll steps,
 toggle state, persistent updates, bounds/disabled controls, failed-write behavior
 and change callbacks. The HID entrance must be present in the registered local

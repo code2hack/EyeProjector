@@ -30,6 +30,8 @@ internal class AndroidHidInput(context: Context, private val input: HidKeyInput)
         }
         if (input.consumeRetired(event.deviceId, event.keyCode, event.scanCode, phase, event.downTime)) return true
         val device = event.device ?: return input.consumeDetached(event.deviceId, event.keyCode, event.scanCode, phase, event.downTime)
+        if (input.consumeChangedCapture(event.deviceId, event.keyCode, event.scanCode, phase, event.downTime,
+                device.descriptor, device.vendorId, device.productId)) return true
         val identity = HidDeviceIdentity(device.descriptor, device.vendorId, device.productId)
         val binding = HidBinding(HidButton(identity, event.keyCode, event.scanCode), device.name, KeyEvent.keyCodeToString(event.keyCode))
         // FLAG_LONG_PRESS is another DOWN of the same physical hold, never a CANCEL.
