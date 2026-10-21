@@ -153,6 +153,8 @@ sealed interface ScrcpyRecord {
 object Scrcpy {
     const val CONFIG = 1L shl 62
     const val KEY_FRAME = 1L shl 61
+    /** Upstream 5.0.1 TYPE_SET_DISPLAY_POWER: physical displays for new-display capture. */
+    fun displayPower(on: Boolean): ByteArray = byteArrayOf(10, if (on) 1 else 0)
     /** Upstream 5.0.1 TYPE_RESIZE_DISPLAY: virtual-display bounds, with DPI retained. */
     fun resize(geometry: Geometry): ByteArray = bytes {
         writeByte(21); writeShort(geometry.width); writeShort(geometry.height)

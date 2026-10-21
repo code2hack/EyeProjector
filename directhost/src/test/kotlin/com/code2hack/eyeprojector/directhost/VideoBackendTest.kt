@@ -22,6 +22,11 @@ class VideoBackendTest {
         assertEquals("480x640/160", options["new_display"]); assertEquals("true", options["flex_display"])
         assertEquals("local", options["display_ime_policy"])
         assertEquals("false", options["vd_system_decorations"])
+        assertEquals("true", options["keep_active"])
+        assertEquals("false", options["power_on"])
+        assertEquals("true", options["cleanup"])
+        assertFalse(options.containsKey("stay_awake"))
+
         assertFalse(options.keys.any { it.startsWith("audio_") || it == "send_codec_meta" })
     }
 

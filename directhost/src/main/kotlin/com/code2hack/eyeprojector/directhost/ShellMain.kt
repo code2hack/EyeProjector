@@ -49,6 +49,12 @@ internal fun sessionFailureReason(error: Exception, control: Boolean): SessionSt
     else -> if (control) SessionStopReason.CONTROL_ERROR else SessionStopReason.VIDEO_ERROR
 }
 
+internal fun panelPowerJson(state: PanelPowerState): JSONObject = JSONObject()
+    .put("requestId", state.requestId).put("offSubmission", state.off.name)
+    .put("restorationSubmission", state.restoration.name).put("physicalObservation", state.observation.name)
+    .put("sessionActive", state.sessionActive)
+    .put("ownerEpoch", state.context.ownerEpoch).put("projectionToken", state.context.projectionToken)
+
 /** Explicit shell bootstrap only. An ordinary installed APK never acquires shell authority. */
 object ShellMain {
     const val SERVER_SHA256 = "764eb6f79811d5211fe9df341120882ba9994c7a61b897d7bf3fb662e53bc536"
@@ -96,6 +102,7 @@ internal class Bridge(
     private val admission = Any()
     private val active = AtomicReference<Session?>()
     private var launchOperationsAccepted = true
+    @Volatile private var lastPanelState = PanelPowerState.unavailable()
     private val peers = ConcurrentHashMap.newKeySet<SSLSocket>()
     private val workers = ThreadPoolExecutor(2, 2, 0, TimeUnit.SECONDS, ArrayBlockingQueue(2))
     private val settings = Tls.settings(directory)
@@ -182,15 +189,26 @@ internal class Bridge(
 
     override fun close() = close(SessionStopReason.OWNER_CLOSE)
 
-    /** Typed local controller hook for the owning Shizuku service; it creates no network identity. */
-    fun requestScale(requestId: Long, value: Double): ScaleState =
-        active.get()?.requestScale(requestId, value) ?: LiveScale.unavailable(requestId, value)
+    /** Typed local controller hooks capture only this Bridge's exact actual Session. */
+    fun requestScale(requestId: Long, value: Double, expectedOwnerEpoch: String, expectedProjectionToken: String): ScaleState {
+        val target = panelTarget(PanelContext(expectedOwnerEpoch, expectedProjectionToken))
+            ?: return LiveScale.unavailable(requestId, value)
+        return target.requestScale(requestId, value)
+    }
 
-    fun scaleState(): ScaleState = active.get()?.scaleState() ?: LiveScale.unavailable()
+    fun scaleState(expectedOwnerEpoch: String, expectedProjectionToken: String): ScaleState {
+        val target = panelTarget(PanelContext(expectedOwnerEpoch, expectedProjectionToken)) ?: return LiveScale.unavailable()
+        return target.scaleState()
+    }
 
     fun captureProjection(expected: ProjectionContext): CapturedProjection? = synchronized(admission) {
         if (!running.get() || !launchOperationsAccepted || !expected.available || ownerEpoch != expected.ownerEpoch) return@synchronized null
         active.get()?.takeIf { it.projectionContext() == expected }
+    }
+
+    private fun panelTarget(context: PanelContext): Session? = synchronized(admission) {
+        if (!launchOperationsAccepted || !running.get() || !context.resolved || context.ownerEpoch != ownerEpoch) null
+        else active.get()?.takeIf { it.panelContext == context }
     }
 
     fun projectionContext(): ProjectionContext = synchronized(admission) {
@@ -198,18 +216,42 @@ internal class Bridge(
         else active.get()?.projectionContext() ?: ProjectionContext()
     }
 
+    fun requestPanelOff(requestId: Long, expectedOwnerEpoch: String, expectedProjectionToken: String): PanelPowerState {
+        val context = PanelContext(expectedOwnerEpoch, expectedProjectionToken)
+        val target = panelTarget(context) ?: return PanelPowerState.unavailable(requestId, context)
+        return target.requestPanelOff(requestId)
+    }
+
+    fun panelState(expectedOwnerEpoch: String, expectedProjectionToken: String): PanelPowerState {
+        val context = PanelContext(expectedOwnerEpoch, expectedProjectionToken)
+        val target = panelTarget(context)
+        return target?.panelState() ?: lastPanelState.takeIf { context.resolved && it.context == context }
+            ?: PanelPowerState.unavailable(context = context)
+    }
+
+    fun panelState(): PanelPowerState = active.get()?.panelState() ?: lastPanelState
+
     fun invalidateLaunchOperations() = synchronized(admission) { launchOperationsAccepted = false }
 
-    private fun close(reason: SessionStopReason) = release.close {
-        running.set(false)
-        runCatching { listener.close() }
-        val owned = synchronized(admission) { active.get() }
-        peers.filterNot { owned?.owns(it) == true }.forEach { runCatching { it.close() } }
-        peers.clear()
-        try { owned?.close(reason) }
-        finally { workers.shutdownNow(); timer.shutdownNow() }
-        active.compareAndSet(owned, null)
-        status("HOST_STOPPED")
+    // All typed operations share the same admission boundary; Stop cannot leave launch admitted.
+    fun invalidatePanelOperations() = invalidateLaunchOperations()
+
+    private fun close(reason: SessionStopReason) {
+        invalidatePanelOperations()
+        release.close {
+            running.set(false)
+            runCatching { listener.close() }
+            val owned = synchronized(admission) { active.get() }
+            peers.filterNot { owned?.owns(it) == true }.forEach { runCatching { it.close() } }
+            peers.clear()
+            try { owned?.close(reason) }
+            finally {
+                lastPanelState = owned?.panelState() ?: lastPanelState
+                workers.shutdownNow(); timer.shutdownNow()
+            }
+            active.compareAndSet(owned, null)
+            status("HOST_STOPPED")
+        }
     }
 }
 
@@ -231,9 +273,16 @@ private class Session(
     private val writeStarted = AtomicLong()
     private val output = DataOutputStream(peer.outputStream)
     private val controlLock = Any()
+    private val projectionToken = UUID.randomUUID().toString()
+    private val context = ProjectionContext(ownerEpoch, projectionToken)
+    val panelContext = PanelContext(context.ownerEpoch, context.projectionToken)
+    @Volatile private var lastScaleReportAttempt: ScaleState? = null
     private val scale = LiveScale(
         resize = { size -> writeControl(Scrcpy.resize(size)) },
-        publish = { value -> send(Frame(Wire.SCALE_STATE, value.requestId, value.bytes())) },
+        publish = { value ->
+            lastScaleReportAttempt = value
+            send(Frame(Wire.SCALE_STATE, value.requestId, value.bytes()))
+        },
     )
     private var localListener: LocalServerSocket? = null
     private var video: LocalSocket? = null
@@ -243,6 +292,9 @@ private class Session(
     private var inputThread: Thread? = null
     private var watchdog: java.util.concurrent.ScheduledFuture<*>? = null
     private val frames = AtomicLong()
+    private val panelPower = SessionPanelPower(controlLock, { running.get() && frames.get() > 0 }, panelContext) {
+        control!!.outputStream.write(it)
+    }
     private val touches = AtomicLong()
     private val heldTouchFrames = AtomicLong()
     private val rejectedHeldTouchFrames = AtomicLong()
@@ -254,8 +306,6 @@ private class Session(
     private val lastPongNs = AtomicLong()
     private val lastWriteChannel = AtomicLong(-1)
     private val scid = SecureRandom().nextInt(Int.MAX_VALUE)
-    private val projectionToken = UUID.randomUUID().toString()
-    private val context = ProjectionContext(ownerEpoch, projectionToken)
     private val launches = ProjectedAppLaunch("$projectionToken:scrcpy-%08x".format(scid), PlatformProjectionLaunch(context = context), context) {
         synchronized(controlLock) {
             check(running.get())
@@ -284,6 +334,17 @@ private class Session(
     fun projectionContext(): ProjectionContext = if (running.get()) context else ProjectionContext()
     override fun launchApp(requestId: Long, packageName: String): ProjectionDisplayState = launches.launch(requestId, packageName)
     override fun projectionDisplayState(): ProjectionDisplayState = launches.snapshot(observe = true)
+
+    fun requestPanelOff(id: Long): PanelPowerState {
+        val result = panelPower.requestOff(id)
+        if (result.off == PanelSubmission.FAILED) {
+            close(SessionStopReason.CONTROL_IO)
+            return panelPower.state()
+        }
+        return result
+    }
+
+    fun panelState(): PanelPowerState = panelPower.state()
 
     private fun writeControl(payload: ByteArray) = synchronized(controlLock) {
         check(running.get())
@@ -437,7 +498,13 @@ private class Session(
         synchronized(resources) {
             phase("peerCloseMs") { runCatching { peer.close() } }
             phase("localListenerCloseMs") { runCatching { localListener?.close() } }
-            HeldInputRelease.beforeTransportClose { inputControls.close() }
+            // Reuse the bounded held-release turn: a stuck writer must not prevent socket/child release.
+            phase("inputAndPanelReleaseMs") {
+                HeldInputRelease.beforeTransportClose {
+                    try { inputControls.close() } finally { panelPower.close() }
+                }
+            }
+
             phase("videoCloseMs") { runCatching { video?.close() } }
             phase("controlCloseMs") { runCatching { control?.close() } }
             phase("childReleaseMs") { server?.let { process ->
@@ -455,15 +522,20 @@ private class Session(
             .put("stopReason", stopReason.name).put("startupStage", lastStartupStage.name).put("stopStartedMs", stopStartedMs)
             .put("childStartedMs", childStartedMs.get()).put("firstVideoFrameMs", firstVideoFrameMs.get())
             .put("closePhases", phases).put("lastPingMonoNs", lastPingNs.get()).put("lastPongMonoNs", lastPongNs.get())
+            .put("panelPower", panelPowerJson(panelPower.state()))
             .put("lastWriteChannel", lastWriteChannel.get()).put("writeStartedMonoNs", writeStarted.get())
             .put("tls", tlsProtocol).put("localAddress", localAddress).put("localPort", localPort)
             .put("peerAddress", peerAddress).put("peerPort", peerPort).put("scid", "%08x".format(scid))
-        val scaleState = scale.state()
-        data.put("scaleStatus", scaleState.status.name)
-            .put("requestedScale", scaleState.requested.takeIf { it.isFinite() } ?: JSONObject.NULL)
-            .put("observedWidth", scaleState.observed?.width ?: JSONObject.NULL)
-            .put("observedHeight", scaleState.observed?.height ?: JSONObject.NULL)
-            .put("appliedScale", scaleState.observed?.let(LayoutScale::applied) ?: JSONObject.NULL)
+        // A single sampled report attempt; never wait for the scale transaction during release.
+        val scaleState = lastScaleReportAttempt
+        data.put("scaleSnapshotBasis", if (scaleState == null) "UNKNOWN_BEFORE_FIRST_REPORT" else "LAST_KNOWN_REPORT_ATTEMPT")
+            .put("finalAppliedScaleVerified", false)
+            .put("scaleStatus", scaleState?.status?.name ?: "UNKNOWN")
+            .put("scaleRequestId", scaleState?.requestId ?: JSONObject.NULL)
+            .put("requestedScale", scaleState?.requested?.takeIf { it.isFinite() } ?: JSONObject.NULL)
+            .put("observedWidth", scaleState?.observed?.width ?: JSONObject.NULL)
+            .put("observedHeight", scaleState?.observed?.height ?: JSONObject.NULL)
+            .put("appliedScale", scaleState?.observed?.let(LayoutScale::applied) ?: JSONObject.NULL)
         val displayState = launches.snapshot()
         data.put("displayGeneration", displayState.generation).put("projectionDisplayId", displayState.displayId ?: JSONObject.NULL)
             .put("launchStatus", displayState.status.name).put("launchHelperReleased", launchRelease.isSuccess)

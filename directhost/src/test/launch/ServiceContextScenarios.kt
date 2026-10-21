@@ -69,15 +69,16 @@ fun serviceContextScenarios(){
         try {
             start(a.ownerEpoch);check(entered.await(2,TimeUnit.SECONDS))
             @Suppress("UNCHECKED_CAST")
-            val routes=ShizukuHostService::class.java.getDeclaredField("launchRoutes").apply{isAccessible=true}.get(service) as OwnedProjectionRoutes<Bridge>
-            val oldOwner=routes.snapshot()!!.owner
+            val routes=ShizukuHostService::class.java.getDeclaredField("panelRoutes").apply{isAccessible=true}.get(service) as PanelSessionRoutes<Bridge>
+            val oldOwner=PanelSessionRoutes::class.java.getDeclaredField("owner").apply{isAccessible=true}.get(routes) as PanelSessionRoutes.Owner
+            fun accepting()=PanelSessionRoutes::class.java.getDeclaredField("accepting").apply{isAccessible=true}.getBoolean(routes)
             val stopping=caller.submit<String>{service.stop()}
             val until=System.nanoTime()+TimeUnit.SECONDS.toNanos(2)
-            while(routes.snapshot()!=null && System.nanoTime()<until)Thread.yield()
-            check(routes.snapshot()==null && !stopping.isDone)
+            while(accepting() && System.nanoTime()<until)Thread.yield()
+            check(!accepting() && routes.current()==null && !stopping.isDone)
             check(result(service.launchApp(1,"example.late.creation",ca.ownerEpoch,ca.projectionToken)).status==ProjectionLaunchStatus.UNAVAILABLE)
             release.countDown();stopping.get(3,TimeUnit.SECONDS)
-            check(routes.snapshot()==null && service.status().contains("\"projectionToken\":\"\""))
+            check(routes.current()==null && service.status().contains("\"projectionToken\":\"\""))
             println("PASS actual service Stop invalidates admission before blocked creation and rejects late Bridge publication")
             start(b.ownerEpoch);check(listenerB.entered.await(2,TimeUnit.SECONDS))
             val count=adapterB.calls.size;val queries=adapterB.foregroundReads
@@ -85,7 +86,7 @@ fun serviceContextScenarios(){
             check(stale.context==ca && stale.requestId==2L && stale.commandExit==null && stale.foregroundPackage==null)
             check(result(service.projectionDisplayState(ca.ownerEpoch,ca.projectionToken)).context==ca)
             check(adapterB.calls.size==count && adapterB.foregroundReads==queries)
-            routes.retire(oldOwner)
+            routes.complete(oldOwner, routes.capture(b.ownerEpoch)!!.target, PanelPowerState.unavailable(context = PanelContext(ca.ownerEpoch, ca.projectionToken)))
             check(routes.capture(b.ownerEpoch)!=null)
             val positive=result(service.launchApp(3,"example.valid.b",cb.ownerEpoch,cb.projectionToken))
             check(positive.context==cb && positive.displayId==88 && positive.status==ProjectionLaunchStatus.STARTED)
@@ -119,10 +120,13 @@ fun serviceContextScenarios(){
             println("PASS typed-operation invalidation closes new capture while existing handle retains original Session")
         }finally{release.countDown();runCatching{service.stop()};caller.shutdownNow()}
     }}
-    val routes=OwnedProjectionRoutes<Any>()
-    val old=routes.begin("same-epoch");routes.publish(old,Any())
-    routes.invalidate()
+    val invalidated=mutableListOf<Any>()
+    val routes=PanelSessionRoutes<Any> { invalidated.add(it) }
+    val old=routes.begin("same-epoch");val oldTarget=Any();routes.publish(old,oldTarget)
+    routes.stop()
     val fresh=routes.begin("same-epoch");val target=Any();routes.publish(fresh,target)
-    routes.retire(old);check(!routes.publish(old,Any()) && routes.capture("same-epoch")!!.target===target)
+    routes.complete(old,oldTarget,PanelPowerState.unavailable())
+    val lateTarget=Any();routes.publish(old,lateTarget)
+    check(routes.capture("same-epoch")!!.target===target && invalidated.containsAll(listOf(oldTarget,lateTarget)))
     println("PASS actual route publication/retirement uses Owner object identity even when epoch text repeats")
 }

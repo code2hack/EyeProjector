@@ -30,6 +30,9 @@ class HostBootstrap private constructor(private val context: Context) {
     private val forget = HostForgetCompletion { main.post(it) }
     private val executor = Executors.newSingleThreadScheduledExecutor()
     private val displayExecutor = Executors.newSingleThreadExecutor()
+    private val scaleExecutor = Executors.newSingleThreadExecutor()
+    private val panelExecutor = Executors.newSingleThreadExecutor()
+    private val panelQueryExecutor = Executors.newSingleThreadExecutor()
     private val observers = CopyOnWriteArraySet<(Status) -> Unit>()
     @Volatile private var current = Status(Setup.UNAVAILABLE, "UNKNOWN")
     @Volatile private var remote: IHostBootstrap? = null
@@ -125,15 +128,75 @@ class HostBootstrap private constructor(private val context: Context) {
     } }
 
     /** Local typed Binder operations; no peer TLS keys or new network trust are involved. */
-    fun requestScale(value: Double, complete: (ScaleState?) -> Unit) =
-        scaleOperation({ it.requestScale(System.nanoTime(), value) }, complete)
+    fun requestScale(value: Double, complete: (ScaleState?) -> Unit) {
+        val id = System.nanoTime()
+        scaleOperation({ service, context -> service.requestScale(id, value, context.ownerEpoch, context.projectionToken) }, complete)
+    }
 
-    fun scaleState(complete: (ScaleState?) -> Unit) = scaleOperation({ it.scaleState() }, complete)
+    fun scaleState(complete: (ScaleState?) -> Unit) = scaleOperation(
+        { service, context -> service.scaleState(context.ownerEpoch, context.projectionToken) }, complete)
 
-    private fun scaleOperation(operation: (IHostBootstrap) -> ByteArray, complete: (ScaleState?) -> Unit) {
+    /** Capture context on the lifecycle lane; Binder work cannot occupy that lane. */
+    fun requestPanelOff(complete: (PanelPowerState?) -> Unit) {
+        val id = System.nanoTime()
+        panelOperation(id, false, { service, context -> service.requestPanelOff(id, context.ownerEpoch, context.projectionToken) }, complete)
+    }
+
+    fun panelState(complete: (PanelPowerState?) -> Unit) = panelOperation(0, true,
+        { service, context -> service.panelState(context.ownerEpoch, context.projectionToken) }, complete)
+
+    private fun panelOperation(id: Long, query: Boolean, operation: (IHostBootstrap, PanelContext) -> ByteArray, complete: (PanelPowerState?) -> Unit) {
+        val atEntry = current
+        val context = PanelContext(atEntry.sessionEpoch, atEntry.projectionToken)
         executor.execute {
-            val result = runCatching { remote?.let { ScaleState.from(operation(it)) } }.getOrNull()
-            main.post { complete(result) }
+            val service = remote
+            val generation = bindingGeneration
+            if (service == null) { main.post { complete(null) }; return@execute }
+            if (!context.resolved || context != PanelContext(current.sessionEpoch, current.projectionToken) ||
+                pending == Action.STOP || revokedBinder != null) {
+                main.post { complete(PanelPowerState.unavailable(id, context)) }; return@execute
+            }
+            val binder = service.asBinder()
+            val operations = if (query) panelQueryExecutor else panelExecutor
+            operations.execute {
+                // Never resolve remote or current context here: even queued calls retain their original target.
+                val result = runCatching { PanelPowerState.from(operation(service, context)) }.getOrNull()
+                executor.execute {
+                    val currentContext = PanelContext(current.sessionEpoch, current.projectionToken)
+                    val reply = result?.takeIf {
+                        remote?.asBinder() == binder && bindingGeneration == generation &&
+                            currentContext == context && pending != Action.STOP && revokedBinder == null && it.context == context
+                    }
+                    main.post { complete(reply) }
+                }
+            }
+        }
+    }
+
+    private fun scaleOperation(operation: (IHostBootstrap, PanelContext) -> ByteArray, complete: (ScaleState?) -> Unit) {
+        val atEntry = current
+        val context = PanelContext(atEntry.sessionEpoch, atEntry.projectionToken)
+        executor.execute {
+            val service = remote
+            val generation = bindingGeneration
+            if (service == null || !context.resolved ||
+                context != PanelContext(current.sessionEpoch, current.projectionToken) ||
+                pending == Action.STOP || revokedBinder != null) {
+                main.post { complete(null) }; return@execute
+            }
+            val binder = service.asBinder()
+            scaleExecutor.execute {
+                // The accepted proxy and actual Session context belong to this intent, even across queueing.
+                val result = runCatching { ScaleState.from(operation(service, context)) }.getOrNull()
+                executor.execute {
+                    val reply = result?.takeIf {
+                        remote?.asBinder() == binder && bindingGeneration == generation &&
+                            PanelContext(current.sessionEpoch, current.projectionToken) == context &&
+                            pending != Action.STOP && revokedBinder == null
+                    }
+                    main.post { complete(reply) }
+                }
+            }
         }
     }
 
