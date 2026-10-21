@@ -23,8 +23,11 @@ class DecoderBackpressureTest {
         val futureOutput = CountDownLatch(1)
         val failure = AtomicReference<Exception>()
         var outputPts = 0L
+        var queuedCount = 0
         codec.input = { timeout -> if (slot.tryAcquire(timeout, TimeUnit.MICROSECONDS)) 0 else -1 }
-        codec.queuedInput = { pts, _ -> queued.add(pts) }
+        // An unmatched future codec PTS isolates the retained output wait from the
+        // receipt-offset estimate. This is an API fault model, not healthy capture.
+        codec.queuedInput = { pts, _ -> queued.add(if (++queuedCount == 1) pts else pts + 335_000) }
         codec.output = { info ->
             queued.poll()?.let { pts ->
                 info.presentationTimeUs = pts; outputPts = pts
@@ -45,7 +48,7 @@ class DecoderBackpressureTest {
             val origin = System.nanoTime()
             decoder.enqueue(ScrcpyRecord.Packet(0, byteArrayOf(1)), origin)
             assertTrue(firstRendered.await(1, TimeUnit.SECONDS))
-            decoder.enqueue(ScrcpyRecord.Packet(335_000, byteArrayOf(2)), origin)
+            decoder.enqueue(ScrcpyRecord.Packet(0, byteArrayOf(2)), origin)
             assertTrue(futureOutput.await(1, TimeUnit.SECONDS))
             val admission = worker.submit { decoder.enqueue(ScrcpyRecord.Packet(368_333, byteArrayOf(3)), System.nanoTime()) }
             admission.get(2, TimeUnit.SECONDS)

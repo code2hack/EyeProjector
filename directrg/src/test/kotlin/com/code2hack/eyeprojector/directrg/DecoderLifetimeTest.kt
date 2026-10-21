@@ -10,6 +10,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.*
 import org.junit.Rule
@@ -22,12 +23,15 @@ class DecoderLifetimeTest {
     private fun session() = ProjectionSession(temporary.root.resolve("session"), Surface(), { _, _ -> }, { _, _ -> })
     private fun decoder() = SurfaceDecoder(Surface(), size, {}, {}, {}, {})
 
-    @Test fun videoPtsSchedulesAFrameWithoutAnAudioClock() {
+    @Test fun boundedFutureCodecOutputSchedulesWithoutAnAudioClock() {
         val codec = MediaCodec().also { MediaCodec.created = it }
         val delivered = CountDownLatch(1)
         val available = AtomicBoolean()
+        val queued = AtomicInteger()
         val failure = AtomicReference<Exception>()
-        codec.queuedInput = { pts, _ -> if (pts == 335_000L) available.set(true) }
+        // Keep the output schedule explicit through an unmatched codec PTS, since
+        // an already-received matching frame need not inherit the first offset.
+        codec.queuedInput = { _, _ -> if (queued.incrementAndGet() == 2) available.set(true) }
         codec.output = { info ->
             if (available.compareAndSet(true, false)) { info.presentationTimeUs = 335_000; 0 } else -1
         }
@@ -36,7 +40,7 @@ class DecoderLifetimeTest {
         try {
             val origin = System.nanoTime()
             decoder.enqueue(ScrcpyRecord.Packet(0, byteArrayOf(1)), origin)
-            decoder.enqueue(ScrcpyRecord.Packet(335_000, byteArrayOf(2)), origin)
+            decoder.enqueue(ScrcpyRecord.Packet(0, byteArrayOf(2)), origin)
             assertFalse("Presentation must follow video PTS", delivered.await(100, TimeUnit.MILLISECONDS))
             assertTrue(delivered.await(1, TimeUnit.SECONDS))
             assertNull(failure.get())
@@ -49,8 +53,9 @@ class DecoderLifetimeTest {
             val entered = CountDownLatch(1)
             val failed = CountDownLatch(1)
             val available = AtomicBoolean()
+            val queued = AtomicInteger()
             val rendered = AtomicBoolean()
-            codec.queuedInput = { pts, _ -> if (pts == aheadMs * 1000) available.set(true) }
+            codec.queuedInput = { _, _ -> if (queued.incrementAndGet() == 2) available.set(true) }
             codec.output = { info ->
                 if (available.compareAndSet(true, false)) {
                     info.presentationTimeUs = aheadMs * 1000; entered.countDown(); 0
@@ -61,7 +66,7 @@ class DecoderLifetimeTest {
             try {
                 val origin = System.nanoTime()
                 decoder.enqueue(ScrcpyRecord.Packet(0, byteArrayOf(1)), origin)
-                decoder.enqueue(ScrcpyRecord.Packet(aheadMs * 1000, byteArrayOf(2)), origin)
+                decoder.enqueue(ScrcpyRecord.Packet(0, byteArrayOf(2)), origin)
                 assertTrue(entered.await(1, TimeUnit.SECONDS))
                 if (aheadMs > 500) assertTrue(failed.await(1, TimeUnit.SECONDS))
                 decoder.close()

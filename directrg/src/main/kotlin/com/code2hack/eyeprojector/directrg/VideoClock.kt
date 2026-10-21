@@ -6,9 +6,15 @@ internal class VideoClock {
     private var originNs = 0L
 
     @Synchronized fun start(ptsUs: Long, receivedNs: Long) {
-        if (originPtsUs == null) {
+        val origin = originPtsUs
+        if (origin == null) {
             originPtsUs = ptsUs
             originNs = receivedNs
+        } else {
+            val elapsedNs = Math.multiplyExact(Math.subtractExact(ptsUs, origin), 1000L)
+            // A later receipt can reveal excess delay in the first sample. Delayed
+            // packets must never move presentation later than the earliest offset.
+            originNs = minOf(originNs, Math.subtractExact(receivedNs, elapsedNs))
         }
     }
 

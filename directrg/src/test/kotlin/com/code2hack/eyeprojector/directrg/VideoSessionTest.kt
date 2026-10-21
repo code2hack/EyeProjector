@@ -67,7 +67,7 @@ class VideoSessionTest {
         }
     }
 
-    @Test fun decoderTimingFailureEndsTheVideoOnlySessionAndReleasesCodec() {
+    @Test fun unobservedCodecTimingFailureEndsTheVideoOnlySessionAndReleasesCodec() {
         val states = LinkedBlockingQueue<String>()
         val codec = codec()
         val session = ProjectionSession(temporary.newFolder().resolve("session"), Surface(), { _, state -> states.add(state) }, { _, _ -> })
@@ -76,7 +76,11 @@ class VideoSessionTest {
                 Frame(Wire.VIDEO, 0, byteArrayOf(1)))
             assertEquals("WAITING_FOR_VIDEO", states.poll(2, TimeUnit.SECONDS))
             assertEquals("STREAMING", states.poll(2, TimeUnit.SECONDS))
-            deliver(session, Frame(Wire.VIDEO, 5_000_000, byteArrayOf(2)))
+            // An admitted frame can arrive after a long source gap. Preserve the
+            // failure path with a codec output PTS that no packet actually supplied.
+            val originalOutput = codec.output
+            codec.output = { info -> originalOutput(info).also { if (it >= 0) info.presentationTimeUs += 5_000_000 } }
+            deliver(session, Frame(Wire.VIDEO, 33_333, byteArrayOf(2)))
             assertEquals("DECODE_FAILED", states.poll(2, TimeUnit.SECONDS))
             assertEquals(1, codec.releases.get())
             assertFalse(session.navigate(Navigation.HOME))
