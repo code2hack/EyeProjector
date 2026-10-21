@@ -29,16 +29,20 @@ class ProjectedAppLaunchTest {
         assertEquals(82, ProjectionLaunchCommands.displayId("[server] INFO: New display: 640x480/160 (id=82)\r\n"))
     }
 
-    @Test fun fixedArgumentsPreservePackageIdentityAndHomeUsesOnlyItsOwnComponent() {
+    @Test fun nativeAppCommandUsesNumericNewTaskAndPreservesPackageLaunchFlags() {
         val app = ProjectionLaunchCommands.launch(47, "example.native.app", false)
-        assertEquals(listOf("/system/bin/cmd", "activity", "start-activity", "-W", "--display", "47"), app.take(6))
-        assertEquals("example.native.app", app.last())
-        assertTrue(app.containsAll(listOf("android.intent.action.MAIN", "android.intent.category.LAUNCHER", "-p")))
+        assertEquals(listOf("/system/bin/cmd", "activity", "start-activity", "-W", "--display", "47",
+            "-f", "0x10000000", "--activity-reset-task-if-needed", "-a", "android.intent.action.MAIN",
+            "-c", "android.intent.category.LAUNCHER", "-p", "example.native.app"), app)
         assertFalse(app.contains("-S")); assertFalse(app.contains("--activity-clear-task"))
+    }
+
+    @Test fun homeCommandUsesNumericNewTaskAndPreservesFixedComponentAndContext() {
         val home = ProjectionLaunchCommands.launch(47, "ignored.by.fixed.home", true, ProjectionContext("owner", "actual-token"))
-        assertEquals(ProjectionLaunchCommands.HOME_COMPONENT, home[home.indexOf("-n") + 1])
-        assertEquals("owner", home[home.indexOf(ProjectionContext.OWNER_EXTRA) + 1])
-        assertEquals("actual-token", home[home.indexOf(ProjectionContext.TOKEN_EXTRA) + 1])
+        assertEquals(listOf("/system/bin/cmd", "activity", "start-activity", "-W", "--display", "47",
+            "-f", "0x10000000", "--activity-clear-top", "-n", ProjectionLaunchCommands.HOME_COMPONENT,
+            "--es", ProjectionContext.OWNER_EXTRA, "owner",
+            "--es", ProjectionContext.TOKEN_EXTRA, "actual-token"), home)
         assertFalse(home.contains("ignored.by.fixed.home"))
     }
 
