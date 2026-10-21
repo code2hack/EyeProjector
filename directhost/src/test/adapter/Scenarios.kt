@@ -561,6 +561,55 @@ fun main() {
         check(service.launches==listOf("example.explicit.home"))
         check(result!!.status==ProjectionLaunchStatus.UNAVAILABLE && result!!.context==homeContext && result!!.displayId==null)
     }
+    scenario("EP12 explicit old scalar context never discovers the current replacement") { f ->
+        f.host.start("ep12-owner"); f.drain()
+        val service = FakeService().apply { state = "STREAMING" }; f.attach(service)
+        val old = f.host.status().projectionContext
+        service.replaceProjection(); f.host.refresh(); f.drain()
+        val fresh = f.host.status().projectionContext
+        check(old != fresh)
+        var replies = 0
+        f.host.requestScale(1.5, old) { check(it == null); replies++ }
+        f.host.scaleState(old) { check(it == null); replies++ }; f.drain()
+        check(replies == 2 && service.scaleRequests.isEmpty() && service.scaleReads == 0)
+        f.host.requestScale(1.25, fresh) { check(it?.status == ScaleStatus.PENDING); replies++ }
+        f.host.scaleState(fresh) { check(it?.requested == 1.25); replies++ }; f.drain()
+        check(replies == 4 && service.scaleRequests.single().second == 1.25 && service.scaleReads == 1)
+    }
+    scenario("EP12 explicit scalar intent keeps its original context before the lifecycle hop") { f ->
+        f.host.start("ep12-first-hop"); f.drain()
+        val service = FakeService().apply { state = "STREAMING" }; f.attach(service)
+        val old = f.host.status().projectionContext
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        (f.field("executor") as ExecutorService).submit { entered.countDown(); check(release.await(4, TimeUnit.SECONDS)) }
+        check(entered.await(2, TimeUnit.SECONDS))
+        try {
+            service.replaceProjection(); f.host.refresh()
+            var replies = 0
+            f.host.requestScale(1.5, old) { check(it == null); replies++ }
+            f.host.scaleState(old) { check(it == null); replies++ }
+            release.countDown(); f.drain()
+            check(replies == 2 && service.scaleRequests.isEmpty() && service.scaleReads == 0)
+        } finally { release.countDown() }
+    }
+    scenario("EP12 explicit Home scalar context works before token poll without rebinding") { f ->
+        f.host.start("ep12-early-home"); f.drain()
+        val service = FakeService(); f.attach(service)
+        check(!f.host.status().projectionContext.available)
+        val fixed = service.context
+        service.state = "STREAMING" // Actual session is ready before the adapter's first token observation.
+        var result: ScaleState? = null
+        var unresolvedReplies = 0
+        f.host.requestScale(1.5) { check(it == null); unresolvedReplies++ }
+        f.host.scaleState { check(it == null); unresolvedReplies++ }; f.drain()
+        check(unresolvedReplies == 2 && service.scaleRequests.isEmpty() && service.scaleReads == 0)
+        f.host.requestScale(1.25, fixed) { result = it }; f.drain()
+        check(result?.status == ScaleStatus.PENDING && service.scaleRequests.size == 1)
+        service.replaceProjection()
+        f.host.requestScale(1.5, fixed) { result = it }; f.drain()
+        check(result == null || result?.status == ScaleStatus.UNAVAILABLE)
+        check(service.scaleRequests.size == 1)
+    }
     check(failures == 0) { "$failures adapter scenarios failed" }
     println("$scenarios adapter scenarios passed; modeled host events, no device/Binder claim")
 }

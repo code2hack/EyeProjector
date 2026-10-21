@@ -9,6 +9,7 @@ import com.code2hack.eyeprojector.directhost.apps.ChosenApp
 class ProjectedHomeActivity : Activity() {
     private lateinit var home: ProjectedHomeView
     private lateinit var sessions: PhoneSessionController
+    private var launchFeedbackIntent = 0L
     private var homeContext = ProjectionContext()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -26,13 +27,17 @@ class ProjectedHomeActivity : Activity() {
     }
 
     private fun bindIntent(intent: Intent) {
+        var boundFeedbackIntent = ++launchFeedbackIntent
         val expected = ProjectionContext(intent.getStringExtra(ProjectionContext.OWNER_EXTRA).orEmpty(),
             intent.getStringExtra(ProjectionContext.TOKEN_EXTRA).orEmpty())
         homeContext = expected
-        home.onAppSelected = { app ->
+        home.onAppSelected = selected@{ app ->
+            if (homeContext != expected || launchFeedbackIntent != boundFeedbackIntent) return@selected
+            val feedbackIntent = ++launchFeedbackIntent
+            boundFeedbackIntent = feedbackIntent
             if (homeContext == expected) home.showStatus(getString(R.string.projected_home_opening, app.label))
             sessions.launchApp(app.packageName, expected) { result ->
-                if (homeContext == expected) home.showStatus(launchFeedback(app, result))
+                if (homeContext == expected && launchFeedbackIntent == feedbackIntent) home.showStatus(launchFeedback(app, result))
             }
         }
     }
