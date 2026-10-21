@@ -3,6 +3,7 @@ package com.code2hack.eyeprojector.directrg
 import android.app.Activity
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
 import android.os.SystemClock
@@ -58,6 +59,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var longTouch: NativePadLongTouch
     private lateinit var heldInput: HeldPointerDispatcher
     private lateinit var padContact: NativePadContact
+    private lateinit var functionInput: NativeFunctionInput
     private var nativeActionsSubmitted = 0L
     private var nativeActionsRejected = 0L
     private var longClassifications = 0L
@@ -159,6 +161,11 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             if (usable()) gestures.classifyLongPress(at) else gestures.cancel(at)
             schedulePadConfirmation()
         }
+        val functionNavigation = FunctionNavigation(::projectionHome, ::showControlPanel, ::contextualBack, ::exitToLauncher)
+        functionInput = NativeFunctionInput(this,
+            { if (usable()) Pair(session, projectionContext) else null },
+            { action -> functionNavigation.dispatch(action, projectionContext) },
+        )
         root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> resize() }
         setContentView(root)
         showStatus(getString(R.string.disconnected))
@@ -208,6 +215,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         cancelInput()
         presentation.showPanel()
         connectionView.visibility = View.VISIBLE
+        connectionView.scrollTo(0, 0)
         resize()
     }
     internal fun projectionHome() {
@@ -221,7 +229,16 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             else { disconnect(); finish() }
         } else remoteBack()
     }
-    internal fun exitToLauncher() { disconnect(); finish() }
+    internal fun exitToLauncher() {
+        // End local interception and invalidate peer callbacks before leaving this Activity.
+        resumed = false
+        functionInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
+        val epoch = attachment.epoch ?: peerSession?.takeIf { it.phase.active }?.epoch
+        disconnect()
+        clientGeneration++; sessionClient?.close(epoch); sessionClient = null
+        startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        finish()
+    }
 
     @Deprecated("Android navigation delegates to the current projection/panel context")
     override fun onBackPressed() { contextualBack() }
@@ -303,6 +320,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         gestures.deadline?.let { root.postDelayed(confirmTap, (it - SystemClock.uptimeMillis()).coerceAtLeast(0)) }
     }
     private fun cancelInput() {
+        if (::functionInput.isInitialized) functionInput.cancel()
         if (::gestures.isInitialized) gestures.cancel(SystemClock.uptimeMillis())
         if (::heldInput.isInitialized) heldInput.cancel(SystemClock.uptimeMillis())
         if (::padContact.isInitialized) padContact.clear()
@@ -467,6 +485,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     }
     override fun onResume() {
         super.onResume(); resumed = true; pointer.start(); longTouch.start(); padContact.start()
+        if (hasWindowFocus()) functionInput.start()
         val generation = ++clientGeneration
         sessionClient = PairedSessionClient(File(filesDir, "session"), { state ->
             if (resumed && generation == clientGeneration) observePeer(state)
@@ -480,18 +499,18 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (::root.isInitialized) {
-            if (!hasFocus) { cancelInput(); pointer.stop(); if (::longTouch.isInitialized) longTouch.stop(); if (::padContact.isInitialized) padContact.stop() }
-            else if (resumed) { pointer.start(); longTouch.start(); padContact.start() }
+            if (!hasFocus) { cancelInput(); pointer.stop(); if (::longTouch.isInitialized) longTouch.stop(); if (::padContact.isInitialized) padContact.stop(); if (::functionInput.isInitialized) functionInput.stop() }
+            else if (resumed) { pointer.start(); longTouch.start(); padContact.start(); functionInput.start() }
         }
     }
     override fun onPause() {
-        resumed = false; longTouch.stop(); padContact.stop(); pointer.stop()
+        resumed = false; functionInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
         val epoch = attachment.epoch ?: peerSession?.takeIf { it.phase.active }?.epoch
         disconnect(notifyPeer = false)
         clientGeneration++; sessionClient?.close(epoch); sessionClient = null
         super.onPause()
     }
-    override fun onDestroy() { longTouch.stop(); padContact.stop(); disconnect(); pairingPanel.close(); super.onDestroy() }
+    override fun onDestroy() { functionInput.stop(); longTouch.stop(); padContact.stop(); disconnect(); pairingPanel.close(); super.onDestroy() }
     override fun surfaceCreated(holder: SurfaceHolder) { peerSession?.let(::observePeer) }
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) { resize() }
     override fun surfaceDestroyed(holder: SurfaceHolder) { disconnect() }
