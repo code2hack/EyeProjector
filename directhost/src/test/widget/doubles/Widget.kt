@@ -15,7 +15,9 @@ class AppWidgetManager {
     var ids = intArrayOf(41, 42)
     val updates = mutableMapOf<Int, RemoteViews>()
     var failUpdates = false
+    var failIds = emptySet<Int>()
+    val updateCounts = mutableMapOf<Int, Int>()
     fun getAppWidgetIds(component: ComponentName) = ids
-    fun updateAppWidget(id: Int, views: RemoteViews) { check(!failUpdates) { "Modeled launcher/render failure" }; updates[id] = views }
+    fun updateAppWidget(id: Int, views: RemoteViews) { check(!failUpdates && id !in failIds) { "Modeled launcher/render failure" }; updates[id] = views; updateCounts[id] = (updateCounts[id] ?: 0) + 1 }
     companion object { val manager = AppWidgetManager(); fun getInstance(context: Context) = manager }
 }

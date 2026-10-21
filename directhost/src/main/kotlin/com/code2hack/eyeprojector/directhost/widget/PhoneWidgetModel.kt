@@ -13,13 +13,14 @@ internal data class PhoneWidgetSnapshot(
     val backend: String,
     val backendDetail: String? = null,
     val projection: ProjectionContext = ProjectionContext(),
+    val initialSetupPending: Boolean = false,
 ) {
     val needsSetup: Boolean get() = !paired || !setupAvailable ||
         session.detail == "SESSION_SETUP_REQUIRED" || backendDetail == "SESSION_SETUP_REQUIRED" ||
         backendDetail in setOf("FORGET_PENDING", "RESTORE_SHIZUKU_TO_VERIFY_STOP")
     // FAILED may still own resources while teardown is pending. Only STOPPED confirms release.
     val canStart: Boolean get() = session.phase in setOf(SessionPhase.INACTIVE, SessionPhase.FAILED) && backend == "STOPPED"
-    val canPanelOff: Boolean get() = session.phase == SessionPhase.STREAMING && backend == "STREAMING" && projection.available
+    val canPanelOff: Boolean get() = !needsSetup && session.phase == SessionPhase.STREAMING && backend == "STREAMING" && projection.available
     val primary: PhoneWidgetCommand get() = if (canStart) PhoneWidgetCommand.START else PhoneWidgetCommand.STOP
 }
 
@@ -70,7 +71,7 @@ internal class PhoneWidgetActions(
                 }
             }
             PhoneWidgetCommand.PANEL_OFF -> {
-                if (!actual.canPanelOff || actual.projection != action.projection) PhoneWidgetRoute.OPEN_STATUS
+                if (actual.needsSetup || !actual.canPanelOff || actual.projection != action.projection) PhoneWidgetRoute.OPEN_STATUS
                 else { panelOff(action.projection); PhoneWidgetRoute.COMPLETE }
             }
             PhoneWidgetCommand.STATUS -> PhoneWidgetRoute.OPEN_STATUS

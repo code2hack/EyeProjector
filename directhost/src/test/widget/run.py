@@ -1,63 +1,102 @@
 #!/usr/bin/env python3
-"""Exercise actual controller/widget Android entry sources against explicitly modeled framework/host transport."""
+"""Run archived actual widget sources with modeled boundaries and fully bound compiler inputs."""
 import argparse
 import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import xml.etree.ElementTree as ET
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--output-dir', type=Path, required=True)
+p.add_argument('--source-root', type=Path, help='Exact production tree; tests always come from this runner checkout')
+p.add_argument('--suite', choices=['standard', 'remediation', 'bootstrap-init'], default='standard')
 a = p.parse_args()
 output = a.output_dir.resolve()
-output.mkdir(parents=True, exist_ok=True)
+output.mkdir(parents=True, exist_ok=False)
 suite = Path(__file__).resolve().parent
 root = suite.parents[3]
-actual = root / 'directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost'
+production = a.source_root.resolve() if a.source_root else root
+actual = production / 'directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost'
 cache = Path(os.environ.get('GRADLE_USER_HOME', Path.home() / '.gradle')) / 'caches/modules-2/files-2.1'
-dependencies = ['org.jetbrains.kotlin/kotlin-compiler-embeddable/2.2.21', 'org.jetbrains.kotlin/kotlin-stdlib/2.2.21',
-                'org.jetbrains.kotlin/kotlin-script-runtime/2.2.21', 'org.jetbrains.kotlin/kotlin-reflect',
-                'org.jetbrains/annotations/13.0', 'org.jetbrains.kotlinx/kotlinx-coroutines-core-jvm']
-jars = [str(j) for d in dependencies for j in sorted((cache / d).rglob('*.jar'))]
-classpath = os.pathsep.join([str(root / 'protocol/build/tmp/kotlin-classes/debug')] + jars)
-java = str(Path(os.environ['JAVA_HOME']) / 'bin/java')
-resources = root / 'directhost/src/main/res'
+dependency_names = ['org.jetbrains.kotlin/kotlin-compiler-embeddable/2.2.21', 'org.jetbrains.kotlin/kotlin-stdlib/2.2.21',
+                    'org.jetbrains.kotlin/kotlin-script-runtime/2.2.21', 'org.jetbrains.kotlin/kotlin-reflect',
+                    'org.jetbrains/annotations/13.0', 'org.jetbrains.kotlinx/kotlinx-coroutines-core-jvm']
+archive_deps = output.parent / 'dependencies'
+archive_deps.mkdir(exist_ok=True)
+deps = []
+for name in dependency_names:
+    for original in sorted((cache / name).rglob('*.jar')):
+        digest = hashlib.sha256(original.read_bytes()).hexdigest()
+        destination = archive_deps / (digest + '.jar')
+        if not destination.exists(): shutil.copy2(original, destination)
+        assert hashlib.sha256(destination.read_bytes()).hexdigest() == digest
+        deps.append({'originalPath': str(original), 'archive': str(destination), 'sha256': digest, 'bytes': original.stat().st_size})
+if not deps: p.error('Kotlin compiler dependencies must already be provisioned')
+classpath = os.pathsep.join(d['archive'] for d in deps)
+java = Path(os.environ['JAVA_HOME']) / 'bin/java'
+resources = production / 'directhost/src/main/res'
+generated = output / 'R.kt'
 strings = {e.attrib['name']: e.text for e in ET.parse(resources / 'values/phone_widget.xml').getroot()}
 ids = ['phone_widget_status', 'phone_widget_primary', 'phone_widget_panel', 'phone_widget_panel_status']
-# These constants/texts come from the production XML; record both as compiler inputs.
-generated = output / 'R.kt'
 lines = ['package com.code2hack.eyeprojector.directhost', 'object R {', 'object string {']
-for i, name in enumerate(strings, 1): lines.append(f'const val {name} = {i}')
+lines += [f'const val {name} = {i}' for i, name in enumerate(strings, 1)]
 lines += ['}', 'object id {'] + [f'const val {name} = {i}' for i, name in enumerate(ids, 100)]
 lines += ['}', 'object layout { const val phone_widget = 200 }', 'val strings = mapOf(']
 lines += [f'{i} to {json.dumps(value)},' for i, value in enumerate(strings.values(), 1)]
-lines += [')', '}']
+period = ET.parse(resources / 'xml/phone_widget_info.xml').getroot().attrib['{http://schemas.android.com/apk/res/android}updatePeriodMillis']
+lines += [')', '}', f'object WidgetDescriptor {{ const val updatePeriodMillis = {period}L }}']
 generated.write_text('\n'.join(lines) + '\n')
-sources = sorted((suite / 'doubles').glob('*.kt')) + [suite / 'Scenarios.kt', generated]
-sources += sorted((actual / 'widget').glob('*.kt'))
-sources += [actual / n for n in ['PhoneSessionController.kt', 'SessionController.kt', 'SessionAttemptStore.kt', 'PanelPower.kt', 'ProjectionContext.kt']]
-sources += [root / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol/SessionState.kt']
+protocol = production / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
+if a.suite == 'bootstrap-init':
+    adapter = suite.parent / 'adapter/doubles'
+    sources = [adapter / n for n in ['Context.kt', 'AtomicFile.kt', 'Json.kt', 'Annotation.kt', 'Service.kt', 'Shizuku.kt']]
+    sources += [suite / 'bootstrap/Os.kt', suite / 'bootstrap/PackageManager.kt', suite / 'BootstrapInitializationScenarios.kt']
+    sources += [actual / n for n in ['HostBootstrap.kt', 'HostForgetCompletion.kt', 'BootstrapSessionFiles.kt', 'PanelPower.kt', 'ProjectionContext.kt', 'ProjectionDisplayState.kt']]
+    entry = 'com.code2hack.eyeprojector.directhost.BootstrapInitializationScenariosKt'
+else:
+    sources = sorted((suite / 'doubles').glob('*.kt')) + [suite / ('RemediationScenarios.kt' if a.suite == 'remediation' else 'Scenarios.kt'), generated]
+    sources += sorted((actual / 'widget').glob('*.kt'))
+    sources += [actual / n for n in ['PhoneSessionController.kt', 'SessionController.kt', 'SessionAttemptStore.kt', 'PanelPower.kt', 'ProjectionContext.kt']]
+    sources += [protocol / 'SessionState.kt']
+    entry = 'com.code2hack.eyeprojector.directhost.widget.' + ('RemediationScenariosKt' if a.suite == 'remediation' else 'ScenariosKt')
+sources += [protocol / n for n in ['Wire.kt', 'Touch.kt', 'LayoutScale.kt']]
 inputs = sources + [resources / n for n in ['values/phone_widget.xml', 'layout/phone_widget.xml', 'xml/phone_widget_info.xml']]
+compiled = []
+identity = []
 archive = output / 'compiled-sources'
-archive.mkdir(exist_ok=True)
-for i, source in enumerate(inputs): (archive / f'{i:02d}-{source.name}').write_bytes(source.read_bytes())
-identity = [{'path': str(s), 'sha256': hashlib.sha256(s.read_bytes()).hexdigest()} for s in inputs]
+for index, source in enumerate(inputs):
+    destination = archive / f'{index:02d}' / source.name
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(source.read_bytes())
+    identity.append({'path': str(source), 'archive': str(destination), 'sha256': hashlib.sha256(destination.read_bytes()).hexdigest()})
+    if index < len(sources): compiled.append(destination)
 (output / 'compiler-inputs.json').write_text(json.dumps(identity, indent=2) + '\n')
 jar = output / 'widget-regressions.jar'
-command = [java, '-cp', classpath, 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', '-no-stdlib', '-no-reflect',
-           '-classpath', classpath, '-d', str(jar)] + list(map(str, sources))
+compile_command = [str(java), '-cp', classpath, 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', '-no-stdlib', '-no-reflect',
+                   '-classpath', classpath, '-d', str(jar)] + list(map(str, compiled))
+run_command = [str(java), '-cp', str(jar) + os.pathsep + classpath, entry]
+java_home = java.parent.parent
+runtime = [{'path': str(f), 'sha256': hashlib.sha256(f.read_bytes()).hexdigest()} for f in [java, java_home / 'release', java_home / 'lib/modules']]
+command = {'compile': compile_command, 'run': run_command, 'dependencies': deps, 'runtime': runtime,
+           'javaVersion': subprocess.run([str(java), '-version'], text=True, capture_output=True, check=True).stderr,
+           'runtimeQualification': 'Compiler/runtime jars archived; JDK executable/release/modules hashed, native JDK/OS runtime files are not archived.'}
+(output / 'command.json').write_text(json.dumps(command, indent=2) + '\n')
+result = {'suite': a.suite, 'productionRoot': str(production), 'compileExit': None, 'scenariosExit': None,
+          'inputs': identity, 'scope': 'Actual production sources; framework/Shizuku/peer boundaries modeled, no physical proof'}
 with (output / 'compile.log').open('w') as log:
-    compiled = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=120)
-if compiled.returncode:
-    print((output / 'compile.log').read_text())
-    raise SystemExit(compiled.returncode)
-with (output / 'scenarios.log').open('w') as log:
-    run = subprocess.run([java, '-cp', str(jar) + os.pathsep + classpath,
-                          'com.code2hack.eyeprojector.directhost.widget.ScenariosKt'],
-                         stdout=log, stderr=subprocess.STDOUT, timeout=60)
-(output / 'result.json').write_text(json.dumps({'compileExit': compiled.returncode, 'scenariosExit': run.returncode,
-    'inputs': identity, 'scope': 'Actual PhoneSessionController/SessionController/ledger and widget provider/Activity/RemoteViews routing; modeled framework, HostBootstrap and peer transport; no physical proof'}, indent=2) + '\n')
-print((output / 'scenarios.log').read_text())
-raise SystemExit(run.returncode)
+    c = subprocess.run(compile_command, stdout=log, stderr=subprocess.STDOUT, timeout=120)
+result['compileExit'] = c.returncode
+if c.returncode == 0:
+    with (output / 'scenarios.log').open('w') as log:
+        r = subprocess.run(run_command, stdout=log, stderr=subprocess.STDOUT, timeout=60)
+    result['scenariosExit'] = r.returncode
+    content = (output / 'scenarios.log').read_text()
+    result['passCases'] = sum(line.startswith('PASS ') for line in content.splitlines())
+    result['failedCases'] = sum(line.startswith('FAIL ') for line in content.splitlines())
+    print(content)
+else: print((output / 'compile.log').read_text())
+(output / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
+raise SystemExit(c.returncode if c.returncode else result['scenariosExit'])

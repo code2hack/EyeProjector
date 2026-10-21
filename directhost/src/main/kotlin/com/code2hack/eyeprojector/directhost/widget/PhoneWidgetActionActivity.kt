@@ -48,11 +48,12 @@ class PhoneWidgetActionActivity : Activity() {
 
     private fun complete(route: PhoneWidgetRoute) {
         sessions?.removeStateObserver(observer)
-        if (route == PhoneWidgetRoute.OPEN_STATUS) {
-            startActivity(Intent(this, HostActivity::class.java).addFlags(
-                Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
-        }
-        finish()
+        try {
+            if (route == PhoneWidgetRoute.OPEN_STATUS) {
+                startActivity(Intent(this, HostActivity::class.java).addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+            }
+        } finally { finish() }
     }
 
     override fun onDestroy() {

@@ -14,9 +14,12 @@ internal class PhoneWidgetActionTurn(
     fun advance() {
         if (finished) return
         val actual = snapshot()
-        if (actual.session.phase == SessionPhase.UNKNOWN && !actual.needsSetup) return
+        if (actual.session.phase == SessionPhase.UNKNOWN &&
+            (!actual.needsSetup || actual.paired && actual.initialSetupPending)) return
         finished = true
-        complete(dispatch())
+        // Dispatch may already have submitted a command before failing. Complete once; never replay it.
+        val route = try { dispatch() } catch (_: Exception) { PhoneWidgetRoute.OPEN_STATUS }
+        complete(route)
     }
 
     fun openStatus() {

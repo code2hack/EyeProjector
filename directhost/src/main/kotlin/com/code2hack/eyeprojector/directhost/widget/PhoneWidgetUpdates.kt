@@ -73,7 +73,11 @@ object PhoneWidgetUpdates {
         fun publish() {
             val snapshot = port.snapshot()
             panel.reconcile(snapshot)
-            ids().forEach { manager.updateAppWidget(it, PhoneWidgetRenderer.views(context, it, snapshot, panel)) }
+            // View publication is independent of command completion, including a failure in one instance.
+            val widgets = runCatching { ids() }.getOrDefault(intArrayOf())
+            widgets.forEach { id ->
+                runCatching { manager.updateAppWidget(id, PhoneWidgetRenderer.views(context, id, snapshot, panel)) }
+            }
         }
         fun close() {
             if (observing) sessions.removeStateObserver(observer)

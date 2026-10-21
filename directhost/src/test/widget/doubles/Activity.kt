@@ -5,12 +5,14 @@ import android.os.Bundle
 open class Activity : Context() {
     var intent = Intent()
     var finished = false
+    var content: Any? = null
+    init { instances.add(this) }
     open fun onCreate(savedInstanceState: Bundle?) {}
     open fun onDestroy() {}
-    fun setContentView(view: Any) {}
+    fun setContentView(view: Any) { content = view }
     fun startActivity(value: Intent) { launches.add(value) }
     open fun finish() { finished = true }
-    companion object { val launches = mutableListOf<Intent>() }
+    companion object { val launches = mutableListOf<Intent>(); val instances = mutableListOf<Activity>() }
 }
 class PendingIntent private constructor(var intent: Intent, val flags: Int) {
     fun send(): Activity {

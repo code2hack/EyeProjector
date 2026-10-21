@@ -15,12 +15,15 @@ open class TextView(context: android.content.Context) {
     fun setTextColor(color: Int) {}
 }
 class Button(context: android.content.Context) : TextView(context) {
-    fun setOnClickListener(listener: () -> Unit) {}
+    private var listener: (() -> Unit)? = null
+    fun setOnClickListener(listener: () -> Unit) { this.listener = listener }
+    fun performClick() { listener!!() }
 }
 class LinearLayout(context: android.content.Context) {
     var orientation = 0
+    val children = mutableListOf<Any>()
     fun setPadding(left: Int, top: Int, right: Int, bottom: Int) {}
     fun setBackgroundColor(color: Int) {}
-    fun addView(view: Any) {}
+    fun addView(view: Any) { children.add(view) }
     companion object { const val VERTICAL = 1 }
 }

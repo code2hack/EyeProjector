@@ -32,7 +32,9 @@ fun main() {
     scenario("provider initial render is UNKNOWN until existing backend observation") {
         provider.onUpdate(context, manager, manager.ids)
         check(stateText().contains("Checking")); check(PhoneWidgetIntents.read(primary().intent)?.command == PhoneWidgetCommand.STOP)
-        drain(); check(stateText().contains("inactive"))
+        drain(); check(stateText().contains("Checking"))
+        host.publish(HostBootstrap.Status(HostBootstrap.Setup.AVAILABLE, "STOPPED")); drain()
+        check(stateText().contains("inactive"))
     }
     scenario("immutable explicit tokens separate widget IDs and operation/epoch/context") {
         val old = primary()

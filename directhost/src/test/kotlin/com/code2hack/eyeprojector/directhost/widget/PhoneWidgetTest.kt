@@ -257,4 +257,55 @@ class PhoneWidgetTest {
         assertTrue(turn.finished); assertEquals(1, dispatched)
     }
 
+    @Test fun initialSetupSentinelWaitsWithoutFabricatingAvailability() {
+        val s = Sessions()
+        var actual = s.snapshot().copy(session = SessionState("unknown", SessionPhase.UNKNOWN),
+            setupAvailable = false, backend = "UNKNOWN", initialSetupPending = true)
+        var dispatched = 0; var completed = 0
+        val turn = PhoneWidgetActionTurn({ actual }, { dispatched++; PhoneWidgetRoute.OPEN_STATUS }, { completed++ })
+        turn.advance(); turn.advance()
+        assertFalse(turn.finished); assertEquals(0, dispatched); assertFalse(actual.setupAvailable)
+        assertTrue(actual.needsSetup); assertFalse(actual.canPanelOff)
+        actual = actual.copy(initialSetupPending = false)
+        turn.advance(); turn.advance()
+        assertTrue(turn.finished); assertEquals(1, dispatched); assertEquals(1, completed)
+    }
+
+    @Test fun missingPairingRoutesEvenWhileInitialSetupIsPending() {
+        val s = Sessions()
+        val actual = s.snapshot().copy(session = SessionState("unknown", SessionPhase.UNKNOWN),
+            paired = false, setupAvailable = false, initialSetupPending = true)
+        var completed = 0
+        val turn = PhoneWidgetActionTurn({ actual }, { PhoneWidgetRoute.OPEN_STATUS }, { completed++ })
+        turn.advance(); assertTrue(turn.finished); assertEquals(1, completed)
+    }
+
+    @Test fun panelSetupAndPairingLossCannotDispatchAnAlreadyRenderedIntent() {
+        for (missingPairing in listOf(false, true)) {
+            val s = Sessions(); s.stream()
+            val rendered = PhoneWidgetAction(PhoneWidgetCommand.PANEL_OFF, s.core.state().epoch, s.projection)
+            if (missingPairing) s.paired = false else s.setup = false
+            var requests = 0
+            assertFalse(s.snapshot().canPanelOff)
+            assertEquals(PhoneWidgetRoute.OPEN_STATUS, PhoneWidgetActions(s) { requests++ }.deliver(rendered))
+            assertEquals(0, requests)
+        }
+    }
+
+    @Test fun dispatchFailureCompletesOnceWithoutReplayingAnIrreversibleCommand() {
+        for (submitted in listOf(false, true)) {
+            val s = Sessions()
+            var attempts = 0; var commands = 0
+            val results = mutableListOf<PhoneWidgetRoute>()
+            val turn = PhoneWidgetActionTurn(s::snapshot, {
+                attempts++; if (submitted) commands++
+                throw IllegalStateException("dispatch fixture")
+            }, results::add)
+            turn.advance(); turn.advance(); turn.openStatus()
+            assertTrue(turn.finished); assertEquals(1, attempts)
+            assertEquals(if (submitted) 1 else 0, commands)
+            assertEquals(listOf(PhoneWidgetRoute.OPEN_STATUS), results)
+        }
+    }
+
 }
