@@ -39,13 +39,14 @@ class PhoneHidKeyService : AccessibilityService(), InputManager.InputDeviceListe
             else -> return false
         }
         if (input.consumeRetired(event.deviceId, event.keyCode, event.scanCode, event.downTime, phase)) return true
+        if (input.consumePassed(event.deviceId, event.keyCode, event.scanCode, event.downTime, phase)) return false
         val device = event.device ?: return input.consumeUnavailable(event.deviceId, event.keyCode,
-            event.scanCode, event.downTime, phase)
+            event.scanCode, event.downTime, phase, event.repeatCount)
         val identity = PhoneHidDeviceIdentity(device.descriptor, device.vendorId, device.productId)
         if (input.consumeChanged(event.deviceId, event.keyCode, event.scanCode, event.downTime, phase, identity)) return true
         // These native Rokid names are observed canonical exclusions, not a guessed Phone descriptor.
         if (!device.isExternal || device.isVirtual || device.name == "ROKID,PSOC-TP-R" || device.name == "qpnp_pon")
-            return input.consumeUnavailable(event.deviceId, event.keyCode, event.scanCode, event.downTime, phase)
+            return input.consumeUnavailable(event.deviceId, event.keyCode, event.scanCode, event.downTime, phase, event.repeatCount)
         val binding = PhoneHidBinding(PhoneHidButton(identity, event.keyCode, event.scanCode),
             device.name, KeyEvent.keyCodeToString(event.keyCode))
         return input.accept(PhoneHidController.Event(event.deviceId, binding, phase,

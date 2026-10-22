@@ -26,6 +26,7 @@ internal class PhoneHidController(
     )
     private data class Raw(val attachment: Int, val key: Int, val scan: Int, val down: Long)
     private data class RawKey(val attachment: Int, val key: Int, val scan: Int)
+    private data class Decision(val down: Long, val handled: Boolean)
     private data class Key(val attachment: Int, val button: PhoneHidButton)
     private class Capture(val event: Event, val action: PhoneHidAction)
     private class Press(val event: Event, val action: PhoneHidAction, val admission: Long) {
@@ -43,7 +44,10 @@ internal class PhoneHidController(
     private val constructing = mutableSetOf<Press>()
     private val retired = mutableSetOf<Raw>()
     private val observedDowns = mutableSetOf<Raw>()
-    private val lastDowns = mutableMapOf<RawKey, Long>()
+    // Keep the last decision per physical button and every still-open passed gesture.
+    // Map publication, page changes and cancellation cannot adopt a DOWN sent to the foreground.
+    private val lastDowns = mutableMapOf<RawKey, Decision>()
+    private val passed = mutableSetOf<Raw>()
     private var receivedKey: Pair<Int, PhoneHidButton>? = null
     private var receivedCount = 0L
     var receivedText = ""; private set
@@ -98,11 +102,25 @@ internal class PhoneHidController(
         return true
     }
 
-    fun consumeUnavailable(device: Int, key: Int, scan: Int, down: Long, phase: PhoneHidPhase): Boolean {
+    /** A match means return false at ingress, before rebuilding possibly changed device facts. */
+    fun consumePassed(device: Int, key: Int, scan: Int, down: Long, phase: PhoneHidPhase): Boolean {
         val raw = Raw(device, key, scan, down)
+        if (raw !in passed && decision(raw) != false) return false
+        if (phase != PhoneHidPhase.DOWN) passed.remove(raw)
+        return true
+    }
+
+    fun consumeUnavailable(device: Int, key: Int, scan: Int, down: Long, phase: PhoneHidPhase, repeatCount: Int = 0): Boolean {
+        val raw = Raw(device, key, scan, down)
+        if (consumePassed(device, key, scan, down, phase)) return false
         val oldCapture = capture?.takeIf { raw(it.event) == raw }
         val press = presses.remove(raw) ?: constructing.firstOrNull { raw(it.event) == raw }
-        if (oldCapture == null && press == null) return consumeRetired(device, key, scan, down, phase)
+        if (oldCapture == null && press == null) {
+            if (consumeRetired(device, key, scan, down, phase)) return true
+            decision(raw)?.let { return it }
+            if (phase == PhoneHidPhase.DOWN && repeatCount == 0) remember(raw, false)
+            return false
+        }
         if (oldCapture != null) capture = null
         retired.add(raw)
         if (press != null) cancel(press)
@@ -138,6 +156,7 @@ internal class PhoneHidController(
     fun accept(event: Event): Boolean {
         val raw = raw(event)
         if (consumeRetired(raw.attachment, raw.key, raw.scan, raw.down, event.phase)) return true
+        if (consumePassed(raw.attachment, raw.key, raw.scan, raw.down, event.phase)) return false
         val captured = capture
         if (captured != null && raw(captured.event) == raw) {
             if (event.phase != PhoneHidPhase.DOWN) {
@@ -150,7 +169,7 @@ internal class PhoneHidController(
         }
         val old = presses[raw]
         if (event.phase != PhoneHidPhase.DOWN) {
-            if (old == null) return bindings.action(event.binding.button) != null
+            if (old == null) return decision(raw) == true
             presses.remove(raw)
             retired.add(raw)
             old.terminal = event
@@ -159,13 +178,12 @@ internal class PhoneHidController(
             return true
         }
         if (old != null) return true
-        val action = bindings.action(event.binding.button)
-        if (event.repeatCount != 0) return action != null
+        if (event.repeatCount != 0) return decision(raw) == true
         val key = Key(event.attachmentId, event.binding.button)
-        val rawKey = RawKey(raw.attachment, raw.key, raw.scan)
-        if (lastDowns[rawKey] == event.downTimeMs) return action != null || (pageVisible && selected != null)
-        lastDowns[rawKey] = event.downTimeMs
+        decision(raw)?.let { return it }
+        val action = bindings.action(event.binding.button)
         val target = selected.takeIf { pageVisible }
+        remember(raw, target != null || action != null) // Before any received/cancel/output callback.
         if (target != null) {
             val previous = capture
             // Publish DOWN ownership before received feedback can reenter with its UP/newer DOWN.
@@ -249,6 +267,12 @@ internal class PhoneHidController(
         receivedCount = if (receivedKey == key) receivedCount + 1 else 1
         receivedKey = key
         receivedText = if (receivedCount == 1L) event.binding.keyLabel else "${event.binding.keyLabel} x$receivedCount"
+    }
+    private fun decision(raw: Raw): Boolean? = lastDowns[RawKey(raw.attachment, raw.key, raw.scan)]
+        ?.takeIf { it.down == raw.down }?.handled
+    private fun remember(raw: Raw, handled: Boolean) {
+        lastDowns[RawKey(raw.attachment, raw.key, raw.scan)] = Decision(raw.down, handled)
+        if (!handled) passed.add(raw)
     }
     private fun raw(event: Event) = Raw(event.attachmentId, event.binding.button.keyCode, event.binding.button.scanCode, event.downTimeMs)
     private fun sameButton(a: Event, b: Event) = a.attachmentId == b.attachmentId && a.binding.button == b.binding.button

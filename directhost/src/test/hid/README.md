@@ -68,6 +68,19 @@ recording session seam only. The actual backend Function merger and its quiet
 timer are absent, so no backend recognition cancellation or acceptance follows;
 that requires the Manager's separate assembled composition checks.
 
+Pass-through disposition controls queue an actual captured assignment, deliver
+an unbound false DOWN before its persistence operation completes, then publish
+the mapping between physical edges. Duplicate DOWN, held repeat and UP/CANCEL
+must remain false for that original gesture; the next fresh actual bound press
+alone may capture a route. Cold bound repeat/UP/CANCEL also remain false without
+an observed handled DOWN, while admitted, captured and explicitly retired raw
+releases remain consumed. Additional controller and actual service sequences
+hold an unbound key across row selection, page open/close/reset, cancellation,
+device changes/removal and a missing InputDevice. Their old raw edges cannot
+start learning or output; a fresh real DOWN/UP can learn afterward. These cases
+use the same queued persistence, service and caller seams described above;
+they do not add backend or physical acceptance.
+
 Every named scenario runs even if another fails. The runner refuses a nonempty
 evidence directory, snapshots each source/fixture before compilation, records
 source/compiler/JDK hashes and exact commands, and retains failed attempts.

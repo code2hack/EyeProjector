@@ -485,6 +485,110 @@ private fun actualServiceFunctionSequenceKeepsOnlyLatestReleasedCallerRoute() {
     } finally { service.onDestroy() }
 }
 
+private fun queuedAssignmentNeverClaimsAnAlreadyPassedThroughGesture() {
+    for (terminal in listOf(PhoneHidPhase.UP, PhoneHidPhase.CANCEL)) {
+        val r = Rig()
+        r.input.openPage(); r.input.select(PhoneHidAction.TAP)
+        check(r.input.accept(event(900)))
+        check(r.input.accept(event(920, 900, PhoneHidPhase.UP)))
+        equal(1, r.jobs.size, "completed earlier capture queues one actual store operation")
+        equal(null, r.bindings.binding(PhoneHidAction.TAP), "queued save is not yet effective")
+        r.input.closePage()
+        check(!r.input.accept(event(1000))) { "unbound actual first DOWN must pass through" }
+        r.flush()
+        equal(binding(), r.bindings.binding(PhoneHidAction.TAP), "queued assignment publishes while pass-through key is held")
+        check(!r.input.accept(event(1020, 1000, terminal))) { "$terminal remains false for the gesture whose DOWN passed through" }
+        check(!r.input.accept(event(1025, 1000))) { "same raw duplicate DOWN remains false after map publication" }
+        check(!r.input.accept(event(1030, 1000, repeat = 1))) { "held repeat remains false after map publication" }
+        check(r.calls.isEmpty()) { "old pass-through edges must never capture or submit a route" }
+        check(!r.input.capturing)
+        equal(1, r.writes.size, "only the original complete capture saved")
+        check(r.input.accept(event(1100)))
+        check(r.input.accept(event(1120, 1100, PhoneHidPhase.UP)))
+        equal(listOf("capture", "submit"), r.calls.map { it.kind }, "next fresh bound gesture admits DOWN exactly once")
+        equal(listOf(PhoneHidPhase.DOWN, PhoneHidPhase.UP), r.calls.map { it.edge!!.phase }, "next fresh gesture has complete true ownership")
+        check(r.calls[0].route === r.calls[1].route)
+        equal(listOf(1100L, 1120L), r.calls.map { it.edge!!.eventTimeMs }, "only fresh actual event times reach the route")
+    }
+}
+
+private fun coldOrphanEdgesStayFalseWhileActualOwnedAndRetiredEdgesStayTrue() {
+    val r = Rig(); r.seed(PhoneHidAction.TAP)
+    check(!r.input.accept(event(900, 880, PhoneHidPhase.UP))) { "cold bound UP has no observed handled DOWN" }
+    check(!r.input.accept(event(910, 890, PhoneHidPhase.CANCEL))) { "cold bound CANCEL has no observed handled DOWN" }
+    check(!r.input.accept(event(920, 900, repeat = 1))) { "cold held repeat cannot invent a handled DOWN" }
+    check(r.calls.isEmpty())
+    check(r.input.accept(event(1000)))
+    check(r.input.accept(event(1010, 1000, repeat = 1)))
+    check(r.input.accept(event(1020, 1000, PhoneHidPhase.UP)))
+    check(r.input.accept(event(1030, 1000, PhoneHidPhase.UP))) { "an explicitly retired handled release stays consumed" }
+    check(!r.input.accept(event(1040, 1030, PhoneHidPhase.UP))) { "different orphan downTime stays false" }
+    check(r.input.accept(event(1100)))
+    r.clock = 1110; r.input.cancelInput()
+    check(r.input.accept(event(1110, 1100, PhoneHidPhase.CANCEL)))
+    check(r.input.accept(event(1120, 1100, PhoneHidPhase.UP))) { "owned canceled raw release stays true" }
+    r.input.openPage(); r.input.select(PhoneHidAction.FUNCTION)
+    check(r.input.accept(event(1200, key = 196, scan = 701)))
+    check(r.input.accept(event(1210, 1200, repeat = 1, key = 196, scan = 701)))
+    r.input.cancelInput()
+    check(r.input.accept(event(1220, 1200, PhoneHidPhase.UP, key = 196, scan = 701))) { "retired capture release remains owned" }
+    equal(listOf("capture", "submit", "capture", "cancel"), r.calls.map { it.kind }, "cold and capture-only edges add no target output")
+    equal(0, r.jobs.size, "canceled capture does not save")
+}
+
+private fun passedThroughHoldSurvivesUiAndDeviceTransitionsWithoutLearning() {
+    for (boundary in listOf("select", "open", "close", "reset", "removed", "cancel")) {
+        val r = Rig(); r.input.openPage()
+        check(!r.input.accept(event(1000)))
+        when (boundary) {
+            "select" -> r.input.select(PhoneHidAction.TAP)
+            "open" -> r.input.openPage()
+            "close" -> r.input.closePage()
+            "reset" -> { r.input.resetAll(); r.flush() }
+            "removed" -> { r.input.select(PhoneHidAction.TAP); r.input.deviceRemoved(peripheral.id) }
+            else -> r.input.cancelInput()
+        }
+        check(!r.input.accept(event(1005, 1000))) { "$boundary cannot promote the old duplicate DOWN to handled input" }
+        check(!r.input.accept(event(1010, 1000, repeat = 1))) { "$boundary cannot promote the old held repeat" }
+        check(!r.input.accept(event(1020, 1000, PhoneHidPhase.UP))) { "$boundary cannot claim the old pass-through UP" }
+        check(!r.input.capturing && r.calls.isEmpty()) { "$boundary cannot turn a held pass-through key into capture/output" }
+        check(PhoneHidAction.entries.all { r.bindings.binding(it) == null })
+        equal(if (boundary == "reset") 1 else 0, r.writes.size, "only explicit reset may write")
+    }
+    val runtime = PhoneHidRuntime.get(Context()); val input = runtime.controller
+    val service = PhoneHidKeyService(); service.onServiceConnected()
+    try {
+        for ((index, transition) in listOf("changed", "removed", "missing").withIndex()) {
+            input.closePage(); input.openPage()
+            val device = peripheral.copy(id = 71 + index, descriptor = "phone-pass-through:$transition")
+            val key = 274 + index; val scan = 817 + index; val at = 20000L + index * 1000
+            PhoneSessionController.fixture.clear()
+            check(!serviceEdge(service, at, device = device, key = key, scan = scan))
+            input.select(PhoneHidAction.TAP)
+            val changed = device.copy(descriptor = "phone-pass-through:$transition:changed")
+            when (transition) {
+                "changed" -> service.onInputDeviceChanged(device.id)
+                "removed" -> service.onInputDeviceRemoved(device.id)
+            }
+            val oldDevice = if (transition == "changed") changed else null
+            check(!serviceEdge(service, at + 5, at, device = oldDevice, key = key, scan = scan,
+                attachment = device.id)) { "$transition duplicate raw DOWN must keep pass-through disposition" }
+            check(!serviceEdge(service, at + 10, at, device = oldDevice, key = key, scan = scan,
+                repeat = 1, flags = KeyEvent.FLAG_LONG_PRESS, attachment = device.id))
+            check(!serviceEdge(service, at + 20, at, KeyEvent.ACTION_UP, device = changed, key = key,
+                scan = scan, attachment = device.id)) { "$transition release with available changed facts remains false" }
+            check(!input.capturing)
+            equal(0, input.saving, "old pass-through edges cannot enqueue a learned assignment")
+            check(PhoneSessionController.fixture.calls.isEmpty())
+            check(serviceEdge(service, at + 100, device = changed, key = key, scan = scan))
+            check(serviceEdge(service, at + 120, at + 100, KeyEvent.ACTION_UP, device = changed, key = key, scan = scan))
+            awaitSaved(runtime)
+            equal(binding(changed, key, scan), input.bindings.binding(PhoneHidAction.TAP), "only next fresh actual DOWN/UP may learn after $transition")
+            check(PhoneSessionController.fixture.calls.isEmpty())
+        }
+    } finally { input.closePage(); service.onDestroy() }
+}
+
 fun main() {
     val scenarios = linkedMapOf<String, () -> Unit>(
         "captured DOWN ownership precedes matching-UP feedback" to ::capturePublishesOwnershipBeforeMatchingUpFeedback,
@@ -500,6 +604,9 @@ fun main() {
         "ordinary Host stop preserves operational HID and interrupt retires owner" to ::ordinaryHostStopDoesNotCancelOperationalHidAndInterruptRetiresOldOwner,
         "released Function caller route retires at reset page selection connection removal and cancel boundaries" to ::releasedFunctionCallerRouteRetiresAtEveryExplicitBoundary,
         "actual service Function sequence keeps latest released caller route without intermediate cancel" to ::actualServiceFunctionSequenceKeepsOnlyLatestReleasedCallerRoute,
+        "queued assignment never claims duplicate repeat or terminal of an earlier false DOWN" to ::queuedAssignmentNeverClaimsAnAlreadyPassedThroughGesture,
+        "cold orphan edges stay false while admitted captured and retired edges remain owned" to ::coldOrphanEdgesStayFalseWhileActualOwnedAndRetiredEdgesStayTrue,
+        "pass-through hold survives UI and changed removed missing-device transitions without learning" to ::passedThroughHoldSurvivesUiAndDeviceTransitionsWithoutLearning,
     )
     val failures = mutableListOf<String>()
     try {
