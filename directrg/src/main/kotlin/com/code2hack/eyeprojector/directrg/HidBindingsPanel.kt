@@ -25,9 +25,18 @@ internal class HidBindingsPanel(
         addView(TextView(context).apply { text = "HID key bindings"; textSize = 22f; setTextColor(Color.WHITE) })
         addView(message)
         for (action in HidAction.entries) {
-            val button = button().apply { setOnClickListener { input.beginCapture(action) } }
-            entries[action] = button
-            addView(button)
+            entries[action] = button().apply { setOnClickListener { input.beginCapture(action) } }
+        }
+        for ((action, assignmentButton) in entries) {
+            val clear = button().apply {
+                text = "Clear ${label(action)}"
+                contentDescription = "Clear ${label(action)} binding"
+                setOnClickListener { input.clearBinding(action); refresh() }
+            }
+            addView(LinearLayout(context).apply {
+                addView(assignmentButton, LayoutParams(0, -2, 1f))
+                addView(clear, LayoutParams(-2, -2))
+            })
         }
         addView(button().apply { text = "Back"; setOnClickListener { back() } })
         refresh()
@@ -41,8 +50,8 @@ internal class HidBindingsPanel(
             button.text = "${label(action)}: $assignment"
             button.isSelected = input.selected == action
         }
-        message.text = bindings.error ?: input.selected?.let { "Press and release a button for ${label(it)}." }
-            ?: "Select a control, then press and release its HID button."
+        message.text = bindings.error ?: input.selected?.let { "Press and release an external HID button for ${label(it)}." }
+            ?: "Select a control, then press and release an external HID button."
     }
     private fun button() = Button(context).apply {
         setTextColor(Color.WHITE)

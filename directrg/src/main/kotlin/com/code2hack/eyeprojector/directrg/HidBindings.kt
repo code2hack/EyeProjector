@@ -44,6 +44,22 @@ internal class HidBindings(read: () -> String?, private val write: (String) -> B
     fun assign(action: HidAction, binding: HidBinding): Boolean {
         val next = bindings.filterValues { it.button != binding.button }.toMutableMap()
         next[action] = binding
+        return save(next)
+    }
+
+    fun clear(action: HidAction): Boolean {
+        if (action !in bindings) return true
+        return save(bindings - action)
+    }
+
+    /** Remove only exact observed device identities; an unrelated observation never rewrites storage. */
+    fun clearDevices(devices: Set<HidDeviceIdentity>): Boolean {
+        val next = bindings.filterValues { it.button.device !in devices }
+        if (next.size == bindings.size) return true
+        return save(next)
+    }
+
+    private fun save(next: Map<HidAction, HidBinding>): Boolean {
         val saved = try {
             write(encode(next))
         } catch (_: Exception) {

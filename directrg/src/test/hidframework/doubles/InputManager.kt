@@ -1,6 +1,7 @@
 package android.hardware.input
 
 import android.os.Handler
+import android.view.InputDevice
 
 /** Observable registration and explicit delivery; no Android service or hardware is involved. */
 class InputManager {
@@ -10,6 +11,10 @@ class InputManager {
         fun onInputDeviceRemoved(deviceId: Int)
     }
     private val listeners = linkedSetOf<InputDeviceListener>()
+    val devices = linkedMapOf<Int, InputDevice>()
+    val inputDeviceIds get() = devices.keys.toIntArray()
+    fun getInputDevice(id: Int): InputDevice? = devices[id]
+    fun install(device: InputDevice) { devices[device.id] = device }
     var registrations = 0; private set
     var unregistrations = 0; private set
     var lastHandler: Handler? = null; private set

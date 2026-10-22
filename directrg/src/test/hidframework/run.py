@@ -16,6 +16,84 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def kotlin_block(source, marker):
+    """Select one exact production function; strings/comments cannot alter brace depth."""
+    matches = list(re.finditer(marker, source, re.MULTILINE))
+    if len(matches) != 1:
+        raise ValueError(f'Expected one production extraction marker {marker!r}, got {len(matches)}')
+    start = matches[0].start()
+    index = source.index('{', matches[0].end())
+    depth, quote = 0, None
+    while index < len(source):
+        if not quote and source.startswith('//', index):
+            end = source.find('\n', index)
+            index = len(source) if end < 0 else end
+            continue
+        if not quote and source.startswith('/*', index):
+            end = source.find('*/', index + 2)
+            if end < 0:
+                raise ValueError('Unterminated production comment')
+            index = end + 2
+            continue
+        char = source[index]
+        if quote:
+            if char == '\\':
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+        elif char in '\"\'':
+            quote = char
+        elif char == '{':
+            depth += 1
+        elif char == '}':
+            depth -= 1
+            if depth == 0:
+                return source[start:index + 1]
+        index += 1
+    raise ValueError('Unterminated production function')
+
+
+def receiver_key_fixture(receiver_source, native_source):
+    dispatch = kotlin_block(receiver_source, r'^    override fun dispatchKeyEvent\(')
+    normalize = kotlin_block(native_source, r'^internal fun nativePadKey\(')
+    boundary = '''package com.code2hack.eyeprojector.directrg
+import android.os.SystemClock
+import android.util.Log
+import android.view.KeyEvent
+
+// Only the Activity superclass, pointer and surrounding lifecycle/scheduling are doubled.
+// dispatchKeyEvent and nativePadKey below are exact production-source extractions.
+internal open class ReceiverKeyBoundary {
+    val fallthrough = mutableListOf<KeyEvent>()
+    open fun dispatchKeyEvent(event: KeyEvent): Boolean { fallthrough.add(event); return false }
+}
+internal class ReceiverKeyPointer {
+    var position = PointerPosition(100f, 200f, true)
+    var reads = 0
+    fun inputPosition(): PointerPosition { reads++; return position }
+}
+internal class ExtractedReceiverKeyIngress(private val input: HidKeyInput, adapter: AndroidHidInput) : ReceiverKeyBoundary() {
+    private lateinit var hidDevices: AndroidHidInput
+    val nativeActions = mutableListOf<PadGestureRecognizer.Action>()
+    val gestures = PadGestureRecognizer(500, 800) { nativeActions.add(it) }
+    val pointer = ReceiverKeyPointer()
+    val scheduled = mutableListOf<Long?>()
+    var padUps = 0L
+    var streaming = true
+    var available = true
+    var cancellations = 0
+    init { hidDevices = adapter }
+    private fun usable() = available
+    private fun schedulePadConfirmation() { scheduled.add(gestures.deadline) }
+    private fun cancelInput() { cancellations++; input.cancel(); gestures.cancel(SystemClock.uptimeMillis()) }
+'''
+    return boundary + dispatch + '\n}\n\n' + normalize + '\n', {
+        'dispatchKeyEvent': {'source': 'ReceiverActivity.kt', 'sha256': hashlib.sha256(dispatch.encode()).hexdigest()},
+        'nativePadKey': {'source': 'NativePadInput.kt', 'sha256': hashlib.sha256(normalize.encode()).hexdigest()},
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source-dir', type=Path, required=True)
@@ -33,8 +111,9 @@ def main():
         'LocalInputSettings.kt', 'LocalInputSettingsPanel.kt',
     )]
     suite_paths = sorted((suite / 'doubles').glob('*.kt')) + [suite / 'Scenarios.kt']
+    extraction_paths = [production / 'ReceiverActivity.kt', production / 'NativePadInput.kt']
     metadata_paths = [suite / 'run.py', suite / 'README.md']
-    all_paths = production_paths + suite_paths + metadata_paths
+    all_paths = production_paths + suite_paths + metadata_paths + extraction_paths
     for path in all_paths:
         if not path.is_file():
             parser.error(f'Missing complete source input: {path}')
@@ -51,10 +130,22 @@ def main():
         snapshot_entries.append({
             'path': str(relative), 'originalPath': str(path),
             'snapshotPath': str(snapshot.relative_to(out)),
-            'kind': 'production' if path in production_paths else 'suite',
-            'compiled': path not in metadata_paths,
+            'kind': 'production' if path in production_paths + extraction_paths else 'suite',
+            'compiled': path not in metadata_paths + extraction_paths,
             'sha256': hashlib.sha256(data).hexdigest(), 'bytes': len(data),
         })
+
+    receiver_snapshot = out / 'source-snapshot' / extraction_paths[0].relative_to(root)
+    native_snapshot = out / 'source-snapshot' / extraction_paths[1].relative_to(root)
+    extracted, extraction = receiver_key_fixture(receiver_snapshot.read_text(), native_snapshot.read_text())
+    generated = out / 'source-snapshot/generated/ExtractedReceiverKeyIngress.kt'
+    generated.parent.mkdir(parents=True, exist_ok=True)
+    generated.write_text(extracted)
+    snapshot_entries.append({
+        'path': 'generated/ExtractedReceiverKeyIngress.kt', 'originalPath': None,
+        'snapshotPath': str(generated.relative_to(out)), 'kind': 'extracted-production-with-boundaries',
+        'compiled': True, 'sha256': digest(generated), 'bytes': generated.stat().st_size,
+    })
 
     cache = Path(os.environ.get('GRADLE_USER_HOME', Path.home() / '.gradle')) / 'caches/modules-2/files-2.1'
     dependencies = (
@@ -98,14 +189,14 @@ def main():
         'compilerDependencies': [{'path': str(path), 'sha256': digest(path)} for path in jars],
         'java': str(Path(java).resolve()),
         'javaVersionLogSha256': digest(out / 'java-version.log'),
-        'productionExtraction': None,
+        'productionExtraction': extraction,
         'apiDoubles': 'Android only; actual production PointerPosition, pad event types and Function classifier compiled',
     }
     manifest_path = out / 'source-manifest.json'
     manifest_path.write_text(json.dumps(manifest, indent=2) + '\n')
     result = {
         'scope': 'Complete actual Android HID adapter/bindings panel, local settings model/panel including HID entrance, '
-                 'and binding/key/Function sources on explicit host Android API doubles; no full Activity routing or actual framework/device delivery, '
+                 'and binding/key/Function sources plus exact Receiver dispatchKeyEvent/nativePadKey source on explicit host Android API doubles; no full Activity or actual framework/device delivery, '
                  'HID identity stability, physical input, native target, navigation or suppression proof',
         'compileExit': None, 'scenariosExit': None,
         'sourceManifestSha256': digest(manifest_path),
