@@ -17,11 +17,13 @@ open class View(val context: Context) {
     var hostVisibleRect: Rect? = null
     var hostGlobalOffsetX = 0
     var hostGlobalOffsetY = 0
+    var visibleRectReads = 0; private set
     val isShown: Boolean get() = visibility == VISIBLE && hostParent?.isShown != false
     var stateDescription: CharSequence? = null
     var contentDescription: CharSequence? = null
     fun setBackgroundColor(value: Int) { backgroundColor = value }
     fun getGlobalVisibleRect(rect: Rect, offset: Point? = null): Boolean {
+        visibleRectReads++
         val visible = hostVisibleRect ?: return false
         if (!isShown || visible.left >= visible.right || visible.top >= visible.bottom) return false
         rect.set(visible)

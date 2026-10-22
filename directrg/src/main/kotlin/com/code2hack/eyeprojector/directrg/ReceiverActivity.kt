@@ -203,7 +203,10 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             { if (::hidPanel.isInitialized) hidPanel.refresh() },
             ::hoveredHidAction,
         )
-        hidDevices = AndroidHidInput(this, hidInput)
+        hidDevices = AndroidHidInput(this, hidInput) { event ->
+            if (::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE && connectionView.visibility == View.VISIBLE)
+                hidPanel.received(event)
+        }
         hidPanel = HidBindingsPanel(this, hidBindings, hidInput, ::showControlPanel).apply { visibility = View.GONE }
         localButtons.addAll(hidPanel.buttons)
         (connectionView.getChildAt(0) as LinearLayout).addView(hidPanel)
@@ -261,18 +264,28 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         connectionView.scrollTo(0, 0)
         resize()
     }
-    private fun hoveredHidAction(): HidAction? {
-        if (!usable() || !::hidPanel.isInitialized || hidPanel.visibility != View.VISIBLE ||
-            connectionView.visibility != View.VISIBLE) return null
+    private fun hoveredHidAction(trace: HidDecisionTrace.Event? = null): HidAction? {
+        if (!HidDecisionTrace.observed(trace, HidDecisionTrace.Step.HOVER_USABLE_BEFORE, usable()) ||
+            !HidDecisionTrace.observed(trace, HidDecisionTrace.Step.HOVER_INITIALIZED, ::hidPanel.isInitialized) ||
+            HidDecisionTrace.observed(trace, HidDecisionTrace.Step.HOVER_PAGE_HIDDEN, hidPanel.visibility != View.VISIBLE) ||
+            HidDecisionTrace.observed(trace, HidDecisionTrace.Step.HOVER_CONNECTION_HIDDEN, connectionView.visibility != View.VISIBLE)) return null
         val admitted = inputGeneration
         val source = session
         val projected = projectionContext
         val panel = hidPanel
         val point = pointer.inputPosition()
-        if (inputGeneration != admitted || !usable() || session !== source || projectionContext != projected ||
-            hidPanel !== panel || panel.visibility != View.VISIBLE || connectionView.visibility != View.VISIBLE) return null
-        return panel.actionAt(point, root)
+        trace?.record(HidDecisionTrace.Step.HOVER_POINT, point = point)
+        val after = inputGeneration
+        if (HidDecisionTrace.observed(trace, HidDecisionTrace.Step.HOVER_GENERATION_CHANGED, after != admitted, before = admitted, after = after) ||
+            !HidDecisionTrace.observed(trace, HidDecisionTrace.Step.HOVER_USABLE_AFTER, usable()) ||
+            HidDecisionTrace.observed(trace, HidDecisionTrace.Step.HOVER_SESSION_CHANGED, session !== source) ||
+            HidDecisionTrace.observed(trace, HidDecisionTrace.Step.HOVER_PROJECTION_CHANGED, projectionContext != projected) ||
+            HidDecisionTrace.observed(trace, HidDecisionTrace.Step.HOVER_PANEL_CHANGED, hidPanel !== panel) ||
+            HidDecisionTrace.observed(trace, HidDecisionTrace.Step.HOVER_PAGE_HIDDEN_AFTER, panel.visibility != View.VISIBLE) ||
+            HidDecisionTrace.observed(trace, HidDecisionTrace.Step.HOVER_CONNECTION_HIDDEN_AFTER, connectionView.visibility != View.VISIBLE)) return null
+        return panel.actionAt(point, root, trace)
     }
+
     private fun showHidBindings() {
         cancelInput()
         mainControls.visibility = View.GONE
@@ -414,7 +427,13 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (::hidDevices.isInitialized && hidDevices.accept(event)) return true
+        val trace = HidDecisionTrace.capture {
+            if (::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE && connectionView.visibility == View.VISIBLE)
+                HidDecisionTrace.Event(event.deviceId, event.keyCode, event.scanCode, event.action, event.repeatCount,
+                    event.isCanceled, event.downTime, event.eventTime).also { it.record(HidDecisionTrace.Step.ARRIVAL) }
+            else null
+        }
+        if (::hidDevices.isInitialized && hidDevices.accept(event, trace)) return true
         val padKey = nativePadKey(event.device?.name, event.source, event.keyCode)
         // Retired pad summaries must be consumed even after Disconnect. Only an
         // ordinary non-pad Back falls through to the disconnected Activity.

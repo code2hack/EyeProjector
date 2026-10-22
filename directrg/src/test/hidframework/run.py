@@ -56,14 +56,23 @@ def kotlin_block(source, marker):
 
 def receiver_key_fixture(receiver_source, native_source):
     dispatch = kotlin_block(receiver_source, r'^    override fun dispatchKeyEvent\(')
+    hovered = kotlin_block(receiver_source, r'^    private fun hoveredHidAction\(')
+    received_initializer = kotlin_block(receiver_source, r'^        hidDevices = AndroidHidInput\(this, hidInput\)')
+    received_match = re.fullmatch(r'        hidDevices = AndroidHidInput\(this, hidInput\) \{ event ->(?P<body>[\s\S]*)\}', received_initializer)
+    if not received_match:
+        raise ValueError('Expected the exact production received callback signature')
+    received_body = received_match.group('body')
+    received_method = '    fun receivedForTest(event: HidKeyInput.Event) {' + received_body + '}\n'
     normalize = kotlin_block(native_source, r'^internal fun nativePadKey\(')
     boundary = '''package com.code2hack.eyeprojector.directrg
 import android.os.SystemClock
+import android.content.Context
 import android.util.Log
 import android.view.KeyEvent
+import android.view.View
 
 // Only the Activity superclass, pointer and surrounding lifecycle/scheduling are doubled.
-// dispatchKeyEvent and nativePadKey below are exact production-source extractions.
+// Key dispatch, hover, received callback body and native mapper are actual source extractions.
 internal open class ReceiverKeyBoundary {
     val fallthrough = mutableListOf<KeyEvent>()
     open fun dispatchKeyEvent(event: KeyEvent): Boolean { fallthrough.add(event); return false }
@@ -83,13 +92,23 @@ internal class ExtractedReceiverKeyIngress(private val input: HidKeyInput, adapt
     var streaming = true
     var available = true
     var cancellations = 0
+    var inputGeneration = 0L
+    var session: Any? = Any()
+    var projectionContext = false
+    lateinit var hidPanel: HidBindingsPanel
+    lateinit var root: View
+    val connectionView = View(Context())
     init { hidDevices = adapter }
+    fun hoveredForTest(trace: HidDecisionTrace.Event?): HidAction? = hoveredHidAction(trace)
     private fun usable() = available
     private fun schedulePadConfirmation() { scheduled.add(gestures.deadline) }
     private fun cancelInput() { cancellations++; input.cancel(); gestures.cancel(SystemClock.uptimeMillis()) }
 '''
-    return boundary + dispatch + '\n}\n\n' + normalize + '\n', {
+    return boundary + received_method + dispatch + '\n' + hovered + '\n}\n\n' + normalize + '\n', {
         'dispatchKeyEvent': {'source': 'ReceiverActivity.kt', 'sha256': hashlib.sha256(dispatch.encode()).hexdigest()},
+        'hoveredHidAction': {'source': 'ReceiverActivity.kt', 'sha256': hashlib.sha256(hovered.encode()).hexdigest()},
+        'receivedInitializer': {'source': 'ReceiverActivity.kt', 'sha256': hashlib.sha256(received_initializer.encode()).hexdigest(),
+                                'bodySha256': hashlib.sha256(received_body.encode()).hexdigest()},
         'nativePadKey': {'source': 'NativePadInput.kt', 'sha256': hashlib.sha256(normalize.encode()).hexdigest()},
     }
 
@@ -106,7 +125,7 @@ def main():
     suite = root / 'directrg/src/test/hidframework'
     production = root / 'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg'
     production_paths = [production / name for name in (
-        'AndroidHidInput.kt', 'HidBindingsPanel.kt', 'HidKeyInput.kt', 'HidBindings.kt',
+        'AndroidHidInput.kt', 'HidBindingsPanel.kt', 'HidKeyInput.kt', 'HidBindings.kt', 'HidDecisionTrace.kt',
         'FunctionGestureRecognizer.kt', 'PadGestureRecognizer.kt', 'HeadPointerModel.kt', 'HeadOrientation.kt',
         'LocalInputSettings.kt', 'LocalInputSettingsPanel.kt',
     )]
