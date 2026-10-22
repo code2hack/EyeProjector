@@ -20,13 +20,28 @@ internal object ProjectionLaunchCommands {
     const val HOME_PACKAGE = "com.code2hack.eyeprojector.directhost"
     const val HOME_COMPONENT = "$HOME_PACKAGE/.ProjectedHomeActivity"
 
-    fun launch(displayId: Int, packageName: String, home: Boolean, context: ProjectionContext = ProjectionContext()): List<String> =
+    fun resolve(packageName: String): List<String> = listOf("/system/bin/cmd", "package", "resolve-activity", "--brief",
+        "--user", "current", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER", "-p", packageName)
+
+    /** The brief resolver prints metadata followed by one flattened ComponentName. */
+    fun resolvedComponent(result: ProjectionCommandResult, packageName: String): String? {
+        if (result.exit != 0 || result.timedOut) return null
+        val parts = result.output.lineSequence().map { it.trim() }.filter { '/' in it }.singleOrNull()?.split('/') ?: return null
+        if (parts.size != 2 || parts[0] != packageName) return null
+        val activity = if (parts[1].startsWith('.')) packageName + parts[1] else parts[1]
+        if (!activity.split('.').all { part -> part.isNotEmpty() && Character.isJavaIdentifierStart(part[0]) &&
+                part.drop(1).all { Character.isJavaIdentifierPart(it) } }) return null
+        return "$packageName/$activity"
+    }
+
+    fun launch(displayId: Int, packageName: String, home: Boolean, context: ProjectionContext = ProjectionContext(),
+        resolvedComponent: String? = null): List<String> =
         listOf("/system/bin/cmd", "activity", "start-activity", "-W", "--display", displayId.toString(), "-f", "0x10000000") +
             if (home) listOf("--activity-clear-top", "-n", HOME_COMPONENT,
                 "--es", ProjectionContext.OWNER_EXTRA, context.ownerEpoch,
                 "--es", ProjectionContext.TOKEN_EXTRA, context.projectionToken)
             else listOf("--activity-reset-task-if-needed", "-a", "android.intent.action.MAIN",
-                "-c", "android.intent.category.LAUNCHER", "-p", packageName)
+                "-c", "android.intent.category.LAUNCHER", "-p", packageName, "-n", requireNotNull(resolvedComponent))
 
     /** Pinned NewDisplayCapture prints this before the first video session metadata. */
     fun displayId(log: String): Int? = Regex(
