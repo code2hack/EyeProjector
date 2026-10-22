@@ -10,8 +10,8 @@ Consume the relevant Rokid function-button reports and classify each complete si
 
 **Acceptance**
 
-- In projection, single returns to the chosen-app home, double sends Back, and triple opens the Glasses control panel while keeping the session/decoder/Surface connected.
-- In local panels/settings, single returns to the main panel, double performs local Back (returning to live projection when that is the preceding view), and triple exits to Rokid home and releases the session.
+- In projection, single sends Back, double returns to the chosen-app home, and triple opens the Glasses control panel while keeping the session/decoder/Surface connected.
+- In local panels/settings, single performs local Back (returning to live projection when that is the preceding view), double returns to the main panel, and triple exits to Rokid home and releases the session.
 - Long press performs no action; a double/triple sequence does not first execute constituent Home/Back actions.
 - Reclaimed gestures suppress competing system behavior, including the triple-click pairing action.
 - Exit/focus changes release interception and pending sequence state appropriately.
