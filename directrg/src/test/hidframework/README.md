@@ -18,6 +18,16 @@ resources and view/widget APIs are small observable host doubles. The scheduler
 advances one monotonic test clock and accepts absolute deadlines. No native pad
 normalizer is used for HID edges.
 
+The runner also snapshots the complete actual `ReceiverActivity.kt` and
+`NativePadInput.kt`, then extracts exactly their `dispatchKeyEvent` and
+`nativePadKey` functions with a unique-marker and balanced-brace parser. The
+generated source compiles those unchanged function bodies against the actual
+Android HID adapter, HID input and native pad recognizer. Only the surrounding
+Activity superclass, pointer, usability, scheduling and diagnostic sinks are
+explicit host boundaries. The manifest records both complete source snapshots,
+the extracted function hashes and the generated source bytes. Native dispatch is
+never reconstructed from a copied routing table.
+
 Scenarios exercise descriptor/vendor/product/key/scan identity and display name
 capture, whole-gesture capture consumption, Android repeat/long/cancel flags,
 unbound key fallthrough, listener start/stop/change/removal, persistence across a
@@ -55,6 +65,38 @@ Every named scenario runs even when another fails; the process
 fails after reporting all named failures, so matched
 parent RED evidence retains both new failures and existing control outcomes.
 
+The original 26 adapter/panel scenarios remain. Added correction scenarios use
+the Owner-authorized recorded inventory: internal `ROKID,PSOC-TP-R` and
+`qpnp_pon`, a virtual keyboard, and the external Nintendo Switch Right Joy-Con.
+The saved native key 83/scan 204 Function assignment and the three saved Joy-Con
+R1/A/X assignments are replayed as metadata/store inputs. These cases verify
+external/nonvirtual admission, explicit exclusion of the observed native device
+names even with a misleading external flag, capture and saved-binding bypass,
+startup/listener repair that removes only the invalid device identity, retained
+Joy-Con output, truthful failed repair and preservation of an unrelated active
+external hold or capture. Changed eligibility on an already owned external edge
+must cancel and consume that exact owner; a fresh excluded edge falls through.
+No descriptor pattern or device connection is inferred by these host cases.
+
+Visible Clear controls are located through the actual panel's registered button
+labels, so the same fixture can compile the preceding source and report its
+missing operation as a behavioral failure. Each action is cleared and reloaded
+independently, followed by reassignment. Clear also cancels capture, held and
+pending Function work; failed persistence keeps the old assignment and error
+visible until retry. Original structural checks accept the preceding direct
+button tree and the added assignment/Clear rows while verifying that every
+interactive descendant is registered and retains the existing black/light style.
+Separate assertions require the new external-HID learning instructions.
+
+The actual Receiver extraction checks native key 83 with its legacy saved
+Function assignment still present, both with an active HID capture and after a
+failed startup repair. The excluded adapter edge must reach the unchanged native
+`CONTACT` mapping and actual marker classifier, retaining its original
+timestamps and classification deadline; no HID Function or learned assignment
+may result. Another control presents the same numeric key and scan codes on an
+eligible external device and verifies capture plus actual HID Function output.
+The native mapper's existing key and source mappings are also retained controls.
+
 The actual settings panel checks preserve independent axis values, scroll steps,
 toggle state, persistent updates, bounds/disabled controls, failed-write behavior
 and change callbacks. The HID entrance must be present in the registered local
@@ -74,5 +116,7 @@ Host API doubles do not prove Android event delivery or framework behavior,
 peripheral descriptor stability or uniqueness, actual HID key identity, Bluetooth
 connection, physical press/release/repeat/reconnect, local head-pointer hit
 testing, native target hold/drag/scroll, default suppression or navigation on a
-device. The full `ReceiverActivity` and routing from its settings entrance are
-outside this suite. Core physical acceptance for issues 15, 16 and 17 remains open.
+device. The full `ReceiverActivity`, its target dispatch/lifecycle and routing
+from its settings entrance remain outside this suite; only the documented key
+ingress functions are extracted. Core physical acceptance for issues 15, 16 and
+17 remains open.

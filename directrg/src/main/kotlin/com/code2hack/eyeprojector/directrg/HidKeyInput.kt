@@ -46,6 +46,22 @@ internal class HidKeyInput(
         changed()
     }
 
+    fun clearBinding(action: HidAction): Boolean {
+        val saved = bindings.clear(action)
+        cancel()
+        changed()
+        return saved
+    }
+
+    /** Live Android device facts identify obsolete assignments; unrelated peripherals stay intact. */
+    fun clearInvalidBindings(devices: Set<HidDeviceIdentity>) {
+        if (HidAction.entries.none { bindings.binding(it)?.button?.device in devices }) return
+        bindings.clearDevices(devices)
+        if (capture?.event?.binding?.button?.device in devices ||
+            admissions.values.any { it.event.binding.button.device in devices }) cancel()
+        changed()
+    }
+
     fun accept(event: Event): Boolean {
         val key = Key(event.attachmentId, event.binding.button)
         suppressed[key]?.let { down ->

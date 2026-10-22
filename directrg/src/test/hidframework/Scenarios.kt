@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Looper
+import android.os.SystemClock
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.Gravity
@@ -25,6 +26,7 @@ private class Rig(initialRecord: String? = null, save: Boolean = true) {
     var now = 1000L
     var context: Any? = "local-bindings-view"
     var record = initialRecord
+    var writable = save
     var panel: HidBindingsPanel? = null
     var backs = 0
     var changed = 0
@@ -37,7 +39,7 @@ private class Rig(initialRecord: String? = null, save: Boolean = true) {
     val scrolls = mutableListOf<Scroll>()
     val functions = mutableListOf<FunctionGestureRecognizer.Action>()
     val point = PointerPosition(100f, 200f, true)
-    val bindings = HidBindings({ record }) { if (save) record = it; save }
+    val bindings = HidBindings({ record }) { if (writable) record = it; writable }
     val input = HidKeyInput(bindings, { now }, { context }, { at, callback ->
         val timer = Timer(at, timers.size, callback)
         timers.add(timer); queue.add(timer)
@@ -82,13 +84,68 @@ private class Rig(initialRecord: String? = null, save: Boolean = true) {
     val message get() = (panel!!.children[1] as TextView).text.toString()
 }
 
+private fun descendants(view: android.view.View): List<android.view.View> =
+    listOf(view) + if (view is LinearLayout) view.children.flatMap(::descendants) else emptyList()
+
+private fun clearControl(panel: HidBindingsPanel, action: HidAction): Button {
+    val label = when (action) {
+        HidAction.TAP -> "Tap"
+        HidAction.SCROLL_DOWN -> "Scroll down"
+        HidAction.SCROLL_UP -> "Scroll up"
+        HidAction.FUNCTION -> "Function button"
+    }
+    return checkNotNull(panel.buttons.singleOrNull { it.text.toString() == "Clear $label" }) {
+        "missing visible per-action Clear control for $label"
+    }
+}
+
+// Recorded USB379 input inventory and saved binding facts, replayed only as host metadata.
+private val nativePad379 = InputDevice(3, "e2d539294d58ad2f9f9b376dfde7ee6310670d2b", 0, 0,
+    "ROKID,PSOC-TP-R", isExternal = false)
+private val nativePower379 = InputDevice(2, "fb60d4f4370f5dbe8267b63d38dea852987571ab", 0, 0,
+    "qpnp_pon", isExternal = false)
+private val virtual379 = InputDevice(-1, "a718a782d34bc767f4689c232d64d527998ea7fd", 0, 0,
+    "Virtual", isExternal = false, isVirtual = true)
+private val joyCon379 = InputDevice(5, "970d9eedc8314011eae0438faa2afda1d6b2b5c5", 1406, 8199,
+    "Nintendo Switch Right Joy-Con", isExternal = true)
+private val joyConButtons379 = linkedMapOf(
+    HidAction.TAP to Pair(103, 311), HidAction.SCROLL_DOWN to Pair(96, 304), HidAction.SCROLL_UP to Pair(99, 307),
+)
+
+private fun actual379Record(): String {
+    val r = Rig()
+    for ((action, codes) in joyConButtons379) {
+        val label = when (action) {
+            HidAction.TAP -> "KEYCODE_BUTTON_R1"
+            HidAction.SCROLL_DOWN -> "KEYCODE_BUTTON_A"
+            HidAction.SCROLL_UP -> "KEYCODE_BUTTON_X"
+            else -> error("unexpected Joy-Con assignment")
+        }
+        check(r.bindings.assign(action, r.binding(joyCon379, codes.first, codes.second).copy(keyLabel = label)))
+    }
+    check(r.bindings.assign(HidAction.FUNCTION,
+        r.binding(nativePad379, 83, 204).copy(keyLabel = "KEYCODE_NOTIFICATION")))
+    return checkNotNull(r.record)
+}
+
+private fun assertJoyCon379Preserved(r: Rig) {
+    val restored = HidBindings({ r.record }) { error("readback does not mutate saved bindings") }
+    for ((action, codes) in joyConButtons379) {
+        val current = checkNotNull(r.bindings.binding(action)) { "$action Joy-Con assignment was removed" }
+        equal(HidButton(HidDeviceIdentity(joyCon379.descriptor, 1406, 8199), codes.first, codes.second),
+            current.button, "$action retains actual USB379 peripheral identity")
+        equal(current, restored.binding(action), "$action retains persisted assignment")
+    }
+}
+
 private fun capturesActualFactsAndConsumesWholeGesture() {
     val r = Rig()
     val panel = r.showPanel()
     check(panel.buttons[0].performClick())
     equal(HidAction.TAP, r.input.selected, "Tap button begins capture")
     check(panel.buttons[0].isSelected)
-    equal("Press and release a button for Tap.", r.message, "capture instruction")
+    check(r.message in setOf("Press and release a button for Tap.",
+        "Press and release an external HID button for Tap.")) { "capture instruction names the selected Tap action" }
     check(r.edge(KeyEvent.ACTION_DOWN, key = 194, scan = 813))
     check(r.bindings.binding(HidAction.TAP) == null)
     check(r.edge(KeyEvent.ACTION_DOWN, at = 1100, down = 1000, key = 194, scan = 813,
@@ -236,14 +293,16 @@ private fun panelShowsFourAssignmentsWithExistingBlackLightControls() {
     val panel = r.showPanel()
     equal(LinearLayout.VERTICAL, panel.orientation, "vertical controls")
     equal(Color.BLACK, panel.backgroundColor, "black panel")
-    equal(7, panel.children.size, "title, message, four assignments and Back")
     equal("HID key bindings", (panel.children[0] as TextView).text.toString(), "panel title")
     equal(22f, (panel.children[0] as TextView).textSize, "panel title size")
     equal(listOf("Tap: Unassigned", "Scroll down: Unassigned", "Scroll up: Unassigned", "Function button: Unassigned", "Back"),
-        panel.buttons.map { it.text.toString() }, "visible assignment labels")
-    equal("Select a control, then press and release its HID button.", r.message, "initial instruction")
-    equal(panel.children.drop(2), panel.buttons, "every interactive button registered for existing local hit testing")
-    for (child in panel.children) equal(Color.WHITE, (child as TextView).textColor, "light text")
+        panel.buttons.take(4).map { it.text.toString() } + panel.buttons.last().text.toString(), "visible assignment labels")
+    check(r.message in setOf("Select a control, then press and release its HID button.",
+        "Select a control, then press and release an external HID button.")) { "initial HID capture instruction" }
+    equal(descendants(panel).filterIsInstance<Button>().toSet(), panel.buttons.toSet(),
+        "every interactive button registered for existing local hit testing")
+    equal(panel.buttons.size, panel.buttons.toSet().size, "interactive controls registered once")
+    for (child in descendants(panel).filterIsInstance<TextView>()) equal(Color.WHITE, child.textColor, "light text")
     for (button in panel.buttons) {
         val background = button.background as GradientDrawable
         equal(Color.BLACK, background.fillColor, "black control")
@@ -658,6 +717,345 @@ private fun localSettingsPanelPreservesControlsAndOpensHidBindings() {
     }
 }
 
+private fun visibleClearControlsUnassignEachActionAndSurviveReload() {
+    for (action in HidAction.entries) {
+        val r = Rig()
+        HidAction.entries.forEach { r.assign(it, key = 190 + it.ordinal, scan = 700 + it.ordinal) }
+        val before = HidAction.entries.associateWith { r.bindings.binding(it) }
+        val panel = r.showPanel()
+        equal(9, panel.buttons.size, "four assign, four Clear and Back controls registered")
+        equal(4, panel.buttons.count { it.text.toString().startsWith("Clear ") }, "one visible Clear per action")
+        val control = clearControl(panel, action)
+        check(control.isEnabled)
+        equal("${control.text} binding", control.contentDescription.toString(), "Clear action accessibility description")
+        check(control.performClick())
+        equal(null, r.bindings.binding(action), "Clear removes only the selected action")
+        val restored = HidBindings({ r.record }) { error("reload must not write") }
+        for (other in HidAction.entries) equal(if (other == action) null else before[other],
+            restored.binding(other), "Clear $action preserves unrelated $other assignment on reload")
+        check(panel.buttons[action.ordinal].text.toString().endsWith(": Unassigned"))
+        equal(null, r.input.selected, "Clear retires capture selection")
+        // The ordinary assignment control can learn a fresh actual peripheral press after clearing.
+        check(panel.buttons[action.ordinal].performClick())
+        check(r.edge(KeyEvent.ACTION_DOWN, at = 1100, key = 210, scan = 800))
+        check(r.edge(KeyEvent.ACTION_UP, at = 1120, down = 1100, key = 210, scan = 800))
+        equal(r.binding(key = 210, scan = 800), r.bindings.binding(action), "cleared action remains assignable")
+        r.noOutput()
+    }
+}
+
+private fun clearCancelsHeldCaptureAndPendingFunctionWork() {
+    val held = Rig()
+    held.assign(HidAction.TAP)
+    val heldPanel = held.showPanel()
+    check(held.edge(KeyEvent.ACTION_DOWN))
+    check(clearControl(heldPanel, HidAction.TAP).performClick())
+    equal(1, held.cancels.size, "Clear cancels the existing held owner")
+    check(held.contacts.single().owner === held.cancels.single().owner)
+    check(held.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000))
+    equal(1, held.contacts.size, "cleared held release cannot send target UP")
+
+    val capture = Rig()
+    val capturePanel = capture.showPanel()
+    check(capturePanel.buttons[0].performClick())
+    check(capture.edge(KeyEvent.ACTION_DOWN, key = 4, scan = 158))
+    check(clearControl(capturePanel, HidAction.FUNCTION).performClick())
+    equal(null, capture.input.selected, "Clear of another action also retires the active capture")
+    check(capture.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000, key = 4, scan = 158))
+    check(HidAction.entries.all { capture.bindings.binding(it) == null })
+    capture.noOutput()
+
+    val function = Rig()
+    function.assign(HidAction.FUNCTION)
+    val functionPanel = function.showPanel()
+    check(function.edge(KeyEvent.ACTION_DOWN))
+    check(function.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000))
+    val staleTimers = function.timers.toList()
+    check(clearControl(functionPanel, HidAction.FUNCTION).performClick())
+    staleTimers.forEach { it.callback() }
+    function.advance(3000)
+    function.noOutput()
+    equal(null, function.bindings.binding(HidAction.FUNCTION), "Clear removes the pending Function assignment")
+}
+
+private fun failedClearRetainsStoredAssignmentAndReportsErrorUntilRetry() {
+    val r = Rig()
+    r.assign(HidAction.FUNCTION)
+    val panel = r.showPanel()
+    val before = r.record
+    val assignment = r.bindings.binding(HidAction.FUNCTION)
+    r.writable = false
+    check(panel.buttons[0].performClick())
+    check(r.edge(KeyEvent.ACTION_DOWN, key = 4, scan = 158))
+    check(clearControl(panel, HidAction.FUNCTION).performClick())
+    equal(null, r.input.selected, "failed Clear still retires the in-progress capture")
+    equal(before, r.record, "failed Clear preserves persisted bytes")
+    equal(assignment, r.bindings.binding(HidAction.FUNCTION), "failed Clear preserves effective assignment")
+    equal("HID bindings could not be saved. Try again.", r.message, "failed Clear displays truthful store error")
+    check(!panel.buttons[3].text.toString().endsWith(": Unassigned"))
+    check(r.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000, key = 4, scan = 158))
+    r.noOutput()
+    r.writable = true
+    check(clearControl(panel, HidAction.FUNCTION).performClick())
+    equal(null, r.bindings.binding(HidAction.FUNCTION), "successful retry removes assignment")
+    equal(null, HidBindings({ r.record }) { false }.binding(HidAction.FUNCTION), "successful retry persists removal")
+    check(!r.message.contains("could not be saved"))
+}
+
+private fun excludedDeviceCannotLearnOrDispatchHid(device: InputDevice) {
+    val capture = Rig()
+    val panel = capture.showPanel()
+    check(panel.buttons[3].performClick())
+    check(!capture.edge(KeyEvent.ACTION_DOWN, key = 83, scan = 204, device = device)) {
+        "excluded ${device.name} DOWN must remain available to native dispatch"
+    }
+    check(!capture.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000, key = 83, scan = 204, device = device))
+    equal(null, capture.bindings.binding(HidAction.FUNCTION), "excluded device is never learned")
+    equal(null, capture.record, "excluded capture does not create a saved binding")
+    capture.advance(3000)
+    capture.noOutput()
+
+    // Replaying legacy saved bytes is distinct from trying to learn a new assignment.
+    val seeded = Rig()
+    seeded.assign(HidAction.FUNCTION, key = 83, scan = 204, device = device)
+    val saved = Rig(seeded.record)
+    check(!saved.edge(KeyEvent.ACTION_DOWN, key = 83, scan = 204, device = device))
+    check(!saved.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000, key = 83, scan = 204, device = device))
+    saved.advance(3000)
+    saved.noOutput()
+}
+
+private fun startupRepairRemovesOnlyTheRecordedNativeFunctionAndPreservesJoyCon() {
+    val original = actual379Record()
+    val r = Rig(original)
+    r.android.inputManager.install(nativePad379)
+    r.android.inputManager.install(nativePower379)
+    r.android.inputManager.install(virtual379)
+    r.android.inputManager.install(joyCon379)
+    r.adapter.start()
+    equal(null, r.bindings.binding(HidAction.FUNCTION), "startup repairs actual saved native key83 Function binding")
+    check(r.record != original)
+    equal(null, HidBindings({ r.record }) { false }.binding(HidAction.FUNCTION), "native repair persists")
+    assertJoyCon379Preserved(r)
+    r.adapter.stop()
+    r.noOutput()
+
+    // A fresh adapter/store must retain the repair, not recreate the native assignment.
+    val restarted = Rig(r.record)
+    restarted.android.inputManager.install(nativePad379)
+    restarted.android.inputManager.install(joyCon379)
+    restarted.adapter.start()
+    equal(r.record, restarted.record, "repaired record is stable on restart")
+    assertJoyCon379Preserved(restarted)
+    restarted.adapter.stop()
+}
+
+private fun listenerRepairBlocksNativeAndPreservesAllThreeJoyConActions() {
+    for (change in listOf(false, true)) {
+        val r = Rig(actual379Record())
+        r.adapter.start() // No excluded inventory exists until its observed listener event below.
+        r.android.inputManager.install(nativePad379)
+        if (change) r.android.inputManager.change(nativePad379.id) else r.android.inputManager.add(nativePad379.id)
+        check(!r.edge(KeyEvent.ACTION_DOWN, key = 83, scan = 204, device = nativePad379))
+        check(!r.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000, key = 83, scan = 204, device = nativePad379))
+        equal(null, r.bindings.binding(HidAction.FUNCTION), "observed attachment add/change repairs native mapping")
+        assertJoyCon379Preserved(r)
+        r.noOutput()
+        check(r.edge(KeyEvent.ACTION_DOWN, at = 1100, key = 103, scan = 311, device = joyCon379))
+        check(r.edge(KeyEvent.ACTION_UP, at = 1120, down = 1100, key = 103, scan = 311, device = joyCon379))
+        equal(listOf(PadGestureRecognizer.Phase.DOWN, PadGestureRecognizer.Phase.UP),
+            r.contacts.map { it.event.phase }, "actual saved Joy-Con R1 retains held ingress")
+        equal(listOf(1100L, 1120L), r.contacts.map { it.event.timeMs }, "Joy-Con R1 actual event times")
+        check(r.edge(KeyEvent.ACTION_DOWN, at = 1200, key = 96, scan = 304, device = joyCon379))
+        check(r.edge(KeyEvent.ACTION_UP, at = 1220, down = 1200, key = 96, scan = 304, device = joyCon379))
+        check(r.edge(KeyEvent.ACTION_DOWN, at = 1300, key = 99, scan = 307, device = joyCon379))
+        check(r.edge(KeyEvent.ACTION_UP, at = 1320, down = 1300, key = 99, scan = 307, device = joyCon379))
+        equal(listOf(160, -160), r.scrolls.map { it.pixels }, "actual saved Joy-Con A/X retain scroll direction")
+        equal(listOf(1220L, 1320L), r.scrolls.map { it.time }, "Joy-Con A/X retain actual release times")
+        assertJoyCon379Preserved(r)
+        check(r.functions.isEmpty() && r.timers.isEmpty())
+        r.adapter.stop()
+    }
+}
+
+private fun failedLegacyRepairKeepsRecordAndErrorButNeverDispatchesNativeHid() {
+    for (route in listOf("startup", "added", "changed")) {
+        val original = actual379Record()
+        val r = Rig(original, save = false)
+        val panel = r.showPanel()
+        r.android.inputManager.install(joyCon379)
+        if (route == "startup") {
+            r.android.inputManager.install(nativePad379)
+            r.adapter.start()
+        } else {
+            r.adapter.start()
+            r.android.inputManager.install(nativePad379)
+            if (route == "changed") r.android.inputManager.change(nativePad379.id)
+            else r.android.inputManager.add(nativePad379.id)
+        }
+        check(!r.edge(KeyEvent.ACTION_DOWN, key = 83, scan = 204, device = nativePad379))
+        check(!r.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000, key = 83, scan = 204, device = nativePad379))
+        equal(original, r.record, "failed native repair preserves persisted bytes")
+        check(r.bindings.binding(HidAction.FUNCTION) != null)
+        equal("HID bindings could not be saved. Try again.", r.bindings.error, "failed native repair reports error")
+        panel.refresh()
+        equal(r.bindings.error, r.message, "failed repair error remains visible")
+        check(!panel.buttons[3].text.toString().endsWith(": Unassigned"))
+        assertJoyCon379Preserved(r)
+        r.advance(2000)
+        r.noOutput()
+        // Save failure must not disable unrelated real external mappings.
+        check(r.edge(KeyEvent.ACTION_DOWN, at = 2100, key = 103, scan = 311, device = joyCon379))
+        check(r.edge(KeyEvent.ACTION_UP, at = 2120, down = 2100, key = 103, scan = 311, device = joyCon379))
+        equal(listOf(PadGestureRecognizer.Phase.DOWN, PadGestureRecognizer.Phase.UP),
+            r.contacts.map { it.event.phase }, "Joy-Con remains usable despite repair failure")
+        equal(original, r.record, "external dispatch does not silently rewrite failed repair")
+        r.adapter.stop()
+    }
+}
+
+private fun receiverNativeKey83RetainsContactMarkerRoute(capturing: Boolean, saveFailure: Boolean) {
+    val original = actual379Record()
+    val r = Rig(original, save = !saveFailure)
+    if (saveFailure) {
+        r.android.inputManager.install(nativePad379)
+        r.adapter.start()
+        equal("HID bindings could not be saved. Try again.", r.bindings.error, "failed startup repair remains observable")
+    }
+    check(r.bindings.binding(HidAction.FUNCTION) != null) { "native legacy assignment must exist before the Receiver dispatch probe" }
+    if (capturing) check(r.showPanel().buttons[0].performClick())
+    val receiver = ExtractedReceiverKeyIngress(r.input, r.adapter)
+    equal(PadGestureRecognizer.Key.CONTACT, nativePadKey(nativePad379.name, 0x101, 83),
+        "exact native mapper retains key83 CONTACT")
+    fun edge(action: Int, at: Long, down: Long) {
+        r.now = at; SystemClock.now = at
+        check(receiver.dispatchKeyEvent(KeyEvent(nativePad379, action, 83, 204, down, at, source = 0x101)))
+    }
+    edge(KeyEvent.ACTION_DOWN, 1000, 1000)
+    edge(KeyEvent.ACTION_UP, 1020, 1000)
+    equal(1L, receiver.padUps, "excluded native key83 UP reaches exact Receiver native branch")
+    equal(2020L, receiver.gestures.deadline, "native CONTACT marker retains classification deadline")
+    check(receiver.fallthrough.isEmpty())
+    check(receiver.nativeActions.isEmpty())
+    receiver.gestures.confirm(2019)
+    check(receiver.nativeActions.isEmpty())
+    receiver.gestures.confirm(2020)
+    val action = receiver.nativeActions.single() as PadGestureRecognizer.Action.Tap
+    equal(PadGestureRecognizer.Timing.CONTACT_MARKER, action.timing, "native contact marker classifier remains actual")
+    equal(listOf(1000L, 1020L, 2020L), listOf(action.downTimeMs, action.upTimeMs, action.timeMs),
+        "native original timestamps and arbitration remain unchanged")
+    r.advance(3000)
+    r.noOutput()
+    assertJoyCon379Preserved(r)
+    equal(103, r.bindings.binding(HidAction.TAP)?.button?.keyCode,
+        "native key83 cannot replace the saved Joy-Con TAP during capture")
+    equal(original, r.record, "native key dispatch itself does not rewrite the saved record")
+    check(r.bindings.binding(HidAction.FUNCTION) != null) { "excluded saved mapping remains harmless before successful startup repair" }
+    if (saveFailure) r.adapter.stop()
+}
+
+private fun startupRepairPreservesUnrelatedActiveExternalHoldAndCapture() {
+    for (capture in listOf(false, true)) {
+        val r = Rig(actual379Record())
+        r.android.inputManager.install(nativePad379)
+        r.android.inputManager.install(joyCon379)
+        if (capture) {
+            check(r.showPanel().buttons[3].performClick())
+            check(r.edge(KeyEvent.ACTION_DOWN, key = 195, scan = 700))
+        } else check(r.edge(KeyEvent.ACTION_DOWN, key = 103, scan = 311, device = joyCon379))
+        r.adapter.start()
+        equal(null, r.bindings.binding(HidAction.FUNCTION), "startup removes only the unrelated saved native Function assignment")
+        check(r.cancels.isEmpty()) { "repair of another identity canceled an actual external hold/capture" }
+        if (capture) {
+            equal(HidAction.FUNCTION, r.input.selected, "in-progress external capture survives unrelated native repair")
+            check(r.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000, key = 195, scan = 700))
+            equal(r.binding(), r.bindings.binding(HidAction.FUNCTION), "surviving capture saves its own external DOWN facts")
+            r.noOutput()
+        } else {
+            check(r.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000, key = 103, scan = 311, device = joyCon379))
+            equal(listOf(PadGestureRecognizer.Phase.DOWN, PadGestureRecognizer.Phase.UP),
+                r.contacts.map { it.event.phase }, "unrelated repair preserves the exact external held route")
+            check(r.contacts[0].owner === r.contacts[1].owner)
+        }
+        assertJoyCon379Preserved(r)
+        r.adapter.stop()
+    }
+}
+
+private fun newlyExcludedMetadataRetiresOnlyAlreadyOwnedExternalEdges() {
+    val changes = listOf<(InputDevice) -> InputDevice>(
+        { it.copy(isExternal = false) }, { it.copy(isVirtual = true) }, { it.copy(name = nativePad379.name) },
+    )
+    for (changed in changes) {
+        for (capture in listOf(false, true)) {
+            val r = Rig()
+            if (capture) check(r.showPanel().buttons[0].performClick()) else r.assign(HidAction.TAP)
+            check(r.edge(KeyEvent.ACTION_DOWN))
+            val excluded = changed(r.device)
+            check(r.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000, device = excluded)) {
+                "already owned external release remains consumed after eligibility metadata changes"
+            }
+            if (capture) {
+                equal(null, r.input.selected, "newly excluded captured owner is retired")
+                equal(null, r.record, "newly excluded captured identity is never saved")
+                r.noOutput()
+            } else {
+                equal(1, r.contacts.size, "newly excluded final release cannot emit target UP")
+                equal(1, r.cancels.size, "newly excluded existing hold is canceled")
+                check(r.contacts.single().owner === r.cancels.single().owner)
+            }
+            check(!r.edge(KeyEvent.ACTION_DOWN, at = 1100, device = excluded)) {
+                "fresh excluded input is available to the ordinary native route"
+            }
+        }
+    }
+}
+
+private fun panelExplicitlyRequestsExternalHidButtons() {
+    val r = Rig()
+    val panel = r.showPanel()
+    equal("Select a control, then press and release an external HID button.", r.message,
+        "idle instructions identify external-only learning")
+    check(panel.buttons[3].performClick())
+    equal("Press and release an external HID button for Function button.", r.message,
+        "capture instructions identify external-only learning")
+}
+
+private fun receiverExternalSameKeyCodeRemainsEligibleForCaptureAndFunction() {
+    val capture = Rig()
+    val panel = capture.showPanel()
+    check(panel.buttons[3].performClick())
+    val receiver = ExtractedReceiverKeyIngress(capture.input, capture.adapter)
+    fun edge(r: Rig, target: ExtractedReceiverKeyIngress, action: Int, at: Long, down: Long) {
+        r.now = at; SystemClock.now = at
+        check(target.dispatchKeyEvent(KeyEvent(r.device, action, 83, 204, down, at)))
+    }
+    edge(capture, receiver, KeyEvent.ACTION_DOWN, 1000, 1000)
+    edge(capture, receiver, KeyEvent.ACTION_UP, 1020, 1000)
+    equal(capture.binding(key = 83, scan = 204), capture.bindings.binding(HidAction.FUNCTION),
+        "an actual external device with key83 can still be learned")
+    capture.noOutput()
+    check(receiver.nativeActions.isEmpty() && receiver.scheduled.isEmpty() && receiver.fallthrough.isEmpty())
+    equal(0L, receiver.padUps, "external key83 is owned by HID before native normalization")
+    edge(capture, receiver, KeyEvent.ACTION_DOWN, 1100, 1100)
+    edge(capture, receiver, KeyEvent.ACTION_UP, 1120, 1100)
+    capture.advance(1620)
+    equal(listOf(FunctionGestureRecognizer.Action.SINGLE), capture.functions, "external key83 retains Function classification")
+    check(receiver.nativeActions.isEmpty() && receiver.scheduled.isEmpty() && receiver.fallthrough.isEmpty())
+}
+
+private fun extractedNativeMappingRetainsRecordedNativeControls() {
+    val codes = linkedMapOf(83 to PadGestureRecognizer.Key.CONTACT, 66 to PadGestureRecognizer.Key.TAP,
+        291 to PadGestureRecognizer.Key.DOUBLE, 4 to PadGestureRecognizer.Key.DOUBLE,
+        22 to PadGestureRecognizer.Key.FORWARD, 21 to PadGestureRecognizer.Key.BACKWARD,
+        292 to PadGestureRecognizer.Key.FORWARD_ALIAS, 293 to PadGestureRecognizer.Key.BACKWARD_ALIAS,
+        20 to PadGestureRecognizer.Key.FORWARD_TAIL, 19 to PadGestureRecognizer.Key.BACKWARD_TAIL)
+    for ((code, expected) in codes) equal(expected, nativePadKey(nativePad379.name, 0x101, code),
+        "actual native mapper retains recorded key $code")
+    equal(null, nativePadKey(joyCon379.name, 0x101, 83), "external device is not renamed as native pad")
+    equal(null, nativePadKey(nativePad379.name, 0, 83), "native source qualification stays actual")
+}
+
 fun main() {
     val scenarios = linkedMapOf<String, () -> Unit>(
         "actual Android device/button facts and complete capture ownership" to ::capturesActualFactsAndConsumesWholeGesture,
@@ -674,7 +1072,38 @@ fun main() {
         "changed facts preserve unrelated key/scan/downTime/attachment and fresh DOWN fallthrough" to ::changedFactsUnrelatedRuntimeEdgesDoNotRetireCapture,
         "changed-facts and missing-device captured release stays consumed across nested fresh same-key capture" to ::changedFactsReleaseStaysConsumedWhenCancelCallbackStartsFreshCapture,
         "actual local settings preserve values, bounds and callbacks with HID entrance" to ::localSettingsPanelPreservesControlsAndOpensHidBindings,
+        "visible per-action Clear unassigns only its action and supports fresh reassignment" to ::visibleClearControlsUnassignEachActionAndSurviveReload,
+        "Clear retires held, capture and pending Function ownership" to ::clearCancelsHeldCaptureAndPendingFunctionWork,
+        "failed Clear retains assignment, saved bytes and visible error until retry" to ::failedClearRetainsStoredAssignmentAndReportsErrorUntilRetry,
+        "startup repairs recorded native key83 Function and preserves all Joy-Con assignments" to ::startupRepairRemovesOnlyTheRecordedNativeFunctionAndPreservesJoyCon,
+        "InputManager add/change repairs native binding and actual Joy-Con R1/A/X still dispatch" to ::listenerRepairBlocksNativeAndPreservesAllThreeJoyConActions,
+        "failed legacy repair remains truthful while native HID is always blocked" to ::failedLegacyRepairKeepsRecordAndErrorButNeverDispatchesNativeHid,
+        "unrelated legacy repair preserves an active external hold and captured gesture" to ::startupRepairPreservesUnrelatedActiveExternalHoldAndCapture,
+        "changed eligibility retires already owned external edges and fresh excluded events fall through" to ::newlyExcludedMetadataRetiresOnlyAlreadyOwnedExternalEdges,
+        "visible learning instructions explicitly request external HID buttons" to ::panelExplicitlyRequestsExternalHidButtons,
+        "actual extracted native mapper preserves all recorded native keys and source qualification" to ::extractedNativeMappingRetainsRecordedNativeControls,
+        "actual Receiver permits external key83 capture and Function dispatch" to ::receiverExternalSameKeyCodeRemainsEligibleForCaptureAndFunction,
     )
+    val excluded = linkedMapOf(
+        "recorded internal Rokid pad" to nativePad379,
+        "recorded internal qpnp_pon" to nativePower379,
+        "recorded virtual keyboard" to virtual379,
+        "virtual keyboard falsely marked external" to virtual379.copy(isExternal = true),
+        "Rokid pad falsely marked external" to nativePad379.copy(isExternal = true),
+        "qpnp_pon falsely marked external" to nativePower379.copy(isExternal = true),
+        "unrelated internal keyboard" to InputDevice(45, "host:internal:keyboard", 17, 29,
+            "Internal keyboard fixture", isExternal = false),
+    )
+    for ((name, device) in excluded)
+        scenarios["excluded $name never learns or dispatches a saved HID Function"] = {
+            excludedDeviceCannotLearnOrDispatchHid(device)
+        }
+    for (capturing in listOf(false, true)) {
+        for (saveFailure in listOf(false, true))
+            scenarios["actual Receiver native key83 CONTACT capture=$capturing failedRepair=$saveFailure"] = {
+                receiverNativeKey83RetainsContactMarkerRoute(capturing, saveFailure)
+            }
+    }
     val changedFacts = linkedMapOf<String, (InputDevice) -> InputDevice>(
         "descriptor" to { it.copy(descriptor = "actual:changed:descriptor") },
         "vendor" to { it.copy(vendorId = 99) },
