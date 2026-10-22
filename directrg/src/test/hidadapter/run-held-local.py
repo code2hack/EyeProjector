@@ -108,7 +108,7 @@ internal class IngressPanel {
     var rowBounds = PointerBounds(0f, 0f, 100f, 40f)
     var hitTests = 0
     fun refresh() = Unit
-    fun actionAt(point: PointerPosition, root: View): HidAction? {
+    fun actionAt(point: PointerPosition, root: View, trace: HidDecisionTrace.Event? = null): HidAction? {
         hitTests++
         if (!point.available || !point.x.isFinite() || !point.y.isFinite() ||
             point.x < 0f || point.y < 0f || point.x >= root.width || point.y >= root.height) return null
@@ -198,7 +198,8 @@ def main():
     if args.source_activity:
         activity_bytes = args.source_activity.resolve().read_bytes()
         generated, blocks = extract_driver(activity_bytes.decode(), out)
-        sources += [actual / name for name in ('HidBindings.kt', 'HidKeyInput.kt', 'FunctionGestureRecognizer.kt')]
+        sources += [actual / name for name in ('HidBindings.kt', 'HidKeyInput.kt', 'FunctionGestureRecognizer.kt', 'HidDecisionTrace.kt')]
+        sources += [root / 'directrg/src/test/hidframework/doubles' / name for name in ('Point.kt', 'Rect.kt')]
         sources += [generated, suite / 'HidIngressScenarios.kt']
     cache = Path(os.environ.get('GRADLE_USER_HOME', Path.home() / '.gradle')) / 'caches/modules-2/files-2.1'
     dependencies = [('org.jetbrains.kotlin', 'kotlin-compiler-embeddable', '2.2.21'),

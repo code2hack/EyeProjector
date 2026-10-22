@@ -8,6 +8,7 @@ open class TextView(context: Context) : View(context) {
     var text: CharSequence = ""
     var textSize = 0f
     var gravity = 0
+    var maxLines = Int.MAX_VALUE
     var textColor = 0; private set
     var textColors: ColorStateList? = null; private set
     fun setTextColor(value: Int) { textColor = value }

@@ -13,7 +13,8 @@ class InputManager {
     private val listeners = linkedSetOf<InputDeviceListener>()
     val devices = linkedMapOf<Int, InputDevice>()
     val inputDeviceIds get() = devices.keys.toIntArray()
-    fun getInputDevice(id: Int): InputDevice? = devices[id]
+    var deviceReads = 0; private set
+    fun getInputDevice(id: Int): InputDevice? { deviceReads++; return devices[id] }
     fun install(device: InputDevice) { devices[device.id] = device }
     var registrations = 0; private set
     var unregistrations = 0; private set

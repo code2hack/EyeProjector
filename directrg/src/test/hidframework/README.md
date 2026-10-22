@@ -9,7 +9,7 @@ JAVA_HOME=/path/to/jdk17 python3 directrg/src/test/hidframework/run.py \
 ```
 
 This suite compiles the complete actual `AndroidHidInput`, `HidBindingsPanel`,
-`HidKeyInput`, `HidBindings`, `FunctionGestureRecognizer`, `PadGestureRecognizer`,
+`HidKeyInput`, `HidBindings`, `HidDecisionTrace`, `FunctionGestureRecognizer`, `PadGestureRecognizer`,
 `HeadPointerModel`, `HeadOrientation`, `LocalInputSettings` and
 `LocalInputSettingsPanel` source files. There is no extracted or
 copied adapter, capture, persistence or UI implementation in the harness. Android
@@ -19,14 +19,21 @@ advances one monotonic test clock and accepts absolute deadlines. No native pad
 normalizer is used for HID edges.
 
 The runner also snapshots the complete actual `ReceiverActivity.kt` and
-`NativePadInput.kt`, then extracts exactly their `dispatchKeyEvent` and
-`nativePadKey` functions with a unique-marker and balanced-brace parser. The
+`NativePadInput.kt`, then extracts exactly their `dispatchKeyEvent`,
+`hoveredHidAction` and `nativePadKey` functions with a unique-marker and balanced-brace parser. The
 generated source compiles those unchanged function bodies against the actual
 Android HID adapter, HID input and native pad recognizer. Only the surrounding
-Activity superclass, pointer, usability, scheduling and diagnostic sinks are
+Activity superclass, session/panel context, pointer, usability, scheduling and diagnostic sinks are
 explicit host boundaries. The manifest records both complete source snapshots,
 the extracted function hashes and the generated source bytes. Native dispatch is
 never reconstructed from a copied routing table.
+
+The same parser retains the exact `AndroidHidInput` received-callback initializer
+from Receiver `onCreate`, records both initializer and callback-body hashes,
+and compiles the unchanged callback body in a named host wrapper. Diagnostic and
+received-status composition scenarios route the actual adapter through this
+wrapper. Its page and connection visibility checks are production source;
+legacy direct-adapter scenarios retain an explicit host callback boundary.
 
 Scenarios exercise descriptor/vendor/product/key/scan identity and display name
 capture, whole-gesture capture consumption, Android repeat/long/cancel flags,
@@ -105,6 +112,31 @@ origin is assumed. These doubles supply visible rectangles and offsets; they do
 not calculate Android layout or prove physical head-pointer accuracy. The
 Activity's pointer publication/reentrancy checks are covered separately by the
 existing actual Receiver/local-pointer harness.
+
+Diagnostic scenarios compile the actual page-gated Receiver trace creation,
+adapter, hover callback, panel geometry, capture and save branches. Each emitted
+row must retain its actual numeric attachment/key/scan/action/repeat/canceled/
+downTime/eventTime tuple; selected target, root offset, clipped row rectangle and
+successful/failed persistence observations are checked against the real host
+execution. Outside the HID page no HID trace tag appears. Ineligible-device
+short circuits leave later predicates unobserved, with no added InputManager,
+pointer, capture-target, hit-test or store calls. An observable Log double can
+throw on the HID tag: the actual held output, callback counts and original
+functional callback exception must remain identical. This tests the diagnostic
+failure boundary and routing observations on host doubles; it does not establish
+logcat delivery, device input delivery or physical geometry.
+
+The actual adapter's received-event callback also drives the actual panel's
+reserved single-line status through the extracted Receiver callback body.
+An eligible fresh DOWN is shown without a hovered row. Same attachment/button
+with distinct downTimes displays x2/x3; duplicate same-DOWN, held repeat, final
+UP, canceled DOWN and excluded native controls do not increment it. A different
+actual key or attachment restarts the display count. Hidden-page feedback is
+ignored. The line starts empty and keeps the same fixed height, registered
+control order and supplied hit rectangles when text changes. A throwing
+received callback cannot alter actual held DOWN/UP, persistence, position or
+hit-test evaluation counts. These are configuration and callback-boundary
+checks, not a rendered-layout or physical input claim.
 
 Reset scenarios populate all four assignments, check exactly one attempted
 empty-map persistence write, reload all four as Unassigned and then reassign

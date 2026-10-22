@@ -6,6 +6,7 @@ import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.Gravity
@@ -47,18 +48,34 @@ private class Rig(initialRecord: String? = null, save: Boolean = true) {
     val scrolls = mutableListOf<Scroll>()
     val functions = mutableListOf<FunctionGestureRecognizer.Action>()
     var point = PointerPosition(100f, 200f, true)
-    var captureTarget: () -> HidAction? = { panel?.actionAt(point, root) }
+    var targetReads = 0
+    var positionReads = 0
+    var connectionVisible = true
+    var receivedCalls = 0
+    var onReceived: (HidKeyInput.Event) -> Unit = {}
+    var receivedRoute: ((HidKeyInput.Event) -> Unit)? = null
+    var captureTarget: (HidDecisionTrace.Event?) -> HidAction? = { trace -> panel?.actionAt(point, root, trace) }
     val bindings = HidBindings({ record }) { writes.add(it); if (writable) record = it; writable }
     val input = HidKeyInput(bindings, { now }, { context }, { at, callback ->
         val timer = Timer(at, timers.size, callback)
         timers.add(timer); queue.add(timer)
         val cancel: () -> Unit = { timer.canceled = true }
         cancel
-    }, { point }, { owner, event -> contacts.add(Contact(owner, event)) },
+    }, { positionReads++; point }, { owner, event -> contacts.add(Contact(owner, event)) },
         { owner, at -> cancels.add(Cancel(owner, at)) },
         { pixels, position, at -> scrolls.add(Scroll(pixels, position, at)) },
-        { functions.add(it) }, { changed++; panel?.refresh(); onChanged() }, { captureTarget() })
-    val adapter = AndroidHidInput(android, input)
+        { functions.add(it) }, { changed++; panel?.refresh(); onChanged() }, { trace -> targetReads++; captureTarget(trace) })
+    val adapter = AndroidHidInput(android, input) { event ->
+        receivedCalls++
+        val route = receivedRoute
+        if (route != null) {
+            onReceived(event)
+            route(event)
+        } else if (panel?.visibility == View.VISIBLE && connectionVisible) {
+            onReceived(event)
+            panel?.received(event)
+        }
+    }
     val device = InputDevice(41, "actual:descriptor:17", 0x1209, 0x0017, "Actual HID peripheral")
 
     fun showPanel(): HidBindingsPanel = HidBindingsPanel(android, bindings, input) { backs++ }.also {
@@ -104,6 +121,7 @@ private class Rig(initialRecord: String? = null, save: Boolean = true) {
         check(contacts.isEmpty() && cancels.isEmpty() && scrolls.isEmpty() && functions.isEmpty())
     }
     val message get() = (panel!!.children[1] as TextView).text.toString()
+    val receivedText get() = (panel!!.children[2] as TextView).text.toString()
 }
 
 private fun descendants(view: android.view.View): List<android.view.View> =
@@ -314,7 +332,13 @@ private fun panelShowsFourAssignmentsWithExistingBlackLightControls() {
     equal(listOf("Tap: Unassigned", "Scroll down: Unassigned", "Scroll up: Unassigned", "Function button: Unassigned",
         "Reset all HID bindings", "Back"), panel.buttons.map { it.text.toString() }, "visible assignment and reset labels")
     equal(6, panel.buttons.size, "four assignments, one reset and Back registered")
-    equal(panel.buttons, panel.children.drop(2), "all six controls are direct full-width rows")
+    equal(panel.buttons, panel.children.drop(3), "all six controls follow title, instructions and reserved received status")
+    val received = panel.children[2] as TextView
+    equal("", received.text.toString(), "received status starts empty")
+    equal(1, received.maxLines, "received status reserves a single line")
+    val receivedLayout = checkNotNull(panel.childLayouts[received])
+    equal(-1, receivedLayout.width, "received status is full width")
+    check(receivedLayout.height > 0) { "received status has a fixed positive height" }
     check(panel.buttons.none { it.text.toString().startsWith("Clear ") }) { "per-action Clear controls removed" }
     equal("Point at an action, then press and release an external HID button.", r.message, "initial hover learning instruction")
     equal(descendants(panel).filterIsInstance<Button>().toSet(), panel.buttons.toSet(),
@@ -1248,6 +1272,237 @@ private fun newerHoveredCaptureOwnsItsReleaseAcrossOverlapAndOldLateUp() {
     }
 }
 
+private fun traceRows(): List<String> = Log.messages.filter { it.first == "EyeProjectorHid" }.map { it.second }
+
+private fun traceIngress(r: Rig): ExtractedReceiverKeyIngress {
+    val panel = r.panel ?: r.showPanel()
+    val receiver = ExtractedReceiverKeyIngress(r.input, r.adapter)
+    receiver.hidPanel = panel
+    receiver.root = r.root
+    r.receivedRoute = receiver::receivedForTest
+    r.captureTarget = { trace ->
+        receiver.pointer.position = r.point
+        receiver.hoveredForTest(trace)
+    }
+    return receiver
+}
+
+private fun traceEdge(r: Rig, receiver: ExtractedReceiverKeyIngress, action: Int, at: Long, down: Long,
+                      device: InputDevice? = r.device, repeat: Int = 0, flags: Int = 0): Boolean {
+    r.now = at
+    SystemClock.now = at
+    return receiver.dispatchKeyEvent(KeyEvent(device, action, 194, 813, down, at, repeat, flags))
+}
+
+private fun actualPageTraceBindsRealTupleHoverGeometryCaptureAndSaveResult() {
+    try {
+        for (save in listOf(true, false)) {
+            Log.messages.clear()
+            val r = Rig()
+            r.hover(HidAction.SCROLL_UP)
+            val receiver = traceIngress(r)
+            check(traceEdge(r, receiver, KeyEvent.ACTION_DOWN, 1000, 1000))
+            val downRows = traceRows()
+            check(downRows.isNotEmpty())
+            val tuple = "device=41 key=194 scan=813 action=0 repeat=0 canceled=false down=1000 time=1000 "
+            check(downRows.all { it.startsWith(tuple) }) { "each DOWN decision retains the immutable actual event tuple" }
+            for (step in listOf("ARRIVAL", "ADAPTER_RETIRED", "DEVICE_EXTERNAL", "ADAPTER_INPUT", "HOVER_POINT",
+                "HOVER_GENERATION_CHANGED", "HIT_ROOT_CLIP", "HIT_ROW_CLIP", "HIT_RESULT", "CAPTURE_BEGIN"))
+                check(downRows.any { it.contains(" step=$step ") }) { "missing actual trace stage $step" }
+            check(downRows.any { it.contains(" step=HOVER_POINT ") && it.contains("available=true x=400.0 y=1240.0") })
+            check(downRows.any { it.contains(" step=HIT_ROOT_CLIP fact=YES ") &&
+                it.contains("left=50 top=80 right=1050 bottom=2080 offsetX=50 offsetY=80") })
+            check(downRows.any { it.contains(" step=HIT_ROW_CLIP fact=YES target=SCROLL_UP ") &&
+                it.contains("left=350 top=1280 right=950 bottom=1370") })
+            check(downRows.any { it.contains(" step=HIT_RESULT fact=YES target=SCROLL_UP ") })
+            r.writable = save
+            Log.messages.clear()
+            check(traceEdge(r, receiver, KeyEvent.ACTION_UP, 1020, 1000))
+            val upRows = traceRows()
+            check(upRows.all { it.startsWith("device=41 key=194 scan=813 action=1 repeat=0 canceled=false down=1000 time=1020 ") })
+            check(upRows.any { it.contains(" step=CAPTURE_MATCH fact=YES target=SCROLL_UP ") })
+            check(upRows.any { it.contains(" step=CAPTURE_SAVE fact=${if (save) "YES" else "NO"} target=SCROLL_UP ") })
+            equal(if (save) r.binding(key = 194, scan = 813) else null, r.bindings.binding(HidAction.SCROLL_UP),
+                "trace reports the real effective save result")
+            equal(1, r.writes.size, "diagnostics do not add store writes")
+            equal(1, receiver.pointer.reads, "only actual capture DOWN refreshes the pointer")
+            equal(1, r.targetReads, "one actual capture target evaluation")
+            check((downRows + upRows).none { it.contains(r.device.name) || it.contains(r.device.descriptor) })
+            r.noOutput()
+        }
+    } finally { Log.onWrite = null; Log.messages.clear() }
+}
+
+private fun pageOnlyTraceAndShortCircuitEligibilityDoNotInspectSkippedCallbacks() {
+    try {
+        val outside = Rig()
+        val outsideReceiver = traceIngress(outside)
+        outsideReceiver.hidPanel.visibility = View.GONE
+        Log.messages.clear()
+        check(!traceEdge(outside, outsideReceiver, KeyEvent.ACTION_DOWN, 1000, 1000))
+        check(traceRows().isEmpty()) { "outside the HID page no HID tag is emitted" }
+        equal(0, outsideReceiver.pointer.reads, "outside page short-circuits pointer publication")
+        equal(0, outside.root.visibleRectReads, "outside page never evaluates geometry")
+        equal(0, outside.writes.size, "outside page never writes bindings")
+
+        for (device in listOf(nativePower379, virtual379.copy(isExternal = true))) {
+            val r = Rig()
+            r.hover(HidAction.TAP)
+            val receiver = traceIngress(r)
+            Log.messages.clear()
+            check(!traceEdge(r, receiver, KeyEvent.ACTION_DOWN, 1100, 1100, device))
+            val rows = traceRows()
+            check(rows.any { it.contains(" step=DEVICE_EXTERNAL fact=${if (device.isExternal) "YES" else "NO"} ") })
+            if (device.isExternal) check(rows.any { it.contains(" step=DEVICE_VIRTUAL fact=YES ") })
+            else check(rows.none { it.contains(" step=DEVICE_VIRTUAL ") })
+            check(rows.none { it.contains(" step=DEVICE_NOT_PAD ") || it.contains(" step=DEVICE_NOT_POWER ") ||
+                it.contains(" step=HOVER_POINT ") || it.contains(" step=HIT_ROOT_CLIP ") })
+            check(rows.any { it.contains(" step=ADAPTER_INELIGIBLE fact=YES target=UNOBSERVED available=UNOBSERVED x=UNOBSERVED y=UNOBSERVED") })
+            equal(0, r.android.inputManager.deviceReads, "diagnostics do not perform an InputManager lookup")
+            equal(0, r.targetReads, "excluded device never invokes capture target")
+            equal(0, receiver.pointer.reads, "excluded device never refreshes pointer")
+            equal(0, r.positionReads, "excluded device never admits output position")
+            equal(0, r.root.visibleRectReads, "excluded device never hit-tests the root")
+            equal(0, r.writes.size, "excluded device never writes store")
+            r.noOutput()
+        }
+    } finally { Log.onWrite = null; Log.messages.clear() }
+}
+
+private fun throwingDiagnosticSinkPreservesOutputCallbacksAndOriginalFunctionalException() {
+    data class Outcome(val phases: List<PadGestureRecognizer.Phase>, val times: List<Pair<Long, Long>>,
+                       val targetReads: Int, val positionReads: Int, val hoverReads: Int,
+                       val rootReads: Int, val rowReads: List<Int>, val writes: Int, val selected: HidAction?)
+    fun held(throwing: Boolean): Outcome {
+        val r = Rig()
+        r.assign(HidAction.TAP, key = 194, scan = 813)
+        val receiver = traceIngress(r)
+        r.leaveRows()
+        Log.onWrite = if (throwing) { tag, _ -> if (tag == "EyeProjectorHid") throw AssertionError("host diagnostic sink") } else null
+        check(traceEdge(r, receiver, KeyEvent.ACTION_DOWN, 1000, 1000))
+        check(traceEdge(r, receiver, KeyEvent.ACTION_UP, 1020, 1000))
+        equal(listOf(PadGestureRecognizer.Phase.DOWN, PadGestureRecognizer.Phase.UP), r.contacts.map { it.event.phase },
+            "actual held outputs retain DOWN and UP")
+        check(r.cancels.isEmpty() && r.functions.isEmpty() && r.scrolls.isEmpty())
+        return Outcome(r.contacts.map { it.event.phase }, r.contacts.map { Pair(it.event.downTimeMs, it.event.timeMs) },
+            r.targetReads, r.positionReads, receiver.pointer.reads, r.root.visibleRectReads,
+            r.panel!!.buttons.map { it.visibleRectReads }, r.writes.size, r.input.selected)
+    }
+    try {
+        val expected = held(false)
+        equal(expected, held(true), "throwing diagnostic sink preserves real output and callback evaluation counts")
+        for (throwing in listOf(false, true)) {
+            val r = Rig()
+            r.hover(HidAction.TAP)
+            val receiver = traceIngress(r)
+            val failure = IllegalStateException("original functional target callback")
+            r.captureTarget = { throw failure }
+            Log.onWrite = if (throwing) { tag, _ -> if (tag == "EyeProjectorHid") throw AssertionError("host diagnostic sink") } else null
+            var caught: Throwable? = null
+            try { traceEdge(r, receiver, KeyEvent.ACTION_DOWN, 1000, 1000) } catch (error: Throwable) { caught = error }
+            check(caught === failure) { "diagnostics must not swallow or replace an original functional callback exception" }
+            equal(1, r.targetReads, "functional target callback is evaluated once")
+            equal(0, r.writes.size, "throwing functional callback does not persist")
+            r.noOutput()
+        }
+    } finally { Log.onWrite = null; Log.messages.clear() }
+}
+
+private fun receivedStatusShowsActualExternalDownWithoutHoverOrRowShift() {
+    val r = Rig()
+    val panel = r.showPanel()
+    traceIngress(r)
+    val line = panel.children[2] as TextView
+    val lineLayout = checkNotNull(panel.childLayouts[line])
+    val rowOrder = panel.children.toList()
+    val rowBounds = panel.buttons.map { it.hostVisibleRect?.let { bounds ->
+        listOf(bounds.left, bounds.top, bounds.right, bounds.bottom)
+    } }
+    equal("", r.receivedText, "reserved status starts empty")
+    equal(1, line.maxLines, "status has one visible line")
+    equal(64, lineLayout.height, "32dp fixed status height at host density two")
+    equal("Last received external HID key", line.contentDescription.toString(), "received status accessible purpose")
+    r.leaveRows()
+    check(!r.edge(KeyEvent.ACTION_DOWN, key = 194, scan = 813))
+    equal("HOST_KEYCODE_194", r.receivedText, "eligible DOWN is acknowledged without a hovered action")
+    check(!r.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000, key = 194, scan = 813))
+    panel.refresh()
+    equal("HOST_KEYCODE_194", r.receivedText, "UP and ordinary refresh preserve the last actual received key")
+    equal(rowOrder, panel.children, "status update does not insert or reorder rows")
+    equal(rowBounds, panel.buttons.map { it.hostVisibleRect?.let { bounds ->
+        listOf(bounds.left, bounds.top, bounds.right, bounds.bottom)
+    } }, "status does not alter assignment hit rectangles")
+    equal(64, checkNotNull(panel.childLayouts[line]).height, "status reserves the same height before and after text")
+    equal(0, r.writes.size, "receipt alone does not assign or persist")
+    equal(0, r.positionReads, "receipt does not sample output position")
+    equal(1, r.targetReads, "only the original fresh DOWN evaluates its normal target callback")
+    r.noOutput()
+}
+
+private fun receivedStatusCountsSeparateActualPressesAndExcludesRepeatsNativeAndHiddenPage() {
+    val r = Rig()
+    val panel = r.showPanel()
+    val receiver = traceIngress(r)
+    r.leaveRows()
+    check(!r.edge(KeyEvent.ACTION_DOWN, key = 194, scan = 813))
+    equal("HOST_KEYCODE_194", r.receivedText, "first separate physical press")
+    check(!r.edge(KeyEvent.ACTION_DOWN, at = 1005, down = 1000, key = 194, scan = 813))
+    equal("HOST_KEYCODE_194", r.receivedText, "duplicate same actual DOWN does not increment")
+    val beforeRepeat = r.receivedCalls
+    check(!r.edge(KeyEvent.ACTION_DOWN, at = 1010, down = 1000, key = 194, scan = 813,
+        repeat = 1, flags = KeyEvent.FLAG_LONG_PRESS))
+    check(!r.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000, key = 194, scan = 813))
+    equal(beforeRepeat, r.receivedCalls, "held repeat and final release do not call status sink")
+    for ((at, count) in listOf(Pair(1100L, 2), Pair(1200L, 3))) {
+        check(!r.edge(KeyEvent.ACTION_DOWN, at = at, key = 194, scan = 813))
+        equal("HOST_KEYCODE_194 x$count", r.receivedText, "fresh actual downTime increments same attachment/button")
+        check(!r.edge(KeyEvent.ACTION_UP, at = at + 20, down = at, key = 194, scan = 813))
+    }
+    check(!r.edge(KeyEvent.ACTION_DOWN, at = 1300, key = 194, scan = 813, device = r.device.copy(id = 42)))
+    equal("HOST_KEYCODE_194", r.receivedText, "different attachment restarts the counter despite same persisted button")
+    check(!r.edge(KeyEvent.ACTION_DOWN, at = 1400, key = 195, scan = 814))
+    equal("HOST_KEYCODE_195", r.receivedText, "different actual key restarts the counter")
+    val beforeExcluded = r.receivedCalls
+    check(!r.edge(KeyEvent.ACTION_DOWN, at = 1450, key = 83, scan = 204, device = nativePad379))
+    check(!r.edge(KeyEvent.ACTION_DOWN, at = 1460, key = 26, scan = 116, device = nativePower379))
+    check(!r.edge(KeyEvent.ACTION_DOWN, at = 1470, key = 194, scan = 813, flags = KeyEvent.FLAG_CANCELED))
+    equal(beforeExcluded, r.receivedCalls, "native excluded and canceled DOWN never call received sink")
+    equal("HOST_KEYCODE_195", r.receivedText, "excluded or canceled input cannot claim status")
+    panel.visibility = View.GONE
+    check(!r.edge(KeyEvent.ACTION_DOWN, at = 1500, key = 196, scan = 815))
+    equal("HOST_KEYCODE_195", r.receivedText, "hidden HID page leaves status untouched")
+    panel.visibility = View.VISIBLE
+    r.connectionVisible = false
+    receiver.connectionView.visibility = View.GONE
+    check(!r.edge(KeyEvent.ACTION_DOWN, at = 1600, key = 197, scan = 816))
+    equal("HOST_KEYCODE_195", r.receivedText, "hidden connection view leaves status untouched")
+    equal(0, r.writes.size, "reception feedback never persists bindings")
+    r.noOutput()
+}
+
+private fun throwingReceivedStatusSinkLeavesOriginalHeldRoutingAndCountsUntouched() {
+    data class Outcome(val phases: List<PadGestureRecognizer.Phase>, val times: List<Pair<Long, Long>>,
+                       val target: Int, val position: Int, val roots: Int, val rows: List<Int>, val writes: Int)
+    fun run(throwing: Boolean): Outcome {
+        val r = Rig()
+        r.assign(HidAction.TAP)
+        r.showPanel()
+        traceIngress(r)
+        r.leaveRows()
+        if (throwing) r.onReceived = { throw AssertionError("host received status sink") }
+        check(r.edge(KeyEvent.ACTION_DOWN))
+        check(r.edge(KeyEvent.ACTION_DOWN, at = 1010, down = 1000, repeat = 1, flags = KeyEvent.FLAG_LONG_PRESS))
+        check(r.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000))
+        equal(1, r.receivedCalls, "one eligible real DOWN calls the status sink")
+        equal(listOf(PadGestureRecognizer.Phase.DOWN, PadGestureRecognizer.Phase.UP), r.contacts.map { it.event.phase },
+            "status failure cannot suppress or duplicate actual held edges")
+        check(r.cancels.isEmpty() && r.functions.isEmpty() && r.scrolls.isEmpty())
+        return Outcome(r.contacts.map { it.event.phase }, r.contacts.map { Pair(it.event.downTimeMs, it.event.timeMs) },
+            r.targetReads, r.positionReads, r.root.visibleRectReads, r.panel!!.buttons.map { it.visibleRectReads }, r.writes.size)
+    }
+    equal(run(false), run(true), "received status exception cannot change original output or functional callback evaluations")
+}
+
 fun main() {
     val scenarios = linkedMapOf<String, () -> Unit>(
         "actual Android device/button facts and complete capture ownership" to ::capturesActualFactsAndConsumesWholeGesture,
@@ -1280,6 +1535,12 @@ fun main() {
         "unavailable hidden disabled outside Reset and Back never target assignment" to ::unavailableHiddenDisabledAndNonAssignmentAreasNeverLearn,
         "row click is nonsticky and repeated actual DOWN replaces or moves saved key" to ::rowClicksNeverLatchAndEveryActualDownCanReplaceOrMoveBindings,
         "newer hovered capture across key or attachment overlap consumes old late UP" to ::newerHoveredCaptureOwnsItsReleaseAcrossOverlapAndOldLateUp,
+        "actual HID page trace binds event tuple, hover, geometry, capture and save result" to ::actualPageTraceBindsRealTupleHoverGeometryCaptureAndSaveResult,
+        "page-only trace preserves skipped eligibility and callback observations" to ::pageOnlyTraceAndShortCircuitEligibilityDoNotInspectSkippedCallbacks,
+        "throwing diagnostics preserve outputs, callback counts and original functional exception" to ::throwingDiagnosticSinkPreservesOutputCallbacksAndOriginalFunctionalException,
+        "received external DOWN status is visible without hover and reserves row geometry" to ::receivedStatusShowsActualExternalDownWithoutHoverOrRowShift,
+        "received status counts distinct actual presses while excluding held native and hidden-page input" to ::receivedStatusCountsSeparateActualPressesAndExcludesRepeatsNativeAndHiddenPage,
+        "throwing received status callback preserves original held routing and evaluation counts" to ::throwingReceivedStatusSinkLeavesOriginalHeldRoutingAndCountsUntouched,
     )
     val excluded = linkedMapOf(
         "recorded internal Rokid pad" to nativePad379,

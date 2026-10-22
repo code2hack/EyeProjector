@@ -1,5 +1,8 @@
 package com.code2hack.eyeprojector.directrg
 
+import com.code2hack.eyeprojector.directrg.HidDecisionTrace.Step
+import com.code2hack.eyeprojector.directrg.HidDecisionTrace.observed
+
 /** Actual HID edges stay separate from Rokid marker/summary normalization. */
 internal class HidKeyInput(
     private val bindings: HidBindings,
@@ -12,7 +15,7 @@ internal class HidKeyInput(
     private val scroll: (Int, PointerPosition, Long) -> Unit,
     function: (FunctionGestureRecognizer.Action) -> Unit,
     private val changed: () -> Unit = {},
-    private val captureTarget: () -> HidAction? = { null },
+    private val captureTarget: (HidDecisionTrace.Event?) -> HidAction? = { null },
 ) {
     enum class Phase { DOWN, UP, CANCEL }
     data class Event(
@@ -21,7 +24,7 @@ internal class HidKeyInput(
     )
     private data class Key(val attachment: Int, val button: HidButton)
     private class Press(val event: Event, val action: HidAction, val context: Any) { val owner = Any() }
-    private data class Capture(val action: HidAction, val event: Event, val context: Any)
+    private data class Capture(val action: HidAction, val event: Event, val context: Any, val trace: HidDecisionTrace.Event?)
     private data class Retired(val key: Key, val downTimeMs: Long)
     private val presses = mutableMapOf<Key, Press>()
     // A pending DOWN owns its transition before any old-target or pointer callback runs.
@@ -59,34 +62,44 @@ internal class HidKeyInput(
         changed()
     }
 
-    fun accept(event: Event): Boolean {
+    fun accept(event: Event, trace: HidDecisionTrace.Event? = null): Boolean {
         val key = Key(event.attachmentId, event.binding.button)
         val retired = Retired(key, event.downTimeMs)
         if (retired in suppressed) {
+            trace?.record(Step.INPUT_RETIRED, HidDecisionTrace.Fact.YES)
             if (event.phase == Phase.UP) suppressed.remove(retired)
             return true
         }
         val capturing = capture
         if (capturing != null && key == Key(capturing.event.attachmentId, capturing.event.binding.button) &&
             event.downTimeMs == capturing.event.downTimeMs) {
+            trace?.record(Step.CAPTURE_MATCH, HidDecisionTrace.Fact.YES, capturing.action)
             if (event.phase != Phase.DOWN) {
                 capture = null // Retire before persistence/publication callbacks.
-                if (event.phase == Phase.UP && event.timeMs >= event.downTimeMs && context() == capturing.context) {
-                    bindings.assign(capturing.action, capturing.event.binding)
-                } else suppressed.add(retired)
+                if (observed(trace, Step.CAPTURE_RELEASE_UP, event.phase == Phase.UP) &&
+                    observed(trace, Step.CAPTURE_RELEASE_TIME, event.timeMs >= event.downTimeMs) &&
+                    observed(trace, Step.CAPTURE_RELEASE_CONTEXT, context() == capturing.context)) {
+                    val saved = bindings.assign(capturing.action, capturing.event.binding)
+                    observed(trace, Step.CAPTURE_SAVE, saved, capturing.action)
+                } else {
+                    suppressed.add(retired)
+                    trace?.record(Step.CAPTURE_INVALID_RELEASE, target = capturing.action)
+                }
                 changed()
             }
             return true
         }
         val old = presses[key]
         val action = old?.action ?: admissions[key]?.action ?: bindings.action(event.binding.button)
-        if (context() == null) {
+        if (observed(trace, Step.INPUT_NO_CONTEXT, context() == null)) {
             if (action != null) cancel()
             return action != null
         }
         if (event.phase == Phase.DOWN) {
-            if (admissions[key]?.event?.downTimeMs == event.downTimeMs || event.repeat != 0) return action != null
-            val current = context() ?: return action != null
+            if (observed(trace, Step.INPUT_REPEAT, admissions[key]?.event?.downTimeMs == event.downTimeMs || event.repeat != 0)) return action != null
+            val current = context()
+            observed(trace, Step.INPUT_DOWN_CONTEXT_PRESENT, current != null)
+            if (current == null) return action != null
             val admitted = generation
             val attempt = Any()
             captureAttempt = attempt
@@ -101,19 +114,20 @@ internal class HidKeyInput(
             }
             fun stillCurrent() = generation == admitted && context() == current &&
                 (press == null || currentAdmission(key, press, admitted))
-            if (!stillCurrent()) {
+            if (observed(trace, Step.INPUT_STALE_BEFORE_TARGET, !stillCurrent())) {
                 if (press != null) abandon(key, press)
                 suppressed.add(retired)
                 return true
             }
-            val target = captureTarget()
-            if (!stillCurrent() || (target != null && captureAttempt !== attempt)) {
+            val target = captureTarget(trace)
+            trace?.record(Step.INPUT_TARGET, if (target == null) HidDecisionTrace.Fact.NO else HidDecisionTrace.Fact.YES, target)
+            if (observed(trace, Step.INPUT_STALE_AFTER_TARGET, !stillCurrent() || (target != null && captureAttempt !== attempt))) {
                 if (press != null) abandon(key, press)
                 suppressed.add(retired)
                 return true
             }
             if (target != null) {
-                val next = if (event.downTimeMs <= event.timeMs) Capture(target, event, current) else null
+                val next = if (event.downTimeMs <= event.timeMs) Capture(target, event, current, trace) else null
                 if (next == null) suppressed.add(retired)
                 // Transfer this exact pending DOWN to capture, without retiring its own release.
                 if (press != null && admissions[key] === press) admissions.remove(key)
@@ -133,7 +147,11 @@ internal class HidKeyInput(
                     return true
                 }
             }
-            if (press == null) return false
+            if (press == null) {
+                trace?.record(Step.INPUT_NORMAL, HidDecisionTrace.Fact.NO)
+                return false
+            }
+            trace?.record(Step.INPUT_NORMAL, HidDecisionTrace.Fact.YES, action)
             val point = if (action == HidAction.TAP) position() else null
             if (!currentAdmission(key, press, admitted)) { abandon(key, press); return true }
             presses[key] = press // Output may synchronously cancel/change the view.
@@ -228,6 +246,8 @@ internal class HidKeyInput(
         contactAdmission = null
         val oldCapture = capture
         capture = nextCapture
+        oldCapture?.trace?.record(if (nextCapture == null) Step.CAPTURE_CANCEL else Step.CAPTURE_RETIRE, target = oldCapture.action)
+        nextCapture?.trace?.record(Step.CAPTURE_BEGIN, target = nextCapture.action)
         if (oldCapture != null) suppressed.add(Retired(Key(oldCapture.event.attachmentId, oldCapture.event.binding.button), oldCapture.event.downTimeMs))
         val old = presses.values.toList()
         admissions.forEach { (key, press) -> suppressed.add(Retired(key, press.event.downTimeMs)) }
