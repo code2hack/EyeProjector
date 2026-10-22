@@ -30,10 +30,12 @@ class ProjectedAppLaunchTest {
     }
 
     @Test fun nativeAppCommandUsesNumericNewTaskAndPreservesPackageLaunchFlags() {
-        val app = ProjectionLaunchCommands.launch(47, "example.native.app", false)
+        val app = ProjectionLaunchCommands.launch(47, "example.native.app", false,
+            resolvedComponent = "example.native.app/example.native.app.Launcher")
         assertEquals(listOf("/system/bin/cmd", "activity", "start-activity", "-W", "--display", "47",
             "-f", "0x10000000", "--activity-reset-task-if-needed", "-a", "android.intent.action.MAIN",
-            "-c", "android.intent.category.LAUNCHER", "-p", "example.native.app"), app)
+            "-c", "android.intent.category.LAUNCHER", "-p", "example.native.app",
+            "-n", "example.native.app/example.native.app.Launcher"), app)
         assertFalse(app.contains("-S")); assertFalse(app.contains("--activity-clear-task"))
     }
 

@@ -9,8 +9,17 @@ internal class PlatformProjectionLaunch(
     private val commands: OwnedProjectionCommands = OwnedProjectionCommands(),
     private val context: ProjectionContext = ProjectionContext(),
 ) : ProjectionLaunchAdapter {
-    override fun launch(displayId: Int, packageName: String, home: Boolean) =
-        commands.run(ProjectionLaunchCommands.launch(displayId, packageName, home, context), 4000)
+    override fun launch(displayId: Int, packageName: String, home: Boolean): ProjectionCommandResult {
+        if (home) return commands.run(ProjectionLaunchCommands.launch(displayId, packageName, true, context), 4000)
+        val started = System.nanoTime()
+        val resolved = commands.run(ProjectionLaunchCommands.resolve(packageName), 4000)
+        val component = ProjectionLaunchCommands.resolvedComponent(resolved, packageName)
+        // Include resolver output draining/reaping in the same existing native launch budget.
+        val remainingMs = TimeUnit.NANOSECONDS.toMillis(TimeUnit.MILLISECONDS.toNanos(4000) - (System.nanoTime() - started))
+        if (resolved.timedOut || remainingMs <= 0) return ProjectionCommandResult(null, "", true)
+        if (component == null) return ProjectionCommandResult(null, "")
+        return commands.run(ProjectionLaunchCommands.launch(displayId, packageName, false, context, component), remainingMs)
+    }
 
     override fun foreground(displayId: Int): String? {
         val result = commands.run(listOf("/system/bin/dumpsys", "-t", "2", "activity", "activities"), 3000)
