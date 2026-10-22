@@ -133,6 +133,7 @@ internal class ExtractedHidIngress(val root: TargetRoot) {
     val pointer = IngressPointer()
     val connectionView = View()
     lateinit var gestures: PadGestureRecognizer
+    private lateinit var completedInput: IngressBoundary
     lateinit var localInput: LocalPointerDispatcher
     lateinit var heldInput: HeldPointerDispatcher
     lateinit var heldOwner: HeldInputOwner
@@ -160,10 +161,12 @@ internal class ExtractedHidIngress(val root: TargetRoot) {
     private fun projectedInput() = session != null && projectionContext
     private fun contextualBack() { cancelInput() }
     private fun updateEdgeScroll() = Unit
+    private fun publishHeadPointer() = Unit
     fun cancelAll() = cancelInput()
     fun dispatch(action: PadGestureRecognizer.Action) = dispatchPadAction(action)
     init {
         functionInput = IngressBoundary(); padContact = IngressBoundary(); screen = IngressBoundary(); hidPanel = IngressPanel()
+        completedInput = IngressBoundary()
         localInput = LocalPointerDispatcher(root)
         gestures = PadGestureRecognizer(500, 800, ::dispatchPadAction)
         val hidBindings = bindings
@@ -189,7 +192,7 @@ def main():
     actual = root / 'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg'
     protocol = root / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
     sources = [actual / name for name in ('HeldInputOwner.kt', 'HeldPointerDispatcher.kt', 'LocalPointerDispatcher.kt', 'PadGestureRecognizer.kt', 'HeadPointerModel.kt', 'HeadOrientation.kt')]
-    sources += [protocol / name for name in ('Touch.kt', 'Wire.kt')]
+    sources += [protocol / name for name in ('Touch.kt', 'Wire.kt', 'PhoneInput.kt')]
     sources += sorted((suite / 'helddoubles').glob('*.kt')) + [suite / 'HeldLocalScenarios.kt']
     unit = root / 'directrg/src/test/kotlin/com/code2hack/eyeprojector/directrg'
     sources += [unit / name for name in ('HeldInputOwnerTest.kt', 'HeldPointerDispatcherTest.kt')]

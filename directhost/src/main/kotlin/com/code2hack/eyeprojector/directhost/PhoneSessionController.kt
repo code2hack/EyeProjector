@@ -7,6 +7,7 @@ import android.os.Looper
 import com.code2hack.eyeprojector.directhost.widget.PhoneWidgetUpdates
 import com.code2hack.eyeprojector.protocol.*
 import com.code2hack.eyeprojector.directhost.scale.*
+import com.code2hack.eyeprojector.directhost.input.PhoneHidRoute
 import java.io.File
 import java.util.concurrent.CopyOnWriteArraySet
 
@@ -81,6 +82,11 @@ class PhoneSessionController private constructor(context: Context) {
     fun requestPanelOff(expected: ProjectionContext, complete: (PanelPowerState?) -> Unit) = bootstrap.requestPanelOff(expected, complete)
 
     fun panelState(complete: (PanelPowerState?) -> Unit) = bootstrap.panelState(complete)
+
+    /** Fresh DOWN is captured and submitted once. UP/CANCEL retain this exact original route. */
+    fun capturePhoneHidRoute(down: PhoneHidEdge): PhoneHidRoute? = bootstrap.capturePhoneHidRoute(down)
+    fun submitPhoneHid(route: PhoneHidRoute, edge: PhoneHidEdge) = route.submit(edge)
+    fun cancelPhoneHid(route: PhoneHidRoute, eventTimeMs: Long) = route.cancel(eventTimeMs)
 
     private fun command(request: SessionControl.Request): SessionState {
         val unavailable = if (request.operation == SessionControl.Operation.START)

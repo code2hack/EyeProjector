@@ -68,6 +68,35 @@ private fun scenario(name: String, run: (Fixture) -> Unit) {
 }
 
 fun main() {
+    scenario("Phone HID capture submits fresh DOWN once and retains original proxy/context/time for UP and post-UP CANCEL") { f ->
+        val down = PhoneHidEdge(PhoneHidAction.FUNCTION, PhoneHidPhase.DOWN, 3, 66, 88, 12345, 12345)
+        check(f.host.capturePhoneHidRoute(down) == null && Shizuku.binds == 0)
+        f.host.start(); f.drain()
+        val old = FakeService().apply { state = "STREAMING" }; f.attach(old)
+        val route = f.host.capturePhoneHidRoute(down)!!
+        check(old.inputCalls.size == 1 && old.inputCalls.single().edge == down)
+        val original = old.context
+        val fresh = FakeService().apply { state = "STREAMING"; sessionEpoch = "replacement" }
+        HostBootstrap::class.java.getDeclaredField("remote").apply { isAccessible = true }.set(f.host, fresh)
+        route.submit(down.copy(phase = PhoneHidPhase.UP, eventTimeMs = 12375))
+        route.cancel(12390)
+        check(fresh.inputCalls.isEmpty() && old.inputCalls.size == 3)
+        check(old.inputCalls.all { it.expected == original && it.edge.downTimeMs == 12345L })
+        check(old.inputCalls.map { it.edge.phase } == listOf(PhoneHidPhase.DOWN, PhoneHidPhase.UP, PhoneHidPhase.CANCEL))
+        check(old.inputCalls.map { it.routeId }.distinct().size == 1)
+        check(f.host.capturePhoneHidRoute(down.copy(phase = PhoneHidPhase.UP, eventTimeMs = 12375)) == null)
+    }
+    scenario("Phone HID same alive Binder replacement before dispatch cannot receive a rebased fresh-owner edge") { f ->
+        f.host.start(); f.drain()
+        val service = FakeService().apply { state = "STREAMING" }; f.attach(service)
+        val expected = service.context
+        service.beforeInput = { service.beforeInput = null; service.replaceProjection("new-owner") }
+        val down = PhoneHidEdge(PhoneHidAction.TAP, PhoneHidPhase.DOWN, 3, 66, 88, 2000, 2000)
+        val route = f.host.capturePhoneHidRoute(down)!!
+        route.submit(down.copy(phase = PhoneHidPhase.UP, eventTimeMs = 2030))
+        check(service.inputCalls.size == 2 && service.inputWrites.isEmpty())
+        check(service.inputCalls.all { it.expected == expected })
+    }
     scenario("R5-01 normal Stop survives delayed construction and waits for revocation/death") { f ->
         f.host.start(); f.drain()
         val service = FakeService().apply { stopReady = false; exitOnDestroy = false }

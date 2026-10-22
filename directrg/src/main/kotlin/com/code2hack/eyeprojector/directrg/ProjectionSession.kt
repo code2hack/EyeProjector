@@ -1,6 +1,7 @@
 package com.code2hack.eyeprojector.directrg
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.AtomicFile
 import android.util.Log
 import android.view.Surface
@@ -25,6 +26,7 @@ class ProjectionSession(
     private val onGeometry: (ProjectionSession, Geometry) -> Unit,
     private val context: Context? = null,
     private val onScale: (ProjectionSession, ScaleState) -> Unit = { _, _ -> },
+    private val onReceiverInput: (ProjectionSession, ReceiverInput) -> Unit = { _, _ -> },
 ) : Closeable {
     private val running = AtomicBoolean(true)
     private val timer = Executors.newScheduledThreadPool(2)
@@ -38,6 +40,11 @@ class ProjectionSession(
             synchronized(this) { heldTouchFrames++ }
         })
     private val outputLock = Any()
+    // Separate from native timed input cancellation; both use the existing serialized stream writer.
+    private val headPointer = LatestHeadPointer({ action ->
+        scaleControls.submit(System.nanoTime() / 1_000_000, { running.get() }, "head-pointer", preserveTiming = false, write = action)
+    }, { send(Frame(Wire.HEAD_POINTER, payload = it.bytes())) }, SystemClock::elapsedRealtimeNanos,
+        { action -> synchronized(outputLock) { action() } })
     private val lifecycleLock = Any()
     private val closeLock = Any()
     @Volatile private var closeComplete = false
@@ -221,6 +228,7 @@ class ProjectionSession(
                 roundTripMs.addLast(delay); if (roundTripMs.size > 256) roundTripMs.removeFirst()
             }
             Wire.END -> closeWithState("DISCONNECTED")
+            Wire.RECEIVER_INPUT -> onReceiverInput(this, ReceiverInput.from(frame.payload))
             else -> error("Unnegotiated media")
         }
     }
@@ -302,6 +310,8 @@ class ProjectionSession(
         heldTouch.cancel(0)
     }
     fun cancelHeadScroll() = controls.cancelPending("head-scroll")
+    fun headPointer(state: HeadPointerState, sourceExpiresAtNs: Long): Boolean =
+        if (running.get() && geometry != null) headPointer.publish(state, sourceExpiresAtNs) else false
 
     private fun input(channel: Int, size: Geometry, payload: ByteArray, eventTimeMs: Long, category: String = "input"): Boolean {
         if (!running.get() || !readyForTouch || size != geometry) {
@@ -334,7 +344,7 @@ class ProjectionSession(
                     decoder.also { decoder = null }
                 }
                 runCatching { socket?.close() }; timer.shutdownNow(); controls.close()
-                scaleControls.close()
+                headPointer.close(); scaleControls.close()
                 runCatching { synchronized(this) { old?.let { stats.put("decoderProgress", it.snapshot()) } } }
                 runCatching { old?.close() }
                 closeComplete = true

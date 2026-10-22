@@ -6,6 +6,7 @@ import android.os.Looper
 import com.code2hack.eyeprojector.protocol.ScaleState
 class HostActivity : Activity()
 class HostBootstrap {
+    fun capturePhoneHidRoute(down: com.code2hack.eyeprojector.protocol.PhoneHidEdge): com.code2hack.eyeprojector.directhost.input.PhoneHidRoute? = null
     enum class Setup { MISSING, UNAVAILABLE, UPDATE_REQUIRED, AUTHORIZATION_REQUIRED, SHELL_REQUIRED, AVAILABLE }
     data class Status(val setup: Setup, val backend: String, val detail: String? = null, val sessionEpoch: String = "", val rejectedEpoch: String? = null,
         val projectionToken: String = "") {

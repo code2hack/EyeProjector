@@ -116,6 +116,13 @@ class ShizukuHostService internal constructor(
         return (captureLaunchTarget(expected)?.projectionDisplayState() ?: ProjectionDisplayState(context = expected)).bytes()
     }
 
+    override fun phoneHidEdge(routeId: Long, typedEdge: ByteArray, expectedOwnerEpoch: String, expectedProjectionToken: String) {
+        val expected = ProjectionContext(expectedOwnerEpoch, expectedProjectionToken)
+        val target = captureLaunchTarget(expected) ?: return
+        val edge = runCatching { com.code2hack.eyeprojector.protocol.PhoneHidEdge.from(typedEdge) }.getOrNull() ?: return
+        target.phoneHidEdge(routeId, edge)
+    }
+
     private fun captureLaunchTarget(expected: ProjectionContext): CapturedProjection? =
         panelRoutes.capture(expected.ownerEpoch)?.target?.captureProjection(expected)
 

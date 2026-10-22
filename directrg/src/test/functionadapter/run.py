@@ -65,6 +65,7 @@ internal class ActivityFunctionWiring : Activity() {
     lateinit var heldInput: Boundary
     lateinit var padContact: Boundary
     lateinit var screen: Boundary
+    lateinit var completedInput: Boundary
     lateinit var localInput: Boundary
     val pointer = Boundary()
     lateinit var longTouch: Boundary
@@ -93,13 +94,14 @@ internal class ActivityFunctionWiring : Activity() {
     init {
         root = Boundary(); longTouch = Boundary()
         gestures = Boundary(); heldInput = Boundary(); padContact = Boundary()
-        screen = Boundary(); localInput = Boundary()
+        screen = Boundary(); localInput = Boundary(); completedInput = Boundary()
         hidPanel = Boundary().apply { visibility = View.GONE }
         hidInput = Boundary()
 ''' + init[0] + '''
     }
     private fun usable() = resumed && hasWindowFocus()
     private fun projectedInput() = streaming && presentation.projectedInput
+    private fun publishHeadPointer() {}
     private fun resize() { cancelInput(); resizes++ }
     private fun observePeer(peer: Peer) { observed++ }
     private fun showStatus(text: String) {}
