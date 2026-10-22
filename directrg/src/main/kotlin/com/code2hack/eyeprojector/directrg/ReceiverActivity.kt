@@ -278,7 +278,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         val projected = connectionView.visibility != View.VISIBLE
         val available = usable() && position.available && (!projected || projectedInput())
         source.headPointer(HeadPointerState(inputGeneration, ++pointerSequence, available, projected,
-            position.x, position.y, fit, size))
+            position.x, position.y, fit, size), pointer.expiresAtNs)
     }
 
     private fun usable() = resumed && hasWindowFocus()

@@ -6,8 +6,9 @@ import java.util.concurrent.Executors
 /** Deadline callbacks only hand off. One ordinary worker plus one latest current Function callback. */
 internal class FunctionWork : Closeable {
     private val lock = Any()
+    @Volatile private var workerThread: Thread? = null
     private val worker = Executors.newSingleThreadExecutor { task ->
-        Thread(task, "eyeprojector-phone-function").apply { isDaemon = true }
+        Thread(task, "eyeprojector-phone-function").apply { isDaemon = true }.also { workerThread = it }
     }
     private var latest: (() -> Unit)? = null
     private var scheduled = false
@@ -34,6 +35,9 @@ internal class FunctionWork : Closeable {
     }
 
     override fun close() = synchronized(lock) {
-        closed = true; latest = null; worker.shutdownNow(); Unit
+        closed = true; latest = null
+        // A Function failure can own Session release; retain that caller's original cleanup opportunity.
+        if (Thread.currentThread() === workerThread) worker.shutdown() else worker.shutdownNow()
+        Unit
     }
 }

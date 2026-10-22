@@ -38,7 +38,7 @@ internal class Peer : SSLSocket() {
     override fun setEnableSessionCreation(v: Boolean) {}
     override fun getEnableSessionCreation() = true
 }
-internal class Child : Process() {
+internal open class Child : Process() {
     var alive = true
     override fun getOutputStream(): OutputStream = ByteArrayOutputStream()
     override fun getInputStream(): InputStream = ByteArrayInputStream(byteArrayOf())
@@ -50,7 +50,7 @@ internal class Child : Process() {
     override fun destroyForcibly(): Process { alive = false; return this }
     override fun isAlive() = alive
 }
-internal class Fixture(val ownerEpoch: String = "session-owner") : AutoCloseable {
+internal class Fixture(val ownerEpoch: String = "session-owner", val child: Child = Child()) : AutoCloseable {
     val directory = Files.createTempDirectory("eyeprojector-launch-composition-").toFile()
     val peer = Peer()
     val timer = Executors.newSingleThreadScheduledExecutor()
@@ -59,7 +59,6 @@ internal class Fixture(val ownerEpoch: String = "session-owner") : AutoCloseable
         peer, DataInputStream(peer.inputStream), directory, File(directory,"unused.jar"), timer, ownerEpoch, {} as () -> Unit)
     val control = LocalSocket()
     val video = LocalSocket()
-    val child = Child()
     init { set("control",control); set("video",video); set("server",child) }
     fun get(name: String): Any? = type.getDeclaredField(name).apply { isAccessible = true }.get(session)
     fun set(name: String, value: Any?) = type.getDeclaredField(name).apply { isAccessible = true }.set(session,value)
@@ -155,5 +154,7 @@ fun main() {
     }
     serviceContextScenarios()
     fusionScenarios()
-    println("14 actual Session/service/fusion scenarios passed; modeled external APIs, no Android/device proof")
+    stopRaceScenarios()
+    functionFailureScenarios()
+    println("20 actual Session/service/fusion scenarios passed; modeled external APIs, no Android/device proof")
 }

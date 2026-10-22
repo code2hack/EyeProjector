@@ -13,6 +13,7 @@ internal class PhoneInputMerger(
     private val navigation: (Navigation, Geometry) -> Unit,
     private val cancelControl: () -> Unit,
     private val receiver: (ReceiverInput) -> Unit,
+    private val active: () -> Boolean = { true },
 ) {
     private class Press(val id: Long, val edge: PhoneHidEdge, val point: HeadPointerState, val contact: Long)
     private class FunctionSequence(val point: HeadPointerState, val key: Triple<Int, Int, Int>) {
@@ -85,6 +86,7 @@ internal class PhoneInputMerger(
     }
 
     fun pointer(next: HeadPointerState) = transaction { out ->
+        if (!active()) return@transaction
         val old = point
         if (old != null && next.sequence <= old.sequence) return@transaction
         if (old != null && (old.revision != next.revision || old.projected != next.projected || old.geometry != next.geometry) || !next.available)
@@ -96,6 +98,7 @@ internal class PhoneInputMerger(
     }
 
     fun edge(routeId: Long, edge: PhoneHidEdge) = transaction { out ->
+        if (!active()) return@transaction
         val old = presses[routeId]
         if (edge.phase == PhoneHidPhase.DOWN) {
             if (old != null || edge.repeatCount != 0) return@transaction
@@ -177,6 +180,7 @@ internal class PhoneInputMerger(
 
     /** Native input keeps its actual timestamps/IDs; the sidecar prevents cross-source ID collisions. */
     fun nativeTouch(event: Touch): Boolean = transaction { out ->
+        if (!active()) return@transaction false
         if (event.phase == Touch.Phase.DOWN) {
             val admitted = ++generation
             nativeContact = event.contactId; retireContact(out)
@@ -184,13 +188,14 @@ internal class PhoneInputMerger(
         }
         else if (nativeContact != event.contactId) return@transaction false
         if (event.phase == Touch.Phase.UP || event.phase == Touch.Phase.CANCEL) nativeContact = null
-        touch(event)
+        active() && touch(event)
     }
 
     fun nativeAction(action: () -> Boolean): Boolean = transaction { out ->
+        if (!active()) return@transaction false
         val admitted = ++generation
         nativeContact = null; retireContact(out)
-        if (generation == admitted) action() else false
+        if (generation == admitted && active()) action() else false
     }
 
     /** Launch/resize/release already invalidate Receiver context; do not send under output/publication locks. */
@@ -241,6 +246,7 @@ internal class PhoneInputMerger(
         cancelFunctionTimer?.invoke()
         val timerGeneration = ++functionTimerGeneration
         cancelFunctionTimer = schedule(deadline) { transaction { out ->
+            if (!active()) { cancelFunction(); return@transaction }
             if (function !== current || timerGeneration != functionTimerGeneration) return@transaction
             val position = point
             if (position?.available != true || position.revision != current.point.revision) { cancelFunction(); return@transaction }
@@ -255,7 +261,7 @@ internal class PhoneInputMerger(
         val position = point?.takeIf { it.available && it.revision == current.point.revision } ?: return
         val admitted = generation + 1
         retire(out, true, clearPoint = false)
-        if (generation != admitted) return
+        if (generation != admitted || !active()) return
         when (current.presses) {
             1 -> if (position.projected) position.geometry?.let { navigation(Navigation.HOME, it) }
                 else out.add(ReceiverInput(ReceiverInputKind.PANEL, position.revision))

@@ -1,6 +1,7 @@
 package com.code2hack.eyeprojector.directrg
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.AtomicFile
 import android.util.Log
 import android.view.Surface
@@ -42,7 +43,8 @@ class ProjectionSession(
     // Separate from native timed input cancellation; both use the existing serialized stream writer.
     private val headPointer = LatestHeadPointer({ action ->
         scaleControls.submit(System.nanoTime() / 1_000_000, { running.get() }, "head-pointer", preserveTiming = false, write = action)
-    }, { send(Frame(Wire.HEAD_POINTER, payload = it.bytes())) })
+    }, { send(Frame(Wire.HEAD_POINTER, payload = it.bytes())) }, SystemClock::elapsedRealtimeNanos,
+        { action -> synchronized(outputLock) { action() } })
     private val lifecycleLock = Any()
     private val closeLock = Any()
     @Volatile private var closeComplete = false
@@ -308,7 +310,8 @@ class ProjectionSession(
         heldTouch.cancel(0)
     }
     fun cancelHeadScroll() = controls.cancelPending("head-scroll")
-    fun headPointer(state: HeadPointerState): Boolean = if (running.get() && geometry != null) headPointer.publish(state) else false
+    fun headPointer(state: HeadPointerState, sourceExpiresAtNs: Long): Boolean =
+        if (running.get() && geometry != null) headPointer.publish(state, sourceExpiresAtNs) else false
 
     private fun input(channel: Int, size: Geometry, payload: ByteArray, eventTimeMs: Long, category: String = "input"): Boolean {
         if (!running.get() || !readyForTouch || size != geometry) {

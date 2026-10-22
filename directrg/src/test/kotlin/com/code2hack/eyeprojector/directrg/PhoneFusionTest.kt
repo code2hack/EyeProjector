@@ -12,21 +12,21 @@ class PhoneFusionTest {
         lateinit var pump: LatestHeadPointer
         pump = LatestHeadPointer({ jobs.add(it); true }, { state ->
             sent.add(state)
-            if (state.sequence == 1000L) { pump.publish(point(1001, 2)); pump.publish(point(1002, 3)) }
-        })
-        for (n in 1L..1000L) pump.publish(point(n))
+            if (state.sequence == 1000L) { pump.publish(point(1001, 2), 100); pump.publish(point(1002, 3), 100) }
+        }, { 0 })
+        for (n in 1L..1000L) pump.publish(point(n), 100)
         assertEquals(1, jobs.size)
         jobs.removeAt(0)(); assertEquals(1, jobs.size)
         jobs.removeAt(0)(); assertTrue(jobs.isEmpty())
         assertEquals(listOf(1000L, 1002L), sent.map { it.sequence })
         assertEquals(3, sent.last().revision)
-        pump.close(); assertFalse(pump.publish(point(1003)))
+        pump.close(); assertFalse(pump.publish(point(1003), 100))
     }
 
     @Test fun rejectedScheduleAndClosedPendingPumpDoNotRemainPermanentlyScheduled() {
         var accepted = false; val jobs = mutableListOf<() -> Unit>(); val sent = mutableListOf<HeadPointerState>()
-        val pump = LatestHeadPointer({ if (accepted) { jobs.add(it); true } else false }, sent::add)
-        pump.publish(point(1)); accepted = true; pump.publish(point(2))
+        val pump = LatestHeadPointer({ if (accepted) { jobs.add(it); true } else false }, sent::add, { 0 })
+        pump.publish(point(1), 100); accepted = true; pump.publish(point(2), 100)
         assertEquals(1, jobs.size); pump.close(); jobs.single()(); assertTrue(sent.isEmpty())
     }
 

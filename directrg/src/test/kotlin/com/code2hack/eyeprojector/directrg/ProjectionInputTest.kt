@@ -49,8 +49,8 @@ class ProjectionInputTest {
         ready(output).use { session ->
             fun point(sequence: Long, revision: Long) = HeadPointerState(revision, sequence, true, true,
                 120f, 240f, Fit(0, 0, 480, 640), geometry)
-            assertTrue(session.headPointer(point(1, 1))); assertTrue(entered.await(2, TimeUnit.SECONDS))
-            for (n in 2L..1000L) session.headPointer(point(n, if (n < 900) 2 else 3))
+            assertTrue(session.headPointer(point(1, 1), Long.MAX_VALUE)); assertTrue(entered.await(2, TimeUnit.SECONDS))
+            for (n in 2L..1000L) session.headPointer(point(n, if (n < 900) 2 else 3), Long.MAX_VALUE)
             session.cancelPendingInput() // Cancels native timed input; pointer pump remains on existing separate writer lane.
             release.countDown(); assertTrue(done.await(3, TimeUnit.SECONDS))
             val input = DataInputStream(buffer.toByteArray().inputStream())

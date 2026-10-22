@@ -5,16 +5,19 @@ import java.io.Closeable
 
 /** One serialization plus one latest value, on the Session's existing writer. */
 internal class LatestHeadPointer(private val schedule: (() -> Unit) -> Boolean,
-    private val write: (HeadPointerState) -> Unit) : Closeable {
+    private val write: (HeadPointerState) -> Unit,
+    private val nowNs: () -> Long,
+    private val withWriterLock: (() -> Unit) -> Unit = { it() }) : Closeable {
+    private data class Pending(val state: HeadPointerState, val expiresAtNs: Long)
     private val lock = Any()
-    private var latest: HeadPointerState? = null
+    private var latest: Pending? = null
     private var scheduled = false
     private var closed = false
 
-    fun publish(value: HeadPointerState): Boolean {
+    fun publish(value: HeadPointerState, expiresAtNs: Long): Boolean {
         val start = synchronized(lock) {
             if (closed) return false
-            latest = value
+            latest = Pending(value, expiresAtNs)
             if (scheduled) false else { scheduled = true; true }
         }
         if (start) enqueue()
@@ -26,8 +29,12 @@ internal class LatestHeadPointer(private val schedule: (() -> Unit) -> Boolean,
     }
 
     private fun serialize() {
-        val value = synchronized(lock) { latest.also { latest = null }?.takeUnless { closed } }
-        try { if (value != null) write(value) }
+        try { withWriterLock {
+            // Select current source state and recheck its own elapsed-clock deadline after writer waits.
+            val value = synchronized(lock) { latest.also { latest = null }?.takeUnless { closed } }
+            if (value != null) write(if (value.state.available && nowNs() >= value.expiresAtNs)
+                value.state.copy(available = false) else value.state)
+        } }
         finally {
             val again = synchronized(lock) {
                 if (!closed && latest != null) true else { scheduled = false; false }

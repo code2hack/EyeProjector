@@ -302,10 +302,13 @@ private class Session(
             }, (deadline - SystemClock.uptimeMillis()).coerceAtLeast(0), TimeUnit.MILLISECONDS)
             val cancel: () -> Unit = { task.cancel(false); Unit }
             cancel
-        }, { geometry.get() }, inputControls::touch, inputControls::scroll,
+        }, { geometry.get() },
+        { event -> running.get() && inputControls.touch(event) },
+        { event -> running.get() && inputControls.scroll(event) },
         ::phoneNavigation,
         { inputControls.cancel() },
-        { event -> if (running.get()) send(Frame(Wire.RECEIVER_INPUT, payload = event.bytes())) })
+        { event -> if (running.get()) send(Frame(Wire.RECEIVER_INPUT, payload = event.bytes())) },
+        { running.get() })
     private var server: java.lang.Process? = null
     private var inputThread: Thread? = null
     private var watchdog: java.util.concurrent.ScheduledFuture<*>? = null
@@ -333,6 +336,7 @@ private class Session(
     }
     private var identifiedDisplay = false
     private fun phoneNavigation(action: Navigation, size: Geometry) {
+        if (!running.get()) return
         if (action == Navigation.HOME) launches.home() else inputControls.navigate(Navigate(action, size))
     }
     private val tlsProtocol = peer.session.protocol
