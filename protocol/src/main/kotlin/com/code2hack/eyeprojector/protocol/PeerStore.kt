@@ -34,9 +34,14 @@ data class RememberedPeer(val certificate: X509Certificate, val endpoint: PeerEn
 
 /** One app-private directory, also consumed by the explicitly bootstrapped host. */
 class PeerStore(val directory: File) {
-    private class DirectoryState { var revision = 0L }
+    private class DirectoryState {
+        val identityLock = Any()
+        var revision = 0L
+    }
     private val state = states.computeIfAbsent(directory.canonicalPath) { DirectoryState() }
     private fun <T> locked(block: () -> T): T = synchronized(state, block)
+    // Identity files are independent of peer trust; PKCS12 work must not hold the peer-state monitor.
+    private fun <T> identityLocked(block: () -> T): T = synchronized(state.identityLock, block)
     fun pairingRevision(): Long = locked { state.revision }
     fun cancelPendingPairing(): Unit = locked { state.revision++ }
 
@@ -47,9 +52,9 @@ class PeerStore(val directory: File) {
         writeTransportEndpoint(host, peer.endpoint.projectionPort, peerName)
         remember(peer)
     }
-    fun ensureIdentity(): X509Certificate = locked {
+    fun ensureIdentity(): X509Certificate = identityLocked {
         directory.mkdirs()
-        if (File(directory, "identity.p12").exists()) return@locked identityCertificate()
+        if (File(directory, "identity.p12").exists()) return@identityLocked identityCertificate()
         val random = SecureRandom()
         val password = ByteArray(32).also(random::nextBytes).let { Base64.getEncoder().encodeToString(it) }.toCharArray()
         try {
@@ -67,16 +72,16 @@ class PeerStore(val directory: File) {
             }
             atomicFile("password") { it.writeText(String(password)) }
             atomicFile("identity.p12") { file -> file.outputStream().use { store.store(it, password) } }
-            return@locked certificate
+            return@identityLocked certificate
         } finally { password.fill('\u0000') }
     }
 
-    fun identityCertificate(): X509Certificate = locked {
+    fun identityCertificate(): X509Certificate = identityLocked {
         val password = File(directory, "password").readText().trimEnd().toCharArray()
         try {
             val store = KeyStore.getInstance("PKCS12")
             File(directory, "identity.p12").inputStream().use { store.load(it, password) }
-            return@locked store.getCertificate(store.aliases().nextElement()) as X509Certificate
+            return@identityLocked store.getCertificate(store.aliases().nextElement()) as X509Certificate
         } finally { password.fill('\u0000') }
     }
 
