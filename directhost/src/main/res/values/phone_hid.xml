@@ -1,0 +1,4 @@
+<resources>
+    <string name="phone_hid_accessibility_label">EyeProjector HID key capture</string>
+    <string name="phone_hid_accessibility_description">Receive external peripheral keys to assign EyeProjector controls and operate the projected display using the Glasses head pointer. Unassigned keys keep their normal behavior. Android and the connected peripheral determine which keys are delivered, including while the Phone is locked or its screen is off.</string>
+</resources>

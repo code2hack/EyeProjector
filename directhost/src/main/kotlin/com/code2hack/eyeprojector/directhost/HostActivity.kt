@@ -17,6 +17,8 @@ import android.os.Handler
 import android.os.Looper
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.code2hack.eyeprojector.directhost.hid.PhoneHidPanel
+import com.code2hack.eyeprojector.directhost.hid.PhoneHidRuntime
 
 class HostActivity : Activity() {
     private lateinit var bootstrap: HostBootstrap
@@ -28,6 +30,8 @@ class HostActivity : Activity() {
     private lateinit var pairingPanel: PairingPanel
     private lateinit var chosenApps: ChosenAppsPanel
     private lateinit var launcherStatus: TextView
+    private lateinit var phoneHid: PhoneHidPanel
+    private lateinit var phoneControls: LinearLayout
     private var launchFeedbackIntent = 0L
     private var launchEnabled = false
     private var launchContext = ProjectionContext()
@@ -113,23 +117,63 @@ class HostActivity : Activity() {
         setContentView(ScrollView(this).apply {
             addView(LinearLayout(this@HostActivity).apply {
                 orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.BLACK); setPadding(24, 24, 24, 24)
-                addView(pairingPanel); addView(status)
-                addView(authorize)
-                addView(button(R.string.host_open_shizuku) {
-                    val intent = packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")
-                    if (intent != null) startActivity(intent) else openGuide()
-                })
-                addView(button(R.string.host_setup_guide) { openGuide() })
-                addView(chosenApps)
-                addView(launcherStatus)
+                phoneControls = LinearLayout(this@HostActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(pairingPanel); addView(status)
+                    addView(authorize)
+                    addView(button(R.string.host_open_shizuku) {
+                        val intent = packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")
+                        if (intent != null) startActivity(intent) else openGuide()
+                    })
+                    addView(button(R.string.host_setup_guide) { openGuide() })
+                    addView(chosenApps)
+                    addView(launcherStatus)
+                }
+                addView(phoneControls)
+                initializePhoneHid(this)
             })
         })
     }
 
     override fun onStart() { super.onStart(); bootstrap.observe(observer); bootstrap.refresh(); main.post(sessionTick) }
-    override fun onResume() { super.onResume(); if (::bootstrap.isInitialized) bootstrap.refresh() }
-    override fun onStop() { main.removeCallbacks(sessionTick); bootstrap.removeObserver(observer); super.onStop() }
-    override fun onDestroy() { pairingPanel.close(); super.onDestroy() }
+    override fun onResume() { super.onResume(); if (::bootstrap.isInitialized) bootstrap.refresh(); resumePhoneHid() }
+    override fun onStop() { stopPhoneHid(); main.removeCallbacks(sessionTick); bootstrap.removeObserver(observer); super.onStop() }
+    override fun onDestroy() { stopPhoneHid(); pairingPanel.close(); super.onDestroy() }
+
+    private fun initializePhoneHid(container: LinearLayout) {
+        phoneHid = PhoneHidPanel(this, PhoneHidRuntime.get(this)) { showPhoneHid(false) }.apply { visibility = View.GONE }
+        phoneControls.addView(Button(this).apply {
+            text = "HID key bindings"; isAllCaps = false
+            setOnClickListener { showPhoneHid(true) }
+        })
+        container.addView(phoneHid)
+    }
+
+    private fun showPhoneHid(show: Boolean) {
+        if (show) {
+            phoneControls.visibility = View.GONE
+            phoneHid.visibility = View.VISIBLE
+            phoneHid.open()
+        } else {
+            phoneHid.close()
+            phoneHid.visibility = View.GONE
+            phoneControls.visibility = View.VISIBLE
+        }
+    }
+
+    private fun resumePhoneHid() {
+        if (::phoneHid.isInitialized && phoneHid.visibility == View.VISIBLE) phoneHid.open()
+    }
+
+    private fun stopPhoneHid() {
+        if (::phoneHid.isInitialized) phoneHid.close()
+    }
+
+    @Deprecated("Phone HID settings use local Back")
+    override fun onBackPressed() {
+        if (::phoneHid.isInitialized && phoneHid.visibility == View.VISIBLE) showPhoneHid(false)
+        else super.onBackPressed()
+    }
 
     private fun button(label: Int, action: () -> Unit) = Button(this).apply {
         setText(label); setOnClickListener { action() }
