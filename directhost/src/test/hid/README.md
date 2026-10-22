@@ -56,6 +56,18 @@ persistence and explicit captured route callbacks; composition cases use the
 actual runtime/service/panel. These scopes are reported separately from the
 actual store JUnit results and should not be summed as independent coverage.
 
+Released Function-route controls cover explicit reset/open/select/close,
+connection loss, device removal and common cancellation after a valid physical
+UP. They verify the original captured caller route is canceled once, including
+UP during pending construction and cancellation reentry from the submit
+callback. Actual service sequences verify successive Function DOWN/UP edges
+add no intermediate cancellation, only the latest released route is retained,
+and an older overlapping UP or old attachment removal cannot replace/cancel a
+newer attachment's marker. This establishes caller-half cancel delivery to the
+recording session seam only. The actual backend Function merger and its quiet
+timer are absent, so no backend recognition cancellation or acceptance follows;
+that requires the Manager's separate assembled composition checks.
+
 Every named scenario runs even if another fails. The runner refuses a nonempty
 evidence directory, snapshots each source/fixture before compilation, records
 source/compiler/JDK hashes and exact commands, and retains failed attempts.

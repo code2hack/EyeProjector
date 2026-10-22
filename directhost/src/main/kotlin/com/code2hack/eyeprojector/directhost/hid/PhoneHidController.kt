@@ -28,7 +28,7 @@ internal class PhoneHidController(
     private data class RawKey(val attachment: Int, val key: Int, val scan: Int)
     private data class Key(val attachment: Int, val button: PhoneHidButton)
     private class Capture(val event: Event, val action: PhoneHidAction)
-    private class Press(val event: Event, val action: PhoneHidAction) {
+    private class Press(val event: Event, val action: PhoneHidAction, val admission: Long) {
         var route: PhoneHidRoute? = null
         var terminal: Event? = null
         var canceled = false
@@ -37,6 +37,9 @@ internal class PhoneHidController(
     private val presses = mutableMapOf<Raw, Press>()
     private val admissions = mutableMapOf<Key, Press>()
     private var tapAdmission: Press? = null
+    // UP ends physical ownership; the latest submitted Function route still owns quiet recognition.
+    private var releasedFunction: Press? = null
+    private var nextAdmission = 0L
     private val constructing = mutableSetOf<Press>()
     private val retired = mutableSetOf<Raw>()
     private val observedDowns = mutableSetOf<Raw>()
@@ -121,10 +124,12 @@ internal class PhoneHidController(
         capture?.takeIf { it.event.attachmentId == device }?.let {
             retired.add(raw(it.event)); capture = null
         }
-        val old = (presses.values + constructing).filter { it.event.attachmentId == device }.distinct()
+        val old = (presses.values + constructing + listOfNotNull(releasedFunction))
+            .filter { it.event.attachmentId == device }.distinct()
         presses.keys.removeAll { it.attachment == device }
         admissions.keys.removeAll { it.attachment == device }
         if (tapAdmission?.event?.attachmentId == device) tapAdmission = null
+        if (releasedFunction?.event?.attachmentId == device) releasedFunction = null
         old.forEach { retired.add(raw(it.event)); it.canceled = true }
         old.forEach(::cancel)
         publish()
@@ -150,7 +155,7 @@ internal class PhoneHidController(
             retired.add(raw)
             old.terminal = event
             if (event.phase == PhoneHidPhase.CANCEL || event.eventTimeMs < event.downTimeMs) cancel(old)
-            else old.route?.let { submit(it, edge(old, event)) }
+            else old.route?.let { rememberReleasedFunction(old); submit(it, edge(old, event)) }
             return true
         }
         if (old != null) return true
@@ -173,7 +178,7 @@ internal class PhoneHidController(
         if (action == null) { received(event); publish(); return false }
         // Replace this same physical key's old incomplete press, preserving every old release.
         val previous = presses.filter { (_, p) -> sameButton(p.event, event) }.values.toList()
-        val press = Press(event, action)
+        val press = Press(event, action, ++nextAdmission)
         previous.forEach { presses.remove(raw(it.event)); retired.add(raw(it.event)) }
         presses[raw] = press
         admissions[key] = press
@@ -196,7 +201,7 @@ internal class PhoneHidController(
         constructing.remove(press)
         if (route != null) {
             if (!current()) cancel(press)
-            else press.terminal?.let { submit(route, edge(press, it)) }
+            else press.terminal?.let { rememberReleasedFunction(press); submit(route, edge(press, it)) }
         }
         if (admissions[key] === press) admissions.remove(key)
         return true // Bound ownership is independent of projection availability/admission.
@@ -209,21 +214,27 @@ internal class PhoneHidController(
     private fun retireInput(): List<Press> {
         capture?.let { retired.add(raw(it.event)) }
         capture = null
-        val old = (presses.values + constructing).distinct()
+        val old = (presses.values + constructing + listOfNotNull(releasedFunction)).distinct()
         presses.clear()
         admissions.clear(); tapAdmission = null
+        releasedFunction = null
         old.forEach { retired.add(raw(it.event)); it.canceled = true }
         return old
     }
 
     private fun cancel(press: Press) {
         press.canceled = true
+        if (releasedFunction === press) releasedFunction = null
         val route = press.route ?: return
         press.route = null
         try { routes.cancel(route, now()) } catch (_: Exception) { /* Ownership stays retired. */ }
     }
     private fun submit(route: PhoneHidRoute, event: PhoneHidEdge) {
         try { routes.submit(route, event) } catch (_: Exception) { /* A failed route is never retargeted. */ }
+    }
+    private fun rememberReleasedFunction(press: Press) {
+        if (press.action == PhoneHidAction.FUNCTION && press.route != null &&
+            (releasedFunction?.admission ?: Long.MIN_VALUE) < press.admission) releasedFunction = press
     }
     private fun save(operation: () -> Unit) {
         saving++

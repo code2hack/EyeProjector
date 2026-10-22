@@ -42,6 +42,7 @@ private class Rig {
     var clock = 1000L
     var onChanged: () -> Unit = {}
     var onCapture: (PhoneHidEdge) -> Unit = {}
+    var onSubmit: (PhoneHidEdge) -> Unit = {}
     var onCancel: () -> Unit = {}
     val jobs = mutableListOf<Pair<() -> Unit, () -> Unit>>()
     val bindings = PhoneHidBindings({ record }) { writes.add(it); if (writable) record = it; writable }
@@ -51,7 +52,7 @@ private class Rig {
             val route = PhoneHidRoute(++next)
             calls.add(Call("capture", route, down)); onCapture(down); return route
         }
-        override fun submit(route: PhoneHidRoute, edge: PhoneHidEdge) { calls.add(Call("submit", route, edge)) }
+        override fun submit(route: PhoneHidRoute, edge: PhoneHidEdge) { calls.add(Call("submit", route, edge)); onSubmit(edge) }
         override fun cancel(route: PhoneHidRoute, eventTimeMs: Long) { calls.add(Call("cancel", route, null)); onCancel() }
     }, { operation, complete -> jobs.add(Pair(operation, complete)) }, { clock }, { onChanged() })
     fun flush() { while (jobs.isNotEmpty()) { val (operation, complete) = jobs.removeAt(0); operation(); complete() } }
@@ -406,6 +407,84 @@ private fun ordinaryHostStopDoesNotCancelOperationalHidAndInterruptRetiresOldOwn
     } finally { service.onDestroy(); host.onDestroy() }
 }
 
+private fun releasedFunctionCallerRouteRetiresAtEveryExplicitBoundary() {
+    for (boundary in listOf("reset", "open", "select", "close", "disconnect", "removed", "cancel")) {
+        val r = Rig(); r.seed(PhoneHidAction.FUNCTION); r.input.openPage()
+        check(r.input.accept(event(1000)))
+        check(r.input.accept(event(1020, 1000, PhoneHidPhase.UP)))
+        equal(listOf("capture", "submit"), r.calls.map { it.kind }, "Function release initially submits DOWN/UP without cancellation")
+        equal(listOf(Pair(1000L, 1000L), Pair(1000L, 1020L)),
+            r.calls.map { Pair(it.edge!!.downTimeMs, it.edge.eventTimeMs) }, "Function caller edges retain actual press timestamps")
+        r.clock = 1030
+        val original = r.calls[0].route
+        when (boundary) {
+            "reset" -> r.input.resetAll()
+            "open" -> r.input.openPage()
+            "select" -> r.input.select(PhoneHidAction.TAP)
+            "close" -> r.input.closePage()
+            "disconnect" -> r.input.connection(false)
+            "removed" -> r.input.deviceRemoved(peripheral.id)
+            else -> r.input.cancelInput()
+        }
+        equal(listOf("capture", "submit", "cancel"), r.calls.map { it.kind }, "$boundary cancels the original released Function route")
+        check(r.calls.all { it.route === original }) { "$boundary must not resolve a replacement route" }
+        r.input.cancelInput()
+        equal(3, r.calls.size, "$boundary retirement is idempotent")
+        r.flush()
+    }
+    val pending = Rig(); pending.seed(PhoneHidAction.FUNCTION); pending.input.openPage()
+    pending.once { check(pending.input.accept(event(1020, 1000, PhoneHidPhase.UP))) }
+    check(pending.input.accept(event(1000)))
+    pending.clock = 1030
+    pending.input.cancelInput()
+    equal(listOf("capture", "submit", "cancel"), pending.calls.map { it.kind }, "UP during feedback retains released Function ownership after route construction")
+    check(pending.calls.all { it.route === pending.calls[0].route })
+    val reentrant = Rig(); reentrant.seed(PhoneHidAction.FUNCTION)
+    check(reentrant.input.accept(event(1000)))
+    reentrant.onSubmit = { reentrant.onSubmit = {}; reentrant.clock = 1020; reentrant.input.cancelInput() }
+    check(reentrant.input.accept(event(1020, 1000, PhoneHidPhase.UP)))
+    equal(listOf("capture", "submit", "cancel"), reentrant.calls.map { it.kind }, "released ownership is published before submit callback reentry")
+}
+
+private fun actualServiceFunctionSequenceKeepsOnlyLatestReleasedCallerRoute() {
+    val runtime = PhoneHidRuntime.get(Context()); val input = runtime.controller
+    input.closePage(); input.cancelInput()
+    check(input.bindings.assign(PhoneHidAction.FUNCTION, binding(key = 198, scan = 798)))
+    val service = PhoneHidKeyService(); service.onServiceConnected()
+    try {
+        PhoneSessionController.fixture.clear()
+        check(serviceEdge(service, 10000, key = 198, scan = 798))
+        check(serviceEdge(service, 10020, 10000, KeyEvent.ACTION_UP, key = 198, scan = 798))
+        check(serviceEdge(service, 10100, key = 198, scan = 798))
+        check(serviceEdge(service, 10110, 10100, key = 198, scan = 798, repeat = 1, flags = KeyEvent.FLAG_LONG_PRESS))
+        check(serviceEdge(service, 10120, 10100, KeyEvent.ACTION_UP, key = 198, scan = 798))
+        val sequence = PhoneSessionController.fixture.calls
+        equal(listOf("capture", "submit", "capture", "submit"), sequence.map { it.kind }, "ordinary successive Function presses add no intermediate cancellation")
+        equal(listOf(PhoneHidPhase.DOWN, PhoneHidPhase.UP, PhoneHidPhase.DOWN, PhoneHidPhase.UP), sequence.map { it.edge!!.phase }, "actual Function edges reach the facade once")
+        val latest = sequence[2].route
+        service.onInterrupt()
+        equal("cancel", sequence.last().kind, "interrupt retires caller's released Function route")
+        check(sequence.last().route === latest)
+        equal(1, sequence.count { it.kind == "cancel" }, "only the latest completed route is retained")
+
+        PhoneSessionController.fixture.clear()
+        val newerAttachment = peripheral.copy(id = 42)
+        check(serviceEdge(service, 11000, key = 198, scan = 798))
+        check(serviceEdge(service, 11100, device = newerAttachment, key = 198, scan = 798))
+        check(serviceEdge(service, 11120, 11100, KeyEvent.ACTION_UP, device = newerAttachment, key = 198, scan = 798))
+        val newer = PhoneSessionController.fixture.calls[1].route
+        check(serviceEdge(service, 11140, 11000, KeyEvent.ACTION_UP, key = 198, scan = 798))
+        val overlap = PhoneSessionController.fixture.calls
+        equal(listOf("capture", "capture", "submit", "submit"), overlap.map { it.kind }, "older overlapping UP still terminates its original physical route")
+        service.onInputDeviceRemoved(peripheral.id)
+        equal(4, overlap.size, "old attachment removal cannot cancel the newer released marker")
+        service.onInputDeviceRemoved(newerAttachment.id)
+        equal(5, overlap.size, "newer attachment removal retires its retained caller route")
+        equal("cancel", overlap.last().kind, "removal is cancellation")
+        check(overlap.last().route === newer) { "an older later UP cannot replace the newer released marker" }
+    } finally { service.onDestroy() }
+}
+
 fun main() {
     val scenarios = linkedMapOf<String, () -> Unit>(
         "captured DOWN ownership precedes matching-UP feedback" to ::capturePublishesOwnershipBeforeMatchingUpFeedback,
@@ -419,6 +498,8 @@ fun main() {
         "actual service excludes native/unknown input and never replays unavailable targets" to ::actualNativeExclusionUnknownKeysAndUnavailableTargetsNeverReplay,
         "actual settings/reset failure and Host lifecycle remain truthful" to ::actualSettingsObservationResetFailureAndLifecycleAreTruthful,
         "ordinary Host stop preserves operational HID and interrupt retires owner" to ::ordinaryHostStopDoesNotCancelOperationalHidAndInterruptRetiresOldOwner,
+        "released Function caller route retires at reset page selection connection removal and cancel boundaries" to ::releasedFunctionCallerRouteRetiresAtEveryExplicitBoundary,
+        "actual service Function sequence keeps latest released caller route without intermediate cancel" to ::actualServiceFunctionSequenceKeepsOnlyLatestReleasedCallerRoute,
     )
     val failures = mutableListOf<String>()
     try {
