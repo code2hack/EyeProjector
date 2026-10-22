@@ -1,6 +1,6 @@
 # v0.1 implementation plan
 
-Status: Owner-authorized implementation. The 20 canonical issues are published in the [v0.1 milestone](https://github.com/code2hack/EyeProjector/milestone/1). EP identifiers retain the plan mapping; GitHub issues own execution scope.
+Status: Completed by the Owner on 2026-10-23 (SGT), after the final Function Back/Home change was installed on both devices. The [version run record](../../runs/v0.1.md) preserves source/host results, Owner observations and remaining measurement limits. The 20 canonical issues remain in the [v0.1 milestone](https://github.com/code2hack/EyeProjector/milestone/1); the optional camera experiment was not executed.
 
 Basis: Owner decisions in [SPEC.md](../../../SPEC.md), committed as [`e972546c6ea32bba49a296beaf24c9c5020bfd85`](https://github.com/code2hack/EyeProjector/blob/e972546c6ea32bba49a296beaf24c9c5020bfd85/SPEC.md). Implementation branches and PRs target `version/v0.1`.
 
