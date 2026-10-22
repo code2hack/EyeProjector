@@ -11,5 +11,6 @@ interface IHostBootstrap {
     byte[] panelState(String expectedOwnerEpoch, String expectedProjectionToken) = 6;
     byte[] launchApp(long requestId, String packageName, String expectedOwnerEpoch, String expectedProjectionToken) = 7;
     byte[] projectionDisplayState(String expectedOwnerEpoch, String expectedProjectionToken) = 8;
+    oneway void phoneHidEdge(long routeId, in byte[] typedEdge, String expectedOwnerEpoch, String expectedProjectionToken) = 9;
     void destroy() = 16777114;
 }

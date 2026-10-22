@@ -34,7 +34,7 @@ sources += [host / name for name in (
     'apps/ChosenAppStore.kt', 'scale/AppScaleCoordinator.kt', 'scale/AppScaleStore.kt',
     'scale/AppScalePreferences.kt', 'scale/AppScaleActivity.kt',
 )]
-sources += [protocol / name for name in ('SessionState.kt', 'Wire.kt', 'Touch.kt', 'LayoutScale.kt')]
+sources += [protocol / name for name in ('SessionState.kt', 'Wire.kt', 'PhoneInput.kt', 'Touch.kt', 'LayoutScale.kt')]
 missing = [str(path) for path in sources if not path.is_file()]
 if missing:
     parser.error('Missing source files: ' + ', '.join(missing))

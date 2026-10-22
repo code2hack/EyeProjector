@@ -1,6 +1,7 @@
 package com.code2hack.eyeprojector.directhost
 /** Matched typed Binder input API; transport is a host double, all downstream routing is actual. */
 interface IHostBootstrap {
+    fun phoneHidEdge(routeId: Long, typedEdge: ByteArray, expectedOwnerEpoch: String, expectedProjectionToken: String) {}
  fun status(): String
  fun start(identity: ByteArray, password: ByteArray, legacy: ByteArray?, endpoint: ByteArray, paired: ByteArray?, sessionEpoch: String): String
  fun stop(): String

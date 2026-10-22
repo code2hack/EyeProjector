@@ -14,6 +14,7 @@ parser.add_argument('--output-dir', type=Path, required=True)
 parser.add_argument('--source-dir', type=Path, help='Optional exact adapter source snapshot for a before/after check')
 parser.add_argument('--composed', action='store_true', help='Continuous actual bootstrap/service/Bridge/Session scalar plus OFF composition')
 parser.add_argument('--legacy-scale-abi', action='store_true', help='Compile the matched pre-correction scalar input ABI for exact-parent RED only')
+parser.add_argument('--protocol-classpath', type=Path, help='Private immutable protocol class snapshot for focused checks')
 parser.add_argument('--panel', action='store_true', help='Drive actual Session panel/cleanup composition with modeled Android resources')
 args = parser.parse_args()
 output = args.output_dir.resolve()
@@ -32,7 +33,7 @@ deps = [
 jars = [str(j) for dependency in deps for j in sorted((cache / dependency).rglob('*.jar'))]
 if not jars:
     parser.error('Run the affected Gradle checks first to provision Kotlin compiler dependencies')
-classpath = os.pathsep.join([str(root / "protocol/build/tmp/kotlin-classes/debug")] + jars)
+classpath = os.pathsep.join([str(args.protocol_classpath or root / "protocol/build/tmp/kotlin-classes/debug")] + jars)
 java_home = os.environ.get('JAVA_HOME')
 java = str(Path(java_home) / 'bin/java') if java_home else shutil.which('java')
 if not java:
@@ -70,12 +71,14 @@ else:
     sources = sorted((suite / 'doubles').glob('*.kt')) + [suite / 'Scenarios.kt', suite / 'HomeContextScenarios.kt']
     sources += [actual / name for name in ('HostBootstrap.kt', 'HostForgetCompletion.kt', 'BootstrapSessionFiles.kt', 'SessionController.kt', 'SessionAttemptStore.kt', 'PanelPower.kt', 'ProjectionDisplayState.kt', 'ProjectionContext.kt', 'ProjectedHomeActivity.kt')]
     sources += [actual / 'apps/ChosenAppStore.kt']
+sources += [actual / 'input/PhoneHidRoute.kt'] if not args.panel else []
+sources += [actual / 'input/PhoneInputMerger.kt', actual / 'input/FunctionWork.kt'] if args.panel or args.composed else []
 protocol = root / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
 if not args.panel and (actual / 'LaunchOperationDiagnostics.kt').exists():
     sources += [actual / 'LaunchOperationDiagnostics.kt']
     if args.composed:
         sources += [suite / 'doubles/Log.kt']
-sources += [protocol / name for name in ('Wire.kt', 'LayoutScale.kt', 'Touch.kt')]
+sources += [protocol / name for name in ('Wire.kt', 'PhoneInput.kt', 'LayoutScale.kt', 'Touch.kt')]
 # Retain exact compiler inputs even for preparation failures and later test corrections.
 archive = output / 'compiled-sources'
 archive.mkdir(exist_ok=True)

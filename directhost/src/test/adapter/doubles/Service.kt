@@ -4,6 +4,7 @@ import com.code2hack.eyeprojector.protocol.*
 
 class ShizukuHostService
 interface IHostBootstrap {
+    fun phoneHidEdge(routeId: Long, typedEdge: ByteArray, expectedOwnerEpoch: String, expectedProjectionToken: String) {}
     fun start(identity: ByteArray, password: ByteArray, legacy: ByteArray?, endpoint: ByteArray, paired: ByteArray?, sessionEpoch: String): String
     fun status(): String
     fun stop(): String
@@ -20,6 +21,16 @@ interface IHostBootstrap {
 
 /** The first stop may time out; the test later releases construction independently. */
 class FakeService : IHostBootstrap, android.os.IBinder {
+    data class InputCall(val routeId: Long, val edge: PhoneHidEdge, val expected: ProjectionContext)
+    val inputCalls = mutableListOf<InputCall>()
+    val inputWrites = mutableListOf<InputCall>()
+    var beforeInput: (() -> Unit)? = null
+    override fun phoneHidEdge(routeId: Long, typedEdge: ByteArray, expectedOwnerEpoch: String, expectedProjectionToken: String) {
+        beforeInput?.invoke()
+        val call = InputCall(routeId, PhoneHidEdge.from(typedEdge), ProjectionContext(expectedOwnerEpoch, expectedProjectionToken))
+        inputCalls.add(call)
+        if (alive && state == "STREAMING" && call.expected == context) inputWrites.add(call)
+    }
     @Volatile var state = "READY"
     var revoked = false
     var stopReady = true

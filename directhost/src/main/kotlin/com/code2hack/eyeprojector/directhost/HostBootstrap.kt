@@ -1,6 +1,9 @@
 package com.code2hack.eyeprojector.directhost
 
 import com.code2hack.eyeprojector.protocol.ScaleState
+import com.code2hack.eyeprojector.protocol.PhoneHidEdge
+import com.code2hack.eyeprojector.protocol.PhoneHidPhase
+import com.code2hack.eyeprojector.directhost.input.PhoneHidRoute
 import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Context
@@ -30,6 +33,7 @@ class HostBootstrap private constructor(private val context: Context) {
     private val forget = HostForgetCompletion { main.post(it) }
     private val executor = Executors.newSingleThreadScheduledExecutor()
     private val displayExecutor = Executors.newSingleThreadExecutor()
+    private val inputRoutes = java.util.concurrent.atomic.AtomicLong(System.nanoTime())
     private val scaleExecutor = Executors.newSingleThreadExecutor()
     private val panelExecutor = Executors.newSingleThreadExecutor()
     private val panelQueryExecutor = Executors.newSingleThreadExecutor()
@@ -221,6 +225,22 @@ class HostBootstrap private constructor(private val context: Context) {
 
     fun launchApp(packageName: String, complete: (ProjectionDisplayState?) -> Unit) =
         launchApp(packageName, current.projectionContext, complete)
+
+    /** Captures before any asynchronous Binder hop; subsequent edges never fetch the new singleton. */
+    fun capturePhoneHidRoute(down: PhoneHidEdge): PhoneHidRoute? {
+        if (down.phase != PhoneHidPhase.DOWN || down.repeatCount != 0) return null
+        val snapshot = current
+        val service = remote ?: return null
+        val binding = bindingGeneration
+        val expected = snapshot.projectionContext.takeIf { it.available } ?: return null
+        if (current !== snapshot || remote !== service || bindingGeneration != binding) return null
+        val id = inputRoutes.incrementAndGet()
+        val route = PhoneHidRoute(down, binding) { edge ->
+            service.phoneHidEdge(id, edge.bytes(), expected.ownerEpoch, expected.projectionToken)
+        }
+        route.submit(down)
+        return route
+    }
 
     fun launchApp(packageName: String, expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit) =
         displayOperation(expected, LaunchOperationDiagnostics.Kind.LAUNCH, packageName,

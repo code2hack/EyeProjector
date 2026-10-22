@@ -25,6 +25,8 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import com.code2hack.eyeprojector.protocol.Touch
+import com.code2hack.eyeprojector.protocol.HeadPointerState
+import com.code2hack.eyeprojector.protocol.ReceiverInputKind
 import com.code2hack.eyeprojector.protocol.Fit
 import com.code2hack.eyeprojector.protocol.Geometry
 import com.code2hack.eyeprojector.protocol.Navigation
@@ -64,6 +66,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var hidPanel: HidBindingsPanel
     private lateinit var mainControls: LinearLayout
     private lateinit var heldOwner: HeldInputOwner
+    private lateinit var completedInput: CompletedReceiverInput
     private lateinit var functionInput: NativeFunctionInput
     private var nativeActionsSubmitted = 0L
     private var nativeActionsRejected = 0L
@@ -79,6 +82,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     private var edgeScheduled = false
     private var padUps = 0L
     private var inputGeneration = 0L
+    private var pointerSequence = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -139,6 +143,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
                 if (!position.available) cancelInput()
                 else if (::heldInput.isInitialized) heldInput.move(SystemClock.uptimeMillis())
                 updateEdgeScroll()
+                publishHeadPointer()
             }
         }
         root.addView(pointer, FrameLayout.LayoutParams(-1, -1))
@@ -150,7 +155,10 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         // Admission and position notifications already refresh the model; observing must not publish again.
         heldInput = HeldPointerDispatcher({ pointer.position }) {
             if (!usable()) null
-            else if (connectionView.visibility == View.VISIBLE) localInput::touch
+            else if (connectionView.visibility == View.VISIBLE) { event ->
+                if (event.phase == Touch.Phase.DOWN && ::completedInput.isInitialized) completedInput.cancel()
+                localInput.touch(event)
+            }
             else {
                 val source = session
                 val size = currentGeometry
@@ -166,6 +174,15 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             }
         }
         heldOwner = HeldInputOwner(heldInput)
+        completedInput = CompletedReceiverInput(SystemClock::uptimeMillis, { inputGeneration },
+            { usable() && connectionView.visibility == View.VISIBLE },
+            { heldOwner.cancel(SystemClock.uptimeMillis()) }, localInput::touch, localInput::scroll, localInput::cancel,
+            { kind -> when (kind) {
+                ReceiverInputKind.PANEL -> showControlPanel()
+                ReceiverInputKind.BACK -> contextualBack()
+                ReceiverInputKind.EXIT -> exitToLauncher()
+                else -> Unit
+            } })
         padContact = NativePadContact(this, { pointer.inputPosition() }, { event ->
             if (usable()) gestures.accept(event, SystemClock.uptimeMillis()) else cancelInput()
             schedulePadConfirmation()
@@ -248,6 +265,20 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         if (fit != null && projectedInput()) {
             pointer.bounds(fit.left.toFloat(), fit.top.toFloat(), (fit.left + fit.width).toFloat(), (fit.top + fit.height).toFloat(), display?.rotation ?: 0)
         } else pointer.bounds(0f, 0f, root.width.toFloat(), root.height.toFloat(), display?.rotation ?: 0)
+        publishHeadPointer()
+    }
+
+    /** Passive snapshot: inputPosition() publishes too, so never call it from this producer. */
+    private fun publishHeadPointer() {
+        val source = session ?: return
+        if (!::pointer.isInitialized || root.width <= 0 || root.height <= 0) return
+        val position = pointer.position
+        val size = currentGeometry
+        val fit = size?.let { Fit.inside(root.width, root.height, it) }
+        val projected = connectionView.visibility != View.VISIBLE
+        val available = usable() && position.available && (!projected || projectedInput())
+        source.headPointer(HeadPointerState(inputGeneration, ++pointerSequence, available, projected,
+            position.x, position.y, fit, size))
     }
 
     private fun usable() = resumed && hasWindowFocus()
@@ -353,6 +384,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         pointer.inputPosition()
         if (inputGeneration != admittedGeneration || !usable() || session !== admittedSession ||
             currentGeometry != admittedGeometry || (connectionView.visibility == View.VISIBLE) != admittedLocal) return
+        if (::completedInput.isInitialized) completedInput.cancel()
         heldOwner.cancel(action.timeMs)
         if (inputGeneration != admittedGeneration || !usable() || session !== admittedSession ||
             currentGeometry != admittedGeometry || (connectionView.visibility == View.VISIBLE) != admittedLocal) return
@@ -417,8 +449,10 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         if (::padContact.isInitialized) padContact.clear()
         if (::screen.isInitialized) screen.cancelTouch()
         if (::localInput.isInitialized) localInput.cancel()
+        if (::completedInput.isInitialized) completedInput.cancel()
         session?.cancelPendingInput()
         root.removeCallbacks(confirmTap); root.removeCallbacks(edgeTick); edgeScheduled = false; edgeMotion.stop()
+        publishHeadPointer()
     }
 
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
@@ -562,7 +596,9 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
                 currentGeometry = geometry
                 pointer.stop(); if (resumed && hasWindowFocus()) pointer.start()
                 resize()
-            } } }, applicationContext)
+            } } }, applicationContext, onReceiverInput = { source, event -> runOnUiThread {
+                if (session === source && usable()) completedInput.accept(event)
+            } })
         session = next; next.start()
     }
 

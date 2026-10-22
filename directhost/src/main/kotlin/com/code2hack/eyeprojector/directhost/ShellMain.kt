@@ -4,6 +4,9 @@ import android.net.LocalServerSocket
 import android.net.LocalSocket
 import android.os.Build
 import android.os.Process
+import android.os.SystemClock
+import com.code2hack.eyeprojector.directhost.input.PhoneInputMerger
+import com.code2hack.eyeprojector.directhost.input.FunctionWork
 import android.util.AtomicFile
 import com.code2hack.eyeprojector.protocol.*
 import java.io.Closeable
@@ -288,6 +291,21 @@ private class Session(
     private var video: LocalSocket? = null
     private var control: LocalSocket? = null
     private val inputControls = PhoneTouchDispatcher(controlLock) { control!!.outputStream.write(it) }
+    private val functionWork = FunctionWork()
+    private val phoneInput: PhoneInputMerger = PhoneInputMerger(controlLock, SystemClock::uptimeMillis,
+        { deadline, action ->
+            val task = timer.schedule({
+                functionWork.submit {
+                    try { if (running.get()) action() }
+                    catch (error: Exception) { close(sessionFailureReason(error, control = true)) }
+                }
+            }, (deadline - SystemClock.uptimeMillis()).coerceAtLeast(0), TimeUnit.MILLISECONDS)
+            val cancel: () -> Unit = { task.cancel(false); Unit }
+            cancel
+        }, { geometry.get() }, inputControls::touch, inputControls::scroll,
+        ::phoneNavigation,
+        { inputControls.cancel() },
+        { event -> if (running.get()) send(Frame(Wire.RECEIVER_INPUT, payload = event.bytes())) })
     private var server: java.lang.Process? = null
     private var inputThread: Thread? = null
     private var watchdog: java.util.concurrent.ScheduledFuture<*>? = null
@@ -306,13 +324,17 @@ private class Session(
     private val lastPongNs = AtomicLong()
     private val lastWriteChannel = AtomicLong(-1)
     private val scid = SecureRandom().nextInt(Int.MAX_VALUE)
-    private val launches = ProjectedAppLaunch("$projectionToken:scrcpy-%08x".format(scid), PlatformProjectionLaunch(context = context), context) {
+    private val launches: ProjectedAppLaunch = ProjectedAppLaunch("$projectionToken:scrcpy-%08x".format(scid), PlatformProjectionLaunch(context = context), context) {
         synchronized(controlLock) {
             check(running.get())
+            phoneInput.invalidate()
             inputControls.cancel()
         }
     }
     private var identifiedDisplay = false
+    private fun phoneNavigation(action: Navigation, size: Geometry) {
+        if (action == Navigation.HOME) launches.home() else inputControls.navigate(Navigate(action, size))
+    }
     private val tlsProtocol = peer.session.protocol
     private val localAddress = peer.localAddress.hostAddress
     private val localPort = peer.localPort
@@ -334,6 +356,10 @@ private class Session(
     fun projectionContext(): ProjectionContext = if (running.get()) context else ProjectionContext()
     override fun launchApp(requestId: Long, packageName: String): ProjectionDisplayState = launches.launch(requestId, packageName)
     override fun projectionDisplayState(): ProjectionDisplayState = launches.snapshot(observe = true)
+    override fun phoneHidEdge(routeId: Long, edge: PhoneHidEdge) {
+        try { if (running.get()) phoneInput.edge(routeId, edge) }
+        catch (error: Exception) { close(sessionFailureReason(error, control = true)) }
+    }
 
     fun requestPanelOff(id: Long): PanelPowerState {
         val result = panelPower.requestOff(id)
@@ -348,6 +374,7 @@ private class Session(
 
     private fun writeControl(payload: ByteArray) = synchronized(controlLock) {
         check(running.get())
+        phoneInput.invalidate()
         inputControls.cancel()
         control!!.outputStream.write(payload)
     }
@@ -411,35 +438,7 @@ private class Session(
             try {
                 while (running.get()) {
                     val frame = Wire.readFrame(input)
-                    when (frame.channel) {
-                        Wire.PING -> { lastPingNs.set(System.nanoTime()); send(Frame(Wire.PONG, frame.stamp)) }
-                        Wire.SCALE_REQUEST -> {
-                            requestScale(frame.stamp, ScaleRequest.from(frame.payload).scale, streamRequest = true)
-                        }
-                        Wire.TAP -> {
-                            val tap = Tap.from(frame.payload)
-                            if (tap.geometry == geometry.get()) {
-                                if (inputControls.tap(tap)) touches.incrementAndGet()
-                            }
-                        }
-                        Wire.SCROLL -> {
-                            val scroll = Scroll.from(frame.payload)
-                            if (scroll.target.geometry == geometry.get()) inputControls.scroll(scroll)
-                        }
-                        Wire.NAVIGATE -> {
-                            val navigate = Navigate.from(frame.payload)
-                            if (navigate.geometry == geometry.get()) {
-                                if (navigate.action == Navigation.HOME) launches.home()
-                                else inputControls.navigate(navigate)
-                            }
-                        }
-                        Wire.TOUCH -> {
-                            if (inputControls.touch(Touch.from(frame.payload))) heldTouchFrames.incrementAndGet()
-                            else rejectedHeldTouchFrames.incrementAndGet()
-                        }
-                        Wire.END -> break
-                        else -> error("Unsupported control")
-                    }
+                    if (!receiveControl(frame)) break
                 }
             } catch (error: Exception) { reason = sessionFailureReason(error, control = true) }
             finally { close(reason) }
@@ -453,6 +452,7 @@ private class Session(
                         startup.cancel(false)
                         scale.observe(record, this) {
                             synchronized(controlLock) {
+                                phoneInput.invalidate()
                                 inputControls.geometry(record.geometry)
                                 geometry.set(record.geometry)
                             }
@@ -481,10 +481,46 @@ private class Session(
         } finally { close(reason) }
     }
 
+    /** Actual authenticated control consumer, shared by the reader and composition checks. */
+    private fun receiveControl(frame: Frame): Boolean {
+        when (frame.channel) {
+            Wire.PING -> { lastPingNs.set(System.nanoTime()); send(Frame(Wire.PONG, frame.stamp)) }
+            Wire.SCALE_REQUEST -> {
+                requestScale(frame.stamp, ScaleRequest.from(frame.payload).scale, streamRequest = true)
+            }
+            Wire.TAP -> {
+                val tap = Tap.from(frame.payload)
+                if (tap.geometry == geometry.get()) {
+                    if (phoneInput.nativeAction { inputControls.tap(tap) }) touches.incrementAndGet()
+                }
+            }
+            Wire.SCROLL -> {
+                val scroll = Scroll.from(frame.payload)
+                if (scroll.target.geometry == geometry.get()) phoneInput.nativeAction { inputControls.scroll(scroll) }
+            }
+            Wire.NAVIGATE -> {
+                val navigate = Navigate.from(frame.payload)
+                if (navigate.geometry == geometry.get()) {
+                    if (navigate.action == Navigation.HOME) launches.home()
+                    else phoneInput.nativeAction { inputControls.navigate(navigate) }
+                }
+            }
+            Wire.TOUCH -> {
+                if (phoneInput.nativeTouch(Touch.from(frame.payload))) heldTouchFrames.incrementAndGet()
+                else rejectedHeldTouchFrames.incrementAndGet()
+            }
+            Wire.HEAD_POINTER -> phoneInput.pointer(HeadPointerState.from(frame.payload))
+            Wire.END -> return false
+            else -> error("Unsupported control")
+        }
+        return true
+    }
+
     override fun close() = close(SessionStopReason.OWNER_CLOSE)
 
     fun close(reason: SessionStopReason) = release.close {
         if (running.compareAndSet(true, false)) stopReason = reason
+        functionWork.close()
         val stopStartedMs = (System.nanoTime() - begin) / 1_000_000
         val lastStartupStage = startupStage.get()
         val phases = JSONObject()
@@ -501,7 +537,8 @@ private class Session(
             // Reuse the bounded held-release turn: a stuck writer must not prevent socket/child release.
             phase("inputAndPanelReleaseMs") {
                 HeldInputRelease.beforeTransportClose {
-                    try { inputControls.close() } finally { panelPower.close() }
+                    try { phoneInput.invalidate() }
+                    finally { try { inputControls.close() } finally { panelPower.close() } }
                 }
             }
 

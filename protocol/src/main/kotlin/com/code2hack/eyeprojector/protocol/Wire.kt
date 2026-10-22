@@ -77,7 +77,7 @@ data class Frame(val channel: Int, val stamp: Long = 0, val payload: ByteArray =
 
 object Wire {
     const val MAGIC = 0x50415631
-    const val VERSION = 4
+    const val VERSION = 5
     const val SCRCPY_VERSION = "5.0.1"
     const val H264 = 0x68323634
     const val MAX_PAYLOAD = 1024 * 1024
@@ -94,6 +94,8 @@ object Wire {
     const val SCALE_REQUEST = 10
     const val SCALE_STATE = 11
     const val TOUCH = 14
+    const val HEAD_POINTER = 15 // Receiver -> Phone: source position/context, no HID.
+    const val RECEIVER_INPUT = 16 // Phone -> Receiver: completed local UI operation.
     const val STREAM = 1
     const val STOP_HOST = 2
 
@@ -114,11 +116,13 @@ object Wire {
         require(input.readUTF() == SCRCPY_VERSION && input.readInt() == H264)
     }
     private fun validate(channel: Int, length: Int) {
-        require(channel in GEOMETRY..TOUCH && length in 0..MAX_PAYLOAD)
+        require(channel in GEOMETRY..RECEIVER_INPUT && length in 0..MAX_PAYLOAD)
         when (channel) {
             GEOMETRY -> require(length == 8)
             TAP -> require(length == 16)
             TOUCH -> require(length == Touch.PAYLOAD_SIZE)
+            HEAD_POINTER -> require(length == HeadPointerState.MIN_PAYLOAD_SIZE || length == HeadPointerState.MAX_PAYLOAD_SIZE)
+            RECEIVER_INPUT -> require(length == ReceiverInput.PAYLOAD_SIZE)
             SCROLL -> require(length == 20)
             NAVIGATE -> require(length == 12)
             SCALE_REQUEST -> require(length == 8)

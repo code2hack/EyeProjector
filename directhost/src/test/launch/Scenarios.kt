@@ -154,5 +154,6 @@ fun main() {
         println("PASS actual Session close reaches transports/child while initial Home waits on old control lock")
     }
     serviceContextScenarios()
-    println("10 actual Session/service context scenarios passed; modeled external APIs, no Android/device proof")
+    fusionScenarios()
+    println("14 actual Session/service/fusion scenarios passed; modeled external APIs, no Android/device proof")
 }

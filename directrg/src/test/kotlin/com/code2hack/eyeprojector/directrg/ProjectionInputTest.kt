@@ -25,14 +25,54 @@ class ProjectionInputTest {
     }
     private fun controls(session: ProjectionSession): OrderedControlDispatcher =
         ProjectionSession::class.java.getDeclaredField("controls").apply { isAccessible = true }.get(session) as OrderedControlDispatcher
-    private fun ready(output: OutputStream, state: (String) -> Unit = {}): ProjectionSession =
-        ProjectionSession(temporary.root.resolve("session"), Surface(), { _, value -> state(value) }, { _, _ -> }).also {
+    private fun ready(output: OutputStream, completed: (ReceiverInput) -> Unit = {},
+        state: (String) -> Unit = {}): ProjectionSession =
+        ProjectionSession(temporary.root.resolve("session"), Surface(), { _, value -> state(value) }, { _, _ -> },
+            onReceiverInput = { _, event -> completed(event) }).also {
             set(it, "geometry", geometry)
             val readiness = ProjectionSession::class.java.getDeclaredField("videoReadiness").apply { isAccessible = true }.get(it) as VideoReadiness
             val epoch = readiness.beginReplacement()!!
             check(readiness.awaitFrame(epoch, System.nanoTime()) && readiness.rendered(epoch))
             set(it, "output", DataOutputStream(output))
         }
+
+    @Test fun actualPointerWriterCoalescesAcrossNativeCancellationWithoutAStuckScheduledFlag() {
+        val entered = CountDownLatch(1); val release = CountDownLatch(1); val done = CountDownLatch(2)
+        val first = AtomicBoolean(true); val buffer = ByteArrayOutputStream()
+        val output = object : OutputStream() {
+            override fun write(value: Int) {
+                if (first.compareAndSet(true, false)) { entered.countDown(); check(release.await(3, TimeUnit.SECONDS)) }
+                buffer.write(value)
+            }
+            override fun flush() { done.countDown() }
+        }
+        ready(output).use { session ->
+            fun point(sequence: Long, revision: Long) = HeadPointerState(revision, sequence, true, true,
+                120f, 240f, Fit(0, 0, 480, 640), geometry)
+            assertTrue(session.headPointer(point(1, 1))); assertTrue(entered.await(2, TimeUnit.SECONDS))
+            for (n in 2L..1000L) session.headPointer(point(n, if (n < 900) 2 else 3))
+            session.cancelPendingInput() // Cancels native timed input; pointer pump remains on existing separate writer lane.
+            release.countDown(); assertTrue(done.await(3, TimeUnit.SECONDS))
+            val input = DataInputStream(buffer.toByteArray().inputStream())
+            val firstPoint = Wire.readFrame(input); val lastPoint = Wire.readFrame(input)
+            assertEquals(Wire.HEAD_POINTER, firstPoint.channel); assertEquals(Wire.HEAD_POINTER, lastPoint.channel)
+            assertEquals(1, HeadPointerState.from(firstPoint.payload).sequence)
+            assertEquals(1000, HeadPointerState.from(lastPoint.payload).sequence)
+            assertEquals(3, HeadPointerState.from(lastPoint.payload).revision)
+            assertEquals(0, input.available())
+        }
+    }
+
+    @Test fun actualReceiverConsumerAcceptsCompletedUiAndRejectsIncomingPointerDirection() {
+        val events = mutableListOf<ReceiverInput>()
+        ready(ByteArrayOutputStream(), completed = events::add).use { session ->
+            val event = ReceiverInput(ReceiverInputKind.PANEL, 7)
+            session.receive(Frame(Wire.RECEIVER_INPUT, payload = event.bytes()))
+            assertEquals(listOf(event), events)
+            assertThrows(IllegalStateException::class.java) { session.receive(Frame(Wire.HEAD_POINTER,
+                payload = HeadPointerState(1, 1, false, false, 0f, 0f, null, null).bytes())) }
+        }
+    }
 
     @Test fun normalizedBurstSurvivesTheActualSessionSubmissionAndWirePath() {
         val blocked = CountDownLatch(1); val release = CountDownLatch(1); val done = CountDownLatch(4)

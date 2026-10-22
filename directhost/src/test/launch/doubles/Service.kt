@@ -1,5 +1,6 @@
 package com.code2hack.eyeprojector.directhost
 interface IHostBootstrap {
+    fun phoneHidEdge(routeId: Long, typedEdge: ByteArray, expectedOwnerEpoch: String, expectedProjectionToken: String) {}
     fun status():String
     fun start(identity:ByteArray,password:ByteArray,legacyPeer:ByteArray?,endpoint:ByteArray,pairedPeer:ByteArray?,sessionEpoch:String):String
     fun stop():String
