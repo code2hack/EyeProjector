@@ -129,8 +129,8 @@ internal class FunctionNavigation(
 ) {
     fun dispatch(action: FunctionGestureRecognizer.Action, projection: Boolean) {
         when (action) {
-            FunctionGestureRecognizer.Action.SINGLE -> if (projection) home() else panel()
-            FunctionGestureRecognizer.Action.DOUBLE -> back()
+            FunctionGestureRecognizer.Action.SINGLE -> back()
+            FunctionGestureRecognizer.Action.DOUBLE -> if (projection) home() else panel()
             FunctionGestureRecognizer.Action.TRIPLE -> if (projection) panel() else exit()
             FunctionGestureRecognizer.Action.LONG -> Unit
         }

@@ -92,7 +92,7 @@ class PhoneHidFunctionCompositionTest {
             assertTrue(h.store.assign(PhoneHidAction.FUNCTION, h.binding))
             h.press()
             h.advance(600)
-            assertEquals("$name must allow a fresh sequence", listOf(Navigation.HOME), h.navigation)
+            assertEquals("$name must allow a fresh sequence", listOf(Navigation.BACK), h.navigation)
         }
     }
 
@@ -102,7 +102,7 @@ class PhoneHidFunctionCompositionTest {
         h.advance(100)
         h.press()
         h.advance(600)
-        assertEquals(listOf(Navigation.BACK), h.navigation)
+        assertEquals(listOf(Navigation.HOME), h.navigation)
         assertTrue(h.receiver.isEmpty())
     }
 
@@ -119,10 +119,10 @@ class PhoneHidFunctionCompositionTest {
         h.press()
         val old = h.routes.single()
         h.advance(600)
-        assertEquals(listOf(Navigation.HOME), h.navigation)
+        assertEquals(listOf(Navigation.BACK), h.navigation)
         h.press()
         old.cancel(h.clock)
         h.advance(600)
-        assertEquals(listOf(Navigation.HOME, Navigation.HOME), h.navigation)
+        assertEquals(listOf(Navigation.BACK, Navigation.BACK), h.navigation)
     }
 }

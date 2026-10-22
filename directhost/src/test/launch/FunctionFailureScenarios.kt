@@ -60,7 +60,7 @@ fun functionFailureScenarios() {
                 .apply { isAccessible = true }.invoke(f.session, 81L) as PanelPowerState
             check(off.off == PanelSubmission.SUBMITTED)
             val at = android.os.SystemClock.uptimeMillis()
-            repeat(if (stockBack) 2 else 1) { n ->
+            repeat(if (stockBack) 1 else 2) { n ->
                 val down = PhoneHidEdge(PhoneHidAction.FUNCTION, PhoneHidPhase.DOWN,
                     1, 67, 90, at + n * 30, at + n * 30)
                 f.hid(n.toLong(), down)

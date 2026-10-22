@@ -39,7 +39,7 @@ fun stopRaceScenarios() {
                     synchronized(old.get("controlLock")!!) {
                         if (kind == "Function BACK") {
                             // Real Session timer and FunctionWork must pass their precheck, then wait here.
-                            repeat(2) { n ->
+                            repeat(1) { n ->
                                 val down = PhoneHidEdge(PhoneHidAction.FUNCTION, PhoneHidPhase.DOWN,
                                     1, 67, 90, at + n * 30, at + n * 30)
                                 old.hid(n.toLong(), down)

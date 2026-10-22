@@ -180,7 +180,7 @@ class FunctionGestureRecognizerTest {
             val calls = mutableListOf<String>()
             val router = FunctionNavigation({ calls.add("home") }, { calls.add("panel") }, { calls.add("back") }, { calls.add("exit") })
             Action.entries.forEach { router.dispatch(it, projection) }
-            assertEquals(if (projection) listOf("home", "back", "panel") else listOf("panel", "back", "exit"), calls)
+            assertEquals(if (projection) listOf("back", "home", "panel") else listOf("back", "panel", "exit"), calls)
         }
     }
 }
