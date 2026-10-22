@@ -47,8 +47,8 @@ internal object ConnectedPanelChecks {
         function("ACTION_BOLON_PAIRING")
         Thread.sleep(650)
         instrumentation.runOnMainSync { check(!activity.isFinishing && field(activity, "session") === session) }
-        // Fresh physical edges are usable immediately after retirement; two presses return locally.
-        repeat(2) { function("ACTION_SPRITE_BUTTON_DOWN"); function("ACTION_SPRITE_BUTTON_UP") }
+        // Fresh physical edges are usable immediately after retirement; one press returns locally.
+        function("ACTION_SPRITE_BUTTON_DOWN"); function("ACTION_SPRITE_BUTTON_UP")
         Thread.sleep(650)
         instrumentation.runOnMainSync {
             check(activity.projectionContext)

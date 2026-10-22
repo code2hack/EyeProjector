@@ -86,8 +86,8 @@ class PhoneInputMergerTest {
             repeat(count) { i -> f.now = 1000L + i * 100; val d = f.down(PhoneHidAction.FUNCTION)
                 f.merger.edge(i.toLong(), d); f.merger.edge(i.toLong(), d.copy(phase = PhoneHidPhase.UP, eventTimeMs = f.now + 20)) }
             f.advance(2000)
-            if (projected && count < 3) assertEquals(listOf(if (count == 1) Navigation.HOME else Navigation.BACK), f.nav)
-            else assertEquals(listOf(if (count == 1 || projected) ReceiverInputKind.PANEL else if (count == 2) ReceiverInputKind.BACK else ReceiverInputKind.EXIT), f.ui.map { it.kind })
+            if (projected && count < 3) assertEquals(listOf(if (count == 1) Navigation.BACK else Navigation.HOME), f.nav)
+            else assertEquals(listOf(if (count == 2 || projected) ReceiverInputKind.PANEL else if (count == 1) ReceiverInputKind.BACK else ReceiverInputKind.EXIT), f.ui.map { it.kind })
         }
         val f = Fixture(); val d = f.down(PhoneHidAction.FUNCTION); f.merger.edge(1, d)
         f.advance(1800); f.merger.edge(1, d.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1800)); f.advance(2500)
@@ -99,7 +99,7 @@ class PhoneInputMergerTest {
         val old = f.jobs.single().action
         f.merger.edge(1, d.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1020))
         f.now = 1050; old(); assertTrue(f.nav.isEmpty())
-        f.advance(1520); assertEquals(listOf(Navigation.HOME), f.nav)
+        f.advance(1520); assertEquals(listOf(Navigation.BACK), f.nav)
     }
 
     @Test fun aFreshPhysicalFunctionPressAfterQuietGapIsNotLostWhenTheOldTimerWasDelayed() {
@@ -109,7 +109,7 @@ class PhoneInputMergerTest {
         val next = f.down(PhoneHidAction.FUNCTION)
         f.merger.edge(2, next); f.merger.edge(2, next.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1720))
         f.advance(2220)
-        assertEquals(listOf(Navigation.HOME, Navigation.HOME), f.nav)
+        assertEquals(listOf(Navigation.BACK, Navigation.BACK), f.nav)
     }
 
     @Test fun localCompletedEventsCarryCoordinatesAndPhoneDurationButNoRemoteClockArithmetic() {
@@ -129,7 +129,7 @@ class PhoneInputMergerTest {
         val fresh = f.down(PhoneHidAction.FUNCTION)
         f.merger.edge(2, fresh); f.merger.edge(2, fresh.copy(phase = PhoneHidPhase.UP, eventTimeMs = 2020))
         f.merger.edge(1, first.copy(phase = PhoneHidPhase.CANCEL, eventTimeMs = 2021))
-        f.advance(2520); assertEquals(listOf(Navigation.HOME), f.nav)
+        f.advance(2520); assertEquals(listOf(Navigation.BACK), f.nav)
     }
 
     @Test fun ordinaryNextFunctionPressAndIndependentScrollPreservePendingSequence() {
@@ -140,7 +140,7 @@ class PhoneInputMergerTest {
         f.merger.edge(1, first.copy(phase = PhoneHidPhase.CANCEL, eventTimeMs = 1121))
         val scroll = f.down(PhoneHidAction.SCROLL_DOWN, 90)
         f.merger.edge(3, scroll); f.merger.edge(3, scroll.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1130))
-        f.advance(1620); assertEquals(listOf(Navigation.BACK), f.nav); assertEquals(160, f.scrolls.single().pixels)
+        f.advance(1620); assertEquals(listOf(Navigation.HOME), f.nav); assertEquals(160, f.scrolls.single().pixels)
     }
 
     @Test fun actualCancellationCallbackCannotResurrectTheOuterNativeDown() {

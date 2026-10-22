@@ -73,9 +73,9 @@ fun main() {
     scenario("actual Activity callback projects Home/Back with no pad fallback") {
         val a = activity(true); val s = a.session!!
         send(a, "CLICK"); Handler.advance(499); check(s.navigations.isEmpty())
-        send(a, "DOUBLE"); Handler.advance(500); check(s.navigations == listOf(Navigation.BACK))
+        send(a, "DOUBLE"); Handler.advance(500); check(s.navigations == listOf(Navigation.HOME))
         send(a, "CLICK"); Handler.advance(500); check(s.navigations.size == 1)
-        press(a); Handler.advance(500); check(s.navigations == listOf(Navigation.BACK, Navigation.HOME))
+        press(a); Handler.advance(500); check(s.navigations == listOf(Navigation.HOME, Navigation.BACK))
     }
     scenario("actual triple panel and local Back retain boundary session decoder Surface") {
         val a = activity(true); val s = a.session!!; val decoder = s.decoder; val surface = a.screen.surface
@@ -83,12 +83,12 @@ fun main() {
         check(!a.projectionContext && a.session === s && s.decoder === decoder && a.screen.surface === surface && !s.closed)
         check(s.navigations.isEmpty() && a.heldInput.calls > 0 && a.localInput.calls > 0)
         send(a, "TRIPLE"); send(a, "UP"); Handler.advance(500); check(!a.finished && !s.closed)
-        press(a); press(a); Handler.advance(500)
+        press(a); Handler.advance(500)
         check(a.projectionContext && a.session === s && s.decoder === decoder && a.screen.surface === surface)
     }
-    scenario("actual local single restores main panel and long consumes") {
+    scenario("actual local double restores main panel and long consumes") {
         val a = activity(false)
-        send(a, "CLICK"); Handler.advance(500); check(a.connectionView.scrollY == 0 && !a.finished)
+        send(a, "DOUBLE"); Handler.advance(500); check(a.connectionView.scrollY == 0 && !a.finished)
         press(a); send(a, "LONG"); Handler.advance(1000); check(!a.finished && a.launch == null)
     }
     scenario("actual binding view single and Back restore main before the retained projection") {
@@ -123,7 +123,7 @@ fun main() {
         a.onWindowFocusChanged(false); check(a.receiver == null)
         stale.forEach { it.run.run() }; check(s.navigations.isEmpty())
         a.onWindowFocusChanged(true); press(a); Handler.advance(500)
-        check(s.navigations == listOf(Navigation.HOME))
+        check(s.navigations == listOf(Navigation.BACK))
     }
     scenario("actual pause destroy disconnect and late callbacks") {
         for (end in listOf("pause", "destroy", "disconnect")) {
