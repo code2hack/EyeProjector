@@ -4,7 +4,10 @@ import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.File
 import java.net.InetAddress
+import java.net.SocketTimeoutException
+import java.io.IOException
 import java.security.KeyStore
+import java.security.Security
 import java.security.cert.CertificateFactory
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
@@ -108,5 +111,75 @@ class TlsTest {
         assertEquals(0, exchange { port ->
             assertThrows(Exception::class.java) { Tls.connect(endpoint("receiver", port, "127.0.0.1")).close() }
         })
+    }
+
+    @Test fun localContextInitializationCompletesBeforeTcpConnect() {
+        // Construct the real server before installing the client-only delegating provider.
+        val listener = Tls.context(File(root, "host")).serverSocketFactory
+            .createServerSocket(0, 2, InetAddress.getLoopbackAddress()) as SSLServerSocket
+        listener.needClientAuth = true
+        val executor = Executors.newSingleThreadExecutor()
+        val providers = Security.getProviders().toList()
+        try {
+            DelayedTlsContext.paused { gate ->
+                // A different initializer must neither release the observation latch nor wait on it.
+                SSLContext.getInstance("TLS").init(emptyArray(), emptyArray(), null)
+                assertEquals(0, gate.clientInitializations.get())
+                assertEquals(1L, gate.entered.count)
+                val future = executor.submit(Callable {
+                    gate.bindClient()
+                    Tls.connect(endpoint("receiver", listener.localPort)).use { socket ->
+                        Wire.writeRequest(DataOutputStream(socket.outputStream), Wire.STREAM)
+                        Wire.readWelcome(DataInputStream(socket.inputStream))
+                    }
+                })
+                var accepted: SSLSocket? = null
+                try {
+                    assertTrue("Actual client SSLContext initialization was not reached", gate.entered.await(5, TimeUnit.SECONDS))
+                    // In the parent, raw.connect already returned before engineInit entered,
+                    // so this accept sees its queued TCP connection, independently of a server worker.
+                    listener.soTimeout = 250
+                    accepted = try { listener.accept() as SSLSocket } catch (_: SocketTimeoutException) { null }
+                    val openedWhileInitializing = accepted != null
+                    gate.release.countDown()
+                    listener.soTimeout = 5000
+                    val peer = accepted ?: (listener.accept() as SSLSocket).also { accepted = it }
+                    peer.soTimeout = 3500
+                    peer.startHandshake()
+                    Tls.requireTrustedPeer(peer, File(root, "host"))
+                    assertEquals(Wire.STREAM, Wire.readRequest(DataInputStream(peer.inputStream)))
+                    Wire.writeWelcome(DataOutputStream(peer.outputStream))
+                    future.get(8, TimeUnit.SECONDS)
+                    assertEquals("Expected one initialization by the exact client thread", 1, gate.clientInitializations.get())
+                    // Assert only after successful real mTLS + STREAM/WELCOME in both runs.
+                    assertFalse("TCP opened while local TLS initialization was still paused", openedWhileInitializing)
+                } finally {
+                    gate.release.countDown()
+                    accepted?.close()
+                    future.cancel(true)
+                }
+            }
+        } finally {
+            listener.close()
+            executor.shutdownNow()
+            assertTrue("Client worker did not finish", executor.awaitTermination(5, TimeUnit.SECONDS))
+            assertEquals("Provider registration leaked", providers, Security.getProviders().toList())
+            assertNull(DelayedTlsContext.active)
+        }
+    }
+
+    @Test fun failedLocalIdentitySetupDoesNotOpenTcp() {
+        val listener = Tls.context(File(root, "host")).serverSocketFactory
+            .createServerSocket(0, 2, InetAddress.getLoopbackAddress()) as SSLServerSocket
+        listener.use {
+            val missing = File(root, "missing-identity").apply { mkdirs() }
+            File(missing, "password").writeText(PASSWORD)
+            endpoint("missing-identity", listener.localPort)
+            assertThrows(IOException::class.java) { Tls.connect(missing) }
+            listener.soTimeout = 250
+            val accepted = try { listener.accept() as SSLSocket } catch (_: SocketTimeoutException) { null }
+            accepted?.close()
+            assertNull("Bad local identity must fail before TCP is opened", accepted)
+        }
     }
 }

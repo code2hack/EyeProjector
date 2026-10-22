@@ -1,0 +1,9 @@
+<resources>
+    <string name="projected_home_title">EyeProjector home</string>
+    <string name="projected_home_empty">Choose apps in the Phone’s EyeProjector panel.</string>
+    <string name="projected_home_opening">Opening %1$s…</string>
+    <string name="projected_home_unavailable">App launch unavailable. Check the Phone’s projection status.</string>
+    <string name="projected_home_opened">Opened %1$s on the projection.</string>
+    <string name="projected_home_timeout">Opening %1$s timed out. It may still open.</string>
+    <string name="projected_home_unconfirmed">Could not confirm %1$s on the projection. Try Home, then open it again.</string>
+</resources>

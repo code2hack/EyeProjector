@@ -7,9 +7,11 @@ internal class EdgeScrollMotion {
     private var lastNs = 0L
     private var direction = 0
     private var fraction = 0L
+    var enabled = true
+        set(value) { field=value; if (!value) stop() }
 
     fun direction(point: PointerPosition, bounds: PointerBounds, expiresAtNs: Long, nowNs: Long): Int = when {
-        !point.available || nowNs >= expiresAtNs || bounds.height <= 0 -> 0
+        !enabled || !point.available || nowNs >= expiresAtNs || bounds.height <= 0 -> 0
         point.y < bounds.top -> -1
         point.y >= bounds.bottom -> 1
         else -> 0

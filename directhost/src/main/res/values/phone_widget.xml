@@ -1,0 +1,31 @@
+<resources>
+    <string name="phone_widget_name">EyeProjector</string>
+    <string name="phone_widget_description">Start or stop paired Glasses projection and turn the Phone panels off.</string>
+    <string name="phone_widget_start">Start</string>
+    <string name="phone_widget_stop">Stop</string>
+    <string name="phone_widget_checking">Checking projection status…</string>
+    <string name="phone_widget_open_status">Open Phone app</string>
+    <string name="phone_widget_panel_off">Panel off</string>
+    <string name="phone_widget_inactive">Projection inactive</string>
+    <string name="phone_widget_starting">Starting projection</string>
+    <string name="phone_widget_available">Waiting for paired Glasses</string>
+    <string name="phone_widget_connecting">Connecting; waiting for displayed video</string>
+    <string name="phone_widget_streaming">Projecting on paired Glasses</string>
+    <string name="phone_widget_stopping">Stopping; release not yet confirmed</string>
+    <string name="phone_widget_unknown">Checking session; Stop opens status if unresolved</string>
+    <string name="phone_widget_failed">Projection failed; release not yet confirmed</string>
+    <string name="phone_widget_failed_released">Projection failed; session released</string>
+    <string name="phone_widget_setup">Open Phone app for pairing or Shizuku setup</string>
+    <string name="phone_widget_start_description">Start paired Glasses projection</string>
+    <string name="phone_widget_stop_description">Stop the current projection</string>
+    <string name="phone_widget_setup_description">Open Phone pairing and Shizuku status</string>
+    <string name="phone_widget_panel_unavailable">Panel off is available during projection</string>
+    <string name="phone_widget_panel_ready">Phone panel state unverified</string>
+    <string name="phone_widget_panel_pending">Submitting panel off; physical state unverified</string>
+    <string name="phone_widget_panel_submitted">Panel off submitted; physical state unverified</string>
+    <string name="phone_widget_panel_failed">Panel off failed; physical state unverified</string>
+    <string name="phone_widget_panel_unknown">Panel result unavailable; physical state unverified</string>
+    <string name="phone_widget_restore_pending">Restoration pending until teardown; unverified</string>
+    <string name="phone_widget_restore_submitted">Restoration submitted; physical state unverified</string>
+    <string name="phone_widget_restore_failed">Restoration failed; physical state unverified</string>
+</resources>

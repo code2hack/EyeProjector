@@ -1,0 +1,16 @@
+<resources>
+    <string name="app_scale_menu">Scale</string>
+    <string name="app_scale_close">Return to Phone controls</string>
+    <string name="app_scale_hint">Pinch below to change the app layout on the Glasses.</string>
+    <string name="app_scale_gesture">Pinch to adjust projected app scale</string>
+    <string name="app_scale_opening">Opening the app on the Glasses…</string>
+    <string name="app_scale_pending">Scale requested. The number shows the latest observed layout.</string>
+    <string name="app_scale_observed">Applied scale from the projected display.</string>
+    <string name="app_scale_interrupted">Layout changed or rotated. Pinch again to adjust.</string>
+    <string name="app_scale_rejected">That scale is outside the display’s supported dimensions. Pinch back toward the current scale.</string>
+    <string name="app_scale_unsupported">This app or display cannot apply the requested scale.</string>
+    <string name="app_scale_save_failed">Scale requested, but the preference could not be saved. Try again.</string>
+    <string name="app_scale_launch_unconfirmed">The app could not be confirmed on the projection display. Return to Phone controls and choose it again.</string>
+    <string name="app_scale_target_changed">The projected app changed. Return to Phone controls and choose Scale for the app again.</string>
+    <string name="app_scale_unavailable">Scale is unavailable. Return to Phone controls, check the connection and choose Scale again.</string>
+</resources>

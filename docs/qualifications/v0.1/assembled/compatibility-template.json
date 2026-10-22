@@ -1,0 +1,295 @@
+{
+  "format_version": 1,
+  "kind": "four_app_assembled_compatibility_template",
+  "author": "Worker: Worker-EyeProjector-23",
+  "issue": 23,
+  "execution_status": "NOT_EXECUTED",
+  "preparation": {
+    "production_basis": "a1492b754bcd538e453cf4e5ca955784f3822758",
+    "shared_run_template": "run-template.json",
+    "matrix": "matrix.csv",
+    "audio_workflows": "../bluetooth/run-template.json and matrix.csv by reference",
+    "keyboard": "Preserve the existing selected Samsung/system keyboard. Owner donor success is attributed historical observation; no extra fixture/service/text transport/default change.",
+    "reporting": "Actual installation/login/availability/theme/IME/HID/physical facts remain null. Record unsupported or unavailable workflows with evidence and limits. Preserve all failures and distinguish genuine from injected actions.",
+    "case_record_fields": {
+      "availability": null,
+      "workflow_and_observed_actions": null,
+      "action_origins": null,
+      "started_at": null,
+      "ended_at": null,
+      "result": null,
+      "evidence_and_hashes": null,
+      "failures_unknowns_and_scope": null
+    },
+    "required_observations": {
+      "LAUNCH": [
+        "launch from Phone",
+        "launch from Glasses",
+        "target display placement",
+        "switch/Home",
+        "exit"
+      ],
+      "STYLE": [
+        "native dark availability and actual selection",
+        "readable controls",
+        "remaining gray/bright surfaces",
+        "photo/video/camera-preview where available",
+        "wearer observation"
+      ],
+      "NATIVE": [
+        "pointer and ordinary single/double/multiple taps",
+        "genuine hold/head drag",
+        "down/up scroll in main/nested controls",
+        "contextual Function",
+        "HID/repeat/cancellation",
+        "actual target responses"
+      ],
+      "TEXT": [
+        "selected system keyboard identity/version/layout",
+        "visible reachable keys",
+        "insertion",
+        "deletion",
+        "selection",
+        "submission",
+        "genuine key action origin"
+      ],
+      "SCALE": [
+        "pinch and numeric readout",
+        "actual live layout",
+        "save/restore/switch/relaunch",
+        "projection after Close",
+        "native input mapping",
+        "keyboard layout/mapping"
+      ],
+      "MEDIA": [
+        "E22 per-workflow result reference",
+        "actual playback output/audibility",
+        "actual microphone corroboration",
+        "BT-loss/mic-unavailable video and genuine control",
+        "physical AV measurement reference"
+      ]
+    }
+  },
+  "applications": [
+    {
+      "planned": {
+        "name": "ChatGPT",
+        "expected_package_hint": "com.openai.chatgpt",
+        "cases": {
+          "LAUNCH_CHATGPT": "Launch from Phone and Glasses; placement; switch/Home; exit",
+          "STYLE_CHATGPT": "Native dark/readable UI and relevant media surfaces",
+          "NATIVE_CHATGPT": "Genuine pointing/taps/hold/drag/scroll and contextual controls",
+          "TEXT_CHATGPT": "Existing selected Samsung/system keyboard insertion/deletion/selection/submission",
+          "SCALE_CHATGPT": "Per-app pinch/readout/save/restore/switch/relaunch/Close/input mapping",
+          "MEDIA_CHATGPT": "Applicable media/playback/recording/ASR/voice and real microphone"
+        },
+        "media_slots_by_reference": [
+          "playback",
+          "recording",
+          "ASR",
+          "call_or_voice_if_available"
+        ]
+      },
+      "actual": {
+        "installation": {
+          "package": null,
+          "version_name": null,
+          "version_code": null,
+          "apk_paths_hashes": null,
+          "device_user_profile": null,
+          "observed_at": null,
+          "availability": null,
+          "login_and_consent_state": null,
+          "feature_entry_points": null
+        },
+        "bindings": {
+          "run_reference_hash": null,
+          "production_source_and_installed_artifacts": null,
+          "phone_glasses_hid_ime_facts_reference": null,
+          "private_configuration_revision": null,
+          "interval": null
+        },
+        "cases": {
+          "LAUNCH_CHATGPT": null,
+          "STYLE_CHATGPT": null,
+          "NATIVE_CHATGPT": null,
+          "TEXT_CHATGPT": null,
+          "SCALE_CHATGPT": null,
+          "MEDIA_CHATGPT": null
+        },
+        "limits": {
+          "unsupported_or_unavailable_with_evidence": null,
+          "all_failures_and_intermediate_attempts": null,
+          "remaining_bright_gray_surfaces_or_hidden_keys": null,
+          "unresolved_causes_and_deferred_human_observations": null,
+          "qualified_scope_only": null
+        }
+      }
+    },
+    {
+      "planned": {
+        "name": "Paseo",
+        "expected_package_hint": "sh.paseo",
+        "cases": {
+          "LAUNCH_PASEO": "Launch from Phone and Glasses; placement; switch/Home; exit",
+          "STYLE_PASEO": "Native dark/readable UI and relevant media surfaces",
+          "NATIVE_PASEO": "Genuine pointing/taps/hold/drag/scroll and contextual controls",
+          "TEXT_PASEO": "Existing selected Samsung/system keyboard insertion/deletion/selection/submission",
+          "SCALE_PASEO": "Per-app pinch/readout/save/restore/switch/relaunch/Close/input mapping",
+          "MEDIA_PASEO": "Applicable media/playback/recording/ASR/voice and real microphone"
+        },
+        "media_slots_by_reference": [
+          "playback",
+          "recording",
+          "ASR",
+          "call_or_voice_if_available"
+        ]
+      },
+      "actual": {
+        "installation": {
+          "package": null,
+          "version_name": null,
+          "version_code": null,
+          "apk_paths_hashes": null,
+          "device_user_profile": null,
+          "observed_at": null,
+          "availability": null,
+          "login_and_consent_state": null,
+          "feature_entry_points": null
+        },
+        "bindings": {
+          "run_reference_hash": null,
+          "production_source_and_installed_artifacts": null,
+          "phone_glasses_hid_ime_facts_reference": null,
+          "private_configuration_revision": null,
+          "interval": null
+        },
+        "cases": {
+          "LAUNCH_PASEO": null,
+          "STYLE_PASEO": null,
+          "NATIVE_PASEO": null,
+          "TEXT_PASEO": null,
+          "SCALE_PASEO": null,
+          "MEDIA_PASEO": null
+        },
+        "limits": {
+          "unsupported_or_unavailable_with_evidence": null,
+          "all_failures_and_intermediate_attempts": null,
+          "remaining_bright_gray_surfaces_or_hidden_keys": null,
+          "unresolved_causes_and_deferred_human_observations": null,
+          "qualified_scope_only": null
+        }
+      }
+    },
+    {
+      "planned": {
+        "name": "Comet",
+        "expected_package_hint": "ai.perplexity.comet",
+        "cases": {
+          "LAUNCH_COMET": "Launch from Phone and Glasses; placement; switch/Home; exit",
+          "STYLE_COMET": "Native dark/readable UI and relevant media surfaces",
+          "NATIVE_COMET": "Genuine pointing/taps/hold/drag/scroll and contextual controls",
+          "TEXT_COMET": "Existing selected Samsung/system keyboard insertion/deletion/selection/submission",
+          "SCALE_COMET": "Per-app pinch/readout/save/restore/switch/relaunch/Close/input mapping",
+          "MEDIA_COMET": "Applicable media/playback/recording/ASR/voice and real microphone"
+        },
+        "media_slots_by_reference": [
+          "playback",
+          "recording",
+          "ASR",
+          "call_or_voice_if_available"
+        ]
+      },
+      "actual": {
+        "installation": {
+          "package": null,
+          "version_name": null,
+          "version_code": null,
+          "apk_paths_hashes": null,
+          "device_user_profile": null,
+          "observed_at": null,
+          "availability": null,
+          "login_and_consent_state": null,
+          "feature_entry_points": null
+        },
+        "bindings": {
+          "run_reference_hash": null,
+          "production_source_and_installed_artifacts": null,
+          "phone_glasses_hid_ime_facts_reference": null,
+          "private_configuration_revision": null,
+          "interval": null
+        },
+        "cases": {
+          "LAUNCH_COMET": null,
+          "STYLE_COMET": null,
+          "NATIVE_COMET": null,
+          "TEXT_COMET": null,
+          "SCALE_COMET": null,
+          "MEDIA_COMET": null
+        },
+        "limits": {
+          "unsupported_or_unavailable_with_evidence": null,
+          "all_failures_and_intermediate_attempts": null,
+          "remaining_bright_gray_surfaces_or_hidden_keys": null,
+          "unresolved_causes_and_deferred_human_observations": null,
+          "qualified_scope_only": null
+        }
+      }
+    },
+    {
+      "planned": {
+        "name": "WeChat",
+        "expected_package_hint": "com.tencent.mm",
+        "cases": {
+          "LAUNCH_WECHAT": "Launch from Phone and Glasses; placement; switch/Home; exit",
+          "STYLE_WECHAT": "Native dark/readable UI and relevant media surfaces",
+          "NATIVE_WECHAT": "Genuine pointing/taps/hold/drag/scroll and contextual controls",
+          "TEXT_WECHAT": "Existing selected Samsung/system keyboard insertion/deletion/selection/submission",
+          "SCALE_WECHAT": "Per-app pinch/readout/save/restore/switch/relaunch/Close/input mapping",
+          "MEDIA_WECHAT": "Applicable media/playback/recording/ASR/voice and real microphone"
+        },
+        "media_slots_by_reference": [
+          "playback",
+          "recording",
+          "ASR",
+          "call_or_voice_if_available"
+        ]
+      },
+      "actual": {
+        "installation": {
+          "package": null,
+          "version_name": null,
+          "version_code": null,
+          "apk_paths_hashes": null,
+          "device_user_profile": null,
+          "observed_at": null,
+          "availability": null,
+          "login_and_consent_state": null,
+          "feature_entry_points": null
+        },
+        "bindings": {
+          "run_reference_hash": null,
+          "production_source_and_installed_artifacts": null,
+          "phone_glasses_hid_ime_facts_reference": null,
+          "private_configuration_revision": null,
+          "interval": null
+        },
+        "cases": {
+          "LAUNCH_WECHAT": null,
+          "STYLE_WECHAT": null,
+          "NATIVE_WECHAT": null,
+          "TEXT_WECHAT": null,
+          "SCALE_WECHAT": null,
+          "MEDIA_WECHAT": null
+        },
+        "limits": {
+          "unsupported_or_unavailable_with_evidence": null,
+          "all_failures_and_intermediate_attempts": null,
+          "remaining_bright_gray_surfaces_or_hidden_keys": null,
+          "unresolved_causes_and_deferred_human_observations": null,
+          "qualified_scope_only": null
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "record_id": null,
+  "execution_status": "NOT_EXECUTED",
+  "evidence_kind": null,
+  "source": {
+    "commit": null,
+    "artifact_sha256": null,
+    "fixture_sha256": null,
+    "source_clock_id": null,
+    "decoded_source_alignment_evidence": null
+  },
+  "capture": {
+    "capture_id": null,
+    "method": null,
+    "raw_artifacts": [],
+    "audio_clock_id": null,
+    "visual_clock_id": null,
+    "audio_resolution_ms": null,
+    "visual_resolution_ms": null
+  },
+  "calibration": {
+    "calibration_id": null,
+    "evidence_kind": null,
+    "applies_to_capture_id": null,
+    "method": null,
+    "raw_artifacts": [],
+    "audio_minus_visual_bias_ms": null
+  },
+  "samples": []
+}

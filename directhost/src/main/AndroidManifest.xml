@@ -1,6 +1,31 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <queries>
+        <package android:name="moe.shizuku.privileged.api" />
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
     <application android:theme="@android:style/Theme.Material.NoActionBar" android:label="EyeProjector host" android:allowBackup="false" android:dataExtractionRules="@xml/no_backup" android:icon="@android:drawable/ic_media_play" android:usesCleartextTraffic="false">
+        <activity android:name=".widget.PhoneWidgetActionActivity" android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" android:noHistory="true"
+            android:excludeFromRecents="true" android:taskAffinity="com.code2hack.eyeprojector.directhost.widget" />
+        <receiver android:name=".widget.PhoneWidgetProvider" android:exported="false" android:label="@string/phone_widget_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/phone_widget_info" />
+        </receiver>
+        <activity android:name=".ProjectedHomeActivity" android:exported="true"
+            android:taskAffinity="com.code2hack.eyeprojector.directhost.projectedhome"
+            android:launchMode="singleTask" android:resizeableActivity="true" />
+        <activity android:name=".scale.AppScaleActivity" android:exported="false" />
+        <activity android:name=".ScaleFixtureActivity" android:exported="true" />
+        <provider android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku" android:multiprocess="false"
+            android:enabled="true" android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
         <activity android:name=".InputFixtureActivity" android:exported="true" />
         <activity android:name=".AvFixtureActivity" android:exported="true" />
         <activity android:name=".FixtureActivity" android:exported="true" />
@@ -10,5 +35,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <service android:name=".hid.PhoneHidKeyService" android:exported="true"
+            android:label="@string/phone_hid_accessibility_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/phone_hid_accessibility" />
+        </service>
     </application>
 </manifest>

@@ -1,6 +1,8 @@
 # EyeProjector
 
-EyeProjector projects supported Android applications from a Phone-hosted virtual display onto smart glasses, with direct authenticated video/audio transport and glasses-native input.
+EyeProjector projects supported Android applications from a Phone-hosted virtual display onto smart glasses, with direct authenticated video/control transport and glasses-native input.
+
+The v0.1 [specification draft](SPEC.md) uses native Phone↔Glasses Bluetooth for all audio. The current bootstrap implementation still forwards Opus audio; replacing that path and its video timing is pending v0.1 implementation.
 
 ## Project documents
 

@@ -1,0 +1,175 @@
+{
+  "format_version": 1,
+  "kind": "qualification_run_template",
+  "author": "Worker: Worker-EyeProjector-22",
+  "issue": 22,
+  "version": "v0.1",
+  "preparation_source_basis": "b6675e0de27cb25cca05643fd619212ce4b4e3fd",
+  "execution_status": "NOT_EXECUTED",
+  "planned": {
+    "scope": "Later separately assigned Phone + Glasses + native audio-route qualification; no device execution is authorized by this template",
+    "matrix": "matrix.csv",
+    "measurement_template": "measurement-template.json",
+    "measurement_method": "method.md",
+    "measurement_cli": "python3 tools/bluetooth-qualification/analyze.py <PRIVATE_MEASUREMENT_JSON>",
+    "availability_values": ["available", "unsupported", "unavailable", "unknown"],
+    "case_execution_values": ["NOT_EXECUTED", "EXECUTED", "FAILED", "DEFERRED"],
+    "action_origin_values": ["genuine_glasses_touchpad", "genuine_glasses_function", "genuine_glasses_hid", "phone_system_ui", "injected_input", "host_command"],
+    "application_slots": [
+      {"name": "ChatGPT", "package": "com.openai.chatgpt", "workflows": ["playback", "recording", "ASR", "call_or_voice_if_available"]},
+      {"name": "Paseo", "package": "sh.paseo", "workflows": ["playback", "recording", "ASR", "call_or_voice_if_available"]},
+      {"name": "Comet", "package": "ai.perplexity.comet", "workflows": ["playback", "recording", "ASR", "call_or_voice_if_available"]},
+      {"name": "WeChat", "package": "com.tencent.mm", "workflows": ["playback", "recording", "ASR", "call_or_voice_if_available"]}
+    ],
+    "fixture": {
+      "component": "com.code2hack.eyeprojector.directhost/.AvFixtureActivity",
+      "media_paths": ["directhost/src/main/res/raw/owned_flash_beep.mp4", "hostprobe/src/main/res/raw/owned_flash_beep.mp4"],
+      "media_sha256_at_preparation_basis": "fa5f9fc73da052322b929b1e10a1d77765becbdb735a23d157617e965b28076a",
+      "source_diagnostics": "MediaPlayer timestamp and latest-only files/av-fixture.json are software evidence only",
+      "repeat_plan": {"independent_captures": 3, "seconds_each": 12, "retain": "Every expected pulse plus observed missing/ambiguous/failure cases; this is a sampling plan, not a product lifetime restriction"}
+    },
+    "physical_offset": {
+      "definition": "audio_arrival_minus_visual_arrival",
+      "positive_means": "audio_later",
+      "target_ms": 100,
+      "source_offset_treatment": "Do not subtract nominal source offset; retain actual physical output result separately from any measured baseline diagnostic",
+      "required_accounting": ["common capture clock", "event identity and raw brackets", "calibration identity and sign", "sample/frame resolution", "optical exposure", "microphone position and acoustic propagation", "uncertainty", "source-clock identity", "raw-file and tool hashes"]
+    },
+    "preservation": "Record exact installed/private/pairing/route/volume/permission/session baseline, each assigned write and concrete return method; no clear/uninstall/credential/account operation is supplied",
+    "retained_issue21_limits": ["earlier static-content/header-timeout failures", "earlier first-scale failure", "current sustained/physical video acceptance remains unproved"],
+    "outcome_boundaries": "Measurement validity and 100 ms relation do not grant Reviewer verdict, Manager implementation acceptance, physical/full issue acceptance or assembled-version acceptance"
+  },
+  "actual": {
+    "run_id": null,
+    "started_at": null,
+    "ended_at": null,
+    "authorization": {
+      "assignment_request_id": null,
+      "scope_reference": null,
+      "reservation_reference": null,
+      "reserved_targets": null,
+      "authorized_operations": null,
+      "operator_identity": null,
+      "physical_observer_identity": null
+    },
+    "source_and_build": {
+      "base_sha": null,
+      "head_sha": null,
+      "remote_sha": null,
+      "worktree": null,
+      "dirty_status": null,
+      "build_command": null,
+      "build_result": null,
+      "build_log_sha256": null,
+      "artifacts": null,
+      "installed_artifact_binding": null
+    },
+    "phone": {
+      "device_identity": null,
+      "model": null,
+      "android_version": null,
+      "sdk": null,
+      "build_fingerprint": null,
+      "firmware": null,
+      "user_id": null,
+      "profile": null,
+      "adb_route": null,
+      "permissions": null
+    },
+    "glasses": {
+      "device_identity": null,
+      "model": null,
+      "android_version": null,
+      "sdk": null,
+      "build_fingerprint": null,
+      "firmware": null,
+      "user_id": null,
+      "profile": null,
+      "adb_route": null,
+      "permissions": null
+    },
+    "baseline": {
+      "observed_at": null,
+      "installed_packages_versions_codes_signatures": null,
+      "baseline_apks_and_hashes": null,
+      "private_app_state_preservation_record": null,
+      "target_app_login_and_feature_availability": null,
+      "projection_session_and_display": null,
+      "eyeprojector_pairing_and_saved_settings": null,
+      "system_bluetooth_pairing": null,
+      "audio_calls_toggle_state": null,
+      "route_api_inventory": null,
+      "active_output_route": null,
+      "active_input_route": null,
+      "actual_microphone_and_corroboration": null,
+      "volume_focus_and_playback": null,
+      "capture_and_return_plan": null,
+      "raw_evidence": null
+    },
+    "installation_changes": {
+      "needed": null,
+      "exact_authorized_artifacts": null,
+      "compatibility_and_return_method": null,
+      "attempts_and_outputs": null,
+      "installed_identity_after": null,
+      "private_state_preservation_observed": null
+    },
+    "applications_and_cases": {
+      "current_application_inventory": null,
+      "concrete_feature_entry_points": null,
+      "per_workflow_availability_and_evidence": null,
+      "case_results_with_raw_failures": null,
+      "action_origins_per_step": null,
+      "route_inventory_per_step": null,
+      "actual_output_corroboration_per_workflow": null,
+      "actual_microphone_corroboration_per_workflow": null,
+      "bluetooth_loss_video_and_genuine_control_evidence": null,
+      "microphone_unavailability_video_and_genuine_control_evidence": null,
+      "stop_disconnect_forget_resource_and_bluetooth_evidence": null
+    },
+    "physical_measurement": {
+      "method": null,
+      "apparatus_and_capture_clock": null,
+      "source_clock_and_fixture_identity": null,
+      "optical_and_microphone_positions": null,
+      "calibration_identity_and_raw_evidence": null,
+      "capture_sample_frame_resolution_and_exposure": null,
+      "actual_repeat_count_and_intervals": null,
+      "raw_recordings_and_hashes": null,
+      "raw_event_samples_including_failures": null,
+      "measurement_json_and_sha256": null,
+      "analyzer_source_sha256": null,
+      "analyzer_command_exit_status_output_and_hashes": null,
+      "measurement_validity": null,
+      "physical_audio_minus_visual_ms": null,
+      "uncertainty_and_target_relation": null,
+      "remaining_limits": null
+    },
+    "return_and_cleanup": {
+      "owned_playback_and_capture_stopped": null,
+      "projection_resources_and_eyeprojector_pairing": null,
+      "system_bluetooth_pairing_route_volume": null,
+      "installations_permissions_and_private_state": null,
+      "restoration_actions_and_verified_results": null,
+      "baseline_differences_and_unresolved_state": null,
+      "reservation_release_reference": null
+    },
+    "evidence": {
+      "private_location": null,
+      "manifest": null,
+      "all_attempts_and_raw_failures": null,
+      "prior_issue21_exact_evidence_references": null,
+      "historical_evidence_scope": null,
+      "unknowns_and_deferred_human_observations": null
+    },
+    "review_and_acceptance": {
+      "independent_reviewer_identity": null,
+      "reviewed_base_and_head": null,
+      "review_evidence_and_verdict": null,
+      "manager_implementation_acceptance": null,
+      "manager_physical_full_issue_acceptance": null,
+      "dependency_acceptance": null,
+      "assembled_version_acceptance": null
+    }
+  }
+}

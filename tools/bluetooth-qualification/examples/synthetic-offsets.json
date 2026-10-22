@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "record_id": "SYNTHETIC-example-no-device-observation",
+  "execution_status": "OBSERVED",
+  "evidence_kind": "synthetic",
+  "source": {
+    "commit": null,
+    "artifact_sha256": null,
+    "fixture_sha256": null,
+    "source_clock_id": "SYNTHETIC-media-timeline"
+  },
+  "capture": {
+    "capture_id": "SYNTHETIC-common-clock",
+    "method": "Invented millisecond edge intervals for host arithmetic checks only",
+    "raw_artifacts": [],
+    "audio_clock_id": "SYNTHETIC-clock-A",
+    "visual_clock_id": "SYNTHETIC-clock-A",
+    "audio_resolution_ms": 2,
+    "visual_resolution_ms": 8
+  },
+  "calibration": {
+    "calibration_id": "SYNTHETIC-instrument-audio-late",
+    "evidence_kind": "synthetic",
+    "applies_to_capture_id": "SYNTHETIC-common-clock",
+    "method": "Invented capture bias: audio timestamp is 8 to 12 ms later than visual",
+    "raw_artifacts": [],
+    "audio_minus_visual_bias_ms": [8, 12]
+  },
+  "samples": [
+    {
+      "sample_id": "synthetic-positive",
+      "cycle_id": "synthetic-loop-0",
+      "source_event_id": "second-0",
+      "audio_candidates_ms": [[70, 74]],
+      "visual_candidates_ms": [[0, 2]]
+    },
+    {
+      "sample_id": "synthetic-negative",
+      "cycle_id": "synthetic-loop-0",
+      "source_event_id": "second-1",
+      "audio_candidates_ms": [[950, 952]],
+      "visual_candidates_ms": [[1000, 1002]]
+    },
+    {
+      "sample_id": "synthetic-audio-outside-target",
+      "cycle_id": "synthetic-loop-0",
+      "source_event_id": "second-2",
+      "audio_candidates_ms": [[2140, 2142]],
+      "visual_candidates_ms": [[2000, 2002]]
+    },
+    {
+      "sample_id": "synthetic-missing-audio",
+      "cycle_id": "synthetic-loop-0",
+      "source_event_id": "second-3",
+      "audio_candidates_ms": [],
+      "visual_candidates_ms": [[3000, 3002]]
+    },
+    {
+      "sample_id": "synthetic-ambiguous-periodic-pair",
+      "cycle_id": "synthetic-loop-0",
+      "source_event_id": "second-4",
+      "audio_candidates_ms": [[4070, 4074], [5070, 5074]],
+      "visual_candidates_ms": [[4000, 4002]]
+    },
+    {
+      "sample_id": "synthetic-boundary-overlap",
+      "cycle_id": "synthetic-loop-0",
+      "source_event_id": "second-5",
+      "audio_candidates_ms": [[5107, 5113]],
+      "visual_candidates_ms": [[5000, 5002]]
+    }
+  ]
+}
