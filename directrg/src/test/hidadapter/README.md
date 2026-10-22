@@ -40,3 +40,25 @@ snapshots and logs distinguish the expected parent failures from the corrected
 runs. Android/session/target boundaries are explicit host doubles; these checks
 do not establish device delivery, physical HID identity, head-pointer usability,
 firmware/default suppression or full issue acceptance.
+
+The single-reset controls exercise `HidKeyInput.resetAllBindings` through the
+same actual Receiver/held/local-dispatcher ingress. Reset while held emits one
+CANCEL with the original downTime and current reset time; its late physical UP
+is consumed without target UP. Reset inside the target's DOWN callback finishes
+the actual local dispatcher's deferred CANCEL after that callback returns. A
+subsequent complete learning press produces no pointer output, and a fresh press
+on the reassigned button delivers its real DOWN/UP. A native contact still
+operates after reset. Store persistence/failure and panel controls are verified
+in their focused suites; these ingress controls use a successful host store.
+
+Hover-learning checks extract `hoveredHidAction` and the HID initializer verbatim
+from ReceiverActivity. The panel's row rectangles and root bounds are an explicit
+host geometry boundary; real panel View geometry is covered separately. The
+actual provider refreshes pointer state before row admission, and the checks
+reject learning after synchronous cancellation, usability/session/projection
+changes, either page becoming hidden, unavailable pointer state or a point
+outside the row. A complete physical learning press pins the row chosen at DOWN
+even if hover changes before UP. Showing a row during an already held normal
+press does not steal its genuine UP or change its assignment. The reset/relearn
+control aims at a fixture row for learning, then hides it before the next normal
+HID DOWN/UP.

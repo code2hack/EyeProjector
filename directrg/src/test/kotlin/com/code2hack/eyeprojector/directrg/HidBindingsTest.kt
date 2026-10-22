@@ -164,38 +164,32 @@ class HidBindingsTest {
         assertEquals(0, writes)
     }
 
-    @Test fun clearingEachActionPreservesOtherAssignmentsAndReloadsTheClearedRecord() {
-        for (cleared in HidAction.entries) {
-            val storage = Storage()
-            val model = storage.open()
-            val original = HidAction.entries.associateWith { binding(20 + it.ordinal, 80 + it.ordinal) }
-            original.forEach { (action, value) -> assertTrue(model.assign(action, value)) }
-            assertTrue(model.clear(cleared))
-            assertEquals(5, storage.writes)
-            assertTrue(storage.record!!.startsWith("eyeprojector.hid-bindings.1:"))
-            val loaded = storage.open()
-            for ((action, value) in original) {
-                if (action == cleared) {
-                    assertNull(model.binding(action))
-                    assertNull(loaded.binding(action))
-                    assertNull(loaded.action(value.button))
-                } else {
-                    assertEquals(value, model.binding(action))
-                    assertEquals(value, loaded.binding(action))
-                    assertEquals(action, loaded.action(value.button))
-                }
-            }
-            assertNull(model.error)
-            assertNull(loaded.error)
+    @Test fun resetAllPersistsEveryRemovalTogetherInOneExistingFormatWriteAndReloadsEmpty() {
+        val storage = Storage()
+        val model = storage.open()
+        val original = HidAction.entries.associateWith { binding(20 + it.ordinal, 80 + it.ordinal) }
+        original.forEach { (action, value) -> assertTrue(model.assign(action, value)) }
+        val writesBeforeReset = storage.writes
+        assertTrue(model.resetAll())
+        assertEquals(writesBeforeReset + 1, storage.writes)
+        assertEquals(wireRecord(emptyList()), storage.record)
+        val loaded = storage.open()
+        for ((action, value) in original) {
+            assertNull(model.binding(action))
+            assertNull(loaded.binding(action))
+            assertNull(model.action(value.button))
+            assertNull(loaded.action(value.button))
         }
+        assertNull(model.error)
+        assertNull(loaded.error)
     }
 
-    @Test fun clearingTheLastAssignmentPersistsAnEmptyRecordAndAllowsFreshReassignment() {
+    @Test fun resetAllAllowsFreshReassignmentAfterReload() {
         val storage = Storage()
         val model = storage.open()
         val physical = binding()
         assertTrue(model.assign(HidAction.TAP, physical))
-        assertTrue(model.clear(HidAction.TAP))
+        assertTrue(model.resetAll())
         val empty = storage.record
         val cleared = storage.open()
         HidAction.entries.forEach { assertNull(cleared.binding(it)) }
@@ -208,7 +202,7 @@ class HidBindingsTest {
         assertEquals(HidAction.FUNCTION, reassigned.action(physical.button))
     }
 
-    @Test fun failedClearRetainsTheVisibleAndPersistedAssignmentUntilSuccessfulRetry() {
+    @Test fun failedResetAllRetainsEveryEffectiveAndPersistedAssignmentUntilSuccessfulRetry() {
         val storage = Storage()
         val model = storage.open()
         val tap = binding()
@@ -217,17 +211,19 @@ class HidBindingsTest {
         assertTrue(model.assign(HidAction.FUNCTION, function))
         val saved = storage.record
         storage.writable = false
-        assertFalse(model.clear(HidAction.TAP))
+        assertFalse(model.resetAll())
+        assertEquals(3, storage.writes)
         assertEquals(tap, model.binding(HidAction.TAP))
         assertEquals(function, model.binding(HidAction.FUNCTION))
         assertEquals(saved, storage.record)
         assertEquals(tap, storage.open().binding(HidAction.TAP))
         assertNotNull(model.error)
         storage.writable = true
-        assertTrue(model.clear(HidAction.TAP))
-        assertNull(model.binding(HidAction.TAP))
-        assertNull(storage.open().binding(HidAction.TAP))
-        assertEquals(function, storage.open().binding(HidAction.FUNCTION))
+        assertTrue(model.resetAll())
+        HidAction.entries.forEach {
+            assertNull(model.binding(it))
+            assertNull(storage.open().binding(it))
+        }
         assertNull(model.error)
         assertEquals(4, storage.writes)
     }
@@ -316,7 +312,7 @@ class HidBindingsTest {
         HidAction.entries.forEach { assertNull(storage.open().binding(it)) }
     }
 
-    @Test fun throwingClearOperationsRetainAssignmentsAndTheSavedRecord() {
+    @Test fun throwingResetAndTargetedCleanupRetainAssignmentsAndTheSavedRecord() {
         for (deviceCleanup in listOf(false, true)) {
             var record: String? = null
             var throws = false
@@ -329,7 +325,7 @@ class HidBindingsTest {
             assertTrue(model.assign(HidAction.TAP, value))
             val saved = record
             throws = true
-            val cleared = if (deviceCleanup) model.clearDevices(setOf(device)) else model.clear(HidAction.TAP)
+            val cleared = if (deviceCleanup) model.clearDevices(setOf(device)) else model.resetAll()
             assertFalse(cleared)
             assertEquals(value, model.binding(HidAction.TAP))
             assertEquals(saved, record)
@@ -338,16 +334,55 @@ class HidBindingsTest {
         }
     }
 
-    @Test fun noMatchClearLeavesMalformedStorageAndItsReadErrorUntouched() {
+    @Test fun noMatchTargetedCleanupLeavesMalformedStorageAndItsReadErrorUntouched() {
         val storage = Storage("existing malformed HID record")
         val model = storage.open()
         val error = model.error
         assertNotNull(error)
-        assertTrue(model.clear(HidAction.TAP))
         assertTrue(model.clearDevices(setOf(device)))
         assertEquals(error, model.error)
         assertEquals("existing malformed HID record", storage.record)
         assertEquals(0, storage.writes)
+    }
+
+    @Test fun eachExplicitResetWritesAnEmptyRecordEvenForAbsentEmptyOrMalformedPriorStorage() {
+        val emptyRecord = wireRecord(emptyList())
+        for (prior in listOf(null, emptyRecord, "", "existing malformed HID record")) {
+            val storage = Storage(prior)
+            val model = storage.open()
+            if (prior != null && prior != emptyRecord) assertNotNull(model.error)
+            assertEquals(0, storage.writes)
+            assertEquals(prior, storage.record)
+            repeat(2) { resetIndex ->
+                assertTrue(model.resetAll())
+                assertEquals(resetIndex + 1, storage.writes)
+                assertEquals(emptyRecord, storage.record)
+                assertNull(model.error)
+                val loaded = storage.open()
+                HidAction.entries.forEach { assertNull(loaded.binding(it)) }
+                assertNull(loaded.error)
+            }
+        }
+    }
+
+    @Test fun failedMalformedRecordResetReportsFailureAndRetainsRawStorageUntilSuccessfulRetry() {
+        val prior = "existing malformed HID record"
+        val storage = Storage(prior)
+        val model = storage.open()
+        assertTrue(model.error!!.contains("reset all bindings"))
+        storage.writable = false
+        assertFalse(model.resetAll())
+        assertEquals(1, storage.writes)
+        assertEquals(prior, storage.record)
+        assertEquals("HID bindings could not be saved. Try again.", model.error)
+        HidAction.entries.forEach { assertNull(model.binding(it)) }
+        assertNotNull(storage.open().error)
+        storage.writable = true
+        assertTrue(model.resetAll())
+        assertEquals(2, storage.writes)
+        assertEquals(wireRecord(emptyList()), storage.record)
+        assertNull(model.error)
+        assertNull(storage.open().error)
     }
 
     private fun wireRecord(entries: List<Pair<String, HidBinding>>): String {

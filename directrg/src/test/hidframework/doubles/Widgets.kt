@@ -14,6 +14,7 @@ open class TextView(context: Context) : View(context) {
     fun setTextColor(value: ColorStateList) { textColors = value; textColor = value.colors[0] }
 }
 open class Button(context: Context) : TextView(context) {
+    var isAllCaps = true
     private var click: ((View) -> Unit)? = null
     fun setOnClickListener(value: (View) -> Unit) { click = value }
     fun performClick(): Boolean {
@@ -28,7 +29,7 @@ open class LinearLayout(context: Context) : View(context) {
     val children = mutableListOf<View>()
     val childLayouts = mutableMapOf<View, LayoutParams>()
     class LayoutParams(val width: Int, val height: Int, val weight: Float = 0f)
-    fun addView(view: View) { children.add(view) }
-    fun addView(view: View, params: LayoutParams) { children.add(view); childLayouts[view] = params }
+    fun addView(view: View) { children.add(view); view.hostParent = this }
+    fun addView(view: View, params: LayoutParams) { children.add(view); childLayouts[view] = params; view.hostParent = this }
     companion object { const val VERTICAL = 1 }
 }
