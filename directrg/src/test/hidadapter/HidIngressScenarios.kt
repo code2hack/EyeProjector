@@ -9,6 +9,10 @@ import com.code2hack.eyeprojector.protocol.Touch
 internal object HidIngressScenarios {
     private val binding = HidBinding(HidButton(HidDeviceIdentity("host-peripheral", 1, 2), 30, 40), "host peripheral", "host key")
     private fun driver() = ExtractedHidIngress(TargetRoot()).apply { check(bindings.assign(HidAction.TAP, binding)) }
+    private fun ExtractedHidIngress.hover(action: HidAction?) {
+        hidPanel.row = action
+        hidPanel.visibility = if (action == null) View.GONE else View.VISIBLE
+    }
     private fun ExtractedHidIngress.hid(
         phase: HidKeyInput.Phase, down: Long = 1_100, at: Long = down,
         attachment: Int = 7, actualBinding: HidBinding = binding,
@@ -451,6 +455,123 @@ internal object HidIngressScenarios {
         check(!d.heldInput.holding)
     }
 
+    private fun resetAllCancelsActualHeldRouteAndKeepsNativeInputAvailable() {
+        val d = driver()
+        d.hid(HidKeyInput.Phase.DOWN, down = 1_100)
+        SystemClock.now = 1_150
+        check(d.hidInput.resetAllBindings())
+        check(HidAction.entries.all { d.bindings.binding(it) == null })
+        check(d.hidInput.selected == null && !d.heldInput.holding)
+        d.hid(HidKeyInput.Phase.UP, down = 1_100, at = 1_170)
+        assertOutputTrace(d, null, "reset held HID and suppress its late UP",
+            Triple(Touch.Phase.DOWN, 1_100L, 1_100L), Triple(Touch.Phase.CANCEL, 1_100L, 1_150L))
+
+        // Reset changes HID assignments, while the actual native contact path remains available.
+        d.pointer.position = d.pointer.position.copy(x = 80f)
+        d.native(PadGestureRecognizer.Key.HELD_CONTACT, PadGestureRecognizer.Phase.DOWN, 2_000)
+        d.native(PadGestureRecognizer.Key.HELD_CONTACT, PadGestureRecognizer.Phase.UP, 2_000, 2_030)
+        assertOutputTrace(d, null, "native contact after HID reset",
+            Triple(Touch.Phase.DOWN, 1_100L, 1_100L), Triple(Touch.Phase.CANCEL, 1_100L, 1_150L),
+            Triple(Touch.Phase.DOWN, 2_000L, 2_000L), Triple(Touch.Phase.UP, 2_000L, 2_030L))
+        check(d.root.first == listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_CANCEL))
+        check(d.root.second == listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP))
+        check(!d.heldInput.holding)
+    }
+
+    private fun resetInsideActualTargetDownDefersCancelAndAllowsFreshRelearning() {
+        val d = driver()
+        d.root.onFirstDown = {
+            d.root.onFirstDown = {}
+            SystemClock.now = 1_050
+            check(d.hidInput.resetAllBindings())
+        }
+        // TargetRoot attaches its target after this callback returns, matching ViewGroup's stack.
+        d.hid(HidKeyInput.Phase.DOWN, down = 1_000)
+        d.hid(HidKeyInput.Phase.UP, down = 1_000, at = 1_100)
+        assertOutputTrace(d, null, "reset inside actual local DOWN completes deferred CANCEL",
+            Triple(Touch.Phase.DOWN, 1_000L, 1_000L), Triple(Touch.Phase.CANCEL, 1_000L, 1_050L))
+        check(d.root.first == listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_CANCEL))
+        check(d.root.second.isEmpty() && !d.heldInput.holding)
+
+        d.hover(HidAction.TAP)
+        d.hid(HidKeyInput.Phase.DOWN, down = 2_000)
+        d.hid(HidKeyInput.Phase.UP, down = 2_000, at = 2_020)
+        check(d.bindings.binding(HidAction.TAP) == binding && d.hidInput.selected == null)
+        check(d.root.events.size == 2) { "relearning replayed the capture as pointer output" }
+        d.hover(null)
+        d.pointer.position = d.pointer.position.copy(x = 80f)
+        d.hid(HidKeyInput.Phase.DOWN, down = 2_100)
+        d.hid(HidKeyInput.Phase.UP, down = 2_100, at = 2_130)
+        assertOutputTrace(d, null, "fresh relearned actual HID contact after deferred reset",
+            Triple(Touch.Phase.DOWN, 1_000L, 1_000L), Triple(Touch.Phase.CANCEL, 1_000L, 1_050L),
+            Triple(Touch.Phase.DOWN, 2_100L, 2_100L), Triple(Touch.Phase.UP, 2_100L, 2_130L))
+        check(d.root.second == listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP))
+        check(!d.heldInput.holding)
+    }
+
+    private fun hoveredRowPinsCaptureAtActualDownAndLeavesHeldReleaseAlone() {
+        val d = driver()
+        d.hover(HidAction.SCROLL_UP)
+        d.hid(HidKeyInput.Phase.DOWN, down = 1_000)
+        check(d.hidInput.selected == HidAction.SCROLL_UP)
+        val hitTestsAtDown = d.hidPanel.hitTests
+        d.hover(HidAction.FUNCTION)
+        d.hid(HidKeyInput.Phase.UP, down = 1_000, at = 1_050)
+        check(d.bindings.binding(HidAction.SCROLL_UP) == binding)
+        check(d.bindings.binding(HidAction.FUNCTION) == null)
+        check(d.bindings.binding(HidAction.TAP) == null)
+        check(d.hidPanel.hitTests == hitTestsAtDown) { "capture UP chose a different hovered row" }
+        check(d.root.events.isEmpty() && !d.heldInput.holding)
+
+        // An already held normal press retains its output lease when a row appears before UP.
+        val normal = driver()
+        normal.hid(HidKeyInput.Phase.DOWN, down = 2_000)
+        normal.hover(HidAction.FUNCTION)
+        val heldHitTests = normal.hidPanel.hitTests
+        normal.hid(HidKeyInput.Phase.UP, down = 2_000, at = 2_050)
+        check(normal.bindings.binding(HidAction.TAP) == binding)
+        check(normal.bindings.binding(HidAction.FUNCTION) == null && normal.hidInput.selected == null)
+        check(normal.hidPanel.hitTests == heldHitTests) { "owned held release was sent to learning" }
+        assertOutputTrace(normal, null, "normal held release while a HID row is hovered",
+            Triple(Touch.Phase.DOWN, 2_000L, 2_000L), Triple(Touch.Phase.UP, 2_000L, 2_050L))
+        check(!normal.heldInput.holding)
+    }
+
+    private fun actualHoverProviderRejectsRefreshInvalidationAndContextPageChanges() {
+        for (change in listOf("cancel", "unusable", "session", "projection", "panel-instance", "panel", "connection", "stale-point", "outside-row")) {
+            val d = driver()
+            check(d.hidInput.resetAllBindings())
+            d.hover(HidAction.FUNCTION)
+            d.pointer.onRefresh = {
+                when (change) {
+                    "cancel" -> d.cancelAll()
+                    "unusable" -> d.available = false
+                    "session" -> d.session = IngressSession()
+                    "projection" -> { d.session = IngressSession(); d.connectionView.visibility = View.GONE }
+                    "panel-instance" -> d.hidPanel = IngressPanel().apply { row = HidAction.FUNCTION; visibility = View.VISIBLE }
+                    "panel" -> d.hidPanel.visibility = View.GONE
+                    "connection" -> d.connectionView.visibility = View.GONE
+                    "stale-point" -> d.pointer.position = d.pointer.position.copy(available = false)
+                    "outside-row" -> d.pointer.position = d.pointer.position.copy(y = 80f)
+                }
+            }
+            SystemClock.now = 3_000
+            // No assignments remain. A canceled/context-retired DOWN owns its late UP; an ordinary
+            // no-row DOWN remains unbound. Neither route may install the stale learning target.
+            val retired = change in setOf("cancel", "unusable", "session", "projection")
+            check(d.hidInput.accept(HidKeyInput.Event(7, binding, HidKeyInput.Phase.DOWN, 3_000, 3_000)) == retired) {
+                "hover refresh $change admitted a stale learning target"
+            }
+            SystemClock.now = 3_050
+            check(d.hidInput.accept(HidKeyInput.Event(7, binding, HidKeyInput.Phase.UP, 3_000, 3_050)) == retired) {
+                "hover refresh $change lost the canceled DOWN's release ownership"
+            }
+            check(d.hidInput.selected == null)
+            check(HidAction.entries.all { d.bindings.binding(it) == null })
+            check(d.root.events.isEmpty() && !d.heldInput.holding)
+        }
+    }
+
     @JvmStatic fun main(args: Array<String>) {
         val cases = mutableListOf<Pair<String, () -> Unit>>(
             "retained pending native actions" to ::pendingNativeActionsAreCanceledByActualHidAdmission,
@@ -481,6 +602,10 @@ internal object HidIngressScenarios {
             cases.add("R3 Receiver native cancellation gate $route" to { actualReceiverNativeCancelGateRejectsOlderAttachmentTap(projection) })
         }
         cases.add("R3 cross-attachment deferred actual local CANCEL" to ::actualDeferredLocalCancelKeepsNewestAttachmentAndItsRealUp)
+        cases.add("reset all held cancellation and native input control" to ::resetAllCancelsActualHeldRouteAndKeepsNativeInputAvailable)
+        cases.add("reset all during target DOWN and fresh relearning" to ::resetInsideActualTargetDownDefersCancelAndAllowsFreshRelearning)
+        cases.add("hover row DOWN pinning and normal held release" to ::hoveredRowPinsCaptureAtActualDownAndLeavesHeldReleaseAlone)
+        cases.add("actual hover provider refresh/context/page rejection" to ::actualHoverProviderRejectsRefreshInvalidationAndContextPageChanges)
         val failures = mutableListOf<String>()
         for ((name, run) in cases) {
             try {

@@ -22,7 +22,7 @@ internal data class HidBinding(val button: HidButton, val deviceName: String, va
  * All assignments occupy one versioned record, so moving a button is one persistence operation.
  * Empty descriptors are retained as reported by Android; two such peripherals with identical
  * vendor/product/key/scan facts cannot be distinguished by this identity and share an assignment.
- * A malformed record loads no assignments, reports an error and stays untouched until assignment.
+ * A malformed record loads no assignments, reports an error and stays untouched until assignment or reset.
  */
 internal class HidBindings(read: () -> String?, private val write: (String) -> Boolean) {
     private var bindings: Map<HidAction, HidBinding> = emptyMap()
@@ -33,7 +33,7 @@ internal class HidBindings(read: () -> String?, private val write: (String) -> B
         try {
             read()?.let { bindings = decode(it) }
         } catch (_: Exception) {
-            error = "Saved HID bindings could not be read. Assign a button to replace them."
+            error = "Saved HID bindings could not be read. Assign a button or reset all bindings to replace them."
         }
     }
 
@@ -47,10 +47,7 @@ internal class HidBindings(read: () -> String?, private val write: (String) -> B
         return save(next)
     }
 
-    fun clear(action: HidAction): Boolean {
-        if (action !in bindings) return true
-        return save(bindings - action)
-    }
+    fun resetAll(): Boolean = save(emptyMap())
 
     /** Remove only exact observed device identities; an unrelated observation never rewrites storage. */
     fun clearDevices(devices: Set<HidDeviceIdentity>): Boolean {

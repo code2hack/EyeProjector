@@ -74,7 +74,7 @@ def method(source, name):
 def extract_driver(source, output):
     blocks = {'heldInitializer': initializer(source, 'heldInput', 'HeldPointerDispatcher', trailing=True),
               'hidInitializer': initializer(source, 'hidInput', 'HidKeyInput')}
-    for name in ('dispatchPadAction', 'cancelInput', 'schedulePadConfirmation', 'remoteTap', 'remoteScroll'):
+    for name in ('dispatchPadAction', 'cancelInput', 'schedulePadConfirmation', 'remoteTap', 'remoteScroll', 'hoveredHidAction'):
         blocks[name] = method(source, name)
     generated = output / 'ExtractedHidIngress.kt'
     generated.write_text('''package com.code2hack.eyeprojector.directrg
@@ -101,6 +101,21 @@ internal class IngressBoundary {
     fun cancelTouch() = Unit
     fun refresh() = Unit
 }
+// Row hit testing is a host boundary; the actual panel's View geometry has separate checks.
+internal class IngressPanel {
+    var visibility = View.GONE
+    var row: HidAction? = null
+    var rowBounds = PointerBounds(0f, 0f, 100f, 40f)
+    var hitTests = 0
+    fun refresh() = Unit
+    fun actionAt(point: PointerPosition, root: View): HidAction? {
+        hitTests++
+        if (!point.available || !point.x.isFinite() || !point.y.isFinite() ||
+            point.x < 0f || point.y < 0f || point.x >= root.width || point.y >= root.height) return null
+        return row?.takeIf { point.x >= rowBounds.left && point.x < rowBounds.right &&
+            point.y >= rowBounds.top && point.y < rowBounds.bottom }
+    }
+}
 internal class IngressSession {
     val touches = mutableListOf<Touch>()
     val touchTimes = mutableListOf<Long>()
@@ -125,7 +140,7 @@ internal class ExtractedHidIngress(val root: TargetRoot) {
     private lateinit var functionInput: IngressBoundary
     private lateinit var padContact: IngressBoundary
     private lateinit var screen: IngressBoundary
-    private lateinit var hidPanel: IngressBoundary
+    lateinit var hidPanel: IngressPanel
     var session: IngressSession? = null
     var currentGeometry: Geometry? = Geometry(100, 100)
     private val edgeMotion = IngressBoundary()
@@ -148,7 +163,7 @@ internal class ExtractedHidIngress(val root: TargetRoot) {
     fun cancelAll() = cancelInput()
     fun dispatch(action: PadGestureRecognizer.Action) = dispatchPadAction(action)
     init {
-        functionInput = IngressBoundary(); padContact = IngressBoundary(); screen = IngressBoundary(); hidPanel = IngressBoundary()
+        functionInput = IngressBoundary(); padContact = IngressBoundary(); screen = IngressBoundary(); hidPanel = IngressPanel()
         localInput = LocalPointerDispatcher(root)
         gestures = PadGestureRecognizer(500, 800, ::dispatchPadAction)
         val hidBindings = bindings
@@ -157,7 +172,7 @@ internal class ExtractedHidIngress(val root: TargetRoot) {
         heldOwner = HeldInputOwner(heldInput)
 ''' + blocks['hidInitializer'] + '''
     }
-''' + '\n'.join(blocks[name] for name in ('dispatchPadAction', 'cancelInput', 'schedulePadConfirmation', 'remoteTap', 'remoteScroll')) + '\n}\n')
+''' + '\n'.join(blocks[name] for name in ('dispatchPadAction', 'cancelInput', 'schedulePadConfirmation', 'remoteTap', 'remoteScroll', 'hoveredHidAction')) + '\n}\n')
     return generated, blocks
 
 

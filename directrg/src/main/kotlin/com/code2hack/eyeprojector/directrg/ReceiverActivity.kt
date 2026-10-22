@@ -201,6 +201,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             { pixels, point, at -> dispatchPadAction(PadGestureRecognizer.Action.Scroll(pixels, point, at)) },
             { action -> functionNavigation.dispatch(action, projectionContext) },
             { if (::hidPanel.isInitialized) hidPanel.refresh() },
+            ::hoveredHidAction,
         )
         hidDevices = AndroidHidInput(this, hidInput)
         hidPanel = HidBindingsPanel(this, hidBindings, hidInput, ::showControlPanel).apply { visibility = View.GONE }
@@ -259,6 +260,18 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         connectionView.visibility = View.VISIBLE
         connectionView.scrollTo(0, 0)
         resize()
+    }
+    private fun hoveredHidAction(): HidAction? {
+        if (!usable() || !::hidPanel.isInitialized || hidPanel.visibility != View.VISIBLE ||
+            connectionView.visibility != View.VISIBLE) return null
+        val admitted = inputGeneration
+        val source = session
+        val projected = projectionContext
+        val panel = hidPanel
+        val point = pointer.inputPosition()
+        if (inputGeneration != admitted || !usable() || session !== source || projectionContext != projected ||
+            hidPanel !== panel || panel.visibility != View.VISIBLE || connectionView.visibility != View.VISIBLE) return null
+        return panel.actionAt(point, root)
     }
     private fun showHidBindings() {
         cancelInput()

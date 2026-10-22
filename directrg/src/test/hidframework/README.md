@@ -33,7 +33,15 @@ capture, whole-gesture capture consumption, Android repeat/long/cancel flags,
 unbound key fallthrough, listener start/stop/change/removal, persistence across a
 fresh attachment ID, actual Function classification and scroll callbacks, the
 four labels, saved assignment movement/readback, storage errors, black/light
-styling, selected capture display, registered buttons and Back callback. Actual
+styling, active capture display, registered controls and Back callback. Assignment
+rows have no click listener or sticky selection: the actual external fresh DOWN
+captures the action under the root-local pointer. Every framework learning case
+sets observable row geometry and pointer coordinates, then sends actual DOWN/UP
+through the complete Android adapter. Moving the pointer before UP cannot change
+the captured action. Repeated complete presses can immediately replace a row or
+move an already assigned physical key to another row. A newer actual DOWN on
+another key or attachment replaces incomplete capture; the old late UP remains
+consumed and cannot save or disown the newer capture. Actual
 listener change/removal also exercises canceled capture release ownership and a
 fresh capture after removal and readdition with a reused Android attachment ID.
 Missing-device events carry only the actual runtime ID/key/scan/downTime, never a
@@ -65,7 +73,8 @@ Every named scenario runs even when another fails; the process
 fails after reporting all named failures, so matched
 parent RED evidence retains both new failures and existing control outcomes.
 
-The original 26 adapter/panel scenarios remain. Added correction scenarios use
+The adapter ownership and native-exclusion controls remain alongside the updated
+panel scenarios. Native-exclusion correction scenarios use
 the Owner-authorized recorded inventory: internal `ROKID,PSOC-TP-R` and
 `qpnp_pon`, a virtual keyboard, and the external Nintendo Switch Right Joy-Con.
 The saved native key 83/scan 204 Function assignment and the three saved Joy-Con
@@ -78,15 +87,37 @@ external hold or capture. Changed eligibility on an already owned external edge
 must cancel and consume that exact owner; a fresh excluded edge falls through.
 No descriptor pattern or device connection is inferred by these host cases.
 
-Visible Clear controls are located through the actual panel's registered button
-labels, so the same fixture can compile the preceding source and report its
-missing operation as a behavioral failure. Each action is cleared and reloaded
-independently, followed by reassignment. Clear also cancels capture, held and
-pending Function work; failed persistence keeps the old assignment and error
-visible until retry. Original structural checks accept the preceding direct
-button tree and the added assignment/Clear rows while verifying that every
-interactive descendant is registered and retains the existing black/light style.
-Separate assertions require the new external-HID learning instructions.
+The single Reset all HID bindings control is located through the actual panel's
+registered button label. This hover fixture requires the actual `actionAt` and
+capture-target APIs; it is not a compatible preceding-production replay. Structural
+checks require four full-width assignment controls, one Reset and Back, in that
+order, without per-action Clear controls. Every interactive descendant remains
+registered for the existing local-pointer route, uses normal-case button text
+and retains the existing black/light style. These assertions observe widget
+configuration; they do not render Android text or perform pointer hit testing.
+External-HID learning instructions remain required.
+
+The actual panel's `actionAt` uses `getGlobalVisibleRect` and its root-local to
+global-root offset in one coordinate domain. Geometry fixtures include nonzero
+root offsets and clipping, hidden and disabled rows/panels, hidden roots,
+unavailable/outside points and the nonassignment Reset/Back areas. No screen
+origin is assumed. These doubles supply visible rectangles and offsets; they do
+not calculate Android layout or prove physical head-pointer accuracy. The
+Activity's pointer publication/reentrancy checks are covered separately by the
+existing actual Receiver/local-pointer harness.
+
+Reset scenarios populate all four assignments, check exactly one attempted
+empty-map persistence write, reload all four as Unassigned and then reassign
+each control. Repeated Reset still performs one write. Null, valid empty and
+malformed storage each exercise successful reset and failed writes: successful
+reset produces the same valid existing-format empty record and clears any read
+error, while failure retains old bytes and reports the save error. A failed
+four-binding reset preserves all effective and reloaded assignments until retry.
+Successful and failed reset both retire actual HID capture, held contact and
+pending Function work. A captured old release stays consumed, a held old release
+does not send target UP, and directly invoked stale Function timer callbacks
+cannot dispatch after reset. These paths use the actual panel click listener,
+store and HID cancellation implementation, with observable host target callbacks.
 
 The actual Receiver extraction checks native key 83 with its legacy saved
 Function assignment still present, both with an active HID capture and after a
