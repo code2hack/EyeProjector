@@ -3,7 +3,8 @@ package com.code2hack.eyeprojector.directrg
 /**
  * Normalizes firmware classifications, not physical touch edges. NOTIFICATION is a short
  * marker even for a held finger (see rokid-long-touch-2026-10-20.md). Its UP is never a release.
- * Times use Android uptime. Every marker uses the same replay offset, retaining tap intervals.
+ * Times use Android uptime. Ambiguous tap markers use the same replay offset, retaining tap
+ * intervals. A definitive swipe needs that offset only while earlier input is still pending.
  */
 internal class PadGestureRecognizer(
     val doubleTapMs: Long,
@@ -144,14 +145,22 @@ internal class PadGestureRecognizer(
         }
         val pixels = if (down.key in listOf(Key.FORWARD, Key.FORWARD_ALIAS)) 160 else -160
         val old = lastSwipe
+        // A still-pending contact admitted after cancellation belongs to the new context.
+        // Use the existing marker rules; a canceled contact must not retire old companions.
+        val freshMarker = if (old != null && old.timeMs <= canceledThrough)
+            takeMarker(up.timeMs, canceledThrough) else null
         // Retain legacy alternate key reports, without counting their companion twice.
-        if (old != null && old.key != down.key &&
+        if (old != null && freshMarker == null && old.key != down.key &&
             up.timeMs - old.timeMs in 0..500 &&
             (old.key in listOf(Key.FORWARD, Key.FORWARD_ALIAS)) == (pixels > 0)) return
-        val marker = takeMarker(up.timeMs, old?.timeMs ?: -1)
+        val marker = freshMarker ?: takeMarker(up.timeMs, old?.timeMs ?: -1)
         lastSwipe = down.copy(timeMs = up.timeMs)
         val origin = marker?.origin ?: down.timeMs
-        val due = marker?.due ?: up.timeMs + if (contactReports) CLASSIFICATION_MS else doubleTapMs
+        // Classification has already replaced this swipe's ambiguous marker. With no earlier
+        // queued input there is nothing left to disambiguate or wait for. Keep the existing
+        // replay schedule behind pending taps so a swipe cannot jump ahead of them.
+        val due = if (pending.isEmpty()) up.timeMs
+            else marker?.due ?: up.timeMs + if (contactReports) CLASSIFICATION_MS else doubleTapMs
         pending.add(Pending(origin, due, Action.Scroll(pixels,
             (marker?.action as? Action.Tap)?.position ?: down.position, due)))
     }
@@ -214,7 +223,9 @@ internal class PadGestureRecognizer(
 
     fun cancel(nowUptimeMs: Long = lastEventMs) {
         val old = held
-        held = null; continuousReports = false; pending.clear(); presses.clear(); summarySingles.clear(); lastSwipe = null; swipeFirst = null
+        held = null; continuousReports = false; pending.clear(); presses.clear(); summarySingles.clear(); swipeFirst = null
+        // Like completed key identities, retain swipe provenance: a dispatch callback may
+        // change context before this already-classified gesture's companion reports arrive.
         canceledThrough = maxOf(canceledThrough, nowUptimeMs); epoch++
         if (old != null) emit(Action.Contact(old.copy(phase = Phase.CANCEL, timeMs = nowUptimeMs)))
     }
