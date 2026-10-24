@@ -1,6 +1,6 @@
 # V02-01 — Keep paired projection alive through Glasses sleep and wake
 
-**Canonical issue:** Pending publication. **Blocked by:** None.
+**Canonical issue:** [#62](https://github.com/code2hack/EyeProjector/issues/62). **Blocked by:** None.
 
 **Objective**
 

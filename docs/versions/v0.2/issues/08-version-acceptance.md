@@ -1,6 +1,6 @@
 # V02-08 — Verify the assembled v0.2 launch, notification, input and camera flows
 
-**Canonical issue:** Pending publication. **Blocked by:** V02-01, V02-02, V02-03, V02-04, V02-05, V02-06, V02-07.
+**Canonical issue:** [#69](https://github.com/code2hack/EyeProjector/issues/69). **Blocked by:** [#62](https://github.com/code2hack/EyeProjector/issues/62), [#63](https://github.com/code2hack/EyeProjector/issues/63), [#64](https://github.com/code2hack/EyeProjector/issues/64), [#65](https://github.com/code2hack/EyeProjector/issues/65), [#66](https://github.com/code2hack/EyeProjector/issues/66), [#67](https://github.com/code2hack/EyeProjector/issues/67), [#68](https://github.com/code2hack/EyeProjector/issues/68).
 
 **Objective**
 

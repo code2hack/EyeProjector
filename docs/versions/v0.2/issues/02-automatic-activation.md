@@ -1,6 +1,6 @@
 # V02-02 — Auto-connect on launch and wake projection from Phone HID
 
-**Canonical issue:** Pending publication. **Blocked by:** V02-01.
+**Canonical issue:** [#63](https://github.com/code2hack/EyeProjector/issues/63). **Blocked by:** [#62](https://github.com/code2hack/EyeProjector/issues/62).
 
 **Objective**
 

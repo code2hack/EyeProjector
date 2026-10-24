@@ -1,6 +1,6 @@
 # v0.2 implementation plan
 
-Status: Owner-authorized implementation, 2026-10-25 (SGT). Integration branch: `version/v0.2`, based on the completed v0.1 main/tag `aff9ebd62bdb779af0eb02e5e61ea4842e9af371`. [SPEC.md](../../../SPEC.md) defines the approved behavior; current assignments and resources live in the private runtime. Canonical issue numbers are filled after publication.
+Status: Owner-authorized implementation, 2026-10-25 (SGT). Integration branch: `version/v0.2`, based on the completed v0.1 main/tag `aff9ebd62bdb779af0eb02e5e61ea4842e9af371`. [SPEC.md](../../../SPEC.md) defines the approved behavior; current assignments and resources live in the private runtime. The eight canonical issues are published in the [v0.2 milestone](https://github.com/code2hack/EyeProjector/milestone/2).
 
 ## Scope and decisions
 
@@ -17,14 +17,14 @@ Initial notification defaults are On for chosen apps; explicit saved choices ove
 
 | Plan ID | Deliverable | Blocked by |
 | --- | --- | --- |
-| V02-01 | [Keep paired projection alive through Glasses sleep and wake](issues/01-sleep-continuity.md) | — |
-| V02-02 | [Auto-connect on launch and wake projection from Phone HID](issues/02-automatic-activation.md) | V02-01 |
-| V02-03 | [Add per-app Glasses notifications toggle to the Phone app menu](issues/03-notification-preferences.md) | — |
-| V02-04 | [Wake Glasses and open the notifying app for enabled notifications](issues/04-notification-activation.md) | V02-02, V02-03 |
-| V02-05 | [Remove seconds-scale delay from native Rokid touch input](issues/05-native-input-latency.md) | — |
-| V02-06 | [Prove the stock Phone virtual-camera producer and consumer path](issues/06-virtual-camera-access.md) | — |
-| V02-07 | [Feed the Glasses camera into Phone app photo and video flows](issues/07-glasses-camera-feed.md) | V02-06 |
-| V02-08 | [Verify the assembled v0.2 launch, notification, input and camera flows](issues/08-version-acceptance.md) | V02-01, V02-02, V02-03, V02-04, V02-05, V02-06, V02-07 |
+| V02-01 / [#62](https://github.com/code2hack/EyeProjector/issues/62) | [Keep paired projection alive through Glasses sleep and wake](issues/01-sleep-continuity.md) | — |
+| V02-02 / [#63](https://github.com/code2hack/EyeProjector/issues/63) | [Auto-connect on launch and wake projection from Phone HID](issues/02-automatic-activation.md) | V02-01 / [#62](https://github.com/code2hack/EyeProjector/issues/62) |
+| V02-03 / [#64](https://github.com/code2hack/EyeProjector/issues/64) | [Add per-app Glasses notifications toggle to the Phone app menu](issues/03-notification-preferences.md) | — |
+| V02-04 / [#65](https://github.com/code2hack/EyeProjector/issues/65) | [Wake Glasses and open the notifying app for enabled notifications](issues/04-notification-activation.md) | V02-02, V02-03 |
+| V02-05 / [#66](https://github.com/code2hack/EyeProjector/issues/66) | [Remove seconds-scale delay from native Rokid touch input](issues/05-native-input-latency.md) | — |
+| V02-06 / [#67](https://github.com/code2hack/EyeProjector/issues/67) | [Prove the stock Phone virtual-camera producer and consumer path](issues/06-virtual-camera-access.md) | — |
+| V02-07 / [#68](https://github.com/code2hack/EyeProjector/issues/68) | [Feed the Glasses camera into Phone app photo and video flows](issues/07-glasses-camera-feed.md) | V02-06 / [#67](https://github.com/code2hack/EyeProjector/issues/67) |
+| V02-08 / [#69](https://github.com/code2hack/EyeProjector/issues/69) | [Verify the assembled v0.2 launch, notification, input and camera flows](issues/08-version-acceptance.md) | V02-01, V02-02, V02-03, V02-04, V02-05, V02-06, V02-07 |
 
 The first independent issues are V02-01,03,05,06. Dependent source work starts as its required interface is integrated; there is no whole-wave barrier. Shared Receiver Activity/lifetime and protocol regions are assigned to one source writer at a time. Native input can begin in its dedicated recognizer/adapter files while the lifetime Worker owns Activity hooks.
 

@@ -1,6 +1,6 @@
 # V02-07 — Feed the Glasses camera into Phone app photo and video flows
 
-**Canonical issue:** Pending publication. **Blocked by:** V02-06.
+**Canonical issue:** [#68](https://github.com/code2hack/EyeProjector/issues/68). **Blocked by:** [#67](https://github.com/code2hack/EyeProjector/issues/67).
 
 **Objective**
 

@@ -1,6 +1,6 @@
 # V02-06 — Prove the stock Phone virtual-camera producer and consumer path
 
-**Canonical issue:** Pending publication. **Blocked by:** None.
+**Canonical issue:** [#67](https://github.com/code2hack/EyeProjector/issues/67). **Blocked by:** None.
 
 **Objective**
 

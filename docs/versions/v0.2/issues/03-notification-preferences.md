@@ -1,6 +1,6 @@
 # V02-03 — Add per-app Glasses notifications toggle to the Phone app menu
 
-**Canonical issue:** Pending publication. **Blocked by:** None.
+**Canonical issue:** [#64](https://github.com/code2hack/EyeProjector/issues/64). **Blocked by:** None.
 
 **Objective**
 

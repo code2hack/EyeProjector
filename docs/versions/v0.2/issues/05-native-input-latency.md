@@ -1,6 +1,6 @@
 # V02-05 — Remove seconds-scale delay from native Rokid touch input
 
-**Canonical issue:** Pending publication. **Blocked by:** None.
+**Canonical issue:** [#66](https://github.com/code2hack/EyeProjector/issues/66). **Blocked by:** None.
 
 **Objective**
 

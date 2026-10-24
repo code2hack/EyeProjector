@@ -1,6 +1,6 @@
 # V02-04 — Wake Glasses and open the notifying app for enabled notifications
 
-**Canonical issue:** Pending publication. **Blocked by:** V02-02, V02-03.
+**Canonical issue:** [#65](https://github.com/code2hack/EyeProjector/issues/65). **Blocked by:** [#63](https://github.com/code2hack/EyeProjector/issues/63), [#64](https://github.com/code2hack/EyeProjector/issues/64).
 
 **Objective**
 
