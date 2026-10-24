@@ -141,13 +141,72 @@ class PadGestureRecognizerTest {
         assertEquals(second, r.actions.filterIsInstance<PadGestureRecognizer.Action.Scroll>().single().position)
     }
     @Test fun markerlessClassificationCannotOvertakeEarlierDelayedInput() {
-        val r = Replay(); r.marker(1000)
-        r.key(PadGestureRecognizer.Key.FORWARD, 1100)
-        r.key(PadGestureRecognizer.Key.BACKWARD, 1200)
+        val r = Replay(); r.marker(1000); r.marker(1170)
+        r.key(PadGestureRecognizer.Key.FORWARD, 1280)
+        r.key(PadGestureRecognizer.Key.BACKWARD, 1400)
         assertTrue(r.actions.isEmpty())
         r.pad.confirm(2500)
+        assertEquals(1000L, r.taps().single().downTimeMs)
+        assertTrue(r.actions.first() is PadGestureRecognizer.Action.Tap)
         assertEquals(listOf(160, -160), r.actions.filterIsInstance<PadGestureRecognizer.Action.Scroll>().map { it.pixels })
         assertTrue(r.actions.zipWithNext { a, b -> b.timeMs >= a.timeMs }.all { it })
+    }
+    @Test fun classifiedIsolatedSwipesDoNotWaitForAmbiguousTapReplay() {
+        for ((key, pixels) in listOf(PadGestureRecognizer.Key.FORWARD to 160,
+            PadGestureRecognizer.Key.BACKWARD to -160,
+            PadGestureRecognizer.Key.FORWARD_ALIAS to 160,
+            PadGestureRecognizer.Key.BACKWARD_ALIAS to -160)) {
+            val r = Replay(); val point = PointerPosition(123f, 234f, true)
+            r.marker(1000, position = point)
+            r.key(key, 1200, 1222)
+            assertEquals(listOf(PadGestureRecognizer.Action.Scroll(pixels, point, 1222)), r.actions)
+            r.pad.confirm(5000)
+            assertEquals(1, r.actions.size)
+        }
+    }
+    @Test fun definitiveCompanionDispatchesWithoutFirstKeyUpOrPreliminaryTap() {
+        val r = Replay(); val point = PointerPosition(123f, 234f, true)
+        r.marker(1000, position = point)
+        r.pad.accept(PadGestureRecognizer.Event(PadGestureRecognizer.Key.FORWARD,
+            PadGestureRecognizer.Phase.DOWN, 1100, 1100), 1100)
+        assertTrue(r.actions.isEmpty())
+        r.pad.accept(PadGestureRecognizer.Event(PadGestureRecognizer.Key.FORWARD_TAIL,
+            PadGestureRecognizer.Phase.DOWN, 1300, 1300), 1300)
+        assertEquals(listOf(PadGestureRecognizer.Action.Scroll(160, point, 1300)), r.actions)
+        r.key(PadGestureRecognizer.Key.FORWARD_ALIAS, 1400)
+        r.pad.confirm(5000)
+        assertEquals(1, r.actions.size)
+    }
+    @Test fun markerlessSwipesAlsoDispatchAtClassification() {
+        val r = Replay(); val point = PointerPosition(123f, 234f, true)
+        r.key(PadGestureRecognizer.Key.FORWARD, 1000, 1022, point)
+        r.key(PadGestureRecognizer.Key.BACKWARD, 1200, 1222, point)
+        assertEquals(listOf(PadGestureRecognizer.Action.Scroll(160, point, 1022),
+            PadGestureRecognizer.Action.Scroll(-160, point, 1222)), r.actions)
+    }
+    @Test fun immediateSwipeCallbackCancellationCannotReplayItsLateAlias() {
+        val actions = mutableListOf<PadGestureRecognizer.Action>()
+        lateinit var pad: PadGestureRecognizer
+        pad = PadGestureRecognizer(300, 500) { action ->
+            actions.add(action)
+            pad.cancel(action.timeMs)
+        }
+        fun key(key: PadGestureRecognizer.Key, at: Long) {
+            pad.accept(PadGestureRecognizer.Event(key, PadGestureRecognizer.Phase.DOWN, at, at), at)
+            pad.accept(PadGestureRecognizer.Event(key, PadGestureRecognizer.Phase.UP, at + 22, at), at + 22)
+        }
+        key(PadGestureRecognizer.Key.CONTACT, 1000)
+        pad.accept(PadGestureRecognizer.Event(PadGestureRecognizer.Key.FORWARD,
+            PadGestureRecognizer.Phase.DOWN, 1100, 1100), 1100)
+        pad.accept(PadGestureRecognizer.Event(PadGestureRecognizer.Key.FORWARD_TAIL,
+            PadGestureRecognizer.Phase.DOWN, 1300, 1300), 1300)
+        assertEquals(1, actions.size)
+        key(PadGestureRecognizer.Key.FORWARD_ALIAS, 1400)
+        pad.confirm(1500)
+        assertEquals(1, actions.size) // The old gesture must not act again in a new context.
+        key(PadGestureRecognizer.Key.CONTACT, 1600)
+        key(PadGestureRecognizer.Key.FORWARD, 1700)
+        assertEquals(2, actions.size) // A fresh same-family swipe remains usable after cancellation.
     }
     @Test fun distinctSummaryOnlyPairsRetainAllFourTouches() {
         val r = Replay(); r.key(PadGestureRecognizer.Key.DOUBLE, 1000); r.key(PadGestureRecognizer.Key.DOUBLE, 1200)
