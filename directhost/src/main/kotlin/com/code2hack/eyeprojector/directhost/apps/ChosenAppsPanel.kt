@@ -17,6 +17,8 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.code2hack.eyeprojector.directhost.R
+import com.code2hack.eyeprojector.directhost.notifications.AppNotificationPreferences
+import com.code2hack.eyeprojector.directhost.notifications.AppNotificationStore
 import java.io.Closeable
 
 /** Area 2 of the Phone panel. Launch integration supplies [onAppSelected] in EP-06. */
@@ -24,7 +26,9 @@ class ChosenAppsPanel @JvmOverloads constructor(
     context: Context,
     private val store: ChosenAppStore = ChosenApps.open(context),
     private val catalog: AppCatalog = InstalledAppCatalog(context.packageManager),
+    private val notifications: AppNotificationStore = AppNotificationPreferences.open(context),
 ) : LinearLayout(context) {
+    private enum class MenuAction { REMOVE, SCALE, NOTIFICATIONS }
     private val icons = InstalledAppCatalog(context.packageManager)
     private val grid = GridLayout(context).apply { columnCount = 3 }
     private var subscription: Closeable? = null
@@ -134,16 +138,31 @@ class ChosenAppsPanel @JvmOverloads constructor(
         }
         setOnLongClickListener {
             val canScale = entry.availability == AppAvailability.AVAILABLE && onAppScale != null
-            val labels = mutableListOf(context.getString(R.string.chosen_apps_remove))
-            if (canScale) labels.add(context.getString(R.string.app_scale_menu))
+            val actions = mutableListOf(MenuAction.REMOVE)
+            if (canScale) actions.add(MenuAction.SCALE)
+            actions.add(MenuAction.NOTIFICATIONS)
+            val labels = actions.map { action ->
+                context.getString(when (action) {
+                    MenuAction.REMOVE -> R.string.chosen_apps_remove
+                    MenuAction.SCALE -> R.string.app_scale_menu
+                    MenuAction.NOTIFICATIONS -> if (notifications.isEnabled(entry.app.packageName))
+                        R.string.chosen_apps_notifications_on else R.string.chosen_apps_notifications_off
+                })
+            }
             dialog = AlertDialog.Builder(context).setTitle(entry.app.label)
                 .setItems(labels.toTypedArray()) { _, which ->
-                    if (which == 0) {
-                        store.remove(entry.app.packageName)
-                        refresh()
-                    } else if (catalog.find(entry.app.packageName)?.launchable == true &&
-                        store.read().any { it.packageName == entry.app.packageName }) {
-                        onAppScale?.invoke(entry.app)
+                    when (actions[which]) {
+                        MenuAction.REMOVE -> {
+                            store.remove(entry.app.packageName)
+                            refresh()
+                        }
+                        MenuAction.SCALE -> if (catalog.find(entry.app.packageName)?.launchable == true &&
+                            store.read().any { it.packageName == entry.app.packageName }) {
+                            onAppScale?.invoke(entry.app)
+                        }
+                        MenuAction.NOTIFICATIONS -> notifications.setEnabled(
+                            entry.app.packageName, !notifications.isEnabled(entry.app.packageName),
+                        )
                     }
                 }.show()
             true

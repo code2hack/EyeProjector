@@ -11,6 +11,7 @@ import android.view.View
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.TextView
 import com.code2hack.eyeprojector.directhost.apps.*
+import com.code2hack.eyeprojector.directhost.notifications.AppNotificationPreferences
 import com.code2hack.eyeprojector.directhost.scale.*
 import com.code2hack.eyeprojector.protocol.*
 
@@ -33,6 +34,8 @@ object AppScaleChecks {
         var closed = false
         val isolated = fixture(activity)
         val apps = ChosenApps.open(isolated)
+        val notifications = AppNotificationPreferences.open(isolated)
+        val scales = AppScalePreferences.open(isolated)
         val app = InstalledApp("example.scale.ui", "Scale Fixture")
         val catalog = object : AppCatalog {
             var available = true
@@ -40,6 +43,8 @@ object AppScaleChecks {
             override fun find(packageName: String) = app.takeIf { available && it.packageName == packageName }
         }
         try {
+            notifications.setEnabled(app.packageName, true)
+            check(scales.write(app.packageName, 1.5))
             driver.runOnMainSync {
                 apps.read().forEach { apps.remove(it.packageName) }; apps.add(app)
                 menu = ChosenAppsPanel(isolated, apps, catalog)
@@ -47,13 +52,28 @@ object AppScaleChecks {
                 menu.findViewWithTag<View>(app.packageName).performLongClick()
             }
             driver.waitForIdleSync()
-            check(!hasText(driver, "Scale")) // Disconnected: Remove only.
+            check(!hasText(driver, "Scale")) // Disconnected: Remove and notifications.
+            check(hasText(driver, "Remove"))
+            click(driver, "Glasses notifications: On")
+            check(!notifications.isEnabled(app.packageName))
+            check(apps.read().single().packageName == app.packageName)
+            driver.runOnMainSync { menu.findViewWithTag<View>(app.packageName).performLongClick() }
+            driver.waitForIdleSync()
             click(driver, "Remove")
+            check(apps.read().isEmpty())
             driver.runOnMainSync {
                 apps.add(app); menu.refresh()
                 menu.onAppScale = { chosen = it }
                 menu.findViewWithTag<View>(app.packageName).performLongClick()
             }
+            driver.waitForIdleSync()
+            check(hasText(driver, "Remove") && hasText(driver, "Scale"))
+            click(driver, "Glasses notifications: Off")
+            check(notifications.isEnabled(app.packageName))
+            check(chosen == null) // The notification row must not dispatch Scale.
+            check(scales.read(app.packageName) == 1.5)
+            check(apps.read().single().packageName == app.packageName)
+            driver.runOnMainSync { menu.findViewWithTag<View>(app.packageName).performLongClick() }
             driver.waitForIdleSync(); click(driver, "Scale")
             driver.runOnMainSync {
                 check(chosen?.packageName == app.packageName)
@@ -65,7 +85,8 @@ object AppScaleChecks {
                 menu.onAppScale = { chosen = it }; catalog.available = false; menu.refresh()
                 menu.findViewWithTag<View>(app.packageName).performLongClick()
             }
-            driver.waitForIdleSync(); check(!hasText(driver, "Scale")); click(driver, "Remove")
+            driver.waitForIdleSync(); check(!hasText(driver, "Scale"))
+            check(hasText(driver, "Glasses notifications: On")); click(driver, "Remove")
             driver.runOnMainSync {
                 panel = ScalePanelView(activity, { factor *= it }, { closed = true })
                 activity.setContentView(panel)
