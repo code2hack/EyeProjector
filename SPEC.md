@@ -4,6 +4,8 @@ EyeProjector projects supported Android applications from a Phone-hosted virtual
 
 This document defines product requirements. Build instructions belong in [RUNBOOK.md](RUNBOOK.md), agent coordination in [AGENTS.md](AGENTS.md), and source history and observed results in [the initialization audit](docs/migration/initialization-audit.md). A requirement here is not a claim that the current implementation has passed it.
 
+The current development target is **v0.2**, building on the Owner-accepted [v0.1 release](https://github.com/code2hack/EyeProjector/releases/tag/v0.1). The [v0.2 plan](docs/versions/v0.2/README.md) owns implementation scope and dependencies. Historical v0.1 evidence remains in its [run record](docs/runs/v0.1.md).
+
 ## Terms
 
 | Term | Meaning |
@@ -28,7 +30,10 @@ This document defines product requirements. Build instructions belong in [RUNBOO
 6. As a user, I want clear failure and compatibility information, so that I can distinguish a connected transport from usable video, audio and app interaction.
 7. As a user, I want projection to continue until I end it or a real failure occurs, so that an elapsed-time limit does not interrupt my session.
 8. As a user, I want an active projection to continue with the Phone's physical panels off while Android remains Awake, so that I can use the Glasses without keeping the Phone's screens lit.
-9. As a user, I want to explore using the Glasses camera from a projected app, so that I can take a photo of what I am looking at and use it in that app. This is a late v0.1 experiment.
+9. As a user, I want supported Phone apps to use the Glasses camera through their normal camera interfaces, with live preview, photo/Add photo capture and continuous video where the app supports it.
+10. As a user, I want launching EyeProjector or reconnecting/pressing my Phone-connected HID to bring projection back automatically, including waking the Glasses.
+11. As a user, I want enabled chosen-app notifications to wake the Glasses and open the notifying app, with a separate per-app Glasses-notification toggle.
+12. As a user, I want Glasses sleep to preserve my connection and projected app state, and native touch operations to respond promptly.
 
 ## Product behavior
 
@@ -68,6 +73,27 @@ Successful code pairing establishes a remembered EyeProjector peer identity for 
 
 The Glasses' Connect action connects or reconnects to the paired Phone's available host. Pairing, host availability, connection and usable streaming are distinct states shown through the controls. Unavailable peers or missing setup produce actionable status.
 
+### v0.2 quick launch, wake and automatic recovery
+
+After ordinary pairing and Phone setup, the following events request usable projection without a development computer or repeated Connect/Start taps:
+
+| Trigger | Required result |
+| --- | --- |
+| Open EyeProjector on the paired Glasses | Connect automatically to the paired Phone. Retry transient unavailability while the request remains active; show actual connecting/retrying/ready state. |
+| Reconnect an external HID peripheral to the Phone | Wake the paired Glasses as needed, connect/resume projection and show its projected screen. |
+| Press a single external HID button while wake/reconnection is needed | Wake/connect/resume only. Consume that physical press through repeat/release/cancel; do not replay its assigned action after projection becomes ready. Later ordinary presses operate their existing bindings. |
+| Receive a new notification from a chosen app with Glasses notifications enabled | Wake/connect/resume as needed and open the notifying app on the projection display. If already usable, open that app through the existing session. |
+
+The same activation path handles overlapping launch/HID/notification requests without duplicate sessions, retargeting old operations to a new session or losing the selected app. Existing pairing and Shizuku setup status remain actionable. Retry is scheduling/recovery, not a new total-session expiry or a finite retry-count policy. Explicit Stop/Disconnect/app exit cancels the current session/request and pending input; a subsequent allowed trigger can request a new activation. Forget still removes remembered trust.
+
+Glasses display sleep or temporary loss of its Activity/Surface retains the authenticated connection and Phone-side virtual display/app state. Rendering and local sensor/input ownership may suspend while the Glasses are asleep; wake/resume reattaches rendering and shows fresh current content without a manual reconnect. Actual peer/network/process failure uses automatic recovery with correct release of the old session. A screen-off state must not be reported as a successful explicit Disconnect. Phone and Glasses power states remain distinct.
+
+### Per-app Glasses notifications
+
+The Phone chosen-app icon long-press menu provides **Remove**, **Scale** in its existing connected context, and a **Glasses notifications: On / Off** toggle. Notification preference can be edited while disconnected and persists independently per app across app restart and device reconnect. It controls EyeProjector's Glasses notification/activation route; the Phone's ordinary app/system notifications retain their existing settings and delivery.
+
+On enables the notification-triggered wake/reconnection/open-app behavior above; Off disables that EyeProjector route for that app. Initial v0.2 default is On for chosen apps, preserving the requested chosen-app quick-launch behavior. This is an implementation default, separate from an explicit saved user choice. Newly arriving notifications are distinguished from duplicate updates or listener reconnection replay of an existing notification.
+
 ### Phone home-screen widget
 
 For v0.1, EyeProjector provides a Phone home-screen widget with two buttons:
@@ -99,13 +125,13 @@ Projected apps use their native dark themes where available. Their content, incl
 
 ### Glasses camera through a Phone virtual camera
 
-Virtual camera is experimental work scheduled among the final v0.1 issues, after the core projection work. Its completion deliverable is a feasibility conclusion with reproducible evidence, limitations and any working prototype. A working virtual camera is optional for v0.1 completion.
+For v0.2, the feature goal is a working Glasses-camera → authenticated LAN → Phone virtual-camera → target-app path. The same camera foundation serves live preview, still-photo/JPEG capture and continuous video; supported video-call flows also retain ordinary Bluetooth audio. The v0.1 camera experiment was unexecuted and does not establish this capability.
 
-The intended experience exposes the Glasses camera to supported Phone target apps through Android's camera interfaces. Opening the camera in a supported app uses the Glasses sensor, with the live preview projected on the Glasses and the captured photo delivered through the app's ordinary flow. This includes the camera option in an Add photo flow; choosing an existing image retains the app's ordinary picker behavior.
+Opening the camera in a supported projected Phone app uses the Glasses sensor. The app's ordinary viewfinder shows current Glasses imagery and its capture delivers that image through the app's normal photo/Add photo flow. Continuous video and available calling workflows use current Glasses frames with correct orientation and usable pacing. Selecting an existing image remains the app's ordinary image-picker flow.
 
-Camera frames travel from the Glasses over the authenticated LAN connection to a Phone virtual camera. Native Bluetooth remains the audio route. Camera acquisition follows the target app's camera use and ordinary Android permissions; closing camera use or ending projection releases the Glasses capture and associated forwarding resources.
+Camera frames travel through the authenticated direct Phone↔Glasses path, without a development-host relay. Actual camera use controls acquisition; closing the camera, replacing its owner, ending projection or losing the peer releases the old capture and forwarding resources. Reopen and reconnect produce fresh frames belonging to the current consumer. Camera work must preserve projection, input and ordinary Bluetooth routing.
 
-Stock Phone support, the required privilege mechanism and camera selection by individual apps remain unresolved. Shizuku startup alone does not establish virtual-camera availability. The [camera research note](docs/research/camera-forwarding.md) records platform candidates and compatibility questions; this design direction has no implementation or device acceptance yet.
+An early isolated stock-Fold6/Shizuku feasibility issue establishes actual service/privilege access, a changing producer and camera visibility on the existing projection display. Android/AOSP mechanisms are candidates until verified on the actual Phone. Root requirement, OS modification or a different privilege/display mechanism is not assumed. A platform blocker is reported for an Owner decision; a feasibility-only result does not by itself satisfy the working v0.2 camera goal. The [camera research note](docs/research/camera-forwarding.md) retains the baseline mechanism and compatibility questions.
 
 ### Glasses-native interaction
 
@@ -137,11 +163,13 @@ The [input mapping](docs/research/glasses-interaction-mapping.md) distinguishes 
 
 Pointer X/Y sensitivity, scroll speed and the head-motion scrolling toggle persist locally on the Glasses. The existing control panel remains accessible during a connected session through the function-button triple click. Turning head-motion scrolling off cancels active head-driven scrolling while preserving pointer movement and touchpad scrolling.
 
+For v0.2, ordinary native taps and swipes must avoid the observed application-added, seconds-scale classification/replay delay while retaining once-only tap counts, long-press/drag and swipe behavior. Measure physical action, received firmware/input events, classification, transport/injection and visible target response separately. Select a faithful fast event path; changing the existing classification constant alone does not prove correct physical behavior. Delayed or ambiguous firmware reports and their remaining limits must be demonstrated rather than disguised by a host-only timing test.
+
 ### HID interaction
 
-For v0.1, the HID peripheral connects to the Glasses. EyeProjector translates its assigned buttons into the same controls as the Glasses' built-in input, using the local head pointer and the current projection/control-panel context.
+The primary HID peripheral connects to the Phone. The Phone captures/binds its keys, receives the actual Glasses head-pointer/context state and constructs complete input events for the current projected display. Native Rokid controls keep their native route and are never assigned as external HID keys. Existing Glasses-side assignments remain preserved; there is no automatic migration or deletion.
 
-The Glasses control panel's **HID key bindings** button opens four configurable bindings:
+The Phone's **HID key bindings** page provides four configurable bindings:
 
 | Binding | Equivalent built-in control |
 | --- | --- |
@@ -150,7 +178,7 @@ The Glasses control panel's **HID key bindings** button opens four configurable 
 | Scroll up | Backward touchpad swipe: scroll up at the pointer. |
 | Function button | Physical function button: single Back, double Home (main panel locally), context-dependent triple-click panel return or app exit, and long-press no-op. |
 
-Select a binding, press the desired HID button and show the saved assignment. Each assigned button maps to one control; assigning it to another binding moves that assignment. The capture press/release records the binding, then ordinary dispatch resumes. Save bindings locally and restore them when the same peripheral reconnects or EyeProjector restarts.
+Tap a Phone binding row to select sticky replacement capture, then press the external HID button and show its saved assignment. The received-key line counts distinct repeated presses as KEY x2/x3. Each assigned button maps to one control; assigning it elsewhere moves the assignment. One **Reset all HID bindings** restores all four to Unassigned. Capture records assignments without executing them. Save Phone bindings locally and restore them when the same peripheral reconnects or EyeProjector restarts. Wake-trigger presses follow the separate wake-only behavior above.
 
 Tap and Function button each bind one physical button; press/release timing determines its short, long or multiple-press behavior. Repeated key-down reports during a held press represent that same press. HID disconnection and focus loss cancel pending or held input, and reconnection starts with fresh input state.
 
@@ -160,7 +188,7 @@ Both the Phone and Glasses must provide an app launcher for choosing and opening
 
 The Phone app must let the user choose which installed supported apps appear in the projection launchers. Both launchers use that selection. The Glasses home page presents an icon grid of the chosen apps, with a taskbar-free layout. Selecting an icon opens that app on the projection display; returning Home restores the selected-app grid. Target apps retain their own interfaces.
 
-On the Phone, tapping a chosen app while connected switches the Glasses' current screen to that app. Holding the icon opens a menu with **Remove** and, while connected, **Scale**. Remove edits only the projection list and its launcher icons. The Scale action opens that app on the Glasses and the adjustment panel described below.
+On the Phone, tapping a chosen app while connected switches the Glasses' current screen to that app. Holding the icon opens a menu with **Remove**, **Glasses notifications: On / Off**, and, while connected, **Scale**. Remove edits only the projection list and its launcher icons. The Scale action opens that app on the Glasses and the adjustment panel described below.
 
 The projection controls remain available separately from the app grid: connection/status, local pointer/scroll settings, Disconnect and host Stop. A Glasses-local keyboard remains outside the current scope.
 
@@ -180,9 +208,9 @@ The Phone's selected system IME is the first text-entry route. Focusing an ordin
 
 Phone Start immediately begins projection on the available paired Glasses, reporting progress until usable video and control are established. Glasses Connect establishes a fresh authenticated receiver connection to the paired Phone's available host. The Receiver must distinguish connecting, streaming, stopped and failed outcomes. Bluetooth audio follows its independent system connection and routing. The host must serialize ownership of active projection resources.
 
-Phone Stop must end the host and its active projection. The Glasses control panel's Disconnect button ends the active session. A function-button triple click during projection instead opens that panel while keeping the session, decoder and display Surface alive. The panel uses local pointer/input and cancels pending projected input and head-scroll motion; local Back returns to the live projection. Connect becomes Disconnect while connected. EyeProjector exit ends the session. Pause, Surface destruction and genuine video/control failures also end the active projection session. Release includes that session's sockets, capture children, virtual display, video codecs, Glasses camera capture and virtual-camera resources, projection sensor subscriptions and pending input. Local control-panel input has its own lifecycle and releases when EyeProjector exits. A status message that a stop was sent is insufficient to verify teardown. EyeProjector pairing remains available for subsequent use; system Bluetooth retains its ordinary lifecycle. Closing a target app's display can affect that app's own playback through normal Android behavior.
+Phone Stop must end the host and its active projection. The Glasses control panel's Disconnect button ends the active session. A function-button triple click during projection instead opens that panel while keeping the session, decoder and display Surface alive. The panel uses local pointer/input and cancels pending projected input and head-scroll motion; local Back returns to the live projection. Connect becomes Disconnect while connected. EyeProjector exit ends the session. In v0.2, Glasses sleep, temporary Activity pause and Surface destruction suspend or detach rendering/input as needed while retaining the connection and Phone app state. Genuine unrecoverable video/control failures release their owned session and enter the applicable recovery path. Release includes that session's sockets, capture children, virtual display, video codecs, Glasses camera capture and virtual-camera resources, projection sensor subscriptions and pending input. Local control-panel input has its own lifecycle and releases when EyeProjector exits. A status message that a stop was sent is insufficient to verify teardown. EyeProjector pairing remains available for subsequent use; system Bluetooth retains its ordinary lifecycle. Closing a target app's display can affect that app's own playback through normal Android behavior.
 
-The host has no overall elapsed-time cutoff. Startup, blocked I/O and resource-release operations retain finite safety bounds. A long-running test interval is a measurement, not a product expiry time. Reconnect must allocate fresh display/video/control resources and a fresh video timing state after the previous session releases ownership.
+The host has no overall elapsed-time cutoff. Startup, blocked I/O and resource-release operations retain finite safety bounds. A long-running test interval is a measurement, not a product expiry time. After a real session failure, reconnect allocates fresh display/video/control resources and video timing after the old owner releases them. A Glasses sleep/wake rendering transition preserves the existing Phone virtual display and app state rather than creating an unnecessary replacement session.
 
 ### Phone power and Android compatibility
 
@@ -227,29 +255,30 @@ Each acceptance record must bind the exact source commit, built and installed ar
 | Display style | Verify pure-black backgrounds and readable light content in EyeProjector's Glasses UI and projected home. For each supported target app, verify its native dark theme where available and record readable controls, remaining gray or bright surfaces, and photos/video/camera-preview readability. |
 | Bluetooth audio and synchronization | With scrcpy audio disabled, verify actual Phone media playback through the Glasses, ordinary volume/call-route transitions and the actual microphone used by each supported recording/ASR app. Verify video/control continues across Bluetooth loss or microphone unavailability and that projection teardown leaves system Bluetooth management intact. Measure physical flash/beep offset against a 100 ms target with a stated method and uncertainty; software timestamps alone do not pass physical synchronization. |
 | Native input | Verify head pointing, ordinary single/double/multiple touchpad taps, long press and held-contact/head-motion dragging, plus forward/down and backward/up scrolling at the pointer in main/nested widgets and local controls. Verify function-button single Back and double Home/main-panel navigation and the connected control-panel return and local app-exit actions; each click sequence produces only its final action, long press produces no action, and reclaimed gestures suppress competing Rokid behavior including AI and Bluetooth pairing. Verify session/local-input release, independent X/Y gains, persisted settings and cancellation/geometry changes, including held drags. Turning head-motion scrolling off stops that scrolling while touchpad scroll and pointer movement remain usable. |
-| HID bindings | Connect a supported peripheral to the Glasses, open **HID key bindings** and configure the four controls. Verify displayed assignments, reassignment, persistence across app restart/peripheral reconnect, ordinary single/double/multiple taps, long press and held-Tap/head-motion dragging, pointer-targeted scrolling, and the Function button's projection/local navigation and the connected panel-return and local app-exit actions. Binding capture records the assignment; subsequent presses operate it. Verify held-key repeat handling and cancellation on disconnect/focus loss. |
+| HID bindings | Connect a supported peripheral to the Phone, open **HID key bindings** and configure the four controls. Verify displayed assignments, reassignment, persistence across app restart/peripheral reconnect, ordinary single/double/multiple taps, long press and held-Tap/head-motion dragging, pointer-targeted scrolling, and the Function button's projection/local navigation and the connected panel-return and local app-exit actions. Binding capture records the assignment; subsequent presses operate it. Verify held-key repeat handling and cancellation on disconnect/focus loss. |
 | Per-app scale | From a connected app's menu, open the blank Phone gesture panel and verify its numeric scale. Pinch to change that app's layout live on the Glasses, with matching numeric updates. Verify persistence per app, restoration on switching/relaunch, continued projection after closing the panel, native input mapping and IME behavior. |
 | Phone IME | Actual system keyboard on the virtual display supports physical insertion, deletion, selection and submission without hidden required keys. Record failures per IME/device/layout. |
 | Lifetime | A declared sustained AV/input run completes without elapsed-time shutdown or unexplained stall; a separate automated regression crosses the former lifetime boundary. Explicit Stop and failure safeguards still operate. No finite run proves unlimited uptime. |
 | Security | Absent/untrusted identity, wrong endpoint identity, incompatible protocol and malformed/out-of-bounds controls fail closed before unauthorized capture or input. Valid peers establish the intended direct endpoints. |
-| Reconnection and release | Triple-click panel entry and local Back preserve the connection/Surface while switching input context. Stop, panel Disconnect, app exit, pause, Surface loss and video/control failure release owned resources. Reconnect establishes fresh display, video timing and input resources with no replay; verify child/display/listener cleanup and independent Bluetooth lifecycle. |
+| Reconnection and release | Triple-click panel entry and local Back preserve the connection/Surface while switching input context. Stop, panel Disconnect, app exit and actual session failure release owned resources. Glasses sleep/pause/Surface detachment preserves the connection and Phone app state and resumes fresh rendering on wake. Real failure recovery establishes fresh owned resources with no input replay; verify child/display/listener cleanup and independent Bluetooth lifecycle. |
 | Phone power | Verify the two required v0.1 Awake scenarios above with the Phone unlocked and securely locked, including a declared interval without user input. Demonstrate usable video, audio and native input before and after turning physical panels off during an existing session. Verify session teardown ends inactivity prevention. Record panel, wakefulness, keyguard and virtual-display states, actual test interval and any failures. |
 | Supported apps | Qualify ChatGPT, Paseo, Comet and WeChat. Identify each tested installation/version and verify launch/placement, rendering, native controls and exit, plus sound and text entry where applicable. Publish limits rather than extrapolating universal coverage. |
 
-### Experimental camera evaluation
+### v0.2 acceptance additions
 
-The late v0.1 virtual-camera investigation records the actual Phone/Glasses pair, privilege/service access, camera visibility and target-app selection. Where feasible, demonstrate that preview and captured photos originate from the Glasses sensor, then evaluate camera/Add photo flows, close/reopen, resource release and concurrent projection/input/Bluetooth audio. Retain failed and unavailable cases with reproducible evidence and a conclusion. This investigation can complete with a documented platform limitation; working camera forwarding is optional for v0.1 acceptance.
+| Area | Required evidence |
+| --- | --- |
+| Glasses launch/retry | Launch while paired and reachable, temporarily unavailable, then reachable. Show automatic usable projection, actual retry state and cancellation without repeated manual Connect/Start. |
+| Phone activation | Actual HID reconnection and an external button wake/connect the Glasses; the wake press causes no assigned target action. Verify ordinary subsequent presses, overlap, old-session cancellation and resumed app state. |
+| Sleep continuity | Actual Glasses sleep/blanking and wake preserve authenticated connection and the same Phone virtual display/app state. Show fresh resumed content/input and independent cleanup on real Stop/failure. Merely reconnecting after sleep is a different result. |
+| App notifications | Each menu toggle persists and affects only that app's EyeProjector Glasses route. A real new enabled-app notification wakes/connects and opens that app; disabled-app notification leaves that route inactive while normal Phone notification delivery is retained. Verify duplicate/update/reconnection behavior and an already-active session. |
+| Native latency | Physical-device timing compares the v0.1 baseline and new path, separates firmware delay from application/transport/render delay, and retains taps/multi-taps, swipe, long/held input, local/projected routing and duplicate/default handling evidence. |
+| Virtual camera | Actual Phone consumer sees a fresh changing test producer on the owned display, followed by real Glasses preview/photo and continuous-video flows in supported target apps. Verify orientation, app selection, close/reopen, interruption/recovery and concurrent projection/input/Bluetooth. Report exact unsupported app/platform cases. |
 
 ## Current implementation and unresolved work
 
-The four modules are `directhost` (Phone control and shell bridge), `directrg` (Receiver), `protocol` (authenticated framing and backend parsing), and `hostprobe` (controlled Android fixtures). Current parameters, backend pins and diagnostics are technical details in [RUNBOOK.md](RUNBOOK.md), not permanent product requirements.
+The four modules are `directhost` (Phone control and shell bridge), `directrg` (Receiver), `protocol` (authenticated framing and backend parsing), and `hostprobe` (controlled Android fixtures). Toolchain/backend pins and diagnostics remain in [RUNBOOK.md](RUNBOOK.md).
 
-Phone-app startup through Shizuku, LAN/code pairing, the two control panels, the two-button Phone widget, the Phone/Glasses launchers, saved per-app scale through the Phone gesture panel, native Bluetooth audio and continuation of an active projection with physical panels off while Android remains Awake are agreed v0.1 requirements whose implementation and device verification remain pending. Live backend scaling still needs qualification.
+The Owner accepted and released v0.1. It contains Shizuku startup, pairing/session controls, app launchers, scale/settings, native controls, widget/panel operations and Phone HID/head-pointer fusion. Function single Back/double Home is installed on both devices. The [v0.1 run record](docs/runs/v0.1.md) preserves exact source/artifact bindings, independent source/host reviews, measured Phone learning/five-tap behavior, Owner manual results, failures and all unmeasured native/held/default-suppression, locked-Awake, target-app/IME/scale and optical/audio/AV limits. Completion did not turn those limits into new passes.
 
-The current bootstrap implementation forwards required Opus audio and schedules video against its playback clock. Implementing the selected Bluetooth-only audio model requires coordinated host, protocol and Receiver changes. Historical forwarded-audio results retain their original scope; Bluetooth audio, microphone compatibility and its synchronization with video require their own device evidence.
-
-Glasses-to-Phone virtual camera is a late v0.1 experiment with evidence-based closeout. There is no current implementation or device evidence; stock Phone access, integration with the projection display and target-app camera selection require feasibility work. Core v0.1 completion is independent of a successful camera implementation.
-
-The v0.1 touchpad and function-button mapping replaces the existing receiver's tap-count navigation. The full mapping and Glasses-connected HID binding flow remain unimplemented; the [physical long-touch trial](docs/provenance/rokid-long-touch-2026-10-20.md) establishes AI interception in the tested app, rather than native long-press delivery to an EyeProjector target app.
-
-Initialization does not establish fresh physical acceptance of the renamed applications. Panel-off continuation has bounded historical evidence; its failed endurance run and pending source acceptance remain recorded in the [provenance record](docs/provenance/README.md). The required v0.1 cases still need verification on EyeProjector. Full Phone-IME usability, sustained decoder stability, reboot bootstrap, Bluetooth microphone compatibility and supported target-app coverage remain unresolved. Physical AV timing needs quantified acceptance. Historical observations retain their own source/artifact bindings in the [migration record](docs/migration/initialization-audit.md).
+At the v0.2 baseline, the Glasses Receiver still disconnects on Activity pause/Surface destruction, startup requires explicit activation, the native pad path contains a one-second classification delay, and the per-app Glasses-notification route and virtual-camera implementation do not yet exist. v0.2 addresses those goals under its [authorized plan](docs/versions/v0.2/README.md). Actual stock camera access, notification/background wake behavior, native timing and app compatibility remain to be established on the current devices.
