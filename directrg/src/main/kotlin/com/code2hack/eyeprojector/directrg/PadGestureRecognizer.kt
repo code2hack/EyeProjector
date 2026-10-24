@@ -145,11 +145,15 @@ internal class PadGestureRecognizer(
         }
         val pixels = if (down.key in listOf(Key.FORWARD, Key.FORWARD_ALIAS)) 160 else -160
         val old = lastSwipe
+        // A still-pending contact admitted after cancellation belongs to the new context.
+        // Use the existing marker rules; a canceled contact must not retire old companions.
+        val freshMarker = if (old != null && old.timeMs <= canceledThrough)
+            takeMarker(up.timeMs, canceledThrough) else null
         // Retain legacy alternate key reports, without counting their companion twice.
-        if (old != null && old.key != down.key &&
+        if (old != null && freshMarker == null && old.key != down.key &&
             up.timeMs - old.timeMs in 0..500 &&
             (old.key in listOf(Key.FORWARD, Key.FORWARD_ALIAS)) == (pixels > 0)) return
-        val marker = takeMarker(up.timeMs, old?.timeMs ?: -1)
+        val marker = freshMarker ?: takeMarker(up.timeMs, old?.timeMs ?: -1)
         lastSwipe = down.copy(timeMs = up.timeMs)
         val origin = marker?.origin ?: down.timeMs
         // Classification has already replaced this swipe's ambiguous marker. With no earlier
