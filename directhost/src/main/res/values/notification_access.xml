@@ -1,0 +1,17 @@
+<resources>
+    <string name="notification_access_title">Notification access</string>
+    <string name="notification_access_label">EyeProjector chosen-app notifications</string>
+    <string name="notification_access_settings">Open notification access settings</string>
+    <string name="notification_access_refresh">Refresh notification status</string>
+    <string name="notification_access_settings_unavailable">Notification access settings could not be opened.</string>
+    <string name="notification_access_on">Notification access: On</string>
+    <string name="notification_access_off">Notification access: Off</string>
+    <string name="notification_access_unknown">Notification access: unavailable</string>
+    <string name="notification_listener_connected">Listener: connected</string>
+    <string name="notification_listener_disconnected">Listener: disconnected</string>
+    <string name="notification_baseline_disconnected">Waiting for the notification listener.</string>
+    <string name="notification_baseline_no_apps">Choose apps to observe their notifications.</string>
+    <string name="notification_baseline_initializing">Preparing the notification baseline.</string>
+    <string name="notification_baseline_observed">Notification baseline observed.</string>
+    <string name="notification_baseline_unavailable">Notification baseline unavailable. Refresh to try again.</string>
+</resources>
