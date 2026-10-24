@@ -29,4 +29,17 @@ class VideoReadinessTest {
         assertTrue(readiness.ready)
         assertNull(readiness.expiry(100_000_000_000))
     }
+    @Test fun replacementRetiresOldDecoderFailureAndCurrentFailureRetiresReplacement() {
+        val readiness = VideoReadiness()
+        val old = readiness.beginReplacement()!!
+        assertTrue(readiness.awaitFrame(old, 0))
+        assertTrue(readiness.rendered(old))
+        val next = readiness.beginReplacement()!!
+        assertFalse(readiness.claimFailure(old))
+        assertTrue(readiness.awaitFrame(next, 10))
+        assertFalse(readiness.claimFailure(old))
+        assertTrue(readiness.claimFailure(next))
+        assertNull(readiness.beginReplacement())
+        assertFalse(readiness.rendered(next))
+    }
 }

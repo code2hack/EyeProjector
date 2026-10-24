@@ -4,6 +4,9 @@ import android.app.Activity
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.content.ComponentName
+import android.content.ServiceConnection
+import android.os.IBinder
 import android.graphics.Color
 import android.os.Bundle
 import android.os.SystemClock
@@ -18,7 +21,6 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowInsets
 import android.view.WindowInsetsController
-import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -33,9 +35,6 @@ import com.code2hack.eyeprojector.protocol.Navigation
 import com.code2hack.eyeprojector.protocol.Scroll
 import com.code2hack.eyeprojector.protocol.PairingPanel
 import com.code2hack.eyeprojector.protocol.PeerRole
-import com.code2hack.eyeprojector.protocol.SessionControl
-import com.code2hack.eyeprojector.protocol.SessionPhase
-import com.code2hack.eyeprojector.protocol.SessionState
 import java.io.File
 import org.json.JSONObject
 
@@ -47,11 +46,36 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var pairingPanel: PairingPanel
     private lateinit var connectButton: Button
     private val presentation = SessionPresentation()
-    private val attachment = SessionAttachment()
-    private var sessionClient: PairedSessionClient? = null
-    private var clientGeneration = 0L
-    private var peerSession: SessionState? = null
+    private var owner: ReceiverSessionOwner? = null
+    private var bound = false
     private var connectRequested = false
+    private var disconnectBeforeBinding = false
+    private var connectBeforeBinding = false
+    private var pendingForget: (() -> Unit)? = null
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName, binder: IBinder) {
+            owner = (binder as ReceiverSessionService.LocalBinder).owner
+            val forget = pendingForget; pendingForget = null
+            if (forget != null) owner?.disconnect(complete = forget)
+            else if (disconnectBeforeBinding) owner?.disconnect()
+            else if (connectBeforeBinding) owner?.connect()
+            disconnectBeforeBinding = false; connectBeforeBinding = false
+            if (resumed) attachPresentation()
+        }
+        override fun onServiceDisconnected(name: ComponentName) {
+            owner = null
+            showSnapshot(ReceiverSessionOwner.Snapshot(null, null, null, false, "DISCONNECTED", null))
+        }
+    }
+    private val sessionView = object : ReceiverSessionOwner.View {
+        override fun state(snapshot: ReceiverSessionOwner.Snapshot) { if (resumed) showSnapshot(snapshot) }
+        override fun input(source: ProjectionSession, event: com.code2hack.eyeprojector.protocol.ReceiverInput) {
+            if (session === source && usable()) completedInput.accept(event)
+        }
+    }
+    private fun attachPresentation() {
+        owner?.attach(sessionView, screen.holder.surface.takeIf { it.isValid })
+    }
     private val localButtons = mutableListOf<Button>()
     private lateinit var status: TextView
     private var connectionStatus = ""
@@ -82,7 +106,6 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     private var edgeScheduled = false
     private var padUps = 0L
     private var inputGeneration = 0L
-    private var pointerSequence = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -103,17 +126,15 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         status = TextView(this).apply { setTextColor(Color.WHITE); textSize = 18f; gravity = Gravity.CENTER }
         connectButton = Button(this).apply {
             text = getString(R.string.connect)
-            setOnClickListener { if (session != null || connectRequested || attachment.epoch != null) disconnect() else connect() }
+            setOnClickListener { if (session != null || connectRequested) disconnect() else connect() }
         }
         localButtons.add(connectButton)
         pairingPanel = PairingPanel(this, PeerRole.GLASSES, { paired ->
             connectButton.visibility = if (paired) View.VISIBLE else View.GONE
         }, { complete ->
-            val epoch = attachment.epoch ?: peerSession?.takeIf { it.phase.active }?.epoch
-            disconnect(notifyPeer = false)
-            val client = sessionClient
-            if (client == null) complete()
-            else client.disconnect(epoch) { runOnUiThread { complete() } }.forEach(attachment::suppress)
+            cancelInput()
+            val source = owner
+            if (source == null) pendingForget = complete else source.disconnect(complete = complete)
         })
         pairingPanel.addView(connectButton, 2)
         localButtons.add(pairingPanel.forgetButton)
@@ -230,6 +251,9 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> resize() }
         setContentView(root)
         showStatus(getString(R.string.disconnected))
+        val service = Intent(this, ReceiverSessionService::class.java)
+        startForegroundService(service)
+        bound = bindService(service, serviceConnection, BIND_AUTO_CREATE)
         root.post {
             window.insetsController?.apply {
                 hide(WindowInsets.Type.systemBars())
@@ -277,7 +301,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         val fit = size?.let { Fit.inside(root.width, root.height, it) }
         val projected = connectionView.visibility != View.VISIBLE
         val available = usable() && position.available && (!projected || projectedInput())
-        source.headPointer(HeadPointerState(inputGeneration, ++pointerSequence, available, projected,
+        source.headPointer(HeadPointerState(inputGeneration, 0, available, projected,
             position.x, position.y, fit, size), pointer.expiresAtNs)
     }
 
@@ -341,9 +365,8 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         // End local interception and invalidate peer callbacks before leaving this Activity.
         resumed = false
         hidDevices.stop(); functionInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
-        val epoch = attachment.epoch ?: peerSession?.takeIf { it.phase.active }?.epoch
         disconnect()
-        clientGeneration++; sessionClient?.close(epoch); sessionClient = null
+        stopService(Intent(this, ReceiverSessionService::class.java))
         startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         finish()
     }
@@ -440,7 +463,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         gestures.deadline?.let { root.postDelayed(confirmTap, (it - SystemClock.uptimeMillis()).coerceAtLeast(0)) }
     }
     private fun cancelInput() {
-        inputGeneration++
+        inputGeneration = owner?.advanceInputRevision() ?: (inputGeneration + 1)
         if (::hidInput.isInitialized) hidInput.cancel()
         if (::functionInput.isInitialized) functionInput.cancel()
         if (::gestures.isInitialized) gestures.cancel(SystemClock.uptimeMillis())
@@ -517,119 +540,51 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
 
     private fun connect() {
         if (!pairingPanel.isPaired()) { showStatus("Pair with the Phone before connecting"); return }
-        if (session != null || connectRequested) return
-        if (!screen.holder.surface.isValid) { showStatus(getString(R.string.display_unavailable)); return }
-        connectRequested = true
-        connectButton.text = getString(R.string.disconnect)
-        showStatus(getString(R.string.connecting))
-        sessionClient?.connect()
+        val source = owner
+        if (source == null) {
+            connectBeforeBinding = true; disconnectBeforeBinding = false; connectRequested = true
+            connectButton.text = getString(R.string.disconnect); showStatus(getString(R.string.connecting))
+        } else source.connect()
     }
 
-    private fun observePeer(state: SessionState) {
-        if (!pairingPanel.isPaired() || pairingPanel.forgetting) return
-        if (state.phase == SessionPhase.UNKNOWN) {
-            if (session == null) showStatus("Waiting for the Phone to verify its session state")
-            return
+    private fun showSnapshot(snapshot: ReceiverSessionOwner.Snapshot) {
+        val oldSession = session
+        val oldGeometry = currentGeometry
+        val wasStreaming = streaming
+        if (oldSession !== snapshot.session || snapshot.state != "STREAMING") cancelInput()
+        session = snapshot.session
+        currentGeometry = snapshot.geometry
+        connectRequested = snapshot.requested
+        streaming = snapshot.state == "STREAMING"
+        if (streaming) presentation.streaming()
+        else if (session == null) presentation.disconnected()
+        connectionView.visibility = if (presentation.panelVisible) View.VISIBLE else View.GONE
+        connectButton.text = getString(if (session != null || connectRequested) R.string.disconnect else R.string.connect)
+        showStatus(when (snapshot.state) {
+            "STREAMING" -> getString(R.string.connected)
+            "CONNECTING", "WAITING_FOR_VIDEO", "DISPLAY_DETACHED" -> getString(R.string.connecting)
+            "PEER_UNAVAILABLE" -> "Paired Phone unavailable. Open EyeProjector on the Phone and check its setup and network."
+            "DISCONNECTED", "STOPPED" -> getString(R.string.disconnected)
+            else -> "Projection stopped: ${snapshot.state}"
+        })
+        if (oldSession !== session || oldGeometry != currentGeometry || wasStreaming != streaming) {
+            pointer.stop(); if (resumed && hasWindowFocus()) pointer.start()
+            resize()
         }
-        peerSession = state
-        if (streaming && attachment.epoch == state.epoch && state.phase != SessionPhase.STREAMING)
-            sessionClient?.command(SessionControl.Operation.RENDERED, state.epoch)
-        if (session != null && (attachment.epoch != state.epoch || !state.phase.active)) disconnect(notifyPeer = false)
-        if (session == null && state.phase.active) {
-            connectRequested = true
-            connectButton.text = getString(R.string.disconnect)
-            showStatus(getString(R.string.connecting))
-        }
-        if (state.phase == SessionPhase.STOPPING) {
-            connectRequested = false; connectButton.text = getString(R.string.connect)
-            showStatus("Stopping projection")
-        }
-        if (state.phase in setOf(SessionPhase.INACTIVE, SessionPhase.FAILED)) {
-            connectRequested = false
-            if (session == null) {
-                connectButton.text = getString(R.string.connect)
-                showStatus(if (state.phase == SessionPhase.FAILED) "Projection failed: ${state.detail}" else getString(R.string.disconnected))
-            }
-        }
-        if (resumed && screen.holder.surface.isValid && attachment.available(state)) {
-            connectRequested = false
-            startProjection(state.epoch)
-        }
-    }
-
-    private fun startProjection(epoch: String) {
-        cancelInput()
-        pointer.stop(); if (resumed && hasWindowFocus()) pointer.start()
-        streaming = false; currentGeometry = null; presentation.disconnected(); connectionView.visibility = View.VISIBLE
-        connectButton.text = getString(R.string.disconnect)
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        sessionClient?.command(SessionControl.Operation.CONNECTING, epoch)
-        val next = ProjectionSession(File(filesDir, "session"), screen.holder.surface,
-            { source, state -> runOnUiThread {
-                if (session === source) {
-                    val wasStreaming = streaming
-                    if (state != "STREAMING") cancelInput()
-                    streaming = state == "STREAMING"
-                    if (streaming) {
-                        presentation.streaming()
-                        sessionClient?.command(SessionControl.Operation.RENDERED, epoch)
-                    }
-                    val terminal = state !in listOf("STREAMING", "CONNECTING", "WAITING_FOR_VIDEO")
-                    if (terminal) {
-                        sessionClient?.command(SessionControl.Operation.FAILED, epoch)
-                        attachment.release(); session = null; presentation.disconnected()
-                        connectButton.text = getString(R.string.connect)
-                    }
-                    connectionView.visibility = if (presentation.panelVisible) View.VISIBLE else View.GONE
-                    showStatus(when (state) {
-                        "STREAMING" -> getString(R.string.connected)
-                        "CONNECTING", "WAITING_FOR_VIDEO" -> getString(R.string.connecting)
-                        else -> "Projection stopped: $state"
-                    })
-                    if (!streaming) cancelInput()
-                    if (terminal) window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                    // Repeated state telemetry must not cancel pending input in the same context.
-                    if (wasStreaming != streaming) resize()
-                }
-            } },
-            { source, geometry -> runOnUiThread { if (session === source) {
-                currentGeometry = geometry
-                pointer.stop(); if (resumed && hasWindowFocus()) pointer.start()
-                resize()
-            } } }, applicationContext, onReceiverInput = { source, event -> runOnUiThread {
-                if (session === source && usable()) completedInput.accept(event)
-            } })
-        session = next; next.start()
     }
 
     internal fun disconnect(notifyPeer: Boolean = true) {
         cancelInput()
-        val epoch = attachment.release() ?: peerSession?.takeIf { it.phase.active }?.epoch
-        if (epoch != null) {
-            attachment.suppress(epoch)
-        }
-        if (notifyPeer) sessionClient?.disconnect(epoch)?.forEach(attachment::suppress)
-        connectRequested = false
-        val old = session; session = null; old?.close()
-        streaming = false; currentGeometry = null; presentation.disconnected(); connectionView.visibility = View.VISIBLE
-        connectButton.text = getString(R.string.connect)
-        showStatus(getString(R.string.disconnected))
-        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        resize()
+        connectBeforeBinding = false
+        val source = owner
+        if (source == null) disconnectBeforeBinding = true
+        else source.disconnect(notifyPeer)
     }
     override fun onResume() {
         super.onResume(); resumed = true; pointer.start(); longTouch.start(); padContact.start()
         hidDevices.start()
         if (hasWindowFocus()) functionInput.start()
-        val generation = ++clientGeneration
-        sessionClient = PairedSessionClient(File(filesDir, "session"), { state ->
-            if (resumed && generation == clientGeneration) observePeer(state)
-        }, {
-            if (resumed && generation == clientGeneration && session == null) {
-                connectRequested = false; connectButton.text = getString(R.string.connect)
-                showStatus("Paired Phone unavailable. Open EyeProjector on the Phone and check its setup and network.")
-            }
-        }, deliver = { action -> runOnUiThread { action() } }).also { it.start() }
+        attachPresentation()
     }
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
@@ -639,16 +594,27 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         }
     }
     override fun onPause() {
-        resumed = false; hidDevices.stop(); functionInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
-        val epoch = attachment.epoch ?: peerSession?.takeIf { it.phase.active }?.epoch
-        disconnect(notifyPeer = false)
-        clientGeneration++; sessionClient?.close(epoch); sessionClient = null
+        resumed = false; cancelInput()
+        hidDevices.stop(); functionInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
+        owner?.detach(sessionView)
         super.onPause()
     }
-    override fun onDestroy() { hidDevices.stop(); functionInput.stop(); longTouch.stop(); padContact.stop(); disconnect(); pairingPanel.close(); super.onDestroy() }
-    override fun surfaceCreated(holder: SurfaceHolder) { peerSession?.let(::observePeer) }
+    override fun onDestroy() {
+        hidDevices.stop(); functionInput.stop(); longTouch.stop(); padContact.stop()
+        owner?.detach(sessionView)
+        if (isFinishing) {
+            disconnect()
+            stopService(Intent(this, ReceiverSessionService::class.java))
+        }
+        if (bound) { unbindService(serviceConnection); bound = false }
+        owner = null; pairingPanel.close(); super.onDestroy()
+    }
+    override fun surfaceCreated(holder: SurfaceHolder) { if (resumed) owner?.attachSurface(sessionView, holder.surface) }
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) { resize() }
-    override fun surfaceDestroyed(holder: SurfaceHolder) { disconnect() }
+    override fun surfaceDestroyed(holder: SurfaceHolder) {
+        streaming = false; cancelInput()
+        owner?.attachSurface(sessionView, null)
+    }
 }
 
 /** Native clicks (including accessibility activation) and drags share the same mapped input path. */

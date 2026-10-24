@@ -22,10 +22,11 @@ class MediaCodec {
     var queuedInput: (Long, Int) -> Unit = { _, _ -> }
     var input: (Long) -> Int = { 0 }
     var frameListener: OnFrameRenderedListener? = null
+    var configuredSurface: Surface? = null
     val releases = AtomicInteger()
     var releaseFailure: Throwable? = null
     val name: String get() { at("name"); return "test-avc" }
-    fun configure(format: MediaFormat, surface: Surface, crypto: android.media.MediaCrypto?, flags: Int) { at("configure") }
+    fun configure(format: MediaFormat, surface: Surface, crypto: android.media.MediaCrypto?, flags: Int) { configuredSurface = surface; at("configure") }
     fun setOnFrameRenderedListener(listener: OnFrameRenderedListener, handler: Handler) { at("listener"); frameListener = listener }
     fun start() { at("start") }
     fun dequeueOutputBuffer(info: BufferInfo, timeout: Long): Int { at("dequeueOutput"); Thread.sleep(1); return output(info) }

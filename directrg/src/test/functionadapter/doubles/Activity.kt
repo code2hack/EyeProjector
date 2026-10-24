@@ -5,6 +5,7 @@ import java.io.File
 open class Activity : Context() {
     var focus = true
     var finished = false
+    val isFinishing: Boolean get() = finished
     var launch: Intent? = null
     val filesDir = File("host-boundary")
     fun hasWindowFocus() = focus

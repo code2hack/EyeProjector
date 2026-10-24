@@ -59,5 +59,17 @@ internal class VideoReadiness {
         return true
     }
 
+    /** Atomically retire only the decoder that failed; replacement wins over an old failure. */
+    @Synchronized fun claimFailure(epoch: Any): Boolean {
+        val current = when (val value = phase) {
+            is Awaiting -> value.epoch
+            is Ready -> value.epoch
+            else -> null
+        }
+        if (current !== epoch) return false
+        phase = Closed
+        return true
+    }
+
     @Synchronized fun close() { phase = Closed }
 }

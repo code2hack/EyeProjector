@@ -308,9 +308,21 @@ class ProjectionInstrumentation : Instrumentation() {
                         report.put("independentAudioFocus", afterFocus)
                     }
                     if (operation == "pause") {
+                        val retainedStart = status().getLong("startedMonoNs")
                         targetContext.startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                        Thread.sleep(1500); require(status().getString("state") == "STOPPED")
-                        report.put("paused", status())
+                        val pauseDeadline = SystemClock.elapsedRealtime() + 5000
+                        while (status().optBoolean("presentationActive", true) && SystemClock.elapsedRealtime() < pauseDeadline) Thread.sleep(100)
+                        val paused = status()
+                        require(paused.getString("state") == "STREAMING" && !paused.getBoolean("presentationActive"))
+                        require(paused.getLong("startedMonoNs") == retainedStart)
+                        report.put("paused", paused).put("pauseScope", "Activity/Surface detach; physical Glasses sleep requires separate device evidence")
+                        targetContext.startActivity(intent)
+                        val resumeDeadline = SystemClock.elapsedRealtime() + 5000
+                        while (!status().optBoolean("presentationActive", false) && SystemClock.elapsedRealtime() < resumeDeadline) Thread.sleep(100)
+                        val restored = status()
+                        require(restored.getString("state") == "STREAMING" && restored.getBoolean("presentationActive"))
+                        require(restored.getLong("startedMonoNs") == retainedStart)
+                        report.put("resumedSameReceiverSession", restored)
                     }
                     if (operation == "local-stop") {
                         runOnMainSync { (activity as ReceiverActivity).disconnect() }
