@@ -278,6 +278,7 @@ private class Session(
     private val controlLock = Any()
     private val projectionToken = UUID.randomUUID().toString()
     private val context = ProjectionContext(ownerEpoch, projectionToken)
+    private val receiverUsability = SessionUsability(context)
     val panelContext = PanelContext(context.ownerEpoch, context.projectionToken)
     @Volatile private var lastScaleReportAttempt: ScaleState? = null
     private val scale = LiveScale(
@@ -358,6 +359,7 @@ private class Session(
     fun scaleState(): ScaleState = if (running.get()) scale.state() else LiveScale.unavailable()
 
     fun projectionContext(): ProjectionContext = if (running.get()) context else ProjectionContext()
+    override fun receiverUsability(): SessionUsabilitySnapshot = receiverUsability.snapshot()
     override fun launchApp(requestId: Long, packageName: String): ProjectionDisplayState = launches.launch(requestId, packageName)
     override fun projectionDisplayState(): ProjectionDisplayState = launches.snapshot(observe = true)
     override fun phoneHidEdge(routeId: Long, edge: PhoneHidEdge) {
@@ -513,6 +515,7 @@ private class Session(
                 if (phoneInput.nativeTouch(Touch.from(frame.payload))) heldTouchFrames.incrementAndGet()
                 else rejectedHeldTouchFrames.incrementAndGet()
             }
+            Wire.RECEIVER_USABILITY -> receiverUsability.publish(ReceiverUsability.from(frame.payload))
             Wire.HEAD_POINTER -> phoneInput.pointer(HeadPointerState.from(frame.payload))
             Wire.END -> return false
             else -> error("Unsupported control")
@@ -522,7 +525,9 @@ private class Session(
 
     override fun close() = close(SessionStopReason.OWNER_CLOSE)
 
-    fun close(reason: SessionStopReason) = release.close {
+    fun close(reason: SessionStopReason) {
+        receiverUsability.retire() // Before any release owner wait, stock write, or control-lock acquisition.
+        release.close {
         if (running.compareAndSet(true, false)) stopReason = reason
         functionWork.close()
         val stopStartedMs = (System.nanoTime() - begin) / 1_000_000
@@ -584,5 +589,6 @@ private class Session(
         println(data.toString())
         check(server?.isAlive != true) { "Owned stock child release incomplete" }
         launchRelease.getOrThrow()
+        }
     }
 }

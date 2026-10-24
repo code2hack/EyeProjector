@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--output-dir', type=Path, required=True)
 p.add_argument('--source-root', type=Path, help='Exact production tree; tests always come from this runner checkout')
-p.add_argument('--suite', choices=['standard', 'remediation', 'bootstrap-init', 'cross-feature'], default='standard')
+p.add_argument('--suite', choices=['standard', 'remediation', 'bootstrap-init', 'cross-feature', 'activation'], default='standard')
 a = p.parse_args()
 output = a.output_dir.resolve()
 output.mkdir(parents=True, exist_ok=False)
@@ -54,18 +54,19 @@ if a.suite == 'bootstrap-init':
     adapter = suite.parent / 'adapter/doubles'
     sources = [adapter / n for n in ['Context.kt', 'AtomicFile.kt', 'Json.kt', 'Annotation.kt', 'Service.kt', 'Shizuku.kt']]
     sources += [suite / 'bootstrap/Os.kt', suite / 'bootstrap/PackageManager.kt', suite / 'BootstrapInitializationScenarios.kt']
-    sources += [actual / n for n in ['HostBootstrap.kt', 'HostForgetCompletion.kt', 'BootstrapSessionFiles.kt', 'PanelPower.kt', 'ProjectionContext.kt', 'ProjectionDisplayState.kt']]
+    sources += [actual / n for n in ['HostBootstrap.kt', 'HostForgetCompletion.kt', 'BootstrapSessionFiles.kt', 'PanelPower.kt', 'ProjectionContext.kt', 'SessionUsability.kt', 'ProjectionDisplayState.kt']]
     entry = 'com.code2hack.eyeprojector.directhost.BootstrapInitializationScenariosKt'
 else:
-    scenario = {'standard': 'Scenarios.kt', 'remediation': 'RemediationScenarios.kt', 'cross-feature': 'CrossFeatureScenarios.kt'}[a.suite]
+    scenario = {'standard': 'Scenarios.kt', 'remediation': 'RemediationScenarios.kt', 'cross-feature': 'CrossFeatureScenarios.kt', 'activation':'ActivationScenarios.kt'}[a.suite]
     sources = sorted((suite / 'doubles').glob('*.kt')) + [suite / scenario, generated]
     sources += sorted((actual / 'widget').glob('*.kt'))
-    sources += [actual / n for n in ['PhoneSessionController.kt', 'SessionController.kt', 'SessionAttemptStore.kt', 'PanelPower.kt', 'ProjectionContext.kt', 'ProjectionDisplayState.kt',
+    sources += [actual / n for n in ['PhoneSessionController.kt', 'SessionController.kt', 'SessionAttemptStore.kt', 'PanelPower.kt', 'ProjectionContext.kt', 'SessionUsability.kt', 'ProjectionDisplayState.kt',
                                     'scale/AppScaleCoordinator.kt', 'scale/AppScalePreferences.kt', 'scale/AppScaleStore.kt']]
-    sources += [protocol / 'SessionState.kt']
-    entry = 'com.code2hack.eyeprojector.directhost.widget.' + {'standard': 'ScenariosKt', 'remediation': 'RemediationScenariosKt', 'cross-feature': 'CrossFeatureScenariosKt'}[a.suite]
+    sources += sorted((actual / 'activation').glob('*.kt'))
+    sources += [protocol / 'SessionState.kt', protocol / 'SessionControl.kt']
+    entry = 'com.code2hack.eyeprojector.directhost.widget.' + {'standard': 'ScenariosKt', 'remediation': 'RemediationScenariosKt', 'cross-feature': 'CrossFeatureScenariosKt', 'activation':'ActivationScenariosKt'}[a.suite]
 sources += [actual / 'input/PhoneHidRoute.kt']
-sources += [protocol / n for n in ['Wire.kt', 'PhoneInput.kt', 'Touch.kt', 'LayoutScale.kt']]
+sources += [protocol / n for n in ['Wire.kt', 'ActivationControl.kt', 'ReceiverUsability.kt', 'PhoneInput.kt', 'Touch.kt', 'LayoutScale.kt']]
 inputs = sources + [resources / n for n in ['values/phone_widget.xml', 'layout/phone_widget.xml', 'xml/phone_widget_info.xml']]
 compiled = []
 identity = []

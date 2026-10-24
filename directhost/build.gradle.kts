@@ -8,10 +8,12 @@ plugins {
 android {
     namespace = "com.code2hack.eyeprojector.directhost"
     compileSdk = 35
+    ndkVersion = "30.0.16248370"
     packaging.resources.excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
     defaultConfig {
         applicationId = "com.code2hack.eyeprojector.directhost"
         minSdk = 32
+        ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64") }
         targetSdk = 35
         versionCode = 1
         versionName = "bootstrap"
@@ -21,6 +23,9 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+    externalNativeBuild {
+        cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" }
     }
     buildFeatures { aidl = true }
     sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("generated/bootstrapAssets"))

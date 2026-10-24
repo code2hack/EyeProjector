@@ -143,7 +143,7 @@ def main():
         'HeldPointerDispatcher.kt', 'PadGestureRecognizer.kt', 'NativePadContact.kt',
     )]
     protocol = root / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
-    production += [protocol / name for name in ('Wire.kt', 'PhoneInput.kt', 'Touch.kt')]
+    production += [protocol / name for name in ('Wire.kt', 'ActivationControl.kt', 'ReceiverUsability.kt', 'PhoneInput.kt', 'Touch.kt')]
     for path in [activity] + production:
         if not path.is_file():
             parser.error(f'--source-dir must be a complete repository-root snapshot: missing {path}')

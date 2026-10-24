@@ -9,7 +9,7 @@ class Looper { companion object {
 class Handler(looper: Looper) {
     fun post(action: () -> Unit): Boolean { queue.add(action); return true }
     companion object {
-        private val queue = ArrayDeque<() -> Unit>()
-        fun drain() { var n = 0; while (queue.isNotEmpty()) { check(++n < 1000) { "Observer loop" }; queue.removeFirst()() } }
+        private val queue = java.util.concurrent.ConcurrentLinkedQueue<() -> Unit>()
+        fun drain() { var n = 0; while (queue.isNotEmpty()) { check(++n < 1000) { "Observer loop" }; queue.poll()?.invoke() } }
     }
 }

@@ -27,7 +27,8 @@ class PhoneWidgetActionActivity : Activity() {
         sessions = owner
         val port = PhoneWidgetSessionAdapter(owner)
         val pending = PhoneWidgetActionTurn(port::snapshot,
-            { PhoneWidgetUpdates.deliver(this, PhoneWidgetIntents.widgetId(intent), action) }, ::complete)
+            { PhoneWidgetUpdates.deliver(this, PhoneWidgetIntents.widgetId(intent), action) }, ::complete,
+            wholeActivationStop = action.command == PhoneWidgetCommand.STOP && action.activationId != null)
         turn = pending
         owner.observeState(observer)
         pending.advance()

@@ -51,6 +51,32 @@ class VideoSilenceTest {
         }
     }
 
+    @Test(timeout = 20_000) fun initialExplicitModeCannotPrecedeActualAuthenticatedRequestWelcome() {
+        val listener=Tls.context(File(root,"host")).serverSocketFactory.createServerSocket(0,2,InetAddress.getLoopbackAddress()) as SSLServerSocket
+        listener.needClientAuth=true;listener.soTimeout=5000
+        File(root,"receiver/endpoint.properties").writeText("host=localhost\nport=${listener.localPort}\n")
+        val executor=Executors.newSingleThreadExecutor()
+        val server=executor.submit(Callable {
+            (listener.accept() as SSLSocket).use { socket ->
+                socket.soTimeout=5000;socket.startHandshake()
+                val input=DataInputStream(socket.inputStream);val output=DataOutputStream(socket.outputStream)
+                assertEquals(Wire.STREAM,Wire.readRequest(input))
+                socket.soTimeout=150
+                assertThrows(java.net.SocketTimeoutException::class.java){input.readByte()}
+                socket.soTimeout=5000;Wire.writeWelcome(output)
+                val first=Wire.readFrame(input)
+                assertEquals(Wire.RECEIVER_USABILITY,first.channel)
+                assertEquals(ReceiverUsabilityMode.NONE,ReceiverUsability.from(first.payload).mode)
+                Wire.writeFrame(output,Frame(Wire.END))
+            }
+        })
+        val session=ProjectionSession(File(root,"receiver"),Surface(),{_,_->},{_,_->})
+        try {
+            session.usability(ReceiverUsability("startup-owner",ReceiverIncarnation("tls-startup",1),1,1,ReceiverUsabilityMode.NONE))
+            session.start();server.get(8,TimeUnit.SECONDS)
+        } finally {session.close();listener.close();executor.shutdownNow()}
+    }
+
     private enum class Ending { QUIET, END, EOF, MALFORMED }
     @Test(timeout = 20_000) fun staticVideoRemainsUsableDuringControlOnlySilence() = exchange(Ending.QUIET)
     @Test(timeout = 20_000) fun explicitEndAfterFirstFrameReleasesSession() = exchange(Ending.END)

@@ -7,11 +7,13 @@ import java.io.Closeable
 internal class LatestHeadPointer(private val schedule: (() -> Unit) -> Boolean,
     private val write: (HeadPointerState) -> Unit,
     private val nowNs: () -> Long,
-    private val withWriterLock: (() -> Unit) -> Unit = { it() }) : Closeable {
+    private val withWriterLock: (() -> Unit) -> Unit = { it() },
+    private val compose: ((HeadPointerState?) -> (() -> Unit))? = null) : Closeable {
     private data class Pending(val state: HeadPointerState, val expiresAtNs: Long)
     private val lock = Any()
     private var latest: Pending? = null
     private var scheduled = false
+    private var sourceDirty = false
     private var closed = false
 
     fun publish(value: HeadPointerState, expiresAtNs: Long): Boolean {
@@ -24,24 +26,39 @@ internal class LatestHeadPointer(private val schedule: (() -> Unit) -> Boolean,
         return true
     }
 
+    /** Update source metadata under the same short selection lock; network writes never hold it. */
+    fun sourceChanged(update: () -> Unit): Boolean {
+        val start = synchronized(lock) {
+            if (closed) return false
+            update(); sourceDirty = true
+            if (scheduled) false else { scheduled = true; true }
+        }
+        if (start) enqueue()
+        return true
+    }
+
     private fun enqueue() {
-        if (!schedule(::serialize)) synchronized(lock) { scheduled = false; latest = null }
+        if (!schedule(::serialize)) synchronized(lock) { scheduled = false; latest = null; sourceDirty = false }
     }
 
     private fun serialize() {
         try { withWriterLock {
             // Select current source state and recheck its own elapsed-clock deadline after writer waits.
-            val value = synchronized(lock) { latest.also { latest = null }?.takeUnless { closed } }
-            if (value != null) write(if (value.state.available && nowNs() >= value.expiresAtNs)
-                value.state.copy(available = false) else value.state)
+            val selected = synchronized(lock) {
+                sourceDirty = false
+                val value = latest.also { latest = null }?.takeUnless { closed }
+                val point = value?.let { if (it.state.available && nowNs() >= it.expiresAtNs) it.state.copy(available = false) else it.state }
+                if (closed) null else compose?.invoke(point) ?: { if (point != null) write(point) }
+            }
+            selected?.invoke()
         } }
         finally {
             val again = synchronized(lock) {
-                if (!closed && latest != null) true else { scheduled = false; false }
+                if (!closed && (latest != null || sourceDirty)) true else { scheduled = false; false }
             }
             if (again) enqueue()
         }
     }
 
-    override fun close() = synchronized(lock) { closed = true; latest = null }
+    override fun close() = synchronized(lock) { closed = true; latest = null; sourceDirty = false }
 }

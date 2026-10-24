@@ -12,6 +12,7 @@ internal object PhoneWidgetIntents {
     private const val WIDGET = "widget"
     private const val COMMAND = "command"
     private const val EPOCH = "epoch"
+    private const val ACTIVATION = "activation"
 
     fun pending(context: Context, widgetId: Int, action: PhoneWidgetAction): PendingIntent =
         PendingIntent.getActivity(context, widgetId, intent(context, widgetId, action),
@@ -22,10 +23,11 @@ internal object PhoneWidgetIntents {
             this.action = ACTION
             data = Uri.Builder().scheme("eyeprojector-widget").authority("command")
                 .appendPath(widgetId.toString()).appendPath(action.command.name).appendPath(action.epoch)
-                .appendPath(action.projection.ownerEpoch).appendPath(action.projection.projectionToken).build()
+                .appendPath(action.activationId.orEmpty()).appendPath(action.projection.ownerEpoch).appendPath(action.projection.projectionToken).build()
             putExtra(WIDGET, widgetId)
             putExtra(COMMAND, action.command.name)
             putExtra(EPOCH, action.epoch)
+            putExtra(ACTIVATION, action.activationId)
             putExtra(ProjectionContext.OWNER_EXTRA, action.projection.ownerEpoch)
             putExtra(ProjectionContext.TOKEN_EXTRA, action.projection.projectionToken)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_HISTORY)
@@ -38,6 +40,6 @@ internal object PhoneWidgetIntents {
         val epoch = intent.getStringExtra(EPOCH) ?: return null
         return PhoneWidgetAction(command, epoch, ProjectionContext(
             intent.getStringExtra(ProjectionContext.OWNER_EXTRA).orEmpty(),
-            intent.getStringExtra(ProjectionContext.TOKEN_EXTRA).orEmpty()))
+            intent.getStringExtra(ProjectionContext.TOKEN_EXTRA).orEmpty()), intent.getStringExtra(ACTIVATION))
     }
 }

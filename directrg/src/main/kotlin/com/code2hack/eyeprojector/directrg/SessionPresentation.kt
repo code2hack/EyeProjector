@@ -15,6 +15,12 @@ internal class SessionPresentation {
         live = true
     }
 
+    fun requestProjected() { panelVisible = false; enteredFromProjection = false }
+    /** Restores selection only; real owner/renderer observations still establish liveness. */
+    fun restoreSelection(panel: Boolean, wasLive: Boolean) {
+        panelVisible = panel; enteredFromProjection = wasLive && panel; live = false
+    }
+
     fun showPanel() {
         enteredFromProjection = live
         panelVisible = true

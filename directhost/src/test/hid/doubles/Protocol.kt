@@ -8,3 +8,7 @@ data class PhoneHidEdge(
     val keyCode: Int, val scanCode: Int, val downTimeMs: Long, val eventTimeMs: Long,
     val repeatCount: Int = 0,
 )
+
+/** Feature value-type doubles only; actual Control3 codec is exercised by the activation suites. */
+enum class ActivationGoal { USABLE, PROJECTED }
+data class ReceiverIncarnation(val id:String,val sequence:Long)

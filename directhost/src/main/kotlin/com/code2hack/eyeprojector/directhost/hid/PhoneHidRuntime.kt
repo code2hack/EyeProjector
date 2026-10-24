@@ -11,6 +11,7 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
 import com.code2hack.eyeprojector.directhost.PhoneSessionController
+import com.code2hack.eyeprojector.directhost.activation.*
 import com.code2hack.eyeprojector.directhost.input.PhoneHidRoute
 import com.code2hack.eyeprojector.protocol.PhoneHidEdge
 import java.io.Closeable
@@ -36,7 +37,13 @@ internal class PhoneHidRuntime private constructor(context: Context) {
         { operation, complete -> writer.execute { try { operation() } finally { main.post { complete() } } } },
         SystemClock::uptimeMillis,
         ::publish,
+        object : PhoneHidActivation {
+            override fun needsWake() = sessions.needsActivation()
+            override fun request(cause: ActivationCause) { sessions.requestActivation(cause) }
+        },
     )
+
+    init { sessions.onInputInvalidated { controller.cancelInput() } }
 
     fun observe(observer: () -> Unit): Closeable {
         observers.add(observer)

@@ -1,5 +1,8 @@
 package com.code2hack.eyeprojector.directhost
 
+import com.code2hack.eyeprojector.directhost.activation.ActivationContextAuthority
+import com.code2hack.eyeprojector.directhost.activation.ActivationContextPublisher
+import java.io.Closeable
 import com.code2hack.eyeprojector.protocol.ScaleState
 import com.code2hack.eyeprojector.protocol.PhoneHidEdge
 import com.code2hack.eyeprojector.protocol.PhoneHidPhase
@@ -38,6 +41,8 @@ class HostBootstrap private constructor(private val context: Context) {
     private val panelExecutor = Executors.newSingleThreadExecutor()
     private val panelQueryExecutor = Executors.newSingleThreadExecutor()
     private val observers = CopyOnWriteArraySet<(Status) -> Unit>()
+    private val retiredWitnessObservers = CopyOnWriteArraySet<(Status) -> Unit>()
+    private val contextPublisher = ActivationContextPublisher()
     @Volatile private var current = Status(Setup.UNAVAILABLE, "UNKNOWN")
     @Volatile private var remote: IHostBootstrap? = null
     private var revokedBinder: IBinder? = null
@@ -59,26 +64,36 @@ class HostBootstrap private constructor(private val context: Context) {
     private fun newConnection(accepted: Boolean): ServiceConnection {
         if (connection != null) abandonConnection()
         val generation = ++bindingGeneration
+        contextPublisher.bindingChanged()
         acceptedGeneration = if (accepted) generation else -1L
         connecting = true; bindStarted = System.nanoTime()
         return object : ServiceConnection {
+            @Volatile private var originalBinding: Pair<IBinder, ActivationContextPublisher.Binding>? = null
             override fun onServiceConnected(name: ComponentName, binder: IBinder) {
                 executor.execute {
                     // Peek callbacks are queued before its returned revision can be checked.
                     if (generation != bindingGeneration || acceptedGeneration != generation) return@execute
                     connecting = false
+                    val binding = contextPublisher.bindingChanged()
+                    originalBinding = binder to binding
                     remote = IHostBootstrap.Stub.asInterface(binder)
                     runCatching {
-                        binder.linkToDeath({ executor.execute {
+                        binder.linkToDeath({
+                            contextPublisher.retireBinding(binding)
+                            executor.execute {
                             if (revokedBinder == binder) finishRevokedStop(binder)
                             else if (remote?.asBinder() == binder) { remote = null; publish("UNKNOWN", "SERVICE_DIED") }
-                        } }, 0)
+                            }
+                        }, 0)
                         performPending()
                         refreshNow()
                     }.onFailure { remote = null; publish("UNKNOWN", "SERVICE_UNREACHABLE") }
                 }
             }
             override fun onServiceDisconnected(name: ComponentName) {
+                originalBinding?.let { original ->
+                    if (!original.first.isBinderAlive) contextPublisher.retireBinding(original.second)
+                }
                 executor.execute {
                     if (generation != bindingGeneration) return@execute
                     if (remote?.asBinder()?.isBinderAlive == false) {
@@ -94,11 +109,14 @@ class HostBootstrap private constructor(private val context: Context) {
         val previous = connection
         connection = null; connecting = false
         bindingGeneration++; acceptedGeneration = -1L
+        contextPublisher.bindingChanged()
         // Detach this callback only; never kill an owned backend to recover attachment.
         if (previous != null) runCatching { Shizuku.unbindUserService(args, previous, false) }
     }
     private val received = Shizuku.OnBinderReceivedListener { refresh() }
     private val dead = Shizuku.OnBinderDeadListener {
+        // The delivered capability loss is known now; it is not an acknowledgment of backend release.
+        contextPublisher.retire(contextPublisher.capture())
         executor.execute { if (connecting) abandonConnection(); publish(current.backend, "SHIZUKU_DIED") }
     }
     private val permission = Shizuku.OnRequestPermissionResultListener { _, _ -> refresh() }
@@ -110,6 +128,11 @@ class HostBootstrap private constructor(private val context: Context) {
         executor.scheduleWithFixedDelay({ runCatching { refreshNow() }.onFailure { publish("UNKNOWN", "STATUS_UNAVAILABLE") } }, 0, 1, TimeUnit.SECONDS)
     }
 
+    internal fun registerActivationAuthority(authority: ActivationContextAuthority): Closeable = contextPublisher.register(authority)
+    internal fun observeRetiredBackendWitness(observer: (Status) -> Unit): Closeable {
+        retiredWitnessObservers.add(observer)
+        return Closeable { retiredWitnessObservers.remove(observer) }
+    }
     fun observe(observer: (Status) -> Unit) { observers.add(observer); main.post { observer(current) } }
     fun status(): Status = current
     fun removeObserver(observer: (Status) -> Unit) { observers.remove(observer) }
@@ -127,9 +150,10 @@ class HostBootstrap private constructor(private val context: Context) {
         publish("STARTING", sessionEpoch = sessionEpoch)
         if (remote != null) performPending() else bind()
     } }
-    fun stop() { executor.execute {
-        requestStop()
-    } }
+    fun stop() {
+        contextPublisher.retire(contextPublisher.capture(), blockBinding = true)
+        executor.execute { requestStop() }
+    }
 
     /** Local typed Binder operations; no peer TLS keys or new network trust are involved. */
     fun requestScale(value: Double, complete: (ScaleState?) -> Unit) = requestScaleOperation(value, null, complete)
@@ -323,12 +347,13 @@ class HostBootstrap private constructor(private val context: Context) {
     }
 
     /** PairingPanel.beforeForget hook: completion and the caller's trust deletion run on main. */
-    fun stopBeforeForget(complete: () -> Unit) { executor.execute {
-        forget.request(complete)
-        requestStop()
-    } }
+    fun stopBeforeForget(complete: () -> Unit) {
+        contextPublisher.retire(contextPublisher.capture(), blockBinding = true)
+        executor.execute { forget.request(complete); requestStop() }
+    }
 
     private fun requestStop() {
+        contextPublisher.retire(contextPublisher.capture(), blockBinding = true)
         localDetail = null
         revokedBinder?.let { binder ->
             if (!binder.isBinderAlive) finishRevokedStop(binder) else publish("STOPPING")
@@ -370,6 +395,7 @@ class HostBootstrap private constructor(private val context: Context) {
         val action = pending ?: return
         if (action == Action.START) pending = null
         var stopRevoked = false
+        val source = contextPublisher.capture() // Captured BEFORE Binder/setup work; late replies cannot revive it.
         runCatching {
             val result = when (action) {
                 Action.START -> {
@@ -383,7 +409,7 @@ class HostBootstrap private constructor(private val context: Context) {
                 }
                 Action.STOP -> service.stop()
             }
-            readStatus(result)
+            readStatus(result, source)
             stopRevoked = action == Action.STOP && JSONObject(result).getString("state") == "STOPPED" && JSONObject(result).optBoolean("sessionRevoked")
             if (stopRevoked) {
                 val binder = service.asBinder()
@@ -408,6 +434,7 @@ class HostBootstrap private constructor(private val context: Context) {
         if (remote?.asBinder() == binder) remote = null
         pending = null
         connection = null; connecting = false; bindingGeneration++; acceptedGeneration = -1L
+        contextPublisher.bindingChanged()
         publish("STOPPED")
         forget.revoked()
     }
@@ -424,7 +451,8 @@ class HostBootstrap private constructor(private val context: Context) {
         val service = remote
         if (service != null) {
             if (pending == Action.STOP || forget.awaitingTeardown()) { pending = Action.STOP; performPending(); return }
-            runCatching { readStatus(service.status()) }.onFailure { remote = null; publish("UNKNOWN", "SERVICE_UNREACHABLE") }
+            val source = contextPublisher.capture()
+            runCatching { readStatus(service.status(), source) }.onFailure { remote = null; publish("UNKNOWN", "SERVICE_UNREACHABLE") }
         } else if (!connecting && setup() == Setup.AVAILABLE) {
             if (pending != null || forget.awaitingTeardown()) {
                 if (forget.awaitingTeardown()) pending = Action.STOP
@@ -443,25 +471,44 @@ class HostBootstrap private constructor(private val context: Context) {
         } else publish(current.backend, current.detail)
     }
 
-    private fun readStatus(json: String) {
+    private fun readStatus(json: String, source: ActivationContextPublisher.Observation = contextPublisher.capture()) {
         val data = JSONObject(json)
-        val file = AtomicFile(File(context.filesDir, "bootstrap-status.json"))
-        val output = file.startWrite()
-        try { output.write(json.toByteArray()); file.finishWrite(output) }
-        catch (error: Exception) { file.failWrite(output); throw error }
         val backend = data.getString("state")
-        publish(if (pending == Action.STOP && backend == "STOPPED") "STOPPING" else backend,
-            data.optString("failure").takeIf { it.isNotBlank() && it != "null" } ?: localDetail,
-            data.optString("sessionEpoch").ifEmpty { current.sessionEpoch }, projectionToken = data.optString("projectionToken"))
+        val observedBackend = if (pending == Action.STOP && backend == "STOPPED") "STOPPING" else backend
+        val epoch = data.optString("sessionEpoch").ifEmpty { source.context.ownerEpoch }
+        val token = if (observedBackend in setOf("SESSION_STARTING", "STREAMING")) data.optString("projectionToken") else ""
+        val known = contextPublisher.stage(source, ProjectionContext(epoch,token),
+            observedBackend in setOf("SESSION_STARTING", "STREAMING") && pending != Action.STOP && revokedBinder == null)
+        // Known loss/replacement already retired fast authority, before this potentially blocking write.
+        if (known) {
+            val file = AtomicFile(File(context.filesDir, "bootstrap-status.json"))
+            val output = file.startWrite()
+            try { output.write(json.toByteArray()); file.finishWrite(output) }
+            catch (error: Exception) { file.failWrite(output); throw error }
+        }
+        publish(observedBackend, data.optString("failure").takeIf { it.isNotBlank() && it != "null" } ?: localDetail,
+            epoch, projectionToken = token, source = source)
     }
     private fun publish(backend: String, detail: String? = null, sessionEpoch: String = current.sessionEpoch, rejectedEpoch: String? = null,
-        projectionToken: String? = null) {
+        projectionToken: String? = null, source: ActivationContextPublisher.Observation = contextPublisher.capture()) {
         val token = if (backend in setOf("SESSION_STARTING", "STREAMING"))
             projectionToken ?: current.projectionToken.takeIf { current.sessionEpoch == sessionEpoch }.orEmpty() else ""
+        val target = ProjectionContext(sessionEpoch,token)
+        val candidate = backend in setOf("SESSION_STARTING", "STREAMING") && pending != Action.STOP && revokedBinder == null
+        contextPublisher.stage(source,target,candidate) // Before package/Shizuku queries, no general observer.
         val value = Status(setup(), backend, detail, sessionEpoch, rejectedEpoch, token)
-        if (value == current) return
-        current = value
-        main.post { observers.forEach { it(value) } }
+        val disposition = synchronized(contextPublisher.gate) {
+            // Gate -> fastLock. No caller ever takes this gate while holding fastLock.
+            if (!contextPublisher.commit(source,target,candidate && value.setup == Setup.AVAILABLE)) -1
+            else if (value == current) 0 else { current = value; 1 }
+        }
+        if (disposition == 1) main.post { observers.forEach { it(value) } }
+        else if (disposition == -1 && (backend in setOf("STOPPED", "FAILED", "STOP_UNVERIFIED") || rejectedEpoch != null)) {
+            // A real old-scope terminal witness remains useful to the core ledger, but cannot
+            // overwrite current/fast authority or UI/scale state for a successor binding.
+            // Only the ownership ledger receives this original-scope witness.
+            main.post { retiredWitnessObservers.forEach { it(value) } }
+        }
     }
 
     companion object {

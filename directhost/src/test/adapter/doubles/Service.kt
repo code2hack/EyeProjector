@@ -40,6 +40,9 @@ class FakeService : IHostBootstrap, android.os.IBinder {
     var starts = 0
     @Volatile var sessionEpoch = ""
     var statusReads = 0
+    var statusGate:java.util.concurrent.CountDownLatch?=null
+    var statusEntered=java.util.concurrent.CountDownLatch(1)
+    var stopGate:java.util.concurrent.CountDownLatch?=null
     val scaleRequests = mutableListOf<Pair<Long, Double>>()
     var scaleReads = 0
     var scalePayloadOverride: ByteArray? = null
@@ -80,10 +83,12 @@ class FakeService : IHostBootstrap, android.os.IBinder {
     override fun status(): String {
         check(alive)
         statusReads++
-        return "{\"state\":\"$state\",\"sessionRevoked\":$revoked,\"sessionEpoch\":\"$sessionEpoch\",\"projectionToken\":\"${if (state == "STREAMING") currentPanel.context.projectionToken else ""}\"}"
+        val captured="{\"state\":\"$state\",\"sessionRevoked\":$revoked,\"sessionEpoch\":\"$sessionEpoch\",\"projectionToken\":\"${if (state == "STREAMING") currentPanel.context.projectionToken else ""}\"}"
+        statusEntered.countDown();statusGate?.let{check(it.await(4,java.util.concurrent.TimeUnit.SECONDS))}
+        return captured
     }
     override fun stop(): String {
-        stops++; stopEntered.countDown()
+        stops++; stopEntered.countDown();stopGate?.let{check(it.await(4,java.util.concurrent.TimeUnit.SECONDS))}
         state = if (stopReady) "STOPPED" else "STOP_UNVERIFIED"
         revoked = stopReady
         if (stopReady) currentScale = currentScale.copy(observed = null, target = null, status = ScaleStatus.UNAVAILABLE)

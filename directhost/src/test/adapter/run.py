@@ -44,7 +44,7 @@ if args.composed:
     sources += sorted((suite.parent / 'panel/doubles').glob('*.kt'))
     sources = [p for p in sources if p != suite.parent / 'panel/doubles/Json.kt']
     sources += sorted((suite.parent / 'composed/doubles').glob('*.kt'))
-    sources += [suite.parent / 'panel/PanelFixtures.kt', suite.parent / 'composed/ComposedScenarios.kt']
+    sources += [suite.parent / 'panel/PanelFixtures.kt', suite.parent / 'panel/UsabilityScenarios.kt', suite.parent / 'composed/ComposedScenarios.kt']
     sources += [actual / name for name in ('HostBootstrap.kt', 'HostForgetCompletion.kt', 'BootstrapSessionFiles.kt', 'SessionController.kt', 'SessionAttemptStore.kt', 'ShizukuHostService.kt', 'OwnedHostLifecycle.kt', 'OwnedShellSessions.kt', 'ShellMain.kt', 'PanelPower.kt', 'PhoneTouchDispatcher.kt', 'HeldInputRelease.kt', 'OwnedRelease.kt', 'LiveScale.kt', 'ProjectionContext.kt', 'ProjectionDisplayState.kt', 'ProjectedAppLaunch.kt', 'PlatformProjectionLaunch.kt')]
     if args.legacy_scale_abi:
         # Each compiler run sees exactly ONE input ABI, matched to the archived production source.
@@ -65,12 +65,13 @@ if args.composed:
                 target.write_text(content)
                 sources[index] = target
 elif args.panel:
-    sources = sorted((suite.parent / 'panel/doubles').glob('*.kt')) + [suite.parent / 'panel/PanelScenarios.kt', suite.parent / 'panel/PanelFixtures.kt', suite / 'doubles/AtomicFile.kt']
+    sources = sorted((suite.parent / 'panel/doubles').glob('*.kt')) + [suite.parent / 'panel/PanelScenarios.kt', suite.parent / 'panel/PanelFixtures.kt', suite.parent / 'panel/UsabilityScenarios.kt', suite / 'doubles/AtomicFile.kt']
     sources += [actual / name for name in ('ShellMain.kt', 'PanelPower.kt', 'PhoneTouchDispatcher.kt', 'HeldInputRelease.kt', 'OwnedRelease.kt', 'LiveScale.kt', 'ProjectionContext.kt', 'ProjectionDisplayState.kt', 'ProjectedAppLaunch.kt', 'PlatformProjectionLaunch.kt')]
 else:
     sources = sorted((suite / 'doubles').glob('*.kt')) + [suite / 'Scenarios.kt', suite / 'HomeContextScenarios.kt']
     sources += [actual / name for name in ('HostBootstrap.kt', 'HostForgetCompletion.kt', 'BootstrapSessionFiles.kt', 'SessionController.kt', 'SessionAttemptStore.kt', 'PanelPower.kt', 'ProjectionDisplayState.kt', 'ProjectionContext.kt', 'ProjectedHomeActivity.kt')]
     sources += [actual / 'apps/ChosenAppStore.kt']
+sources += [actual / 'SessionUsability.kt']
 sources += [actual / 'input/PhoneHidRoute.kt'] if not args.panel else []
 sources += [actual / 'input/PhoneInputMerger.kt', actual / 'input/FunctionWork.kt'] if args.panel or args.composed else []
 protocol = root / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
@@ -78,7 +79,7 @@ if not args.panel and (actual / 'LaunchOperationDiagnostics.kt').exists():
     sources += [actual / 'LaunchOperationDiagnostics.kt']
     if args.composed:
         sources += [suite / 'doubles/Log.kt']
-sources += [protocol / name for name in ('Wire.kt', 'PhoneInput.kt', 'LayoutScale.kt', 'Touch.kt')]
+sources += [protocol / name for name in ('Wire.kt', 'PhoneInput.kt', 'LayoutScale.kt', 'Touch.kt', 'ActivationControl.kt', 'ReceiverUsability.kt')]
 # Retain exact compiler inputs even for preparation failures and later test corrections.
 archive = output / 'compiled-sources'
 archive.mkdir(exist_ok=True)

@@ -1,12 +1,19 @@
 package com.code2hack.eyeprojector.directhost.activation
 
+import com.code2hack.eyeprojector.protocol.ActivationGoal
+import com.code2hack.eyeprojector.protocol.ReceiverIncarnation
 import java.io.Closeable
 import java.util.UUID
 
 internal enum class ActivationCause { PHONE_START, GLASSES_LAUNCH, HID_ATTACHMENT, HID_PRESS, NOTIFICATION }
 
 /** Identity tokens are retained by their caller; an old callback never resolves a new current owner. */
-internal class ActivationHandle internal constructor(val id: String, val cause: ActivationCause)
+internal class ActivationHandle internal constructor(val id: String, val cause: ActivationCause,
+    val demandId: String? = null, val goal: ActivationGoal = ActivationGoal.USABLE)
+internal data class ActivationBinding(
+    val activationId: String, val demandId: String?, val goal: ActivationGoal, val wakeRevision: Long,
+    val attemptId: String?, val incarnation: ReceiverIncarnation?, val presentationRevision: Long?,
+)
 internal class ActivationAttempt internal constructor(val handle: ActivationHandle, val id: String)
 internal enum class ActivationPhase { PENDING, STARTING, SETUP_REQUIRED, AWAITING_PRESENTATION, READY, RELEASING, CANCELED }
 internal data class ActivationState<T : Any>(
@@ -15,8 +22,11 @@ internal data class ActivationState<T : Any>(
     val attempt: ActivationAttempt? = null,
     val target: T? = null,
     val detail: String = "",
+    val binding: ActivationBinding? = null,
+    val authority: Long = 0,
 )
-internal data class ActivationReady<T : Any>(val handle: ActivationHandle, val attempt: ActivationAttempt, val target: T)
+internal data class ActivationReady<T : Any>(val handle: ActivationHandle, val attempt: ActivationAttempt, val target: T,
+    val binding: ActivationBinding? = null, val authority: Long = 0)
 
 /**
  * Serialized local ownership only. The existing Phone session owner supplies actual admission,
@@ -38,14 +48,22 @@ internal class PhoneActivationOwner<T : Any>(private val newId: () -> String = {
         return handle
     }
 
+    /** Restore desire only; authoritative backend/presentation reconciliation supplies every observation. */
+    fun restoreActivation(id: String, cause: ActivationCause): ActivationHandle {
+        current?.let { return it.handle }
+        val handle = ActivationHandle(id, cause)
+        current = ActivationState(handle, ActivationPhase.PENDING)
+        return handle
+    }
+
     fun state(handle: ActivationHandle): ActivationState<T> = current?.takeIf { it.handle === handle }
         ?: ActivationState(handle, ActivationPhase.CANCELED)
 
     /** The old attempt must actually release before another can be admitted, even after failure. */
-    fun beginAttempt(handle: ActivationHandle): ActivationAttempt? {
+    fun beginAttempt(handle: ActivationHandle, id: String = newId()): ActivationAttempt? {
         if (canceledAttempts.isNotEmpty()) return null
         val old = current?.takeIf { it.handle === handle && it.attempt == null } ?: return null
-        val attempt = ActivationAttempt(handle, newId())
+        val attempt = ActivationAttempt(handle, id)
         constructing.add(attempt)
         try { update(old.copy(phase = ActivationPhase.STARTING, attempt = attempt, target = null, detail = "")) }
         finally { constructing.remove(attempt) }
@@ -65,6 +83,15 @@ internal class PhoneActivationOwner<T : Any>(private val newId: () -> String = {
         if (bound != null && bound != target) return false
         val original = bound ?: target.also { targets[attempt] = it }
         update(old.copy(phase = ActivationPhase.READY, target = original, detail = ""))
+        return true
+    }
+
+    /** Actual source context replacement retires presentation binding, not backend resources. */
+    fun invalidatePresentation(attempt: ActivationAttempt): Boolean {
+        val old = current?.takeIf { it.attempt === attempt } ?: return false
+        targets.remove(attempt)
+        if (old.phase != ActivationPhase.RELEASING)
+            update(old.copy(phase = ActivationPhase.AWAITING_PRESENTATION, target = null))
         return true
     }
 

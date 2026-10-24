@@ -37,6 +37,7 @@ class ChosenAppsInstrumentation : Instrumentation() {
         try {
             when (arguments.getString("operation", "ui")) {
                 "ui" -> testUi()
+                "snapshot-probe" -> com.code2hack.eyeprojector.directhost.activation.snapshot.NativeSnapshotChecks.run(targetContext, arguments, result)
                 "app-scale" -> AppScaleChecks.run(this, targetContext)
                 "app-scale-persist-write" -> AppScaleChecks.persistence(targetContext, true)
                 "app-scale-persist-read" -> AppScaleChecks.persistence(targetContext, false)

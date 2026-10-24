@@ -6,3 +6,4 @@ runtime.json.*
 *.lock
 __pycache__/
 third_party/scrcpy-server-v*
+/directhost/.cxx/

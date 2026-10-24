@@ -233,7 +233,7 @@ class PairedSessionClientTest {
             SessionState("retired", SessionPhase.INACTIVE)
         })
         try {
-            client.disconnect("ending") { complete.countDown() }
+            client.disconnect("ending", complete = { complete.countDown() })
             assertTrue(entered.await(2, TimeUnit.SECONDS))
             assertFalse(complete.await(50, TimeUnit.MILLISECONDS))
             release.countDown()

@@ -27,6 +27,7 @@ class ProjectionSession(
     private val context: Context? = null,
     private val onScale: (ProjectionSession, ScaleState) -> Unit = { _, _ -> },
     private val onReceiverInput: (ProjectionSession, ReceiverInput) -> Unit = { _, _ -> },
+    private val nextUsabilityRevision: () -> Long = { System.nanoTime() },
 ) : Closeable {
     private val running = AtomicBoolean(true)
     private val timer = Executors.newScheduledThreadPool(2)
@@ -40,11 +41,31 @@ class ProjectionSession(
             synchronized(this) { heldTouchFrames++ }
         })
     private val outputLock = Any()
+    @Volatile private var controlReady = false
+    @Volatile private var sourceUsability: ReceiverUsability? = null
+    private var serializedUsability: ReceiverUsability? = null
+    private var ownerUsabilityRevision = -1L
     // Separate from native timed input cancellation; both use the existing serialized stream writer.
     private val headPointer = LatestHeadPointer({ action ->
         scaleControls.submit(System.nanoTime() / 1_000_000, { running.get() }, "head-pointer", preserveTiming = false, write = action)
     }, { send(Frame(Wire.HEAD_POINTER, payload = it.bytes())) }, SystemClock::elapsedRealtimeNanos,
-        { action -> synchronized(outputLock) { action() } })
+        { action -> synchronized(outputLock) { action() } }, compose = { point ->
+            // Selection of latest mode and latest point is atomic after output-lock waits.
+            var mode = sourceUsability
+            if (point != null && mode != null && point.revision > mode.inputRevision) {
+                mode = mode.copy(inputRevision = point.revision, revision = nextUsabilityRevision())
+                sourceUsability = mode
+            }
+            val selectedMode = mode
+            val selectedPoint = point?.let { p ->
+                if (mode != null && (mode.mode == ReceiverUsabilityMode.NONE || p.revision < mode.inputRevision)) p.copy(available = false) else p
+            }
+            val action: () -> Unit = {
+                writeUsabilityLocked(selectedMode)
+                if (selectedPoint != null) writeFrameLocked(Frame(Wire.HEAD_POINTER, payload = selectedPoint.bytes()))
+            }
+            action
+        })
     private val lifecycleLock = Any()
     private val closeLock = Any()
     @Volatile private var closeComplete = false
@@ -64,12 +85,18 @@ class ProjectionSession(
     private var pointerSequence = 0L
     private var lastHeadPointer: HeadPointerState? = null
     @Volatile private var presentationActive = true
-    private val readyForTouch get() = presentationActive && videoReadiness.ready
+    // Once explicit source ownership exists, an old legacy positive callback cannot
+    // override a newer NONE. Legacy-only sessions retain their existing boolean behavior.
+    private val presentationUsable get() = sourceUsability?.let { it.mode != ReceiverUsabilityMode.NONE } ?: presentationActive
+    private val readyForTouch get() = presentationUsable && videoReadiness.ready
 
     /** Rendering visibility is independent of authenticated transport and offscreen decoding. */
     fun presentation(active: Boolean) = synchronized(inputLock) {
         presentationActive = active
         if (!active) {
+            sourceUsability?.let { fact ->
+                usability(fact.copy(mode = ReceiverUsabilityMode.NONE, revision = nextUsabilityRevision())) }
+
             cancelPendingInput()
             lastHeadPointer?.let {
                 val unavailable = it.copy(available = false, sequence = ++pointerSequence)
@@ -105,7 +132,7 @@ class ProjectionSession(
             .put("heldTouchFramesWritten", heldTouchFrames).put("scrollsSent", scrolls).put("navigationsSent", navigations)
             .put("packetReadToCallbackP95Ms", p95(renderDelayMs)).put("networkRoundTripP95Ms", p95(roundTripMs))
             .put("latencyScope", "Receiver packet-read to decoder Surface callback receipt; network echo RTT; window presentation and optical/input timing are separate")
-            .put("presentationActive", presentationActive)
+            .put("presentationActive", presentationUsable)
             .put("maxEncodedPacketBytes", Wire.MAX_PAYLOAD).put("maxInflightFrames", 16)
         stats.put("videoLateDrops", droppedVideo)
             .put("videoTiming", "Video PTS relative to first frame receipt in each decoder stream; Receiver monotonic clock")
@@ -159,11 +186,31 @@ class ProjectionSession(
         stats.put("errorType", error.javaClass.simpleName).put("causeClasses", causes)
     }
 
-    private fun send(frame: Frame) = synchronized(outputLock) {
+    fun usability(fact: ReceiverUsability) {
+        headPointer.sourceChanged {
+            val old = sourceUsability
+            if (old == null || old.incarnation == fact.incarnation && fact.revision > ownerUsabilityRevision ||
+                fact.incarnation.sequence > old.incarnation.sequence) {
+                ownerUsabilityRevision = fact.revision
+                sourceUsability = fact.copy(revision = nextUsabilityRevision())
+            }
+        }
+    }
+    private fun writeUsabilityLocked(fact: ReceiverUsability?) {
+        if (controlReady && fact != null && fact != serializedUsability) {
+            writeFrameLocked(Frame(Wire.RECEIVER_USABILITY, payload = fact.bytes()))
+            serializedUsability = fact
+        }
+    }
+    private fun writeFrameLocked(frame: Frame) {
         check(running.get())
         writing.set(System.nanoTime())
         try { Wire.writeFrame(output ?: error("No authenticated connection"), frame) }
         finally { writing.set(0) }
+    }
+    private fun send(frame: Frame) = synchronized(outputLock) {
+        writeUsabilityLocked(sourceUsability)
+        writeFrameLocked(frame)
     }
 
     fun start() {
@@ -177,6 +224,7 @@ class ProjectionSession(
                 Wire.writeRequest(output!!, Wire.STREAM)
                 val input = DataInputStream(peer.inputStream)
                 Wire.readWelcome(input)
+                controlReady = true
                 val initialEpoch = videoReadiness.awaitInitialFrame(System.nanoTime())
                 synchronized(this) {
                     stats.put("tls", peer.session.protocol).put("peerAddress", peer.inetAddress.hostAddress)
@@ -331,7 +379,7 @@ class ProjectionSession(
     fun cancelHeadScroll() = controls.cancelPending("head-scroll")
     fun headPointer(state: HeadPointerState, sourceExpiresAtNs: Long): Boolean = synchronized(inputLock) {
         if (!running.get() || geometry == null) return false
-        val current = state.copy(sequence = ++pointerSequence, available = state.available && presentationActive)
+        val current = state.copy(sequence = ++pointerSequence, available = state.available && presentationUsable)
         lastHeadPointer = current
         headPointer.publish(current, sourceExpiresAtNs)
     }
@@ -353,6 +401,7 @@ class ProjectionSession(
 
     private fun closeWithState(value: String, expiry: VideoReadiness.Expiry? = null) {
         if (expiry != null && !videoReadiness.claim(expiry)) return
+        sourceUsability?.let { usability(it.copy(mode = ReceiverUsabilityMode.NONE, revision = nextUsabilityRevision())) }
         videoReadiness.close()
         // Cancel construction immediately; wait below for its unpublished codec to be released.
         running.set(false)

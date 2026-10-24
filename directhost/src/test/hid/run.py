@@ -112,7 +112,7 @@ def main():
     production = root / 'directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost'
     actual = [production / 'hid' / name for name in (
         'PhoneHidBindings.kt', 'PhoneHidController.kt', 'PhoneHidRuntime.kt', 'PhoneHidKeyService.kt', 'PhoneHidPanel.kt')]
-    actual += sorted((production / 'activation').glob('*.kt'))
+    actual += [production / 'activation' / name for name in ('PhoneActivationOwner.kt', 'PhoneHidActivation.kt')]
     fixture = sorted((suite / 'doubles').glob('*.kt')) + [suite / 'Scenarios.kt',
         root / 'directhost/src/test/activation/ActivationScenarios.kt',
         root / 'directhost/src/test/kotlin/com/code2hack/eyeprojector/directhost/hid/PhoneHidBindingsTest.kt']

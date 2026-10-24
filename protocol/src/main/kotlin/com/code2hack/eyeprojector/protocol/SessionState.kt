@@ -13,4 +13,5 @@ enum class AttemptDisposition { OBSERVED, CANCEL_PENDING, CANCELED, RETIRED, RET
 data class AttemptReceipt(val id: String, val owner: String?, val disposition: AttemptDisposition)
 
 /** AVAILABLE means the authenticated host listener is ready; STREAMING requires a Receiver render. */
-data class SessionState(val epoch: String, val phase: SessionPhase, val detail: String = "", val receipt: AttemptReceipt? = null)
+data class SessionState(val epoch: String, val phase: SessionPhase, val detail: String = "", val receipt: AttemptReceipt? = null,
+    val activation: ActivationReply? = null)

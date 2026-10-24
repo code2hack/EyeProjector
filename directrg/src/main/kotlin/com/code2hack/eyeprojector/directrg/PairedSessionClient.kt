@@ -18,6 +18,7 @@ internal class PairedSessionClient(
         pairedControl(directory, request, opened)
     },
     private val deliver: (() -> Unit) -> Unit = { it() },
+    private val feature: ReceiverActivationStore? = null,
 ) : Closeable {
     private val executor = Executors.newSingleThreadScheduledExecutor()
     private val closed = AtomicBoolean()
@@ -31,6 +32,8 @@ internal class PairedSessionClient(
     private val canceledOwners = mutableSetOf<String>()
     private var observedActiveEpoch: String? = null
     private var connectWanted = false
+    private data class FeatureCompletion(val trigger: String?, val activation: String?, val complete: () -> Unit)
+    private val featureCompletions = mutableListOf<FeatureCompletion>()
 
     fun start() { executor.scheduleWithFixedDelay(::poll, 0, 1, TimeUnit.SECONDS) }
 
@@ -44,7 +47,19 @@ internal class PairedSessionClient(
         }
     }
 
+    fun launch(scope: ReceiverLaunchScope) {
+        synchronized(lock) {
+            if (closed.get()) return
+            val attempt = admission ?: Attempt().also { admission = it }
+            feature?.launch(scope, attempt.id)
+            if (feature == null) connectWanted = true
+            executor.execute(::poll)
+        }
+    }
+    fun presentationChanged() { synchronized(lock) { if (!closed.get()) executor.execute(::poll) } }
+
     private fun poll() {
+        try { feature?.startIncarnation() } catch (_: Exception) { deliver(onUnavailable); return }
         val generation = synchronized(lock) { commandGeneration }
         reconcile()
         val attempt = synchronized(lock) {
@@ -67,11 +82,40 @@ internal class PairedSessionClient(
     }
 
     private fun reconcile() {
+        feature?.pendingTriggers()?.forEach { t ->
+            exchange(SessionControl.Request(SessionControl.Operation.STATUS,
+                cancelTrigger = CancelTrigger(t.scope.trigger, t.admission)), notify = false)
+        }
+        feature?.state?.pendingCancel?.toList()?.forEach { h ->
+            exchange(SessionControl.Request(SessionControl.Operation.STATUS, cancelActivation = CancelActivation(h)), notify = false)
+        }
+        val completed = synchronized(lock) {
+            featureCompletions.filter { c ->
+                (c.trigger == null || feature?.state?.triggers?.get(c.trigger)?.acknowledged == true) &&
+                    (c.activation == null || c.activation !in feature?.state?.pendingCancel.orEmpty())
+            }.also { featureCompletions.removeAll(it.toSet()) }
+        }
+        completed.forEach { it.complete() }
         val attempts = synchronized(lock) { canceling.values.toList() }
         attempts.forEach { attempt -> exchange(SessionControl.Request.cancelStart(attempt.baseline, attempt.id), notify = false) }
     }
 
-    fun disconnect(epoch: String?, complete: (() -> Unit)? = null): List<String> {
+    fun disconnect(epoch: String?, complete: (() -> Unit)? = null, scope: ReceiverLaunchScope? = feature?.currentScope(),
+        activationId: String? = feature?.directive?.activationId): List<String> {
+        if (feature != null) {
+            // Persist original T/H before closing transport or releasing media, including first-reply loss.
+            val current = feature.cancellationTargetsCurrent(scope, activationId)
+            feature.cancel(scope, activationId, synchronized(lock) { admission?.id.orEmpty() })
+            synchronized(lock) {
+                if (current) {
+                    commandGeneration++; connectWanted = false; runCatching { active?.close() }; admission = null
+                    listOfNotNull(epoch, observedActiveEpoch).forEach(canceledOwners::add)
+                }
+                complete?.let { featureCompletions.add(FeatureCompletion(scope?.trigger, activationId, it)) }
+                if (!closed.get()) executor.execute { reconcile() }
+            }
+            return listOfNotNull(epoch)
+        }
         val targets = synchronized(lock) {
             commandGeneration++
             connectWanted = false
@@ -106,10 +150,14 @@ internal class PairedSessionClient(
 
     private fun exchange(request: SessionControl.Request, notify: Boolean = true): SessionState? {
         if (closed.get()) return null
+        val actualRequest = if (feature == null) request else request.copy(incarnation = feature.incarnation,
+            intent = if (request.operation in setOf(SessionControl.Operation.STATUS, SessionControl.Operation.START) &&
+                request.cancelTrigger == null && request.cancelActivation == null) feature.intent() else null,
+            presentation = feature.presentation)
         val generation = synchronized(lock) { commandGeneration }
         val observation = controlObservation(request.operation)
         return try {
-            val state = observedTransport(transport, request, { socket ->
+            val state = observedTransport(transport, actualRequest, { socket ->
                 synchronized(lock) {
                     if (closed.get()) { socket.close(); error("Receiver stopped") }
                     active = socket
@@ -133,8 +181,9 @@ internal class PairedSessionClient(
                     true
                 }
             }
+            if (current) feature?.accept(state.activation)
             // A STOP reply describes reconciliation; it cannot grant attachment to any owner.
-            if (current && (state.receipt?.disposition == AttemptDisposition.RETRYABLE || state.detail == "SESSION_CONTROL_STATE_UNAVAILABLE"))
+            if (current && (state.receipt?.disposition == AttemptDisposition.RETRYABLE || state.detail in setOf("SESSION_CONTROL_STATE_UNAVAILABLE", "ACTIVATION_STORAGE_PENDING")))
                 dispatch(generation, onUnavailable, observation)
             else if (notify && current && request.operation != SessionControl.Operation.STOP) dispatch(generation, {
                 val attachable = synchronized(lock) {
@@ -149,7 +198,7 @@ internal class PairedSessionClient(
             state
         } catch (error: Exception) {
             controlTelemetry { if (observation?.failure !== error) observation?.clientFailure = error }
-            dispatch(generation, onUnavailable, observation)
+            if (notify || feature == null) dispatch(generation, onUnavailable, observation)
             null
         } finally {
             synchronized(lock) { active = null }
@@ -236,7 +285,7 @@ private fun observedTransport(
                 observation?.phase = state.phase
                 observation?.receipt = state.receipt?.disposition
                 observation?.retryable = state.receipt?.disposition == AttemptDisposition.RETRYABLE
-                observation?.stateUnavailable = state.detail == "SESSION_CONTROL_STATE_UNAVAILABLE"
+                observation?.stateUnavailable = state.detail in setOf("SESSION_CONTROL_STATE_UNAVAILABLE", "ACTIVATION_STORAGE_PENDING")
                 observation?.outcome = "RETURNED_STATE"
             } else if (observation?.outcome != "NO_REMEMBERED_PEER") observation?.outcome = "NULL_RESULT"
         } }
