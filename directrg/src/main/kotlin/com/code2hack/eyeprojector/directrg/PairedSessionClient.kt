@@ -9,7 +9,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** One resumed Receiver owns its admission, including a STATUS reply not yet delivered to the UI. */
+/** One retained Receiver lifetime owns admission, including STATUS replies awaiting delivery. */
 internal class PairedSessionClient(
     private val directory: File,
     private val onState: (SessionState) -> Unit,
@@ -111,7 +111,7 @@ internal class PairedSessionClient(
         return try {
             val state = observedTransport(transport, request, { socket ->
                 synchronized(lock) {
-                    if (closed.get()) { socket.close(); error("Receiver paused") }
+                    if (closed.get()) { socket.close(); error("Receiver stopped") }
                     active = socket
                 }
             }, observation) ?: return null

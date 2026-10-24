@@ -57,11 +57,27 @@ class ProjectionSession(
     @Volatile private var socket: SSLSocket? = null
     @Volatile private var output: DataOutputStream? = null
     @Volatile private var decoder: SurfaceDecoder? = null
-    private var decoderEpoch: Any? = null
+    @Volatile private var decoderEpoch: Any? = null
     private var droppedVideo = 0L
     @Volatile var geometry: Geometry? = null
         private set
-    private val readyForTouch get() = videoReadiness.ready
+    private var pointerSequence = 0L
+    private var lastHeadPointer: HeadPointerState? = null
+    @Volatile private var presentationActive = true
+    private val readyForTouch get() = presentationActive && videoReadiness.ready
+
+    /** Rendering visibility is independent of authenticated transport and offscreen decoding. */
+    fun presentation(active: Boolean) = synchronized(inputLock) {
+        presentationActive = active
+        if (!active) {
+            cancelPendingInput()
+            lastHeadPointer?.let {
+                val unavailable = it.copy(available = false, sequence = ++pointerSequence)
+                lastHeadPointer = unavailable
+                headPointer.publish(unavailable, 0)
+            }
+        }
+    }
     @Volatile var scaleState: ScaleState? = null
         private set
     private val started = System.nanoTime()
@@ -88,7 +104,8 @@ class ProjectionSession(
             .put("renderedFps", if (seconds > 0) rendered / seconds else 0).put("touchesSent", touches)
             .put("heldTouchFramesWritten", heldTouchFrames).put("scrollsSent", scrolls).put("navigationsSent", navigations)
             .put("packetReadToCallbackP95Ms", p95(renderDelayMs)).put("networkRoundTripP95Ms", p95(roundTripMs))
-            .put("latencyScope", "RG System.nanoTime packet-read to render-callback receipt; network echo RTT; no optical/input end-to-end claim")
+            .put("latencyScope", "Receiver packet-read to decoder Surface callback receipt; network echo RTT; window presentation and optical/input timing are separate")
+            .put("presentationActive", presentationActive)
             .put("maxEncodedPacketBytes", Wire.MAX_PAYLOAD).put("maxInflightFrames", 16)
         stats.put("videoLateDrops", droppedVideo)
             .put("videoTiming", "Video PTS relative to first frame receipt in each decoder stream; Receiver monotonic clock")
@@ -267,7 +284,9 @@ class ProjectionSession(
                         }
                         if (running.get() && videoReadiness.rendered(epoch)) state("STREAMING", epoch)
                     }, { name -> synchronized(this) { stats.put("decoder", name) } },
-                        { format -> synchronized(this) { stats.put("decoderFormat", format) } }, { error -> failure(error); closeWithState("DECODE_FAILED") },
+                        { format -> if (decoderEpoch === epoch) synchronized(this) { stats.put("decoderFormat", format) } }, { error ->
+                            if (videoReadiness.claimFailure(epoch)) { failure(error); closeWithState("DECODE_FAILED") }
+                        },
                         dropped = { synchronized(this) { droppedVideo++ } })
                     val installed = synchronized(lifecycleLock) {
                         if (running.get() && decoderEpoch === epoch) { decoder = next; true } else false
@@ -310,8 +329,12 @@ class ProjectionSession(
         heldTouch.cancel(0)
     }
     fun cancelHeadScroll() = controls.cancelPending("head-scroll")
-    fun headPointer(state: HeadPointerState, sourceExpiresAtNs: Long): Boolean =
-        if (running.get() && geometry != null) headPointer.publish(state, sourceExpiresAtNs) else false
+    fun headPointer(state: HeadPointerState, sourceExpiresAtNs: Long): Boolean = synchronized(inputLock) {
+        if (!running.get() || geometry == null) return false
+        val current = state.copy(sequence = ++pointerSequence, available = state.available && presentationActive)
+        lastHeadPointer = current
+        headPointer.publish(current, sourceExpiresAtNs)
+    }
 
     private fun input(channel: Int, size: Geometry, payload: ByteArray, eventTimeMs: Long, category: String = "input"): Boolean {
         if (!running.get() || !readyForTouch || size != geometry) {

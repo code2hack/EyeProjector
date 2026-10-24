@@ -148,6 +148,8 @@ internal class ExtractedHidIngress(val root: TargetRoot) {
     private val confirmTap = Runnable {}
     private val edgeTick = Runnable {}
     private var edgeScheduled = false
+    private class RetainedRevision { private var revision = 0L; fun advanceInputRevision() = ++revision }
+    private val owner: RetainedRevision? = RetainedRevision()
     private var inputGeneration = 0L
     private var nativeActionsSubmitted = 0L
     private var nativeActionsRejected = 0L

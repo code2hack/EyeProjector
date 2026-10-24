@@ -24,6 +24,7 @@ abstract class BroadcastReceiver {
     abstract fun onReceive(context: Context, intent: Intent)
 }
 class Intent(val action: String) {
+    constructor(context: Context, target: Class<*>) : this(target.name)
     var flags = 0
     val categories = mutableSetOf<String>()
     fun addCategory(value: String) = apply { categories.add(value) }
