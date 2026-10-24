@@ -12,6 +12,8 @@ import android.view.ViewGroup
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.GridLayout
 import com.code2hack.eyeprojector.directhost.apps.*
+import com.code2hack.eyeprojector.directhost.notifications.AppNotificationPreferences
+import com.code2hack.eyeprojector.directhost.scale.AppScalePreferences
 
 /** Platform-only Phone UI driver. Selection fixtures use a separate test-only private preference file. */
 class ChosenAppsInstrumentation : Instrumentation() {
@@ -44,13 +46,22 @@ class ChosenAppsInstrumentation : Instrumentation() {
                     store.read().forEach { store.remove(it.packageName) }
                     store.add(InstalledApp("example.restart.one", "Restart One"))
                     store.add(InstalledApp("example.restart.two", "Restart Two"))
+                    val notifications = AppNotificationPreferences.open(fixtureContext)
+                    notifications.setEnabled("example.restart.one", false)
+                    notifications.setEnabled("example.restart.two", true)
                     // Synchronous barrier for the process-death test, on the fixture preference file only.
                     check(fixtureContext.getSharedPreferences("chosen_projection_apps", 0).edit().commit())
+                    check(fixtureContext.getSharedPreferences("projection_app_notifications", 0).edit().commit())
                 }
                 "persist-read" -> {
                     check(ChosenApps.open(fixtureContext).read() == listOf(
                         ChosenApp("example.restart.one", "Restart One"), ChosenApp("example.restart.two", "Restart Two"),
                     ))
+                    val notifications = AppNotificationPreferences.open(fixtureContext)
+                    check(!notifications.isEnabled("example.restart.one"))
+                    check(notifications.isEnabled("example.restart.two"))
+                    val saved = fixtureContext.getSharedPreferences("projection_app_notifications", 0)
+                    check(saved.contains("example.restart.one") && saved.contains("example.restart.two"))
                 }
                 else -> error("Unknown test operation")
             }
@@ -66,6 +77,11 @@ class ChosenAppsInstrumentation : Instrumentation() {
     private fun testUi() {
         val store = ChosenApps.open(fixtureContext)
         store.read().forEach { store.remove(it.packageName) }
+        check(fixtureContext.getSharedPreferences("projection_app_notifications", 0).edit().clear().commit())
+        val notifications = AppNotificationPreferences.open(fixtureContext)
+        val scales = AppScalePreferences.open(fixtureContext)
+        check(scales.write("example.ui.alpha", 1.5))
+        check(scales.write("example.ui.beta", .75))
         val catalog = object : AppCatalog {
             var available = listOf(InstalledApp("example.ui.alpha", "Alpha"), InstalledApp("example.ui.beta", "Beta"))
             var invisiblePackages = emptySet<String>()
@@ -117,6 +133,19 @@ class ChosenAppsInstrumentation : Instrumentation() {
             check(store.read().size == 2)
             // Rebuild the consumer from persisted state; + stays first and order is retained.
             replacePanel()
+            // No connected callbacks: notifications remain editable and package choices are independent.
+            runOnMainSync { panel.findViewWithTag<View>("example.ui.alpha").performLongClick() }
+            clickText("Glasses notifications: On")
+            waitForIdleSync()
+            check(!notifications.isEnabled("example.ui.alpha"))
+            check(notifications.isEnabled("example.ui.beta"))
+            replacePanel()
+            runOnMainSync { panel.findViewWithTag<View>("example.ui.alpha").performLongClick() }
+            clickText("Glasses notifications: Off")
+            waitForIdleSync()
+            check(AppNotificationPreferences.open(fixtureContext).isEnabled("example.ui.alpha"))
+            check(scales.read("example.ui.alpha") == 1.5 && scales.read("example.ui.beta") == .75)
+            check(store.read().map { it.packageName } == listOf("example.ui.alpha", "example.ui.beta"))
             runOnMainSync {
                 check((0 until grid(panel).childCount).map { grid(panel).getChildAt(it).tag } ==
                     listOf(ChosenAppsPanel.ADD_TAG, "example.ui.alpha", "example.ui.beta"))
