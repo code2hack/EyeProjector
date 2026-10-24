@@ -1,0 +1,14 @@
+{
+  "repository": "https://android.googlesource.com/platform/frameworks/av",
+  "commit": "4b2111885ff934799e70eddae2527a9848c3be29",
+  "sourceRoot": "services/camera/virtualcamera/aidl",
+  "files": {
+    "android/companion/virtualcamera/Format.aidl": "b49de35df97b4c188ce7157f030574f7616293798b7a933226554d394715c4e4",
+    "android/companion/virtualcamera/IVirtualCameraCallback.aidl": "d8a13d57463f9d9fea1b8f1366b3eebfea850e8387747e9c991365cbb4c38dfc",
+    "android/companion/virtualcamera/IVirtualCameraService.aidl": "ec22bf6caec538dadc3bf8755421517f8a800e28c97e98b7896a0a54db67d4fc",
+    "android/companion/virtualcamera/LensFacing.aidl": "f15c637f42431a15140efd82648ffc102335a890c57f6043404f121355334c72",
+    "android/companion/virtualcamera/SensorOrientation.aidl": "91ba7f89d6a7423eef558f36f390aaaffbc23c37c7f6d23f5e77304aa17de4f4",
+    "android/companion/virtualcamera/SupportedStreamConfiguration.aidl": "a2eb8c1a62d18c30ac347d347a18d94a6152c38968bbadc3792c410a12cba2a3",
+    "android/companion/virtualcamera/VirtualCameraConfiguration.aidl": "fd55917c74007ac535946de401e946f9c78388c4ceaac98ffdc2e654ffcdd4dd"
+  }
+}
