@@ -28,8 +28,9 @@ internal class PanelFixture(val ownerEpoch: String = "owner-1") : AutoCloseable 
     val cancelEntered = CountDownLatch(1)
     val restoreEntered = CountDownLatch(1)
     private val type = Class.forName("com.code2hack.eyeprojector.directhost.Session")
+    val peer = Peer { events.add("peer-close") }
     val session: Any = type.declaredConstructors.single().apply { isAccessible = true }.newInstance(
-        Peer { events.add("peer-close") }, DataInputStream(ByteArrayInputStream(byteArrayOf())),
+        peer, DataInputStream(ByteArrayInputStream(byteArrayOf())),
         directory, directory.resolve("unused.jar"), timer, ownerEpoch, {} as () -> Unit)
     val output = object : OutputStream() {
         override fun write(value: Int) = error("Expected whole stock messages")
@@ -77,6 +78,10 @@ internal class PanelFixture(val ownerEpoch: String = "owner-1") : AutoCloseable 
         blockRestore?.countDown()
         close(SessionStopReason.OWNER_CLOSE)
         timer.shutdownNow()
+        // Fixture cleanup only; production Stop/deadlines never wait for native setup.
+        (runCatching { field("nativeSetup") as ExecutorService }.getOrNull())?.let {
+            check(it.awaitTermination(3, TimeUnit.SECONDS)) { "Owned native setup fixture did not retire" }
+        }
         directory.deleteRecursively()
     }
 }
@@ -94,7 +99,8 @@ internal class Child(private val events: MutableList<String>) : java.lang.Proces
 }
 
 internal class Peer(private val onClose: () -> Unit) : SSLSocket() {
-    override fun getOutputStream() = ByteArrayOutputStream()
+    val sink = ByteArrayOutputStream()
+    override fun getOutputStream() = sink
     override fun getLocalAddress(): InetAddress = InetAddress.getLoopbackAddress()
     override fun getInetAddress(): InetAddress = InetAddress.getLoopbackAddress()
     override fun getSession(): SSLSession = Proxy.newProxyInstance(SSLSession::class.java.classLoader, arrayOf(SSLSession::class.java)) { _, method, _ ->

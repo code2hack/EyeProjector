@@ -19,6 +19,7 @@ private fun eventually(predicate: () -> Boolean) {
 
 fun main() {
     receiverUsabilityScenarios()
+    nativeTransportBackendScenarios()
     var passed = 0
     for (reason in listOf(SessionStopReason.HOST_STOP, SessionStopReason.CONTROL_END, SessionStopReason.VIDEO_IO)) {
         PanelFixture().use { f ->

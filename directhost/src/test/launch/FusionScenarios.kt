@@ -18,9 +18,16 @@ internal fun Fixture.receive(frame: Frame) {
     type.getDeclaredMethod("receiveControl", Frame::class.java).apply { isAccessible = true }.invoke(session, actual)
 }
 
-internal fun Fixture.pointer(projected: Boolean = true, revision: Long = 1, sequence: Long = 1) =
+internal fun Fixture.pointer(projected: Boolean = true, revision: Long = 1, sequence: Long = 1) {
+    // Matched Receiver producer: explicit source authority precedes its pointer record.
+    val original=(session as CapturedProjection).receiverUsability().fact
+    val mode=if(projected) ReceiverUsabilityMode.PROJECTED else ReceiverUsabilityMode.LOCAL_PANEL
+    if(original==null || original.mode!=mode || original.inputRevision!=revision)
+        receive(Frame(Wire.RECEIVER_USABILITY,payload=ReceiverUsability(ownerEpoch,
+            original?.incarnation ?: ReceiverIncarnation("launch-fixture",1),(original?.revision ?: 0)+1,revision,mode).bytes()))
     receive(Frame(Wire.HEAD_POINTER, payload = HeadPointerState(revision, sequence, true, projected,
         120f, 230f, Fit(20, 30, 480, 640), Geometry(480, 640)).bytes()))
+}
 
 internal fun Fixture.hid(id: Long, edge: PhoneHidEdge) = (session as CapturedProjection).phoneHidEdge(id, edge)
 

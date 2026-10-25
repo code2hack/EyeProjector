@@ -65,7 +65,7 @@ if args.composed:
                 target.write_text(content)
                 sources[index] = target
 elif args.panel:
-    sources = sorted((suite.parent / 'panel/doubles').glob('*.kt')) + [suite.parent / 'panel/PanelScenarios.kt', suite.parent / 'panel/PanelFixtures.kt', suite.parent / 'panel/UsabilityScenarios.kt', suite / 'doubles/AtomicFile.kt']
+    sources = sorted((suite.parent / 'panel/doubles').glob('*.kt')) + [suite.parent / 'panel/PanelScenarios.kt', suite.parent / 'panel/PanelFixtures.kt', suite.parent / 'panel/UsabilityScenarios.kt', suite.parent / 'panel/NativeTransportScenarios.kt', suite / 'doubles/AtomicFile.kt']
     sources += [actual / name for name in ('ShellMain.kt', 'PanelPower.kt', 'PhoneTouchDispatcher.kt', 'HeldInputRelease.kt', 'OwnedRelease.kt', 'LiveScale.kt', 'ProjectionContext.kt', 'ProjectionDisplayState.kt', 'ProjectedAppLaunch.kt', 'PlatformProjectionLaunch.kt')]
 else:
     sources = sorted((suite / 'doubles').glob('*.kt')) + [suite / 'Scenarios.kt', suite / 'HomeContextScenarios.kt']
@@ -80,6 +80,11 @@ if not args.panel and (actual / 'LaunchOperationDiagnostics.kt').exists():
     if args.composed:
         sources += [suite / 'doubles/Log.kt']
 sources += [protocol / name for name in ('Wire.kt', 'PhoneInput.kt', 'LayoutScale.kt', 'Touch.kt', 'ActivationControl.kt', 'ReceiverUsability.kt')]
+sources += [actual/'activation/snapshot'/n for n in ['NativeSnapshotRegion.kt','SnapshotWord.kt']]
+if not args.panel:
+    sources += [actual/'activation/snapshot/PhoneHidSnapshotLease.kt']
+    sources += [actual/'activation'/n for n in ['ActivationContextAuthority.kt','PhoneActivationOwner.kt','PhoneHidActivation.kt','PhoneHidDisposition.kt','HidWakeRequest.kt']]
+sources += sorted((suite.parent/'snapshot/transport/doubles').glob('*.kt'))
 # Retain exact compiler inputs even for preparation failures and later test corrections.
 archive = output / 'compiled-sources'
 archive.mkdir(exist_ok=True)
@@ -94,6 +99,7 @@ compile_command = [java, '-cp', classpath, 'org.jetbrains.kotlin.cli.jvm.K2JVMCo
 with (output / 'compile.log').open('w') as log:
     compiled = subprocess.run(compile_command, stdout=log, stderr=subprocess.STDOUT, timeout=120)
 if compiled.returncode:
+    (output / 'result.json').write_text(json.dumps({'compileExit':compiled.returncode,'scenariosExit':None,'scope':'Actual source compiler closure failed; no execution proof','sources':[{'path':str(p),'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in sources]},indent=2)+'\n')
     print((output / 'compile.log').read_text())
     sys.exit(compiled.returncode)
 with (output / 'scenarios.log').open('w') as log:

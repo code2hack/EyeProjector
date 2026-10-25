@@ -26,6 +26,19 @@ private fun equal(expected: Any?, actual: Any?, reason: String) {
     check(expected == actual) { "$reason: expected <$expected>, actual <$actual>" }
 }
 
+/** Explicit ready local port keeps isolated controller/lifecycle tests independent of absent native setup. */
+private fun routedRuntime():PhoneHidRuntime {
+ val runtime=PhoneHidRuntime.get(Context())
+ runtime.controller.activation=object:PhoneHidActivation {
+  override fun needsWake()=false
+  override fun request(cause:ActivationCause)=Unit
+  override fun capture()=PhoneHidCapture(PhoneHidDisposition.USABLE,
+   HidWakeRequest(PhoneHidDisposition.USABLE,PhoneSessionController.fixture.captureHidAuthority()),
+   PhoneSessionController.fixture::capturePhoneHidRoute)
+ }
+ return runtime
+}
+
 private val peripheral = InputDevice(41, "phone-fixture:descriptor", 0x1209, 0x0017, "External Phone fixture")
 private fun binding(device: InputDevice = peripheral, key: Int = 195, scan: Int = 700) = PhoneHidBinding(
     PhoneHidButton(PhoneHidDeviceIdentity(device.descriptor, device.vendorId, device.productId), key, scan),
@@ -223,7 +236,7 @@ private fun rows(panel: PhoneHidPanel) = panel.children.filterIsInstance<Button>
 private fun text(panel: PhoneHidPanel) = panel.children.filterIsInstance<TextView>().map { it.text.toString() }
 
 private fun actualPanelServiceAndAsyncPersistenceRetainStickySelectionAndSingleDownRoutes() {
-    val context = Context(); val runtime = PhoneHidRuntime.get(context); val input = runtime.controller
+    val context = Context(); val runtime = routedRuntime(); val input = runtime.controller
     val service = PhoneHidKeyService(); service.onServiceConnected()
     val panel = PhoneHidPanel(context, runtime) {}; panel.open()
     try {
@@ -291,7 +304,7 @@ private fun actualPanelServiceAndAsyncPersistenceRetainStickySelectionAndSingleD
 }
 
 private fun actualServiceCorrelatesChangedMissingAndRetiredReleasesBeforeMetadata() {
-    val runtime = PhoneHidRuntime.get(Context()); val input = runtime.controller
+    val runtime = routedRuntime(); val input = runtime.controller
     input.closePage(); check(input.bindings.assign(PhoneHidAction.TAP, binding()))
     val service = PhoneHidKeyService(); service.onServiceConnected()
     try {
@@ -316,7 +329,7 @@ private fun actualServiceCorrelatesChangedMissingAndRetiredReleasesBeforeMetadat
 }
 
 private fun actualNativeExclusionUnknownKeysAndUnavailableTargetsNeverReplay() {
-    val runtime = PhoneHidRuntime.get(Context()); val input = runtime.controller
+    val runtime = routedRuntime(); val input = runtime.controller
     input.closePage(); input.cancelInput(); check(input.bindings.assign(PhoneHidAction.TAP, binding()))
     val service = PhoneHidKeyService(); service.onServiceConnected()
     try {
@@ -394,7 +407,7 @@ private fun actualSettingsObservationResetFailureAndLifecycleAreTruthful() {
 }
 
 private fun ordinaryHostStopDoesNotCancelOperationalHidAndInterruptRetiresOldOwner() {
-    val runtime = PhoneHidRuntime.get(Context()); val input = runtime.controller
+    val runtime = routedRuntime(); val input = runtime.controller
     input.closePage(); check(input.bindings.assign(PhoneHidAction.TAP, binding()))
     val host = ExtractedHostHid(); val service = PhoneHidKeyService(); service.onServiceConnected()
     try {
@@ -448,7 +461,7 @@ private fun releasedFunctionCallerRouteRetiresAtEveryExplicitBoundary() {
 }
 
 private fun actualServiceFunctionSequenceKeepsOnlyLatestReleasedCallerRoute() {
-    val runtime = PhoneHidRuntime.get(Context()); val input = runtime.controller
+    val runtime = routedRuntime(); val input = runtime.controller
     input.closePage(); input.cancelInput()
     check(input.bindings.assign(PhoneHidAction.FUNCTION, binding(key = 198, scan = 798)))
     val service = PhoneHidKeyService(); service.onServiceConnected()
@@ -556,7 +569,7 @@ private fun passedThroughHoldSurvivesUiAndDeviceTransitionsWithoutLearning() {
         check(PhoneHidAction.entries.all { r.bindings.binding(it) == null })
         equal(if (boundary == "reset") 1 else 0, r.writes.size, "only explicit reset may write")
     }
-    val runtime = PhoneHidRuntime.get(Context()); val input = runtime.controller
+    val runtime = routedRuntime(); val input = runtime.controller
     val service = PhoneHidKeyService(); service.onServiceConnected()
     try {
         for ((index, transition) in listOf("changed", "removed", "missing").withIndex()) {
@@ -618,7 +631,7 @@ fun main() {
             catch (failure: Throwable) { failures.add(name); System.err.println("FAIL: $name"); failure.printStackTrace() }
         }
     } finally {
-        val runtime = PhoneHidRuntime.get(Context())
+        val runtime = routedRuntime()
         val writer = runtime.javaClass.getDeclaredField("writer").apply { isAccessible = true }.get(runtime) as ExecutorService
         writer.shutdownNow(); writer.awaitTermination(2, TimeUnit.SECONDS); MainQueue.drain()
     }
@@ -718,7 +731,7 @@ private fun wakeDuringStickyLearningPreservesConfigurationAndPassedGestures() {
 }
 
 private fun actualServiceAttachmentAndWakeUseTheExplicitLocalPort() {
-    val runtime = PhoneHidRuntime.get(Context()); val input = runtime.controller
+    val runtime = routedRuntime(); val input = runtime.controller
     val service = PhoneHidKeyService(); val port = WakePort()
     input.closePage(); input.cancelInput(); input.activation = port
     service.onServiceConnected()

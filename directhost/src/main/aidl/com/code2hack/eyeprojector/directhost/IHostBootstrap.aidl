@@ -1,4 +1,5 @@
 package com.code2hack.eyeprojector.directhost;
+import com.code2hack.eyeprojector.directhost.activation.snapshot.NativeSnapshotDescriptor;
 
 // Only EyeProjector operations. No command, executable or caller-chosen path API.
 interface IHostBootstrap {
@@ -12,5 +13,7 @@ interface IHostBootstrap {
     byte[] launchApp(long requestId, String packageName, String expectedOwnerEpoch, String expectedProjectionToken) = 7;
     byte[] projectionDisplayState(String expectedOwnerEpoch, String expectedProjectionToken) = 8;
     oneway void phoneHidEdge(long routeId, in byte[] typedEdge, String expectedOwnerEpoch, String expectedProjectionToken) = 9;
+    @nullable NativeSnapshotDescriptor phoneHidSnapshot(String expectedOwnerEpoch, String expectedProjectionToken) = 10;
+    oneway void phoneHidStampedEdge(long routeId, in byte[] typedEdge, String expectedOwnerEpoch, String expectedProjectionToken, String regionId, long word) = 11;
     void destroy() = 16777114;
 }

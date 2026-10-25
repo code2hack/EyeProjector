@@ -112,10 +112,12 @@ def main():
     production = root / 'directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost'
     actual = [production / 'hid' / name for name in (
         'PhoneHidBindings.kt', 'PhoneHidController.kt', 'PhoneHidRuntime.kt', 'PhoneHidKeyService.kt', 'PhoneHidPanel.kt')]
-    actual += [production / 'activation' / name for name in ('PhoneActivationOwner.kt', 'PhoneHidActivation.kt')]
+    actual += [production / 'activation' / name for name in ('PhoneActivationOwner.kt','PhoneHidActivation.kt','PhoneHidDisposition.kt','HidWakeRequest.kt')]
+    actual += [production/'activation/snapshot'/n for n in ['NativeSnapshotRegion.kt','SnapshotWord.kt','PhoneHidSnapshotLease.kt']]
     fixture = sorted((suite / 'doubles').glob('*.kt')) + [suite / 'Scenarios.kt',
         root / 'directhost/src/test/activation/ActivationScenarios.kt',
         root / 'directhost/src/test/kotlin/com/code2hack/eyeprojector/directhost/hid/PhoneHidBindingsTest.kt']
+    fixture += sorted((suite.parent/'snapshot/transport/doubles').glob('*.kt'))
     extraction = [production / 'HostActivity.kt']
     metadata = [suite / 'run.py', suite / 'README.md', root / 'directhost/src/main/AndroidManifest.xml',
                 root / 'directhost/src/main/res/xml/phone_hid_accessibility.xml',

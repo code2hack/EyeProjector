@@ -23,6 +23,7 @@ internal class Fixture:AutoCloseable {
  val lane:ScheduledExecutorService
  val hostLane:ScheduledExecutorService
  private var reportRevision=0L
+ private var nativeSlot:SessionUsability?=null
  val inc=ReceiverIncarnation("producer-receiver",1)
  init {
   Shizuku.reset();Shizuku.peekService=service;Shizuku.peekVersion=123
@@ -47,6 +48,15 @@ internal class Fixture:AutoCloseable {
   return request(SessionControl.Request(SessionControl.Operation.STATUS,incarnation=inc,
    presentation=PresentationReport(d.activationId,d.ownerEpoch,d.wakeRevision,inc,++reportRevision,mode)))
  }
+ fun nativeLocal(runtime:com.code2hack.eyeprojector.directhost.hid.PhoneHidRuntime) {
+  val slot=SessionUsability(service.context);slot.prepareRegion()
+  slot.publish(ReceiverUsability(service.sessionEpoch,inc,1,1,ReceiverUsabilityMode.LOCAL_PANEL))
+  nativeSlot=slot;service.snapshotProvider=slot::descriptor
+  nativeAwaitReady(runtime)
+ }
+ fun nativeAwaitReady(runtime:com.code2hack.eyeprojector.directhost.hid.PhoneHidRuntime) {
+  await("actual original reader installed") {runtime.controller.activation.capture().disposition==PhoneHidDisposition.USABLE}
+ }
  fun ready():ActivationReady<ProjectionContext> {
   val h=sessions.requestActivation(ActivationCause.NOTIFICATION)
   lane.submit{}.get(2,TimeUnit.SECONDS)
@@ -56,6 +66,7 @@ internal class Fixture:AutoCloseable {
   return checkNotNull(ready){"Original projected D did not become Ready: ${sessions.state()}"}
  }
  override fun close(){
+  nativeSlot?.closeResources()
   AtomicFile.beforeStart=null;service.statusGate?.countDown();service.stopGate?.countDown()
   @Suppress("UNCHECKED_CAST")
   (field(bootstrap,"observers").get(bootstrap) as MutableSet<(HostBootstrap.Status)->Unit>).clear()
@@ -69,6 +80,8 @@ internal class Fixture:AutoCloseable {
 }
 fun main(){
  inputAuthorityRegression()
+ requestMerge57Scenarios()
+ if (System.getProperty("eyeprojector.transport")=="true") Class.forName("com.code2hack.eyeprojector.directhost.activation.producer.TransportScenariosKt").getMethod("transportFrontendScenarios").invoke(null)
  Fixture().use{f->
   val ready=f.ready();check(f.sessions.tryCommitActivationReady(ready,LaunchCommitPermit()))
   f.bootstrap.stop()

@@ -279,6 +279,10 @@ private class Session(
     private val projectionToken = UUID.randomUUID().toString()
     private val context = ProjectionContext(ownerEpoch, projectionToken)
     private val receiverUsability = SessionUsability(context)
+    private val preparingHidRegion = AtomicBoolean()
+    private val nativeResourcesClosing = AtomicBoolean()
+    // Resource work only. JNI/map/FD cleanup never occupies Function/startup/write deadlines.
+    private val nativeSetup = Executors.newSingleThreadExecutor { task -> Thread(task, "eyeprojector-native-setup") }
     val panelContext = PanelContext(context.ownerEpoch, context.projectionToken)
     @Volatile private var lastScaleReportAttempt: ScaleState? = null
     private val scale = LiveScale(
@@ -366,6 +370,48 @@ private class Session(
         try { if (running.get()) phoneInput.edge(routeId, edge) }
         catch (error: Exception) { close(sessionFailureReason(error, control = true)) }
     }
+    override fun phoneHidSnapshot(): com.code2hack.eyeprojector.directhost.activation.snapshot.NativeSnapshotDescriptor? {
+        if (running.get() && receiverUsability.needsRegion()) prepareHidRegionAsync()
+        return receiverUsability.descriptor()
+    }
+    override fun phoneHidStampedEdge(routeId: Long, edge: PhoneHidEdge, regionId: String, word: Long) {
+        try {
+            if (running.get()) phoneInput.stampedEdge(routeId, edge) { point, source ->
+                receiverUsability.accepts(regionId, word, point, source)
+            }
+        } catch (error: Exception) { close(sessionFailureReason(error, control = true)) }
+    }
+    private fun prepareHidRegion() {
+        // Normal producer is package-loaded ShizukuHostService(Context) -> inline Bridge -> Session.
+        // Standalone app_process loading is not assumed to have the APK native-library route.
+        try { if (running.get()) receiverUsability.prepareRegion() }
+        catch (_: LinkageError) { /* Unestablished descriptor remains UNKNOWN; never forge NONE. */ }
+        catch (_: Exception) { /* A later original setup request can retry without another key. */ }
+        finally { receiverUsability.closeRetiredRegions() }
+    }
+    private fun prepareHidRegionAsync() {
+        if (nativeResourcesClosing.get()) return
+        if (!preparingHidRegion.compareAndSet(false, true)) return
+        try { nativeSetup.execute { try { prepareHidRegion() } finally { preparingHidRegion.set(false) } } }
+        catch (_: java.util.concurrent.RejectedExecutionException) { preparingHidRegion.set(false) }
+    }
+    private fun beginStartup(): java.util.concurrent.ScheduledFuture<*> {
+        val deadline = timer.schedule({ close(SessionStopReason.STARTUP_DEADLINE) }, 8, TimeUnit.SECONDS)
+        prepareHidRegionAsync()
+        return deadline
+    }
+    private fun checkWriteDeadline() {
+        val since = writeStarted.get()
+        if (since != 0L && System.nanoTime() - since > 2_000_000_000L) close(SessionStopReason.WRITE_DEADLINE)
+    }
+    private fun retireNativeResources() {
+        receiverUsability.retire()
+        if (nativeResourcesClosing.compareAndSet(false, true)) {
+            // No wait/join, including when an original load/map/descriptor operation is blocked.
+            nativeSetup.execute { receiverUsability.closeResources() }
+            nativeSetup.shutdown()
+        }
+    }
 
     fun requestPanelOff(id: Long): PanelPowerState {
         val result = panelPower.requestOff(id)
@@ -402,7 +448,7 @@ private class Session(
             check(running.get())
             LocalServerSocket(socketName).also { localListener = it }
         }
-        val startup = timer.schedule({ close(SessionStopReason.STARTUP_DEADLINE) }, 8, TimeUnit.SECONDS)
+        val startup = beginStartup() // Deadline is armed before asynchronous native work can block.
         val command = ShellMain.videoControlCommand(scid)
         // Stock cleanup unlinks its own CLASSPATH JAR. Keep the pinned master for
         // reconnects and let each stock session consume its own verified copy.
@@ -431,10 +477,7 @@ private class Session(
         } }
         local.close()
         synchronized(resources) { localListener = null }
-        watchdog = timer.scheduleWithFixedDelay({
-            val since = writeStarted.get()
-            if (since != 0L && System.nanoTime() - since > 2_000_000_000L) close(SessionStopReason.WRITE_DEADLINE)
-        }, 250, 250, TimeUnit.MILLISECONDS)
+        watchdog = timer.scheduleWithFixedDelay(::checkWriteDeadline, 250, 250, TimeUnit.MILLISECONDS)
         Wire.writeWelcome(output)
         val videoInput = DataInputStream(video!!.inputStream)
         startupStage.set(StartupStage.READ_CODEC)
@@ -515,8 +558,15 @@ private class Session(
                 if (phoneInput.nativeTouch(Touch.from(frame.payload))) heldTouchFrames.incrementAndGet()
                 else rejectedHeldTouchFrames.incrementAndGet()
             }
-            Wire.RECEIVER_USABILITY -> receiverUsability.publish(ReceiverUsability.from(frame.payload))
-            Wire.HEAD_POINTER -> phoneInput.pointer(HeadPointerState.from(frame.payload))
+            Wire.RECEIVER_USABILITY -> {
+                receiverUsability.publish(ReceiverUsability.from(frame.payload))
+                if (receiverUsability.needsRegion()) prepareHidRegionAsync()
+            }
+            Wire.HEAD_POINTER -> {
+                val point = HeadPointerState.from(frame.payload)
+                val original = receiverUsability.snapshot().fact
+                phoneInput.pointer(point, original) { receiverUsability.acceptsPointer(original, point) }
+            }
             Wire.END -> return false
             else -> error("Unsupported control")
         }
@@ -526,7 +576,7 @@ private class Session(
     override fun close() = close(SessionStopReason.OWNER_CLOSE)
 
     fun close(reason: SessionStopReason) {
-        receiverUsability.retire() // Before any release owner wait, stock write, or control-lock acquisition.
+        retireNativeResources() // Terminal store precedes resource/deadline/stock cleanup; never joins setup.
         release.close {
         if (running.compareAndSet(true, false)) stopReason = reason
         functionWork.close()
