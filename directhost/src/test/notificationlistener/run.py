@@ -56,7 +56,7 @@ dependencies = (
     'org.hamcrest/hamcrest-core/1.3',
 )
 java = Path(os.environ['JAVA_HOME']) / 'bin/java' if os.environ.get('JAVA_HOME') else Path(shutil.which('java') or 'java')
-record = {'startedUtc': now(), 'finishedUtc': None, 'scope': 'Actual NLS overrides/runtime/helper/panel/classifier against explicit Android and canonical ChosenApps storage boundaries; no actual framework binding/Android/activation/launch/device proof',
+record = {'startedUtc': now(), 'finishedUtc': None, 'scope': 'Actual NLS overrides/runtime/helper/panel/classifier against explicit Android, canonical storage and inactive selection/facade constructor boundaries; actual selection/activation/launch composition is checked separately by notificationselection/run.py. No framework binding/Android/device proof',
           'runner': {'path': str(Path(__file__).resolve()), 'sha256': digest(Path(__file__).resolve())},
           'auxiliaryInputs': [{'path': str(path), 'sha256': digest(path)} for path in (manifest, resources)],
           'compileExit': None, 'testsExit': None, 'timeoutStage': None, 'sources': [], 'dependencies': []}

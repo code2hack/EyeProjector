@@ -8,7 +8,7 @@ import java.security.MessageDigest
 internal object LaunchOperationDiagnostics {
     const val TAG = "EyeProjectorLaunch"
     enum class Kind { LAUNCH, DISPLAY_QUERY }
-    enum class Stage { PRE_CALL, RESULT, BEFORE_CALLBACK }
+    enum class Stage { PRE_CALL, AFTER_CALL, RESULT, BEFORE_CALLBACK }
     enum class Outcome { SKIPPED, ADMITTED, RETURNED, PRE_CALL_EXCEPTION, OPERATION_EXCEPTION, DECODE_EXCEPTION, VALUE_SELECTED, NULL_SELECTED }
     enum class Reason { EXPECTED_CONTEXT_UNAVAILABLE, NO_SERVICE, SERVICE_CHANGED, BINDING_CHANGED, CONTEXT_CHANGED }
     data class Match(

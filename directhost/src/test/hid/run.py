@@ -79,16 +79,18 @@ internal class InertBootstrap {
     fun removeObserver(observer: () -> Unit) = Unit
 }
 internal class InertPairing { fun close() = Unit }
+internal class InertNotificationAccess { fun open() = Unit; fun close() = Unit }
 internal class ExtractedHostHid : Activity() {
     private lateinit var phoneHid: PhoneHidPanel
     private val phoneControls = LinearLayout(this)
     private lateinit var bootstrap: InertBootstrap
     private val pairingPanel = InertPairing()
+    private lateinit var notificationAccess: InertNotificationAccess
     private val main = Handler(Looper.getMainLooper())
     private val sessionTick = Runnable {}
     private val observer: () -> Unit = {}
     val container = LinearLayout(this)
-    init { bootstrap = InertBootstrap(); container.addView(phoneControls); initializePhoneHid(container) }
+    init { bootstrap = InertBootstrap(); notificationAccess = InertNotificationAccess(); container.addView(phoneControls); initializePhoneHid(container) }
     fun panelForTest() = phoneHid
     fun controlsForTest() = phoneControls
     fun openForTest(show: Boolean) = showPhoneHid(show)

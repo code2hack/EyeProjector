@@ -5,13 +5,20 @@ import android.content.SharedPreferences
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.Closeable
+import com.code2hack.eyeprojector.directhost.notifications.NotificationPolicy
 
 /** One private preference file, shared by every Phone/projected-home consumer. No default apps. */
 object ChosenApps {
     private const val FILE = "chosen_projection_apps"
     private const val KEY = "ordered_apps"
 
-    fun open(context: Context): ChosenAppStore = ChosenAppStore(PreferenceStorage(preferences(context)))
+    fun open(context: Context): ChosenAppStore = ChosenAppStore(PreferenceStorage(preferences(context))) { packageName, chosen ->
+        val change = NotificationPolicy.process.begin(packageName, true, chosen)
+        object : ChosenAppMutation {
+            override fun isCurrent() = NotificationPolicy.process.isCurrent(change)
+            override fun finished(success: Boolean) = NotificationPolicy.process.finish(change, success)
+        }
+    }
 
     fun observe(context: Context, onChange: () -> Unit): Closeable {
         val preferences = preferences(context)

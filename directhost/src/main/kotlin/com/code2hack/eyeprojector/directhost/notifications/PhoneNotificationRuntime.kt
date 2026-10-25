@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import com.code2hack.eyeprojector.directhost.apps.ChosenApps
+import com.code2hack.eyeprojector.directhost.PhoneSessionController
 import java.io.Closeable
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -13,7 +14,7 @@ internal enum class NotificationAccessApproval { GRANTED, DENIED, UNKNOWN }
 /** OBSERVED means a public snapshot return, not proof of complete/successful underlying RPC. */
 internal enum class NotificationListenerBaseline { DISCONNECTED, NO_CHOSEN_APPS, INITIALIZING, OBSERVED, UNAVAILABLE }
 internal data class NotificationAccessStatus(val approval: NotificationAccessApproval, val connected: Boolean,
-    val baseline: NotificationListenerBaseline, val chosenAvailable: Boolean)
+    val baseline: NotificationListenerBaseline, val chosenAvailable: Boolean, val launchFailed: Boolean = false)
 
 /** Minted at actual connected receipt, never recovered from the latest listener singleton. */
 internal class NotificationListenerConnection {
@@ -24,12 +25,13 @@ internal class NotificationListenerConnection {
 
 /** Local receipt scope, not proof of native incarnation or accepted app-selection continuity. */
 internal class NotificationReceiptScope(val connection: NotificationListenerConnection, val membership: Any)
-internal data class NotificationIngressObservation(val scope: NotificationReceiptScope, val event: NotificationEventResult)
+internal data class NotificationIngressObservation(val scope: NotificationReceiptScope, val event: NotificationEventResult,
+    val receipt: Long = 0, val admission: NotificationPolicy.Receipt? = null)
 
 /**
  * Main-thread metadata/status owner. NLS callbacks (minSdk32) classify synchronously before any
  * new queue. Only snapshot I/O goes to a worker; completion returns to the same main owner.
- * There is no activation, selection, backend, notification cancellation or durable event queue.
+ * Production selection consumes the classified receipt inline; no backend or durable event queue.
  */
 internal class PhoneNotificationRuntime(
     private val readChosen: () -> Set<String>,
@@ -37,6 +39,7 @@ internal class PhoneNotificationRuntime(
     private val readApproval: () -> NotificationAccessApproval,
     private val runSnapshot: (() -> NotificationSnapshot, (NotificationSnapshot) -> Unit) -> Unit,
     private val onMain: (() -> Unit) -> Unit,
+    private val selection: NotificationSelectionOwner? = null,
 ) {
     private class Session(val connection: NotificationListenerConnection, val epoch: NotificationIngressEpoch,
         val snapshot: (Set<String>) -> NotificationSnapshot) {
@@ -52,6 +55,8 @@ internal class PhoneNotificationRuntime(
     private var approval = NotificationAccessApproval.UNKNOWN
     private val statusObservers = linkedSetOf<() -> Unit>()
     private val eventObservers = linkedSetOf<(NotificationIngressObservation) -> Unit>()
+    private var receiptSequence = 0L
+    private var preferenceObservation: Closeable? = null
 
     fun status(): NotificationAccessStatus {
         val baseline = when {
@@ -62,7 +67,7 @@ internal class PhoneNotificationRuntime(
             chosen.any { events.baselineState(it) == NotificationBaselineState.UNAVAILABLE } -> NotificationListenerBaseline.UNAVAILABLE
             else -> NotificationListenerBaseline.OBSERVED
         }
-        return NotificationAccessStatus(approval, session != null, baseline, chosenAvailable)
+        return NotificationAccessStatus(approval, session != null, baseline, chosenAvailable, selection?.failed == true)
     }
 
     // Registration itself invokes no callback. UI/event callbacks run outside classifier transitions.
@@ -82,7 +87,7 @@ internal class PhoneNotificationRuntime(
         membership = Any()
         previous?.let(::retire)
         if (session !== original) return
-        approval = readApprovalSafely()
+        updateApproval()
         refreshMembership(original)
         if (session !== original) return
         val registration = observeChosen {
@@ -103,13 +108,13 @@ internal class PhoneNotificationRuntime(
         val original = session?.takeIf { it.connection === connection } ?: return
         session = null // Retire ownership before detach/observer callbacks can reenter.
         retire(original)
-        approval = readApprovalSafely()
+        updateApproval()
         publishStatus()
     }
 
     /** Explicit panel refresh/reconnect/membership addition drives queries; failure never loops. */
     fun refresh() {
-        approval = readApprovalSafely()
+        updateApproval()
         val original = session
         if (original != null) {
             refreshMembership(original)
@@ -127,6 +132,9 @@ internal class PhoneNotificationRuntime(
     private fun receive(connection: NotificationListenerConnection, packageName: String,
         extract: () -> NotificationRecord, removed: Boolean): NotificationIngressObservation? {
         val original = session?.takeIf { it.connection === connection } ?: return null
+        // Before ANY chosen read/reentry: Stop cannot let this old receipt adopt a fresh H.
+        val admission = selection?.receipt(packageName)
+        val receipt = ++receiptSequence
         refreshMembership(original) // Actual first receipt, not a potentially lagging preference observer.
         val scope = NotificationReceiptScope(connection, membership)
         val record = if (session === original && chosenAvailable && packageName in chosen) runCatching(extract).getOrNull() else null
@@ -136,8 +144,10 @@ internal class PhoneNotificationRuntime(
             return null
         }
         val result = if (removed) events.removed(original.epoch, record) else events.posted(original.epoch, record)
-        val observation = NotificationIngressObservation(scope, result)
+        val observation = NotificationIngressObservation(scope, result, receipt, admission)
         // No queue or external observer precedes classification of this captured receipt.
+        updateApproval()
+        if (session === original && membership === scope.membership) selection?.accept(observation)
         eventObservers.toList().forEach { observer -> runCatching { observer(observation) } }
         startSnapshot(original)
         publishStatus()
@@ -191,6 +201,7 @@ internal class PhoneNotificationRuntime(
         original.choices = null
     }
     private fun readApprovalSafely() = try { readApproval() } catch (_: Exception) { NotificationAccessApproval.UNKNOWN }
+    private fun updateApproval() { approval = readApprovalSafely(); selection?.access(approval) }
     private fun publishStatus() { statusObservers.toList().forEach { runCatching(it) } }
 
     companion object {
@@ -202,13 +213,20 @@ internal class PhoneNotificationRuntime(
         private fun create(app: Context): PhoneNotificationRuntime {
             val main = Handler(Looper.getMainLooper())
             val snapshots = Executors.newSingleThreadExecutor()
-            return PhoneNotificationRuntime(
+            lateinit var runtime: PhoneNotificationRuntime
+            val owner = NotificationSelectionOwner(FacadeNotificationPort(PhoneSessionController.get(app)), NotificationPolicy.process,
+                { packageName -> ChosenApps.open(app).read().any { it.packageName == packageName } to AppNotificationPreferences.open(app).isEnabled(packageName) },
+                { work -> main.post { work() } }, { main.post { runtime.publishStatus() } })
+            runtime = PhoneNotificationRuntime(
                 { ChosenApps.open(app).read().map { it.packageName }.toSet() },
                 { changed -> ChosenApps.observe(app, changed) },
                 { NotificationAccess.approval(app) },
                 { work, complete -> snapshots.execute { val result = work(); main.post { complete(result) } } },
                 { work -> if (Looper.myLooper() == Looper.getMainLooper()) work() else main.post { work() } },
+                owner,
             )
+            runtime.preferenceObservation = AppNotificationPreferences.observe(app) { main.post { runtime.refresh() } }
+            return runtime
         }
     }
 }

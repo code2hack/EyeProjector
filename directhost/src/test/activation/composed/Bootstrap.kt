@@ -62,6 +62,9 @@ class HostBootstrap {
     fun stop() { contextPublisher.retire(contextPublisher.capture(),blockBinding=true); stops++; check(!failStop) { "Modeled dispatch failure after Stop" }; if (auto) publish(value.copy(backend = "STOPPED", projectionToken = "")) }
     fun refresh() { refreshes++; check(!failRefresh) { "Modeled dispatch failure before Stop" } }
     fun launchApp(pkg: String, complete: (ProjectionDisplayState?) -> Unit) = launchApp(pkg, value.projectionContext, complete)
+    internal fun launchNotification(carrier: com.code2hack.eyeprojector.directhost.notifications.NotificationLaunchCarrier,
+        complete: (com.code2hack.eyeprojector.directhost.notifications.NotificationDispatchOutcome) -> Unit): Unit =
+        error("Notification launch uses actual Bootstrap in notificationselection/run.py; outside this fixture")
     fun launchApp(pkg: String, expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit) {
         callOrder.add("launch" to expected); displayCalls.add(DisplayCall("launch", expected, pkg, complete))
     }

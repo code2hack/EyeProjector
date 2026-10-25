@@ -1,4 +1,5 @@
 <resources>
+    <string name="notification_launch_failed">The notification app action reported a problem.</string>
     <string name="notification_access_title">Notification access</string>
     <string name="notification_access_label">EyeProjector chosen-app notifications</string>
     <string name="notification_access_settings">Open notification access settings</string>

@@ -21,6 +21,7 @@ import com.code2hack.eyeprojector.directhost.hid.PhoneHidPanel
 import com.code2hack.eyeprojector.directhost.hid.PhoneHidRuntime
 
 class HostActivity : Activity() {
+    private lateinit var notificationAccess: com.code2hack.eyeprojector.directhost.notifications.NotificationAccessPanel
     private lateinit var bootstrap: HostBootstrap
     private lateinit var sessions: PhoneSessionController
     private val main = Handler(Looper.getMainLooper())
@@ -101,6 +102,7 @@ class HostActivity : Activity() {
         start = button(R.string.host_start) { sessions.start() }
         authorize = button(R.string.host_authorize) { bootstrap.requestAuthorization() }
         chosenApps = ChosenAppsPanel(this)
+        notificationAccess = com.code2hack.eyeprojector.directhost.notifications.NotificationAccessPanel(this)
         launcherStatus = TextView(this).apply { setTextColor(Color.WHITE) }
         val stop = button(R.string.host_stop) { sessions.stop() }
         pairingPanel = PairingPanel(this, PeerRole.PHONE, { paired ->
@@ -127,6 +129,7 @@ class HostActivity : Activity() {
                     addView(button(R.string.host_setup_guide) { openGuide() })
                     addView(chosenApps)
                     addView(launcherStatus)
+                    addView(notificationAccess)
                 }
                 addView(phoneControls)
                 initializePhoneHid(this)
@@ -135,9 +138,9 @@ class HostActivity : Activity() {
     }
 
     override fun onStart() { super.onStart(); bootstrap.observe(observer); bootstrap.refresh(); main.post(sessionTick) }
-    override fun onResume() { super.onResume(); if (::bootstrap.isInitialized) bootstrap.refresh(); resumePhoneHid() }
-    override fun onStop() { stopPhoneHid(); main.removeCallbacks(sessionTick); bootstrap.removeObserver(observer); super.onStop() }
-    override fun onDestroy() { stopPhoneHid(); pairingPanel.close(); super.onDestroy() }
+    override fun onResume() { super.onResume(); if (::bootstrap.isInitialized) bootstrap.refresh(); if (::notificationAccess.isInitialized) notificationAccess.open(); resumePhoneHid() }
+    override fun onStop() { if (::notificationAccess.isInitialized) notificationAccess.close(); stopPhoneHid(); main.removeCallbacks(sessionTick); bootstrap.removeObserver(observer); super.onStop() }
+    override fun onDestroy() { if (::notificationAccess.isInitialized) notificationAccess.close(); stopPhoneHid(); pairingPanel.close(); super.onDestroy() }
 
     private fun initializePhoneHid(container: LinearLayout) {
         phoneHid = PhoneHidPanel(this, PhoneHidRuntime.get(this)) { showPhoneHid(false) }.apply { visibility = View.GONE }

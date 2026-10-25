@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.atomic.AtomicLong
 import java.io.Closeable
 import com.code2hack.eyeprojector.directhost.activation.*
+import com.code2hack.eyeprojector.directhost.notifications.*
 
 /** App-scoped owner survives panel recreation and supplies the same commands to later Phone controls. */
 class PhoneSessionController private constructor(context: Context) {
@@ -76,6 +77,8 @@ class PhoneSessionController private constructor(context: Context) {
     val appScales = AppScaleCoordinator(AppScalePreferences.open(context), object : AppScaleBackend {
         override fun launch(packageName: String, expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit) =
             bootstrap.launchApp(packageName, expected, complete)
+        override fun launchNotification(carrier: NotificationLaunchCarrier, complete: (NotificationDispatchOutcome) -> Unit) =
+            bootstrap.launchNotification(carrier, complete)
         override fun display(expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit) =
             bootstrap.projectionDisplayState(expected, complete)
         override fun request(value: Double, expected: ProjectionContext, complete: (ScaleState?) -> Unit) =
@@ -180,11 +183,24 @@ class PhoneSessionController private constructor(context: Context) {
 
     /** Immediate local identity capture only. HID never waits for this writer, disk or Binder. */
     internal fun requestActivation(cause: ActivationCause): ActivationHandle {
-        val handle = synchronized(fastLock) { requestIdentityLocked(cause) }
+        val handle = synchronized(NotificationPolicy.process.gate) {
+            synchronized(fastLock) { requestIdentityLocked(cause) }
+        }
         scheduleDrain(); invalidateState()
         return handle
     }
-    /** Pure identity transition; caller owns fastLock, effects and notification policy stay outside. */
+
+    /** Typed notification G admission and original D creation share Stop's in-memory order. */
+    internal fun admitNotification(selection: NotificationSelection, snapshot: NotificationPolicy.Snapshot): ActivationHandle? {
+        val policy = NotificationPolicy.process
+        val handle = synchronized(policy.gate) {
+            if (!policy.installLocked(selection, snapshot)) { selection.permit.retire(); null }
+            else synchronized(fastLock) { requestIdentityLocked(ActivationCause.NOTIFICATION).also { selection.handle = it } }
+        }
+        if (handle != null) { scheduleDrain(); invalidateState() }
+        policy.publish() // Effects/ordinary callbacks are outside BOTH ordering sections.
+        return handle
+    }
     private fun requestIdentityLocked(cause: ActivationCause): ActivationHandle {
         val h = currentHandle.get() ?: ActivationHandle("$localNonce.${offers.incrementAndGet()}", cause).also {
             currentHandle.set(it); localRevision.incrementAndGet()
@@ -309,17 +325,20 @@ class PhoneSessionController private constructor(context: Context) {
         genericProducerVersion = -1; projectedProducerVersion = -1
     }
     private data class FastRetirement(val revision: Long, val notify: Boolean)
-    private fun retireFastOwner(id: String, cancel: Boolean, inputLost: Boolean): FastRetirement = synchronized(fastLock) {
-        val current = currentHandle.get() ?: return@synchronized FastRetirement(localRevision.get(),false)
-        if ((aliases[current.id] ?: current.id) != id) return@synchronized FastRetirement(localRevision.get(),false)
-        clearReadyLocked()
-        val notify = usable && inputLost
-        if (inputLost) usable = false
-        if (cancel) {
-            currentHandle.set(null); currentDemand = null; localRevision.incrementAndGet()
-            pendingRequest.get()?.takeIf { (aliases[it.handle.id] ?: it.handle.id) == id }?.let { pendingRequest.set(null) }
+    private fun retireFastOwner(id: String, cancel: Boolean, inputLost: Boolean): FastRetirement = synchronized(NotificationPolicy.process.gate) {
+        synchronized(fastLock) fast@{
+            val current = currentHandle.get() ?: return@fast FastRetirement(localRevision.get(),false)
+            if ((aliases[current.id] ?: current.id) != id) return@fast FastRetirement(localRevision.get(),false)
+            clearReadyLocked()
+            val notify = usable && inputLost
+            if (inputLost) usable = false
+            if (cancel) {
+                NotificationPolicy.process.retireLocked()
+                currentHandle.set(null); currentDemand = null; localRevision.incrementAndGet()
+                pendingRequest.get()?.takeIf { (aliases[it.handle.id] ?: it.handle.id) == id }?.let { pendingRequest.set(null) }
+            }
+            FastRetirement(localRevision.get(),notify)
         }
-        FastRetirement(localRevision.get(),notify)
     }
     private fun scheduleDrain() {
         if (drainQueued.compareAndSet(false, true)) featureLane.execute { drainQueued.set(false); drain() }
@@ -495,16 +514,20 @@ class PhoneSessionController private constructor(context: Context) {
         drain(); activation.start(expectedEpoch).also { publishActivation(revision) }
     }.get(4, TimeUnit.SECONDS)
     fun stop(): SessionState {
-        synchronized(fastLock) {
-            localRevision.incrementAndGet()
-            val original = currentHandle.getAndSet(null)
-            if (original == null && !initialized) stopInitialOwner = true
-            original?.let {
-                synchronized(pendingStops) { pendingStops.add(original.id) }
-                pendingRequest.get()?.takeIf { it.handle.id == original.id }?.let { pendingRequest.set(null) }
+        synchronized(NotificationPolicy.process.gate) {
+            NotificationPolicy.process.retireLocked()
+            synchronized(fastLock) {
+                localRevision.incrementAndGet()
+                val original = currentHandle.getAndSet(null)
+                if (original == null && !initialized) stopInitialOwner = true
+                original?.let {
+                    synchronized(pendingStops) { pendingStops.add(original.id) }
+                    pendingRequest.get()?.takeIf { it.handle.id == original.id }?.let { pendingRequest.set(null) }
+                }
+                currentDemand = null; clearReadyLocked(); usable = false
             }
-            currentDemand = null; clearReadyLocked(); usable = false
         }
+        NotificationPolicy.process.publish()
         invalidateInput(); scheduleDrain()
         return state()
     }
@@ -518,14 +541,18 @@ class PhoneSessionController private constructor(context: Context) {
         activation.stop(expectedEpoch).also { publishActivation(retirement.revision) }
     }.get(4, TimeUnit.SECONDS)
     internal fun cancelActivation(id: String) {
-        val invalidate = synchronized(fastLock) {
-            synchronized(pendingStops) { pendingStops.add(id) }
-            pendingRequest.get()?.takeIf { it.handle.id == id }?.let { pendingRequest.set(null) }
-            val original = currentHandle.get()
-            if (original != null && (aliases[original.id] ?: original.id) == (aliases[id] ?: id)) {
-                currentHandle.set(null); currentDemand = null; localRevision.incrementAndGet(); clearReadyLocked(); usable = false; true
-            } else false
+        val invalidate = synchronized(NotificationPolicy.process.gate) {
+            synchronized(fastLock) {
+                synchronized(pendingStops) { pendingStops.add(id) }
+                pendingRequest.get()?.takeIf { it.handle.id == id }?.let { pendingRequest.set(null) }
+                val original = currentHandle.get()
+                if (original != null && (aliases[original.id] ?: original.id) == (aliases[id] ?: id)) {
+                    NotificationPolicy.process.retireLocked()
+                    currentHandle.set(null); currentDemand = null; localRevision.incrementAndGet(); clearReadyLocked(); usable = false; true
+                } else false
+            }
         }
+        NotificationPolicy.process.publish()
         if (invalidate) invalidateInput()
         scheduleDrain()
     }
@@ -541,10 +568,15 @@ class PhoneSessionController private constructor(context: Context) {
         launchApp(packageName, bootstrap.status().projectionContext, complete)
     }
     fun launchApp(packageName: String, expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit) {
+        NotificationPolicy.process.explicitChoice()
         appScales.launch(packageName, expected, complete)
     }
-    fun launchAppForScale(packageName: String, expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit): AppScaleTarget =
-        appScales.launch(packageName, expected, complete)
+    fun launchAppForScale(packageName: String, expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit): AppScaleTarget {
+        NotificationPolicy.process.explicitChoice()
+        return appScales.launch(packageName, expected, complete)
+    }
+    internal fun launchNotification(carrier: NotificationLaunchCarrier, settled: (NotificationLaunchSettlement) -> Unit) =
+        appScales.launchNotification(carrier, settled)
     fun projectionDisplayState(complete: (ProjectionDisplayState?) -> Unit) = bootstrap.projectionDisplayState(complete)
 
     fun requestPanelOff(complete: (PanelPowerState?) -> Unit) = bootstrap.requestPanelOff(complete)

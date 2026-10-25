@@ -1,10 +1,11 @@
-# Notification listener foundation checks
+# Notification listener focused checks
 
-This component adds a system-bound `PhoneNotificationListener`, an application-
-context metadata/status runtime, ordinary Settings helper and a feature-local
-panel for later mounting. It does not mount in HostActivity or request shared
-activation, wake, app selection, launch or a commit permit. The accepted
-NotificationEvents classifier and its 29 tests are unchanged.
+This isolated suite checks the system-bound `PhoneNotificationListener`,
+application-context metadata/status runtime, ordinary Settings helper and panel.
+Its selection/facade/preferences constructor endpoints are explicitly inactive
+boundaries. The production panel mount and selection/launch wiring are separate
+from this suite; `notificationselection/run.py` compiles and drives their actual
+non-UI composition. The accepted classifier and its 29 tests are unchanged.
 
 With the Manager's isolated host allocation:
 
