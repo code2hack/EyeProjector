@@ -68,6 +68,80 @@ Outputs: `tools/camera-access/build/camera-access.jar` and
 `hostprobe/build/outputs/apk/debug/hostprobe-debug.apk`. Freeze source SHA, diff state,
 build commands/results and artifact SHA-256 before device execution.
 
+## Ordinary consumer output mode and closure contract
+
+The ordinary `com.code2hack.eyeprojector.hostprobe/.CameraAccessActivity` consumer
+accepts `--es outputMode preview-only` for a real preview-only opening. That path
+checks only supported SurfaceTexture sizes, allocates one preview Surface, and
+configures a one-output session. It performs no required JPEG-size lookup, no JPEG
+ImageReader allocation and no combined-output configuration. Optional JPEG metadata
+in the independent enumeration log does not gate that opening. Actual camera APIs,
+context, permission and display routing are unchanged.
+
+The compatibility default remains `preview-jpeg`; an explicit
+`--es outputMode preview-jpeg` selects the same combined preview/JPEG mode. It checks
+both supported size sets and configures both outputs. Mode and exact camera ID are
+captured immutably for each opening. The JPEG button is unavailable for preview-only;
+a JPEG command on such an opening records `jpeg_not_configured`, without reopening
+or switching mode. Use the existing in-app JPEG button on a live combined opening.
+Root still owns ordinary permission/foreground setup. If Android pauses the fixture
+for its permission prompt, pause cancels the pending open; after permission setup,
+issue an explicit Open again rather than counting the grant as camera success.
+A fresh Activity only handles `operation=open` automatically; `capture`, `close`,
+`enumerate` and `finish` commands otherwise use the same existing top instance's
+`onNewIntent`. Intent delivery may pause/close the current camera, so shell capture
+or enumeration during preview is not a reliable live-photo control path. No new
+automatic capture or background consumer interface is provided.
+
+Full existing JSON metadata remains append-only in `camera-access-events.jsonl`
+and the `EyeCameraConsumer` log. The visible status uses a compact two-line summary
+rather than all enumeration JSON, preserving space for the weighted preview.
+`surface_available`/`surface_size_changed` log actual dimensions, and preview samples
+include the actual view dimensions, output mode, camera ID and opening generation.
+A source layout correction alone is not evidence of a usable real Surface.
+
+Each opening permanently owns its original CameraDevice, session, Surface and
+optional ImageReader. Close invalidates preview/capture admission immediately and
+records `consumer_close_requested`. Close calls do not imply callbacks. A late
+`onOpened` after cancellation closes that original camera without configuring it;
+a late session callback belongs to that original opening. A replacement open and
+explicit finish wait behind actual original closure without blocking either thread.
+The session and camera may report closure in either order. After those outcomes,
+owned outputs are released and `consumer_close_completed` is emitted; only then
+can a successor start. An explicitly finished Activity is finished after completion;
+a system `consumer_destroyed` event is separately recorded and the callback worker
+is retained until original ownership resolves, then `consumer_worker_shutdown` logs.
+Destroyed TextureView textures are retained until that original ownership releases
+its outputs; they are never handed to a successor.
+
+`onConfigureFailed` is an actual terminal path for that failed session, which Android
+considers closed; the fixture records `session_configure_failed` without inventing
+`session_closed` or waiting for an undocumented later callback. Camera errors and
+disconnection still require the delivered original camera's `onClosed`. See the
+[session callback contract](https://developer.android.com/reference/android/hardware/camera2/CameraCaptureSession.StateCallback#onConfigureFailed(android.hardware.camera2.CameraCaptureSession))
+and [camera callback contract](https://developer.android.com/reference/android/hardware/camera2/CameraDevice.StateCallback).
+A synchronous setup failure before invoking an open can release only local outputs,
+with no camera closure claimed. Exceptions from invoked open/configure calls are
+recorded as `open_call_unresolved`/`configuration_call_unresolved`: queued original
+callbacks may still arrive, so pending ownership is preserved. A close/release
+exception is similarly unconfirmed. Missing callbacks leave reopen/finish/worker
+shutdown pending; no elapsed cap, forced completion or fabricated cleanup is added.
+
+Focused cached host checks compile the exact production close-owner declaration,
+not a copy, with delayed/reentrant fake callbacks:
+
+```sh
+timeout --foreground 120s python3 hostprobe/src/test/cameraaccess/run.py \
+  --output-dir "$NEW_HOST_CHECK_EVIDENCE_DIRECTORY"
+```
+
+These checks do not instantiate Android, open Camera2, allocate a real Surface or
+prove layout/imagery. Root separately allocates the finite offline hostprobe build,
+then ordinary installed APK/CAMERA/foreground/current-display setup and real device
+checks. The accepted producer JAR/AIDL and closed camera90 evidence are unchanged;
+that service/token/empty-map release result did not exercise a configured stream
+or EGL imagery.
+
 ## Root-owned execution template (unresolved fields)
 
 Resolve actual Phone serial/model/OS/API/user, shell UID, permission grant/denial,
@@ -102,23 +176,29 @@ projection running. The commands below are templates, not executed evidence.
    ```sh
    timeout 15s adb -s "$PHONE" shell am start --display "$DISPLAY_ID" \
      -n com.code2hack.eyeprojector.hostprobe/.CameraAccessActivity \
-     --es cameraId "$CAMERA_ID" --es operation open
+     --es cameraId "$CAMERA_ID" --es outputMode preview-only --es operation open
    ```
 
-   Controls are Enumerate / Open / JPEG / Close. Subsequent `am start` commands to this
-   same top Activity on this same display can use `--es operation enumerate`, `capture`,
-   `close`, `open` or `finish`. `singleTop` retains the current consumer when it is on top.
-   `open` takes the exact explicit ID; no default/first physical camera is substituted.
+   This selects the explicit preview-only experiment. Controls are Enumerate / Open /
+   JPEG / Close, with JPEG unavailable in this mode. Mode omitted means the compatible
+   combined preview/JPEG mode. Use read-only diagnostics during live preview. After
+   close, same-instance `open` queues behind actual original closure; `finish` waits
+   before ending the Activity. Do not cold-launch a new cleanup instance or use a
+   shell `capture`/`enumerate` intent as an uninterrupted live-camera action. `open`
+   takes the exact explicit ID; no default/first physical camera is substituted.
 5. Verify increasing `producer_progress.postedFrames`, Camera2 `capture_result` frame
    numbers/timestamps, and `preview_presented` callbacks with changing pixel sample hashes.
    EGL generates a changing background, moving white bar and 16-bit binary frame marker
    along the source's bottom edge (OpenGL origin). Pixel values/geometry on the display
    may rotate or scale; inspect the actual preview as well.
-6. Take two JPEGs separated by source progress, retrieve the exact reported filenames,
+6. In a separately selected combined `preview-jpeg` opening, use the existing in-app
+   JPEG button for two photos separated by source progress, retrieve the exact reported filenames,
    verify valid dimensions, byte SHA-256 and decoded sample changes, and inspect the
    source marker in the images. Different encoded hashes alone do not prove changing
    imagery. Pixel samples establish changes at the consumer, not physical Glasses rendering.
-7. Close; wait for real `session_closed` / `camera_closed` callbacks. Reopen the same ID,
+7. Close; retain `consumer_close_requested`, real original `session_closed` /
+   `camera_closed` (or actual failed-configuration terminal outcome), and
+   `consumer_close_completed`. Reopen the same ID only after that completion,
    verify fresh preview/capture, then close again. Type `status` in the producer to inspect
    stream request/frame counts. Type `unregister` while that same token-owning process
    is alive, wait for `tokenAbsent=true` and `producer_resources_released`, then verify
@@ -139,8 +219,9 @@ The consumer appends JSONL to app-private `files/camera-access-events.jsonl`, an
 `files/camera-access-<instance>-<generation>-<count>.jpg`. Retrieve using the reserved `run-as` route;
 these are owned experiment files. Every Activity creation logs UID/PID, OS fingerprint,
 display and Android device context; commands log exact camera IDs and generations.
-The fixture closes camera resources on pause/destroy and releases only its own Surface,
-ImageReader, capture session and CameraDevice. Producer resources use one serial thread.
+The fixture requests close on pause/destroy and retains original callback ownership
+until its actual terminal outcomes before reporting completed release of its own
+Surface, optional ImageReader, capture session and CameraDevice. Producer resources use one serial thread.
 
 ## Evidence and completion boundary
 
