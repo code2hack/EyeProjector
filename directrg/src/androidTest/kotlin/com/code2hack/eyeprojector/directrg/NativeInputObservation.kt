@@ -104,6 +104,9 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
     var detached = false
     val state = NativeInputObservationRunState(seconds * 1000L)
     var currentActivity: WeakReference<ReceiverActivity>? = null
+    fun onMain(operation: () -> Unit) {
+        nativeInputObservationOnMain({ task -> instrumentation.runOnMainSync { task() } }, operation)
+    }
     fun boundary(state: String) {
         recorder.queue.capture("capture_boundary", null, SystemClock.uptimeMillis(), SystemClock.elapsedRealtimeNanos()) {
             mapOf("state" to state)
@@ -128,7 +131,7 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
     fun inventory() {
         val at = SystemClock.elapsedRealtimeNanos()
         recorder.queue.capture("device_inventory", null, SystemClock.uptimeMillis(), at) {
-            val devices = manager.inputDeviceIds.mapNotNull { deviceId ->
+            val devices = manager.inputDeviceIds.asSequence().mapNotNull { deviceId ->
                 manager.getInputDevice(deviceId)?.let { deviceId to NativeInputRecorder.Device(it.name, at) }
             }.toMap()
             recorder.inventory.set(devices)
@@ -168,7 +171,7 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
         inventoryThread.start()
         listenerRegistrationAttempted = true
         manager.registerInputDeviceListener(listener, Handler(inventoryThread.looper))
-        instrumentation.runOnMainSync {
+        onMain {
             check(ReceiverActivity.nativeInputObserver == null) { "Another observation owns the sink" }
             lifecycleRegistrationAttempted = true
             application.registerActivityLifecycleCallbacks(lifecycle)
@@ -187,7 +190,7 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
             val elapsed = SystemClock.elapsedRealtime()
             if (elapsed >= nextSample) {
                 val sample = mutableMapOf<String, Any?>()
-                instrumentation.runOnMainSync {
+                onMain {
                     val activity = currentActivity?.get()
                     sample["activitySnapshotScope"] = if (activity == null) "No Receiver resume observed since listener installation" else "observed Receiver instance"
                     if (activity != null) {
@@ -219,13 +222,13 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
         var queueClosed = false
         var writerClosed = false
         var streamClosed = false
-        state.attempt("observerDetach") { instrumentation.runOnMainSync {
+        state.attempt("observerDetach") { onMain {
             if (ReceiverActivity.nativeInputObserver === recorder) {
                 ReceiverActivity.nativeInputObserver = null; detached = true
             }
             sinkReleased = ReceiverActivity.nativeInputObserver !== recorder
         } }
-        state.attempt("lifecycleUnregister") { if (lifecycleRegistrationAttempted) instrumentation.runOnMainSync {
+        state.attempt("lifecycleUnregister") { if (lifecycleRegistrationAttempted) onMain {
             application.unregisterActivityLifecycleCallbacks(lifecycle)
             currentActivity = null
             lifecycleReleased = true

@@ -5,6 +5,7 @@ from analyze import CLEANUP_STEPS, analyze, phone_delta
 
 def key(seq, action, time, down=1000, device=3):
     return dict(type="key", seq=seq, activityId=7, deviceId=device, deviceName="ROKID,PSOC-TP-R",
+                deviceNameScope="InputManager inventory; no event-time Binder lookup",
                 source=0x101, keyCode=83, scanCode=204, action=action, flags=0, repeat=0,
                 downTimeMs=down, eventTimeMs=time, receiptUptimeMs=time + 2, receiptElapsedNs=time * 1_000_000)
 
@@ -15,6 +16,43 @@ def stage(seq, name, time, **fields):
 
 
 class NativeTimingAnalysis(unittest.TestCase):
+    def assert_unknown_marker_origin(self, action, count):
+        self.assertEqual(count, action["markerCandidateCount"])
+        self.assertEqual(count, len(action["markerCandidates"]))
+        self.assertIsNone(action["markerOriginDeviceId"])
+        self.assertEqual("unknown-unrecorded-original-routing", action["markerEligibility"])
+        self.assertTrue(all(row["nativeEligibility"] == "unrecorded" for row in action["markerCandidates"]))
+        self.assertNotIn("markerDownToDispatchMs", action)
+        self.assertNotIn("markerUpToDispatchMs", action)
+
+    @staticmethod
+    def collision_rows():
+        # Exact Reviewer counterexample: original routing is absent from the recorded stages.
+        ordinary = key(1, 0, 1000, device=3)
+        ordinary["deviceName"] = "ordinary keyboard"
+        return [ordinary, key(2, 0, 1000, device=4), key(3, 1, 1022, device=4),
+                stage(4, "dispatch_enter", 2030, actionId=1, actionType="tap", actionTimeMs=2022,
+                      downTimeMs=1000, upTimeMs=1022, tapTiming="CONTACT_MARKER"),
+                stage(5, "dispatch_result", 2033, actionId=1, outcome="submitted")]
+
+    def assert_collision_stays_ambiguous(self, selected_device):
+        # Keep this regression assertion compatible with the parent API: its no-filter case
+        # should pass, whereas selecting either device must expose the old wrong-timing claim.
+        result = analyze(self.collision_rows(), selected_device)
+        self.assertEqual(1, len(result["actions"]))
+        action = result["actions"][0]
+        self.assertNotIn("markerDownToDispatchMs", action,
+                         "Display selection cannot establish which device supplied an action")
+        self.assertNotIn("markerUpToDispatchMs", action)
+        self.assertEqual("ambiguous-or-unobserved", action["markerCorrelation"])
+        self.assertEqual(8, action["actionTimeToDispatchMs"])
+        self.assertEqual(3, action["dispatchEntryToOutcomeMs"])
+        visible = {3, 4} if selected_device is None else {selected_device}
+        self.assertEqual(visible, {row["deviceId"] for row in result["devices"]})
+        expected_seqs = {1, 2, 3} if selected_device is None else ({1} if selected_device == 3 else {2, 3})
+        self.assertEqual(expected_seqs, {row["seq"] for row in result["receiptLagMs"]})
+        self.assertFalse(result["physicalInputPass"])
+
     def test_marker_due_dispatch_and_handler_are_separate(self):
         rows = [key(1, 0, 1000), key(2, 1, 1022),
                 stage(3, "dispatch_enter", 2030, actionId=1, actionType="tap", actionTimeMs=2022,
@@ -22,10 +60,11 @@ class NativeTimingAnalysis(unittest.TestCase):
                 stage(4, "dispatch_result", 2033, actionId=1, outcome="submitted")]
         result = analyze(rows, 3)
         action = result["actions"][0]
-        self.assertEqual(1030, action["markerDownToDispatchMs"])
-        self.assertEqual(1008, action["markerUpToDispatchMs"])
+        self.assert_unknown_marker_origin(action, 1)
+        self.assertEqual("one-matching-delivered-marker-origin-unknown", action["markerCorrelation"])
         self.assertEqual(8, action["actionTimeToDispatchMs"])
         self.assertEqual(3, action["dispatchEntryToOutcomeMs"])
+        self.assertEqual([2, 2], [row["lagMs"] for row in result["receiptLagMs"]])
         self.assertEqual(22, result["keyIntervals"][0]["reportedDurationMs"])
         self.assertFalse(result["physicalInputPass"])
 
@@ -35,7 +74,13 @@ class NativeTimingAnalysis(unittest.TestCase):
                       actionTimeMs=1815, downTimeMs=1000),
                 stage(5, "dispatch_result", 1815, actionId=1, outcome="classified-only")]
         result = analyze(rows, 3)
-        self.assertEqual(815, result["actions"][0]["markerDownToDispatchMs"])
+        action = result["actions"][0]
+        self.assert_unknown_marker_origin(action, 1)
+        self.assertEqual("one-matching-delivered-marker-origin-unknown", action["markerCorrelation"])
+        self.assertEqual(0, action["actionTimeToDispatchMs"])
+        self.assertEqual(0, action["dispatchEntryToOutcomeMs"])
+        self.assertEqual(1815, result["aiCallbacks"][0]["aiCallbackUptimeMs"])
+        self.assertEqual(22, result["keyIntervals"][0]["reportedDurationMs"])
         self.assertEqual([], result["motionPhases"])
         self.assertFalse(result["physicalHoldReleasePass"])
 
@@ -43,16 +88,107 @@ class NativeTimingAnalysis(unittest.TestCase):
         rows = [key(1, 0, 1000), stage(2, "cancel", 1100),
                 stage(3, "dispatch_enter", 2022, actionId=1, actionType="tap", actionTimeMs=2022, downTimeMs=1000)]
         action = analyze(rows, 3)["actions"][0]
+        self.assert_unknown_marker_origin(action, 1)
         self.assertEqual("canceled-between-origin-and-dispatch", action["markerCorrelation"])
-        self.assertNotIn("markerDownToDispatchMs", action)
         self.assertEqual("missing-terminal-observation", action["outcome"])
 
-    def test_different_device_or_activity_cannot_be_claimed_as_one_origin(self):
+    def test_hidden_device_candidate_remains_unknown_and_other_activity_does_not_match(self):
         raw = key(1, 0, 1000, device=4)
         entry = stage(2, "dispatch_enter", 2022, actionId=1, actionType="tap", actionTimeMs=2022, downTimeMs=1000)
-        self.assertEqual("ambiguous-or-unobserved", analyze([raw, entry], 3)["actions"][0]["markerCorrelation"])
+        result = analyze([raw, entry], 3)
+        action = result["actions"][0]
+        self.assert_unknown_marker_origin(action, 1)
+        self.assertEqual("one-matching-delivered-marker-origin-unknown", action["markerCorrelation"])
+        self.assertEqual(4, action["markerCandidates"][0]["deviceId"])
+        self.assertEqual([], result["devices"])
+        self.assertEqual([], result["receiptLagMs"])
         raw["deviceId"], raw["activityId"] = 3, 8
-        self.assertEqual("ambiguous-or-unobserved", analyze([raw, entry], 3)["actions"][0]["markerCorrelation"])
+        action = analyze([raw, entry], 3)["actions"][0]
+        self.assert_unknown_marker_origin(action, 0)
+        self.assertEqual("ambiguous-or-unobserved", action["markerCorrelation"])
+
+    def test_collision_without_selection_keeps_ambiguous_origin_without_marker_timing(self):
+        self.assert_collision_stays_ambiguous(None)
+
+    def test_selecting_ordinary_keyboard_cannot_erase_competing_rokid_origin(self):
+        self.assert_collision_stays_ambiguous(3)
+
+    def test_selecting_rokid_cannot_erase_competing_ordinary_keyboard_origin(self):
+        self.assert_collision_stays_ambiguous(4)
+
+    def test_all_candidate_metadata_and_unknown_eligibility_survive_display_selection(self):
+        rows = self.collision_rows()
+        fields = ("seq", "activityId", "deviceId", "source", "keyCode", "downTimeMs",
+                  "eventTimeMs", "deviceName", "deviceNameScope")
+        expected = [{**{field: row[field] for field in fields}, "nativeEligibility": "unrecorded"}
+                    for row in rows[:2]]
+        for selection in [None, 3, 4, 99]:
+            with self.subTest(selection=selection):
+                result = analyze(rows, selection)
+                self.assertEqual(1, len(result["actions"]))
+                action = result["actions"][0]
+                self.assert_unknown_marker_origin(action, 2)
+                self.assertEqual(expected, action["markerCandidates"])
+                self.assertEqual("ambiguous-or-unobserved", action["markerCorrelation"])
+                visible = {3, 4} if selection is None else ({selection} if selection in [3, 4] else set())
+                self.assertEqual(visible, {row["deviceId"] for row in result["devices"]})
+                self.assertEqual(visible, {row["deviceId"] for row in result["receiptLagMs"]})
+                self.assertEqual(1 if selection in [None, 4] else 0, len(result["keyIntervals"]))
+                self.assertEqual(bool(visible), result["eventsObserved"])
+
+    def test_unique_inventory_name_and_source_never_establish_original_native_routing(self):
+        for name, source in [("ordinary keyboard", 0x101), ("ROKID,PSOC-TP-R", 0),
+                             ("ROKID,PSOC-TP-R", 0x101)]:
+            for selection in [None, 3, 4]:
+                with self.subTest(name=name, source=source, selection=selection):
+                    raw = key(1, 0, 1000)
+                    raw.update(deviceName=name, source=source)
+                    rows = [raw, stage(2, "dispatch_enter", 2030, actionId=1, actionType="tap",
+                                      actionTimeMs=2022, downTimeMs=1000, upTimeMs=1022)]
+                    action = analyze(rows, selection)["actions"][0]
+                    self.assert_unknown_marker_origin(action, 1)
+                    self.assertEqual("one-matching-delivered-marker-origin-unknown", action["markerCorrelation"])
+                    candidate = action["markerCandidates"][0]
+                    self.assertEqual((3, name, source),
+                                     (candidate["deviceId"], candidate["deviceName"], candidate["source"]))
+
+    def test_unrelated_raw_reports_do_not_become_matching_marker_candidates(self):
+        other_key = key(1, 0, 1000); other_key["keyCode"] = 66
+        other_time = key(2, 0, 999, down=999)
+        other_activity = key(3, 0, 1000); other_activity["activityId"] = 8
+        repeat = key(4, 0, 1000); repeat["repeat"] = 1
+        rows = [other_key, other_time, other_activity, repeat,
+                key(5, 0, 1000, device=4), key(6, 1, 1022, device=4),
+                stage(7, "dispatch_enter", 2030, actionId=1, actionType="tap", actionTimeMs=2022,
+                      downTimeMs=1000, upTimeMs=1022),
+                stage(8, "dispatch_result", 2033, actionId=1, outcome="submitted"),
+                key(9, 0, 1000)] # A later observed report cannot originate the earlier dispatch.
+        for selection in [None, 3, 4, 99]:
+            with self.subTest(selection=selection):
+                action = analyze(rows, selection)["actions"][0]
+                self.assert_unknown_marker_origin(action, 1)
+                self.assertEqual(5, action["markerCandidates"][0]["seq"])
+                self.assertEqual("one-matching-delivered-marker-origin-unknown", action["markerCorrelation"])
+
+    def test_full_trace_cancellation_remains_explicit_for_both_colliding_candidates(self):
+        rows = self.collision_rows()
+        rows[-2]["seq"], rows[-1]["seq"] = 5, 6
+        rows.insert(3, stage(4, "cancel", 1100))
+        for selection in [None, 3, 4]:
+            with self.subTest(selection=selection):
+                action = analyze(rows, selection)["actions"][0]
+                self.assert_unknown_marker_origin(action, 2)
+                self.assertEqual("canceled-between-origin-and-dispatch", action["markerCorrelation"])
+                self.assertEqual(8, action["actionTimeToDispatchMs"])
+
+    def test_other_activity_cancellation_cannot_cancel_a_hidden_candidate(self):
+        cancel = stage(2, "cancel", 1100); cancel["activityId"] = 8
+        rows = [key(1, 0, 1000, device=4), cancel,
+                stage(3, "dispatch_enter", 2030, actionId=1, actionType="tap", actionTimeMs=2022,
+                      downTimeMs=1000, upTimeMs=1022)]
+        action = analyze(rows, 3)["actions"][0]
+        self.assert_unknown_marker_origin(action, 1)
+        self.assertEqual("one-matching-delivered-marker-origin-unknown", action["markerCorrelation"])
 
     def test_control_samples_remain_aggregate_and_reset_on_session_change(self):
         rows = [dict(type="sample", controls=dict(startedMonoNs=1, controlsAccepted=2, controlsWritten=1)),

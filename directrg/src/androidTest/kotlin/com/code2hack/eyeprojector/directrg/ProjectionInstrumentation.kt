@@ -42,6 +42,48 @@ internal fun fixtureBootstrapReady(
 class ProjectionInstrumentation : Instrumentation() {
     private lateinit var args: Bundle
     private var freshAfterNs = 0L
+    private var runStartedNs: Long? = null
+    private var setupReport: JSONObject? = null
+    private val setupStages = JSONArray()
+    private var currentSetupStage = "NOT_STARTED"
+    private var lastStatusObservation: JSONObject? = null
+    private var baselineActivity: Activity? = null
+    private fun startupSnapshot(activity: Activity?, destination: JSONObject) {
+        if (activity !is ReceiverActivity) {
+            destination.put("startupSnapshotScope", "No owned Receiver Activity returned")
+            return
+        }
+        var values: Map<String, Any?>? = null
+        var start: Long? = null
+        var end: Long? = null
+        var readFailure: Throwable? = null
+        try {
+            runOnMainSync {
+                try {
+                    start = System.nanoTime()
+                    values = activity.startupDiagnosticSnapshot()
+                } catch (error: Throwable) { readFailure = error }
+                finally { end = System.nanoTime() }
+            }
+            val failure = readFailure
+            if (failure != null) destination.put("startupSnapshotError", JSONObject(startupErrorFields(failure)))
+            else destination.put("startupSnapshot", JSONObject(values ?: emptyMap<String, Any?>()))
+                    .put("startupSnapshotScope", "Passive current-memory scalar reads; not atomic readiness or authorization")
+        } catch (error: Throwable) {
+            runCatching { destination.put("startupSnapshotError", JSONObject(startupErrorFields(error))) }
+        }
+        runCatching { destination.put("startupSnapshotStartMonoNs", start ?: JSONObject.NULL)
+            .put("startupSnapshotEndMonoNs", end ?: JSONObject.NULL) }
+    }
+    private fun setupStage(stage: String, activity: Activity? = baselineActivity) {
+        if (activity != null) baselineActivity = activity
+        currentSetupStage = stage
+        setupReport?.put("setupStage", stage)
+        val record = JSONObject().put("stage", stage).put("observedMonoNs", System.nanoTime())
+            .put("activityPresent", activity != null)
+        startupSnapshot(activity, record)
+        setupStages.put(record)
+    }
     override fun onCreate(arguments: Bundle?) { args = arguments ?: Bundle(); super.onCreate(arguments); start() }
     private fun buttons(view: View): List<Button> = when (view) {
         is Button -> listOf(view)
@@ -49,6 +91,7 @@ class ProjectionInstrumentation : Instrumentation() {
         else -> emptyList()
     }
     private fun clickConnect(activity: Activity) {
+        setupStage("WAIT_SURFACE", activity)
         val deadline = SystemClock.elapsedRealtime() + 5000
         var ready = false
         while (!ready && SystemClock.elapsedRealtime() < deadline) {
@@ -56,14 +99,40 @@ class ProjectionInstrumentation : Instrumentation() {
             if (!ready) Thread.sleep(50)
         }
         check(ready) { "No current projection Surface" }
+        setupStage("SURFACE_READY", activity)
+        var buttonFound = false
+        var clickResult: Boolean? = null
+        setupStage("CONNECT_DISPATCH", activity)
         runOnMainSync {
             // Phone Start may already have attached this resumed Receiver through the paired control route.
-            buttons(activity.window.decorView).singleOrNull { it.text == "Connect" }?.performClick()
+            val button = buttons(activity.window.decorView).singleOrNull { it.text == "Connect" }
+            buttonFound = button != null
+            clickResult = button?.performClick()
         }
+        setupReport?.put("connectButtonFound", buttonFound)?.put("connectClickResult", clickResult ?: JSONObject.NULL)
+        setupStage("CONNECT_RETURNED", activity)
     }
-    private fun status(): JSONObject = JSONObject(File(targetContext.filesDir, "status.json").readText()).also {
-        check(freshAfterNs == 0L || it.optLong("startedMonoNs", 0) >= freshAfterNs) { "Historical session status" }
-        check(it.optString("state") !in listOf("STREAMING", "CONNECTING", "WAITING_FOR_VIDEO") || System.nanoTime() - it.optLong("startedMonoNs", 0) - it.optLong("elapsedMs", 0) * 1_000_000 < 3_000_000_000L) { "Stale session telemetry" }
+    private fun status(): JSONObject {
+        val bound = if (freshAfterNs == 0L) runStartedNs else freshAfterNs
+        val observation = JSONObject().put("requiredStartMonoNs", bound ?: JSONObject.NULL)
+        lastStatusObservation = observation
+        try {
+            val value = JSONObject(File(targetContext.filesDir, "status.json").readText())
+            val now = System.nanoTime()
+            val started = diagnosticClockLong(value.opt("startedMonoNs"))
+            val elapsed = diagnosticClockLong(value.opt("elapsedMs"))
+            val reason = receiverStatusRejection(value.optString("state"), started, elapsed, bound, now)
+            observation.put("readNowMonoNs", now).put("state", value.optString("state"))
+                .put("startedMonoNs", started ?: JSONObject.NULL).put("elapsedMs", elapsed ?: JSONObject.NULL)
+                .put("rejection", reason ?: JSONObject.NULL)
+            check(reason == null) { "Rejected Receiver status: $reason" }
+            value.put("driverStatusRead", observation)
+            setupReport?.put("lastStatusObservation", observation)
+            return value
+        } catch (error: Exception) {
+            startupErrorFields(error).forEach { (key, value) -> observation.put(key, value ?: JSONObject.NULL) }
+            throw error
+        }
     }
     private fun surfaces(view: View): List<SurfaceView> = when (view) {
         is SurfaceView -> listOf(view)
@@ -118,14 +187,18 @@ class ProjectionInstrumentation : Instrumentation() {
         }
     }
     private fun waitStreaming() {
+        setupStage("WAIT_STREAM")
         val deadline = SystemClock.elapsedRealtime() + 15_000
         while (SystemClock.elapsedRealtime() < deadline) {
-            if (runCatching { status().optString("state") == "STREAMING" }.getOrDefault(false)) return
+            if (runCatching { status().optString("state") == "STREAMING" }.getOrDefault(false)) {
+                setupStage("STREAM_READY"); return
+            }
             Thread.sleep(100)
         }
         error("No rendered stream")
     }
     private fun waitFixtureGeometry() {
+        setupStage("WAIT_FIXTURE_GEOMETRY")
         val deadline = SystemClock.elapsedRealtime() + 15_000
         while (SystemClock.elapsedRealtime() < deadline) {
             val ready = runCatching {
@@ -133,7 +206,7 @@ class ProjectionInstrumentation : Instrumentation() {
                 fixtureBootstrapReady(value.getString("state"), value.optString("tls"), value.optString("peerAddress"),
                     value.optString("localAddress"), value.getInt("width"), value.getInt("height"), value.getLong("touchesSent"))
             }.getOrDefault(false)
-            if (ready) return
+            if (ready) { setupStage("FIXTURE_GEOMETRY_READY"); return }
             Thread.sleep(100)
         }
         error("No authenticated fixture geometry")
@@ -159,6 +232,10 @@ class ProjectionInstrumentation : Instrumentation() {
 
     override fun onStart() {
         val report = JSONObject().put("passed", false).put("driver", "on-RG Kotlin instrumentation")
+        runStartedNs = System.nanoTime()
+        setupReport = report
+        report.put("runStartedMonoNs", runStartedNs).put("setupStages", setupStages)
+        setupStage("RUN_STARTED")
         var activity: Activity? = null
         var file: File? = null
         var ownsRecord = false
@@ -170,13 +247,16 @@ class ProjectionInstrumentation : Instrumentation() {
         try {
             val id = args.getString("runId") ?: error("Run identity required")
             require(id.matches(Regex("[A-Za-z0-9_-]{1,48}")))
+            report.put("runId", id)
             file = File(targetContext.filesDir, "probe-$id.json")
             require(file.createNewFile()) { "Existing test record" }
             ownsRecord = true
             val operation = args.getString("operation") ?: "stream"
             report.put("operation", operation)
             if (operation == "native-input-observation") {
+                setupStage("NATIVE_OBSERVER_START")
                 runNativeInputObservation(this, args, id, report)
+                setupStage("NATIVE_OBSERVER_FINISHED")
             } else if (operation == "local-input-replay") {
                 val widgets = WidgetCheckDiagnostics.nativeReport()
                 report.put("localWidgets", widgets)
@@ -184,7 +264,9 @@ class ProjectionInstrumentation : Instrumentation() {
                 val intent = Intent().setClassName(targetContext.packageName, ReceiverActivity::class.java.name)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 diagnostics.enter(WidgetCheckDiagnostics.Check.ACTIVITY_START)
+                setupStage("ACTIVITY_LAUNCH")
                 activity = startActivitySync(intent)
+                setupStage("ACTIVITY_LAUNCHED", activity)
                 diagnostics.completed(WidgetCheckDiagnostics.Check.ACTIVITY_START)
                 diagnostics.enter(WidgetCheckDiagnostics.Check.ACTIVITY_IDLE)
                 waitForIdleSync()
@@ -212,19 +294,32 @@ class ProjectionInstrumentation : Instrumentation() {
                 }
                 val intent = Intent().setClassName(targetContext.packageName, ReceiverActivity::class.java.name).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 freshAfterNs = System.nanoTime()
-                activity = startActivitySync(intent); waitForIdleSync(); Thread.sleep(250)
+                setupStage("ACTIVITY_LAUNCH")
+                activity = startActivitySync(intent)
+                setupStage("ACTIVITY_LAUNCHED", activity)
+                setupStage("WAIT_ACTIVITY_IDLE", activity)
+                waitForIdleSync(); Thread.sleep(250)
+                setupStage("ACTIVITY_IDLE", activity)
                 if (args.getString("autoStart") == "true") {
                     File(targetContext.filesDir, "probe-$id.ready").writeText("Receiver resumed; waiting for Phone Start; no Glasses Connect invocation")
                     report.put("initiator", "Phone Start; no Glasses Connect invocation")
+                    setupStage("WAIT_PHONE_START", activity)
                 } else clickConnect(activity)
                 if (waitForFixture) waitFixtureGeometry() else waitStreaming()
                 if (operation == "connected-panel") report.put("connectedPanel", ConnectedPanelChecks.run(this, activity as ReceiverActivity))
                 report.put("connected", status())
                 if (operation == "reconnect") {
+                    setupStage("RECONNECT_FINISH_OWNED_ACTIVITY", activity)
                     runOnMainSync { activity!!.finish() }; Thread.sleep(1500)
                     require(status().getString("state") == "STOPPED")
                     freshAfterNs = System.nanoTime()
-                    activity = startActivitySync(intent); waitForIdleSync(); Thread.sleep(250)
+                    baselineActivity = null
+                    setupStage("RECONNECT_ACTIVITY_LAUNCH", null)
+                    activity = startActivitySync(intent)
+                    setupStage("RECONNECT_ACTIVITY_LAUNCHED", activity)
+                    setupStage("RECONNECT_WAIT_ACTIVITY_IDLE", activity)
+                    waitForIdleSync(); Thread.sleep(250)
+                    setupStage("RECONNECT_ACTIVITY_IDLE", activity)
                     clickConnect(activity)
                     if (waitForFixture) waitFixtureGeometry() else waitStreaming()
                     require(status().getLong("touchesSent") == 0L)
@@ -347,14 +442,26 @@ class ProjectionInstrumentation : Instrumentation() {
             report.put("passed", true)
         } catch (error: Exception) {
             report.put("errorType", error.javaClass.simpleName)
+            report.put("failureSetupStage", currentSetupStage)
+            report.put("failureActivityScope", when {
+                activity == null -> "NO_ACTIVITY_RETURNED"
+                activity === baselineActivity -> "CURRENT_BASELINE_ACTIVITY"
+                else -> "PRIOR_OWNED_ACTIVITY_NO_NEW_ACTIVITY_RETURNED"
+            })
+            startupErrorFields(error).forEach { (key, value) -> report.put(key, value ?: JSONObject.NULL) }
+            startupSnapshot(activity, report)
             if (activity != null) runCatching { report.put("failureStatus", status()) }
+                .onFailure { failure -> report.put("failureStatusUnavailable", JSONObject(startupErrorFields(failure))) }
+            lastStatusObservation?.let { report.put("lastStatusObservation", it) }
             val causes = JSONArray(); var cause: Throwable? = error
             repeat(6) { cause?.let { causes.put(it.javaClass.simpleName); cause = it.cause } }
             report.put("causeClasses", causes)
         }
         finally {
             measurementStarted?.let { report.put("actualMeasurementMs", (measurementEnded ?: SystemClock.elapsedRealtime()) - it) }
+            if (activity != null) report.put("baselineTeardown", "FINISH_OWNED_ACTIVITY")
             activity?.let { runOnMainSync { it.finish() } }
+            baselineActivity = null
             testFocus?.let { audioManager.abandonAudioFocusRequest(it) }
             priorVolume?.let {
                 audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, it, 0)

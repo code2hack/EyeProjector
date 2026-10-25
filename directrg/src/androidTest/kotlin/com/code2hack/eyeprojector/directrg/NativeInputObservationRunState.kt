@@ -1,5 +1,24 @@
 package com.code2hack.eyeprojector.directrg
 
+import java.util.concurrent.atomic.AtomicReference
+
+/** Dispatch must wait for callback completion. Contain on that thread, then fail on the caller. */
+internal fun nativeInputObservationOnMain(dispatch: (() -> Unit) -> Unit, operation: () -> Unit) {
+    val failure = AtomicReference<Throwable?>()
+    try {
+        dispatch {
+            try { operation() }
+            catch (error: Throwable) { failure.set(error) }
+        }
+    } catch (error: Throwable) {
+        val original = failure.get()
+        if (original == null || original === error) throw error
+        original.addSuppressed(error)
+        throw original
+    }
+    failure.get()?.let { throw it }
+}
+
 /** Test-run facts and failure ordering, independent of Android event handling. */
 internal class NativeInputObservationRunState(val requestedWindowMs: Long) {
     var windowStartMs: Long? = null

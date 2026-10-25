@@ -684,6 +684,29 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         return true
     }
 
+    /** Main-thread diagnostic reads only; no pairing/config I/O or activation/presentation mutation. */
+    internal fun startupDiagnosticSnapshot(): Map<String, Any?> {
+        val memory = owner?.snapshot()
+        val feature = serviceBinder?.feature
+        val directive = feature?.directive
+        val reported = feature?.presentation
+        val screenReady = ::screen.isInitialized
+        return mapOf(
+            "bound" to bound, "binderAvailable" to (serviceBinder != null), "bindingValid" to bindingValid,
+            "resumed" to resumed, "focused" to hasWindowFocus(), "finishing" to isFinishing, "destroyed" to isDestroyed,
+            "screenInitialized" to screenReady, "surfaceValid" to if (screenReady) screen.holder.surface.isValid else null,
+            "connectRequested" to connectRequested, "connectBeforeBinding" to connectBeforeBinding,
+            "disconnectBeforeBinding" to disconnectBeforeBinding,
+            "ownerState" to memory?.state, "ownerRequested" to memory?.requested,
+            "sessionPresent" to memory?.let { it.session != null }, "peerPhase" to memory?.peer?.phase?.name,
+            "peerDetail" to memory?.peer?.detail, "visibleActivation" to visibleActivation,
+            "currentActivation" to memory?.activationId, "activationDesired" to directive?.desired,
+            "activationGoal" to directive?.goal?.name, "reportedPresentationMode" to reported?.mode?.name,
+            "reportedPresentationDetail" to reported?.detail, "panelSelected" to presentation.panelVisible,
+            "presentationLive" to presentation.live, "pairedAvailable" to null,
+            "pairedAvailabilityScope" to "UNEXPORTED_NO_MEMORY_GETTER")
+    }
+
     internal fun inputSnapshot(): JSONObject = JSONObject()
         .put("sensor", pointer.sourceDescription).put("sourceRegistered", pointer.sourceRegistered)
         .put("acceptedSensorSamples", pointer.acceptedSamples).put("localCursorDraws", pointer.drawCount)
