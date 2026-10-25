@@ -59,8 +59,10 @@ internal class PhoneHidRuntime private constructor(context: Context) {
                 }
                 return captured
             }
-            override fun request(cause: ActivationCause) { sessions.requestActivation(cause) }
+            override fun request(cause: ActivationCause) { request(cause, capture()) }
             override fun request(cause: ActivationCause, capture: PhoneHidCapture) {
+                // An attachment already qualified as usable joins that captured owner without latest-H effects.
+                if (capture.disposition == PhoneHidDisposition.USABLE) return
                 val wake = capture.wake ?: return
                 val h = sessions.requestHidActivation(wake) ?: return
                 if (capture.disposition == PhoneHidDisposition.UNKNOWN) {

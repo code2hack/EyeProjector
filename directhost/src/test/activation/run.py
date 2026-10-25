@@ -6,6 +6,7 @@ p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--output-dir',type=Path,required=True)
 p.add_argument('--composed',action='store_true')
 p.add_argument('--producer',action='store_true')
+p.add_argument('--attachment-only',action='store_true',help='Actual attachment caller regression only; requires producer/transport source closure')
 p.add_argument('--transport',action='store_true',help='Producer plus actual Session/merger composition; Android/native/Binder boundaries explicit')
 p.add_argument('--source-root',type=Path,help='Exact production source snapshot; fixtures remain current and are separately retained')
 a=p.parse_args(); out=a.output_dir.resolve();out.mkdir(parents=True,exist_ok=False)
@@ -57,7 +58,7 @@ for i,f in enumerate(files):
 java=str(Path(os.environ.get('JAVA_HOME','/usr/lib/jvm/java-17-openjdk-amd64'))/'bin/java')
 cp=os.pathsep.join(map(str,jars)); jar=out/'activation.jar'
 commands={'compile':[java,'-Xmx2g','-cp',cp,'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler','-no-stdlib','-no-reflect','-jvm-target','17','-classpath',cp,'-d',str(jar)]+compiled,
-          'run':[java,('-Deyeprojector.transport=true' if a.transport else '-Deyeprojector.transport=false'),'-cp',str(jar)+os.pathsep+cp,('com.code2hack.eyeprojector.directhost.activation.producer.ScenariosKt' if a.producer else 'com.code2hack.eyeprojector.directhost.activation.ComposedScenariosKt' if a.composed else 'com.code2hack.eyeprojector.directhost.activation.SharedScenariosKt')]}
+          'run':[java,('-Deyeprojector.attachmentOnly=true' if a.attachment_only else '-Deyeprojector.attachmentOnly=false'),('-Deyeprojector.transport=true' if a.transport else '-Deyeprojector.transport=false'),'-cp',str(jar)+os.pathsep+cp,('com.code2hack.eyeprojector.directhost.activation.producer.ScenariosKt' if a.producer else 'com.code2hack.eyeprojector.directhost.activation.ComposedScenariosKt' if a.composed else 'com.code2hack.eyeprojector.directhost.activation.SharedScenariosKt')]}
 result={'inputs':inputs,'dependencies':[{'path':str(f),'sha256':sha(f)} for f in jars],'commands':commands,'compileExit':None,'runExit':None,'scope':('Actual Bootstrap/facade/Runtime/KeyService/controller/native Kotlin writer+reader/Session/merger/core/control with explicit Android/JNI/SharedMemory/Binder/TLS/platform boundaries; no native/runtime/physical proof' if a.transport else 'Actual HostBootstrap producer and facade/core/feature/control with explicit Android/Shizuku/Binder/persistence boundaries; no native/runtime/physical proof' if a.producer else 'Actual facade/runtime/HID/merger/core/feature/store/control code with explicit Android/Bootstrap/Binder/TLS doubles; not real Android/backend resources or physical proof' if a.composed else 'Actual core/feature engine/stores/control codecs/paired client; TLS/log boundaries explicit, no facade/Android/backend/physical proof')}
 try:
     for phase,limit in [('compile',90),('run',60 if a.producer else 30)]:

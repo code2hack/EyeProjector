@@ -14,7 +14,7 @@ private fun await(message:String,pump:Boolean=true,test:()->Boolean){
  val end=System.nanoTime()+TimeUnit.SECONDS.toNanos(4)
  while(!test() && System.nanoTime()<end){if(pump)Handler.flush();Thread.yield()};check(test()){message}
 }
-internal class Fixture:AutoCloseable {
+internal class Fixture(private val initialActivation:Boolean=true):AutoCloseable {
  val directory=java.nio.file.Files.createTempDirectory("actual-producer-").toFile()
  val context=Context(directory)
  val service=FakeService().apply{state="STREAMING";replaceProjection("original-A")}
@@ -36,8 +36,10 @@ internal class Fixture:AutoCloseable {
   lane=field(sessions,"featureLane").get(sessions) as ScheduledExecutorService
   hostLane=field(bootstrap,"executor").get(bootstrap) as ScheduledExecutorService
   await("actual Bootstrap attached running fixture"){bootstrap.status().projectionContext==service.context}
-  sessions.requestActivation(ActivationCause.HID_ATTACHMENT)
-  await("feature H adopts actual already-owned A"){directiveOrNull()?.ownerEpoch=="original-A"}
+  if(initialActivation){
+   sessions.requestActivation(ActivationCause.HID_ATTACHMENT)
+   await("feature H adopts actual already-owned A"){directiveOrNull()?.ownerEpoch=="original-A"}
+  }
  }
  fun directiveOrNull()=sessions.state().activation?.directive
  fun directive()=directiveOrNull()!!
@@ -79,6 +81,10 @@ internal class Fixture:AutoCloseable {
  }
 }
 fun main(){
+ if(System.getProperty("eyeprojector.attachmentOnly")=="true") {
+  Class.forName("com.code2hack.eyeprojector.directhost.activation.producer.TransportScenariosKt").getMethod("attachment77Scenarios").invoke(null)
+  return
+ }
  inputAuthorityRegression()
  requestMerge57Scenarios()
  if (System.getProperty("eyeprojector.transport")=="true") Class.forName("com.code2hack.eyeprojector.directhost.activation.producer.TransportScenariosKt").getMethod("transportFrontendScenarios").invoke(null)

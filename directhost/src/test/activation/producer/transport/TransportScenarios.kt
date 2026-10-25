@@ -40,6 +40,7 @@ private class TransportRig(val f:Fixture,val backend:PanelFixture):AutoCloseable
 }
 
 fun transportFrontendScenarios(){
+ attachment77Scenarios()
  for(bound in listOf(false,true))Fixture().use{f->PanelFixture(f.service.sessionEpoch).use{backend->TransportRig(f,backend).use{r->
   if(bound)r.bound();r.ready()
   check(!r.key(900,k=202));check(!r.key(910,KeyEvent.ACTION_UP,900,k=202)) // Known usable unassigned passes.
@@ -139,4 +140,158 @@ fun transportFrontendScenarios(){
   check(f.sessions.isActivationCurrent(h2))
   println("PASS delayed original descriptor/UNKNOWN demand after Stop cannot install into or wake successor H2")
  }}}
+}
+
+
+/** Actual eligible InputManager delivery -> KeyService -> Controller -> Runtime -> existing facade/engine. */
+fun attachment77Scenarios(){
+ Fixture().use{f->PanelFixture(f.service.sessionEpoch).use{backend->TransportRig(f,backend).use{r->
+  r.ready();f.report(ReceiverUsabilityMode.PROJECTED);Handler.flush();r.ready()
+  val engine=member(f.sessions,"activation") as PhoneActivationEngine
+  check(engine.ready && !f.sessions.needsActivation() && member(r.runtime,"pendingSetup")==null)
+  val h=f.sessions.activationId();val before=f.directive();val demand=engine.journal.current!!.demandId
+  val input=member(r.ingress,"manager") as android.hardware.input.InputManager
+  input.install(r.device)
+  val held=CountDownLatch(1);val release=CountDownLatch(1)
+  f.lane.execute{held.countDown();check(release.await(4,TimeUnit.SECONDS))};check(held.await(1,TimeUnit.SECONDS))
+  var reads=0L
+  try {
+   r.mode(ReceiverUsabilityMode.NONE) // Already parsed, accepted, native-published; facade/feature catch-up held.
+   check(!f.sessions.needsActivation() && engine.ready)
+   val nativeBefore=NativeSnapshotAccess.reads.get()
+   input.add(r.device.id) // Real registered KeyService callback; no key event or compatibility-only port.
+   reads=NativeSnapshotAccess.reads.get()-nativeBefore
+  } finally {release.countDown()}
+  f.lane.submit{}.get(2,TimeUnit.SECONDS);Handler.flush();f.lane.submit{}.get(2,TimeUnit.SECONDS)
+  val advanced=f.directive().wakeRevision>before.wakeRevision
+  val lost=engine.inputPresentation==null
+  val sameScope=f.sessions.activationId()==h && f.directive().ownerEpoch==before.ownerEpoch && engine.journal.current!!.demandId==demand
+  val noTarget=f.service.inputCalls.isEmpty() && backend.peer.sink.size()==0
+  println("OBSERVED C66-01 actual eligible attachment nativeReads=$reads wakeBefore=${before.wakeRevision} wakeAfter=${f.directive().wakeRevision} inputRetired=$lost sameHAD=$sameScope noTarget=$noTarget")
+  check(reads==1L && advanced && lost && sameScope && noTarget) {"C66-01 attachment bypassed established native NONE; no second key may be required"}
+  println("PASS actual eligible attachment samples published NONE once and produces durable original H/A wake, preserving D without key/target/replay")
+ }}}
+ attachment77Controls()
+}
+
+
+private fun attachmentInput(r:TransportRig):android.hardware.input.InputManager =
+ (member(r.ingress,"manager") as android.hardware.input.InputManager).also{it.install(r.device)}
+private fun localRequest(f:Fixture)=(member(f.sessions,"pendingRequest") as java.util.concurrent.atomic.AtomicReference<*>).get()
+
+private fun attachment77Controls(){
+ Fixture().use{f->PanelFixture(f.service.sessionEpoch).use{backend->TransportRig(f,backend).use{r->
+  r.ready();f.report(ReceiverUsabilityMode.PROJECTED);Handler.flush();r.ready()
+  val input=attachmentInput(r);val original=f.directive();val h=f.sessions.activationId();val starts=f.service.starts
+  var reads=NativeSnapshotAccess.reads.get();input.add(r.device.id)
+  check(NativeSnapshotAccess.reads.get()==reads+1 && member(r.runtime,"pendingSetup")==null)
+  f.lane.submit{}.get(2,TimeUnit.SECONDS);Handler.flush();check(f.directive()==original && f.sessions.activationId()==h)
+  val held=CountDownLatch(1);val release=CountDownLatch(1)
+  f.lane.execute{held.countDown();check(release.await(4,TimeUnit.SECONDS))};check(held.await(1,TimeUnit.SECONDS))
+  try {
+   val d=f.sessions.requestActivation(ActivationCause.NOTIFICATION);val pending=localRequest(f)
+   reads=NativeSnapshotAccess.reads.get();input.add(r.device.id)
+   check(NativeSnapshotAccess.reads.get()==reads+1 && localRequest(f)===pending && f.sessions.isActivationCurrent(d))
+  } finally {release.countDown()}
+  f.lane.submit{}.get(2,TimeUnit.SECONDS);Handler.flush()
+  check(f.service.starts==starts && f.service.inputCalls.isEmpty() && backend.peer.sink.size()==0)
+  reads=NativeSnapshotAccess.reads.get();r.runtime.controller.activation.request(ActivationCause.HID_ATTACHMENT)
+  check(NativeSnapshotAccess.reads.get()==reads+1) // Compatibility entry captures once; typed path never recaptures.
+  for(device in listOf(r.device.copy(id=80,isExternal=false),r.device.copy(id=81,isVirtual=true),r.device.copy(id=82,name="ROKID,PSOC-TP-R"),r.device.copy(id=83,name="qpnp_pon"))){input.install(device);input.add(device.id)}
+  val after=NativeSnapshotAccess.reads.get();input.add(999);check(after==NativeSnapshotAccess.reads.get() && after==reads+1)
+  println("PASS actual USABLE attachment is one-capture/no-effect original-H join; pending PROJECTED D unchanged; compatibility one capture and existing eligibility exclusions/no targets")
+ }}}
+ Fixture().use{f->PanelFixture(f.service.sessionEpoch).use{backend->TransportRig(f,backend).use{r->
+  val entered=CountDownLatch(1);val release=CountDownLatch(1)
+  f.service.snapshotProvider={entered.countDown();check(release.await(4,TimeUnit.SECONDS));r.session.phoneHidSnapshot()}
+  Handler.flush();check(entered.await(2,TimeUnit.SECONDS));f.report(ReceiverUsabilityMode.PROJECTED);Handler.flush()
+  val original=f.directive();val h=f.sessions.activationId();val input=attachmentInput(r)
+  try {
+   input.add(r.device.id);check(member(r.runtime,"pendingSetup")!=null && f.service.inputCalls.isEmpty())
+   r.ingress.onDestroy();Handler.flush();check(member(r.runtime,"pendingSetup")!=null)
+   r.mode(ReceiverUsabilityMode.NONE)
+  } finally {release.countDown()}
+  waitFor("UNKNOWN attachment resolves original NONE without a key or Accessibility reconnect") {
+   member(r.runtime,"pendingSetup")==null && (member(f.sessions,"activation") as PhoneActivationEngine).inputPresentation==null && f.directive().wakeRevision>original.wakeRevision
+  }
+  check(f.sessions.activationId()==h && f.directive().ownerEpoch==original.ownerEpoch && f.service.inputCalls.isEmpty() && backend.peer.sink.size()==0)
+  println("PASS actual UNKNOWN eligible attachment survives Accessibility detach and resolves original durable NONE wake without any key/reconnect/target replay")
+ }}}
+ for(mode in listOf(PhoneHidDisposition.USABLE,PhoneHidDisposition.NONE))Fixture().use{f->PanelFixture(f.service.sessionEpoch).use{backend->TransportRig(f,backend).use{r->
+  r.ready();f.report(ReceiverUsabilityMode.PROJECTED);Handler.flush();r.ready();if(mode==PhoneHidDisposition.NONE)r.mode(ReceiverUsabilityMode.NONE)
+  val actual=r.runtime.controller.activation;var captured:PhoneHidCapture?=null;var typedCalls=0;var h2:ActivationHandle?=null
+  val held=CountDownLatch(1);val release=CountDownLatch(1)
+  f.lane.execute{held.countDown();check(release.await(4,TimeUnit.SECONDS))};check(held.await(1,TimeUnit.SECONDS))
+  // Explicit test scheduling boundary after ACTUAL pure capture; capture/admission algorithms remain production.
+  r.runtime.controller.activation=object:PhoneHidActivation {
+   override fun needsWake()=actual.needsWake()
+   override fun capture():PhoneHidCapture=actual.capture().also {
+    check(it.disposition==mode);captured=it;f.sessions.stop();h2=f.sessions.requestActivation(ActivationCause.PHONE_START)
+    r.runtime.controller.activation=PhoneHidActivation.Unwired // Caller must retain its original port/capture.
+   }
+   override fun request(cause:ActivationCause)=error("unexpected unscoped attachment fallback")
+   override fun request(cause:ActivationCause,observation:PhoneHidCapture){check(observation===captured && cause==ActivationCause.HID_ATTACHMENT);typedCalls++;actual.request(cause,observation)}
+  }
+  try {
+   attachmentInput(r).add(r.device.id)
+   check(typedCalls==1 && member(r.runtime,"pendingSetup")==null && f.sessions.isActivationCurrent(h2!!))
+   val pending=checkNotNull(localRequest(f));check(member(pending,"hidWake")==null && member(pending,"handle")===h2)
+   check(f.service.inputCalls.isEmpty() && backend.peer.sink.size()==0)
+  } finally {r.runtime.controller.activation=actual;release.countDown()}
+  println("PASS actual attachment $mode capture held across Stop/H2 and port replacement cannot rebind, enqueue old loss into H2, recapture or emit target input")
+ }}}
+ Fixture().use{f->PanelFixture(f.service.sessionEpoch).use{backend->TransportRig(f,backend).use{r->
+  val entered=CountDownLatch(1);val release=CountDownLatch(1)
+  f.service.snapshotProvider={entered.countDown();check(release.await(4,TimeUnit.SECONDS));r.session.phoneHidSnapshot()}
+  Handler.flush();check(entered.await(2,TimeUnit.SECONDS));attachmentInput(r).add(r.device.id);check(member(r.runtime,"pendingSetup")!=null)
+  val held=CountDownLatch(1);val go=CountDownLatch(1)
+  f.lane.execute{held.countDown();check(go.await(4,TimeUnit.SECONDS))};check(held.await(1,TimeUnit.SECONDS))
+  try {
+   val old=f.sessions.activationId();f.sessions.stop();val h2=f.sessions.requestActivation(ActivationCause.PHONE_START);val pending=localRequest(f)
+   check(old!=h2.id);release.countDown();(member(r.runtime,"writer") as ExecutorService).submit{}.get(2,TimeUnit.SECONDS);Handler.flush()
+   check(member(r.runtime,"pendingSetup")==null && localRequest(f)===pending && f.sessions.isActivationCurrent(h2))
+   check(member(checkNotNull(pending),"hidWake")==null && f.service.inputCalls.isEmpty())
+  } finally {release.countDown();go.countDown()}
+  println("PASS actual UNKNOWN attachment delayed original descriptor/result after Stop cannot install or transfer wake payload into H2")
+ }}}
+ Fixture().use{f->PanelFixture(f.service.sessionEpoch).use{backend->TransportRig(f,backend).use{r->PanelFixture(f.service.sessionEpoch).use{replacement->
+  val next=replacement.session as CapturedProjection
+  method(replacement.session,"prepareHidRegion")
+  method(replacement.session,"receiveControl",Frame(Wire.RECEIVER_USABILITY,payload=ReceiverUsability(f.service.sessionEpoch,ReceiverIncarnation("replacement",1),1,4,ReceiverUsabilityMode.LOCAL_PANEL).bytes()))
+  val entered=CountDownLatch(1);val release=CountDownLatch(1);val first=java.util.concurrent.atomic.AtomicBoolean(true)
+  f.service.snapshotProvider={if(first.compareAndSet(true,false)){entered.countDown();check(release.await(4,TimeUnit.SECONDS));r.session.phoneHidSnapshot()}else next.phoneHidSnapshot()}
+  Handler.flush();check(entered.await(2,TimeUnit.SECONDS));val h=f.sessions.activationId();attachmentInput(r).add(r.device.id)
+  check(member(r.runtime,"pendingSetup")!=null)
+  try {
+   f.service.display=f.service.display.copy(context=next.receiverUsability().context)
+   f.bootstrap.refresh();f.hostLane.submit{}.get(2,TimeUnit.SECONDS);Handler.flush()
+  } finally {release.countDown()}
+  waitFor("old attachment setup result cannot install old C; replacement setup uses exact same-H new context") {
+   val authority=member(member(r.runtime,"snapshot"),"authority") as HidInputAuthority?
+   authority?.context==next.receiverUsability().context
+  }
+  check(f.sessions.activationId()==h && member(r.runtime,"pendingSetup")==null && f.service.inputCalls.isEmpty())
+  println("PASS actual UNKNOWN attachment old-C descriptor is rejected after original source replacement; same-H replacement reader binds new C without old demand/target replay")
+ }}}}
+ Fixture(initialActivation=false).use{f->PanelFixture(f.service.sessionEpoch).use{backend->
+  val session=backend.session as CapturedProjection
+  f.service.display=f.service.display.copy(context=session.receiverUsability().context)
+  f.bootstrap.refresh();f.hostLane.submit{}.get(2,TimeUnit.SECONDS);Handler.flush()
+  method(backend.session,"prepareHidRegion");method(backend.session,"receiveControl",Frame(Wire.RECEIVER_USABILITY,payload=ReceiverUsability(f.service.sessionEpoch,ReceiverIncarnation("no-owner",1),1,4,ReceiverUsabilityMode.NONE).bytes()))
+  f.service.snapshotProvider={session.phoneHidSnapshot()}
+  PhoneHidRuntime::class.java.getDeclaredField("instance").apply{isAccessible=true}.set(null,null)
+  val runtime=PhoneHidRuntime.get(f.context);val ingress=PhoneHidKeyService();ingress.onServiceConnected()
+  try {
+   Handler.flush();check(f.sessions.activationId()==null)
+   val input=member(ingress,"manager") as android.hardware.input.InputManager;val device=InputDevice(44,"no-owner-hid",4,5,"External fixture")
+   val readsBefore=NativeSnapshotAccess.reads.get()
+   input.install(device);input.add(device.id);val h=checkNotNull(f.sessions.activationId())
+   check(member(runtime,"pendingSetup")!=null)
+   waitFor("no-owner UNKNOWN attachment establishes original H/A and completes pending setup without key") {
+    f.directiveOrNull()?.ownerEpoch==f.service.sessionEpoch && member(runtime,"pendingSetup")==null && NativeSnapshotAccess.reads.get()>readsBefore
+   }
+   check(f.sessions.activationId()==h && f.service.inputCalls.isEmpty() && backend.peer.sink.size()==0)
+   println("PASS actual no-owner UNKNOWN attachment allocates scoped H and resolves established NONE to original durable directive without any key/target")
+  } finally {ingress.onDestroy();Handler.flush();(member(runtime,"writer") as ExecutorService).let{it.shutdownNow();it.awaitTermination(2,TimeUnit.SECONDS)};Handler.flush()}
+ }}
 }

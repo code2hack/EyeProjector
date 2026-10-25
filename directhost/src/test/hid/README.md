@@ -123,3 +123,14 @@ Stop/page/device/service retirement, missing/changed device metadata, request
 failure, sticky learning while disconnected and unchanged ready pass-through.
 The actual service attachment cases reuse the existing external/nonvirtual/native
 exclusions and do not treat metadata change as a new attachment.
+
+
+Correction77 routes eligible attachment through the same one captured disposition
+as fresh keys. Production USABLE attachment is an idempotent join without a
+latest-owner request; NONE/UNKNOWN retain the captured scoped wake/setup path.
+The existing scoped helper represents these HID observations as HID_PRESS while
+the caller port retains HID_ATTACHMENT. Attachment creates no raw gesture or
+target edge. Its actual Runtime/KeyService/Session/engine proof is in the
+activation runner's `--producer --transport` suite; `--attachment-only` isolates
+that subset and `--source-root` binds the preserved parent production snapshot.
+The isolated HID port cases here retain separate caller/gesture/learning scope.

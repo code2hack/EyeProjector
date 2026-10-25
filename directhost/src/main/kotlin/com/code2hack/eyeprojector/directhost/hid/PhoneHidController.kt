@@ -119,7 +119,11 @@ internal class PhoneHidController(
         return true
     }
 
-    fun externalAttached() = requestActivation(ActivationCause.HID_ATTACHMENT)
+    /** Attachment shares one original usability decision; it creates no raw key gesture or target edge. */
+    fun externalAttached() {
+        val source = activation
+        requestActivation(ActivationCause.HID_ATTACHMENT, source, source.capture())
+    }
 
     private fun requestActivation(cause: ActivationCause, source: PhoneHidActivation = activation, admission: PhoneHidCapture? = null) {
         try { if (admission == null) source.request(cause) else source.request(cause, admission) } catch (_: Exception) { /* A handled press never falls back to target input. */ }
