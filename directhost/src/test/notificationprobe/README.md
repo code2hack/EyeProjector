@@ -42,6 +42,9 @@ channel/tag/id even if a caller reuses `runId`.
   not a semantically new message or native-incarnation guarantee. Off is reported as
   ineligible but does not suppress ingress observation. Unchosen packages require setup
   because the production runtime intentionally does not extract their records.
+  Its invocation-owned synthetic channel uses `IMPORTANCE_LOW` to avoid an audible fixture
+  alert under ordinary Android channel behavior. Production notification policy and Owner
+  channel/audio settings are unchanged; actual device quiet behavior is separately observed.
 - `cleanup-owned`: after Root has reconciled an uncertain or terminated original invocation,
   accepts its retained canonical UUID and the exact target posting package. It derives only
   that fixture's fixed channel/tag/id; no arbitrary channel/tag/key/id is accepted. It performs

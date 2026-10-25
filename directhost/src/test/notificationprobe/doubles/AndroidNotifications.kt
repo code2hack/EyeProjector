@@ -96,5 +96,5 @@ class NotificationManager(private val context: Context) {
         deleteFailure?.let { throw it }
         channels.remove(id)
     }
-    companion object { const val IMPORTANCE_DEFAULT = 3; const val IMPORTANCE_NONE = 0 }
+    companion object { const val IMPORTANCE_DEFAULT = 3; const val IMPORTANCE_LOW = 2; const val IMPORTANCE_NONE = 0 }
 }

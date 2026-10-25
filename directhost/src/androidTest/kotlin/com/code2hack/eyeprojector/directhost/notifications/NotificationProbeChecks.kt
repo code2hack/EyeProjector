@@ -234,7 +234,7 @@ internal object NotificationProbeChecks {
             })
             check(notifications.getNotificationChannel(channelId) == null)
             channelOwned = true // Own exact new UUID even if create throws after a partial effect.
-            notifications.createNotificationChannel(NotificationChannel(channelId, "EyeProjector notification probe", NotificationManager.IMPORTANCE_DEFAULT))
+            notifications.createNotificationChannel(NotificationChannel(channelId, "EyeProjector notification probe", NotificationManager.IMPORTANCE_LOW))
             val channel = notifications.getNotificationChannel(channelId)
             report.put("ownedChannel", if (channel == null) "UNOBSERVED" else if (channel.importance == NotificationManager.IMPORTANCE_NONE) "BLOCKED" else "OBSERVED_ENABLED")
             if (channel == null || channel.importance == NotificationManager.IMPORTANCE_NONE) {
