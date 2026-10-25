@@ -175,7 +175,9 @@ class ProjectionInstrumentation : Instrumentation() {
             ownsRecord = true
             val operation = args.getString("operation") ?: "stream"
             report.put("operation", operation)
-            if (operation == "local-input-replay") {
+            if (operation == "native-input-observation") {
+                runNativeInputObservation(this, args, id, report)
+            } else if (operation == "local-input-replay") {
                 val widgets = WidgetCheckDiagnostics.nativeReport()
                 report.put("localWidgets", widgets)
                 val diagnostics = WidgetCheckDiagnostics(widgets)

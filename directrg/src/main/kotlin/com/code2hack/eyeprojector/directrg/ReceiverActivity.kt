@@ -44,6 +44,25 @@ import java.util.UUID
 import org.json.JSONObject
 
 class ReceiverActivity : Activity(), SurfaceHolder.Callback {
+    /** Optional instrumentation observer; never owns, consumes or retains the input events. */
+    internal interface NativeInputObserver {
+        fun key(activityId: Int, event: KeyEvent, receiptUptimeMs: Long, receiptElapsedNs: Long)
+        fun motion(activityId: Int, entry: String, event: MotionEvent, receiptUptimeMs: Long, receiptElapsedNs: Long)
+        fun stage(activityId: Int, stage: String, action: PadGestureRecognizer.Action?, deadlineUptimeMs: Long?,
+                  outcome: String?, local: Boolean?, generation: Long, receiptUptimeMs: Long, receiptElapsedNs: Long)
+    }
+    companion object {
+        @Volatile internal var nativeInputObserver: NativeInputObserver? = null
+    }
+    private inline fun observeNativeInput(read: (NativeInputObserver) -> Unit) {
+        val observer = nativeInputObserver ?: return
+        try { read(observer) } catch (_: Throwable) { /* Diagnostics cannot change input handling. */ }
+    }
+    private fun nativeInputStage(stage: String, action: PadGestureRecognizer.Action? = null,
+                                 due: Long? = null, outcome: String? = null, local: Boolean? = null) {
+        observeNativeInput { it.stage(System.identityHashCode(this), stage, action, due, outcome, local,
+            inputGeneration, SystemClock.uptimeMillis(), SystemClock.elapsedRealtimeNanos()) }
+    }
     private lateinit var root: FrameLayout
     private lateinit var screen: ProjectorSurface
     private lateinit var pointer: PointerOverlay
@@ -301,6 +320,8 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             schedulePadConfirmation()
         }, ::cancelInput)
         longTouch = NativePadLongTouch(this) { at ->
+            observeNativeInput { it.stage(System.identityHashCode(this), "ai_callback", null, at, null, null,
+                inputGeneration, SystemClock.uptimeMillis(), SystemClock.elapsedRealtimeNanos()) }
             if (usable()) gestures.classifyLongPress(at) else gestures.cancel(at)
             schedulePadConfirmation()
         }
@@ -499,18 +520,32 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun dispatchPadAction(action: PadGestureRecognizer.Action) {
+        nativeInputStage("dispatch_enter", action)
         when (action) {
-            is PadGestureRecognizer.Action.LongPress -> { longClassifications++; return }
+            is PadGestureRecognizer.Action.LongPress -> {
+                longClassifications++
+                nativeInputStage("dispatch_result", action, outcome = "classified-only")
+                return
+            }
             is PadGestureRecognizer.Action.Contact -> {
                 val accepted = if (action.event.phase == PadGestureRecognizer.Phase.CANCEL || usable())
                     heldOwner.acceptNative(action.event) else false
                 if (accepted) nativeActionsSubmitted++ else nativeActionsRejected++
+                nativeInputStage("dispatch_result", action, outcome = if (accepted) "submitted-to-held-owner" else "rejected")
                 updateEdgeScroll(); return
             }
-            is PadGestureRecognizer.Action.Back -> { contextualBack(); return }
+            is PadGestureRecognizer.Action.Back -> {
+                contextualBack()
+                nativeInputStage("dispatch_result", action, outcome = "delegated-contextual-back")
+                return
+            }
             else -> Unit
         }
-        if (!usable()) { nativeActionsRejected++; return }
+        if (!usable()) {
+            nativeActionsRejected++
+            nativeInputStage("dispatch_result", action, outcome = "rejected-unusable")
+            return
+        }
         val admittedGeneration = inputGeneration
         val admittedSession = session
         val admittedGeometry = currentGeometry
@@ -518,11 +553,17 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         // Pointer publication and old-target CANCEL may synchronously replace the view/session.
         pointer.inputPosition()
         if (inputGeneration != admittedGeneration || !usable() || session !== admittedSession ||
-            currentGeometry != admittedGeometry || (connectionView.visibility == View.VISIBLE) != admittedLocal) return
+            currentGeometry != admittedGeometry || (connectionView.visibility == View.VISIBLE) != admittedLocal) {
+            nativeInputStage("dispatch_result", action, outcome = "canceled-context-change", local = admittedLocal)
+            return
+        }
         if (::completedInput.isInitialized) completedInput.cancel()
         heldOwner.cancel(action.timeMs)
         if (inputGeneration != admittedGeneration || !usable() || session !== admittedSession ||
-            currentGeometry != admittedGeometry || (connectionView.visibility == View.VISIBLE) != admittedLocal) return
+            currentGeometry != admittedGeometry || (connectionView.visibility == View.VISIBLE) != admittedLocal) {
+            nativeInputStage("dispatch_result", action, outcome = "canceled-context-change", local = admittedLocal)
+            return
+        }
         val submitted = when (action) {
             is PadGestureRecognizer.Action.Tap -> {
                 val delay = SystemClock.uptimeMillis() - action.downTimeMs
@@ -544,6 +585,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             nativeActionsRejected++
             Log.w("EyeProjectorPad", "Native pointer action was not submitted")
         }
+        nativeInputStage("dispatch_result", action, outcome = if (submitted) "submitted" else "rejected", local = admittedLocal)
     }
 
     private fun updateEdgeScroll() {
@@ -572,9 +614,12 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     }
     private fun schedulePadConfirmation() {
         root.removeCallbacks(confirmTap)
-        gestures.deadline?.let { root.postDelayed(confirmTap, (it - SystemClock.uptimeMillis()).coerceAtLeast(0)) }
+        val deadline = gestures.deadline
+        nativeInputStage("deadline", due = deadline)
+        deadline?.let { root.postDelayed(confirmTap, (it - SystemClock.uptimeMillis()).coerceAtLeast(0)) }
     }
     private fun cancelInput() {
+        nativeInputStage("cancel")
         inputGeneration = owner?.advanceInputRevision() ?: (inputGeneration + 1)
         if (::hidInput.isInitialized) hidInput.cancel()
         if (::functionInput.isInitialized) functionInput.cancel()
@@ -590,12 +635,22 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         publishHeadPointer()
     }
 
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        observeNativeInput { it.motion(System.identityHashCode(this), "touch_motion", event,
+            SystemClock.uptimeMillis(), SystemClock.elapsedRealtimeNanos()) }
+        return super.dispatchTouchEvent(event)
+    }
+
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+        observeNativeInput { it.motion(System.identityHashCode(this), "generic_motion", event,
+            SystemClock.uptimeMillis(), SystemClock.elapsedRealtimeNanos()) }
         if (::padContact.isInitialized && padContact.accept(event)) return true
         return super.dispatchGenericMotionEvent(event)
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        observeNativeInput { it.key(System.identityHashCode(this), event,
+            SystemClock.uptimeMillis(), SystemClock.elapsedRealtimeNanos()) }
         val trace = HidDecisionTrace.capture {
             if (::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE && connectionView.visibility == View.VISIBLE)
                 HidDecisionTrace.Event(event.deviceId, event.keyCode, event.scanCode, event.action, event.repeatCount,
