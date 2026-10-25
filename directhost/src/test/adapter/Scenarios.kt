@@ -446,17 +446,20 @@ fun main() {
         val original = service.currentPanel.context
         val gate = java.util.concurrent.CountDownLatch(1); val entered = java.util.concurrent.CountDownLatch(1)
         val executor = f.field("executor") as ScheduledExecutorService
-        executor.execute {
+        val replaced = executor.submit {
             entered.countDown(); gate.await()
+            val source = (f.field("contextPublisher") as com.code2hack.eyeprojector.directhost.activation.ActivationContextPublisher).capture()
             service.replaceProjection()
-            HostBootstrap::class.java.getDeclaredMethod("readStatus", String::class.java).apply { isAccessible = true }
-                .invoke(f.host, service.status())
+            HostBootstrap::class.java.getDeclaredMethod("readStatus", String::class.java,
+                com.code2hack.eyeprojector.directhost.activation.ActivationContextPublisher.Observation::class.java).apply { isAccessible = true }
+                .invoke(f.host, service.status(), source)
         }
         check(entered.await(1, TimeUnit.SECONDS))
         var response: PanelPowerState? = null
         try { f.host.requestPanelOff { response = it } }
         finally { gate.countDown() }
         f.drain()
+        replaced.get(2, TimeUnit.SECONDS)
         check(response!!.context == original && response!!.off == PanelSubmission.UNAVAILABLE)
         check(service.currentPanel.context != original && service.panelRequests.isEmpty())
     }

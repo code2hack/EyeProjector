@@ -8,6 +8,9 @@ class ProjectedHomeView(context:Context){
     fun refresh(){}
 }
 class PhoneSessionController {
+    internal fun tryCommitActivationReady(ready: com.code2hack.eyeprojector.directhost.activation.ActivationReady<ProjectionContext>,
+        permit: com.code2hack.eyeprojector.directhost.activation.LaunchCommitPermit): Boolean =
+        error("Notification claim is outside this legacy adapter fixture; actual composition has a separate suite")
     fun launchApp(pkg:String,expected:ProjectionContext,complete:(ProjectionDisplayState?)->Unit)=host.launchApp(pkg,expected,complete)
     companion object {
         lateinit var host:HostBootstrap

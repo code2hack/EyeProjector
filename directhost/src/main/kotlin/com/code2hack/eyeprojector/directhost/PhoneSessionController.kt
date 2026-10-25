@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.atomic.AtomicLong
 import java.io.Closeable
 import com.code2hack.eyeprojector.directhost.activation.*
+import com.code2hack.eyeprojector.directhost.notifications.*
 
 /** App-scoped owner survives panel recreation and supplies the same commands to later Phone controls. */
 class PhoneSessionController private constructor(context: Context) {
@@ -29,7 +30,11 @@ class PhoneSessionController private constructor(context: Context) {
     val store = PeerStore(File(context.filesDir, "session"))
     private val featureLane = Executors.newSingleThreadScheduledExecutor()
     private val pendingBackend = AtomicReference<HostBootstrap.Status?>()
-    private data class LocalRequest(val handle: ActivationHandle, val cause: ActivationCause, val expectedEpoch: String? = null)
+    private data class LocalRequest(val handle: ActivationHandle, val cause: ActivationCause, val expectedEpoch: String? = null,
+        val hidWake: HidWakeRequest? = null)
+    private var hidRegionId: String? = null // Primitive setup authority only; never a mapping/address.
+    private var hidRegionContext = ProjectionContext()
+    private var hidRegionGeneration = 0L
     private val pendingRequest = AtomicReference<LocalRequest?>()
     private val pendingStops = linkedSetOf<String>()
     private val pendingReleased = AtomicReference<HostBootstrap.Status?>()
@@ -72,6 +77,8 @@ class PhoneSessionController private constructor(context: Context) {
     val appScales = AppScaleCoordinator(AppScalePreferences.open(context), object : AppScaleBackend {
         override fun launch(packageName: String, expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit) =
             bootstrap.launchApp(packageName, expected, complete)
+        override fun launchNotification(carrier: NotificationLaunchCarrier, complete: (NotificationDispatchOutcome) -> Unit) =
+            bootstrap.launchNotification(carrier, complete)
         override fun display(expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit) =
             bootstrap.projectionDisplayState(expected, complete)
         override fun request(value: Double, expected: ProjectionContext, complete: (ScaleState?) -> Unit) =
@@ -119,27 +126,98 @@ class PhoneSessionController private constructor(context: Context) {
 
     /** Immediate local identity capture only. HID never waits for this writer, disk or Binder. */
     internal fun requestActivation(cause: ActivationCause): ActivationHandle {
-        val handle = synchronized(fastLock) {
-            val h = currentHandle.get() ?: ActivationHandle("$localNonce.${offers.incrementAndGet()}", cause).also {
-                currentHandle.set(it); localRevision.incrementAndGet()
-                if (!initialized && firstOffer == null) firstOffer = it.id
-            }
-            if (cause == ActivationCause.NOTIFICATION) {
-                ActivationHandle(h.id, cause, "$localNonce.d${offers.incrementAndGet()}", ActivationGoal.PROJECTED).also { d ->
-                    currentDemand = d; projectedActivation = null; projectedProducerVersion = -1
-                    localRevision.incrementAndGet()
-                    pendingRequest.set(LocalRequest(d,cause))
-                }
-            } else {
-                // One existing latest-value slot; weaker input never replaces a pending PROJECTED request.
-                val pending = pendingRequest.get()
-                if (pending?.handle?.demandId == null) pendingRequest.set(LocalRequest(h,cause))
-                h
-            }
+        val handle = synchronized(NotificationPolicy.process.gate) {
+            synchronized(fastLock) { requestIdentityLocked(cause) }
         }
         scheduleDrain(); invalidateState()
         return handle
     }
+
+    /** Typed notification G admission and original D creation share Stop's in-memory order. */
+    internal fun admitNotification(selection: NotificationSelection, snapshot: NotificationPolicy.Snapshot): ActivationHandle? {
+        val policy = NotificationPolicy.process
+        val handle = synchronized(policy.gate) {
+            if (!policy.installLocked(selection, snapshot)) { selection.permit.retire(); null }
+            else synchronized(fastLock) { requestIdentityLocked(ActivationCause.NOTIFICATION).also { selection.handle = it } }
+        }
+        if (handle != null) { scheduleDrain(); invalidateState() }
+        policy.publish() // Effects/ordinary callbacks are outside BOTH ordering sections.
+        return handle
+    }
+    private fun requestIdentityLocked(cause: ActivationCause): ActivationHandle {
+        val h = currentHandle.get() ?: ActivationHandle("$localNonce.${offers.incrementAndGet()}", cause).also {
+            currentHandle.set(it); localRevision.incrementAndGet()
+            if (!initialized && firstOffer == null) firstOffer = it.id
+        }
+        return if (cause == ActivationCause.NOTIFICATION) {
+            ActivationHandle(h.id, cause, "$localNonce.d${offers.incrementAndGet()}", ActivationGoal.PROJECTED).also { d ->
+                currentDemand = d; projectedActivation = null; projectedProducerVersion = -1
+                localRevision.incrementAndGet()
+                enqueueLocalRequestLocked(LocalRequest(d, cause))
+            }
+        } else {
+            enqueueLocalRequestLocked(LocalRequest(h, cause)); h
+        }
+    }
+
+    private fun originalHidScopeCurrentLocked(original: HidInputAuthority): Boolean {
+        val current = currentHandle.get()
+        val old = original.handle
+        if (old == null) return current == null && original.admissionRevision == localRevision.get()
+        if (current == null || (aliases[current.id] ?: current.id) != (aliases[old.id] ?: old.id)) return false
+        if (original.attemptId != null && readyAttempt?.id != original.attemptId) return false
+        if (original.context.available) {
+            val fact = contextAuthority.fact
+            if (fact?.eligible != true || fact.context != original.context || contextAuthority.version != original.producerVersion) return false
+        }
+        return true
+    }
+
+    private fun validHidWakeLocked(wake: HidWakeRequest): Boolean {
+        val original = wake.authority
+        val old = original.handle ?: return false
+        val current = currentHandle.get() ?: return false
+        if ((aliases[current.id] ?: current.id) != (aliases[old.id] ?: old.id)) return false
+        if (original.attemptId != null && readyAttempt?.id != original.attemptId) return false
+        if (wake.admitted) {
+            // A later UNKNOWN setup sample cannot erase an already admitted NONE obligation.
+            // This never grants input/Ready and never transfers it to a different A/C/H.
+            if (original.context.available && contextAuthority.fact?.context != original.context) return false
+        } else if (!originalHidScopeCurrentLocked(original)) return false
+        return when (wake.disposition) {
+            PhoneHidDisposition.USABLE -> false
+            PhoneHidDisposition.UNKNOWN -> true // Unestablished setup is not a remote NONE observation.
+            PhoneHidDisposition.NONE -> original.context.available && original.attemptId != null &&
+                wake.regionId != null && wake.word != null && (wake.word ushr 2) != 0L && (wake.word and 3L) == 0L &&
+                (wake.admitted || wake.regionId == hidRegionId && original.context == hidRegionContext &&
+                    original.regionGeneration == hidRegionGeneration)
+        }
+    }
+
+    private fun enqueueLocalRequestLocked(request: LocalRequest) {
+        val old = pendingRequest.get()
+        val oldCurrent = old?.takeIf { currentLocked(it.handle) }
+        val incoming = request.takeIf { currentLocked(it.handle) }
+        val projected = currentDemand?.takeIf(::currentLocked)
+        val selected = when {
+            projected != null && incoming?.handle === projected -> incoming
+            projected != null && oldCurrent?.handle === projected -> oldCurrent
+            projected != null -> LocalRequest(projected, ActivationCause.NOTIFICATION)
+            incoming != null -> incoming
+            else -> oldCurrent
+        } ?: return
+        val incomingLoss = request.hidWake?.takeIf(::validHidWakeLocked)
+        val oldLoss = old?.hidWake?.takeIf(::validHidWakeLocked)
+        val loss = when {
+            incomingLoss?.disposition == PhoneHidDisposition.NONE && oldLoss?.disposition == PhoneHidDisposition.NONE ->
+                if (incomingLoss.regionId == oldLoss.regionId && (oldLoss.word!! ushr 2) > (incomingLoss.word!! ushr 2)) oldLoss else incomingLoss
+            incomingLoss?.disposition == PhoneHidDisposition.NONE -> incomingLoss
+            oldLoss?.disposition == PhoneHidDisposition.NONE -> oldLoss
+            else -> incomingLoss ?: oldLoss
+        }
+        pendingRequest.set(selected.copy(hidWake = loss))
+    }
+
     private fun currentLocked(handle: ActivationHandle): Boolean {
         val current = currentHandle.get() ?: return false
         return (aliases[current.id] ?: current.id) == (aliases[handle.id] ?: handle.id) &&
@@ -204,17 +282,20 @@ class PhoneSessionController private constructor(context: Context) {
         genericProducerVersion = -1; projectedProducerVersion = -1
     }
     private data class FastRetirement(val revision: Long, val notify: Boolean)
-    private fun retireFastOwner(id: String, cancel: Boolean, inputLost: Boolean): FastRetirement = synchronized(fastLock) {
-        val current = currentHandle.get() ?: return@synchronized FastRetirement(localRevision.get(),false)
-        if ((aliases[current.id] ?: current.id) != id) return@synchronized FastRetirement(localRevision.get(),false)
-        clearReadyLocked()
-        val notify = usable && inputLost
-        if (inputLost) usable = false
-        if (cancel) {
-            currentHandle.set(null); currentDemand = null; localRevision.incrementAndGet()
-            pendingRequest.get()?.takeIf { (aliases[it.handle.id] ?: it.handle.id) == id }?.let { pendingRequest.set(null) }
+    private fun retireFastOwner(id: String, cancel: Boolean, inputLost: Boolean): FastRetirement = synchronized(NotificationPolicy.process.gate) {
+        synchronized(fastLock) fast@{
+            val current = currentHandle.get() ?: return@fast FastRetirement(localRevision.get(),false)
+            if ((aliases[current.id] ?: current.id) != id) return@fast FastRetirement(localRevision.get(),false)
+            clearReadyLocked()
+            val notify = usable && inputLost
+            if (inputLost) usable = false
+            if (cancel) {
+                NotificationPolicy.process.retireLocked()
+                currentHandle.set(null); currentDemand = null; localRevision.incrementAndGet()
+                pendingRequest.get()?.takeIf { (aliases[it.handle.id] ?: it.handle.id) == id }?.let { pendingRequest.set(null) }
+            }
+            FastRetirement(localRevision.get(),notify)
         }
-        FastRetirement(localRevision.get(),notify)
     }
     private fun scheduleDrain() {
         if (drainQueued.compareAndSet(false, true)) featureLane.execute { drainQueued.set(false); drain() }
@@ -274,19 +355,7 @@ class PhoneSessionController private constructor(context: Context) {
                         cancelId != null || report?.mode == ReceiverUsabilityMode.NONE || cleanupId != null || failedId != null).notify) invalidateInput()
             }
             val reply = control?.let(activation::command)
-            synchronized(fastLock) { pendingRequest.getAndSet(null) }?.let { request ->
-                try {
-                    if (request.handle.id !in activation.journal.canceled &&
-                        (request.expectedEpoch == null || controller.acceptsStartCaller(request.expectedEpoch)))
-                        if (synchronized(fastLock) { currentLocked(request.handle) })
-                            activation.request(request.cause, request.handle.id, request.handle.demandId)
-                } catch (error: Exception) {
-                    synchronized(fastLock) {
-                        if (currentLocked(request.handle)) pendingRequest.compareAndSet(null, request)
-                    }
-                    throw error
-                }
-            }
+            synchronized(fastLock) { pendingRequest.getAndSet(null) }?.let(::applyLocalRequest)
             pendingForget.getAndSet(null)?.let { done ->
                 try { activation.stop(); bootstrap.stopBeforeForget(done) }
                 catch (error: Exception) { pendingForget.compareAndSet(null, done); throw error }
@@ -299,6 +368,22 @@ class PhoneSessionController private constructor(context: Context) {
             return null
         }
     }
+    private fun applyLocalRequest(request: LocalRequest) {
+        try {
+            val wake = synchronized(fastLock) { request.hidWake?.takeIf(::validHidWakeLocked) }
+            val requestCurrent = synchronized(fastLock) { currentLocked(request.handle) }
+            if (request.handle.id !in activation.journal.canceled && requestCurrent &&
+                (request.expectedEpoch == null || controller.acceptsStartCaller(request.expectedEpoch)) &&
+                (request.hidWake == null || wake != null || request.cause != ActivationCause.HID_PRESS))
+                activation.request(request.cause, request.handle.id, request.handle.demandId)
+            // Superseding D alone cannot discard valid original H-scoped loss.
+            wake?.let(activation::observeHidWake)
+        } catch (error: Exception) {
+            synchronized(fastLock) { enqueueLocalRequestLocked(request) }
+            throw error
+        }
+    }
+
     private fun publishActivation(revision: Long) {
         published = activation.state()
         val actual = activation.handle
@@ -386,16 +471,20 @@ class PhoneSessionController private constructor(context: Context) {
         drain(); activation.start(expectedEpoch).also { publishActivation(revision) }
     }.get(4, TimeUnit.SECONDS)
     fun stop(): SessionState {
-        synchronized(fastLock) {
-            localRevision.incrementAndGet()
-            val original = currentHandle.getAndSet(null)
-            if (original == null && !initialized) stopInitialOwner = true
-            original?.let {
-                synchronized(pendingStops) { pendingStops.add(original.id) }
-                pendingRequest.get()?.takeIf { it.handle.id == original.id }?.let { pendingRequest.set(null) }
+        synchronized(NotificationPolicy.process.gate) {
+            NotificationPolicy.process.retireLocked()
+            synchronized(fastLock) {
+                localRevision.incrementAndGet()
+                val original = currentHandle.getAndSet(null)
+                if (original == null && !initialized) stopInitialOwner = true
+                original?.let {
+                    synchronized(pendingStops) { pendingStops.add(original.id) }
+                    pendingRequest.get()?.takeIf { it.handle.id == original.id }?.let { pendingRequest.set(null) }
+                }
+                currentDemand = null; clearReadyLocked(); usable = false
             }
-            currentDemand = null; clearReadyLocked(); usable = false
         }
+        NotificationPolicy.process.publish()
         invalidateInput(); scheduleDrain()
         return state()
     }
@@ -409,14 +498,18 @@ class PhoneSessionController private constructor(context: Context) {
         activation.stop(expectedEpoch).also { publishActivation(retirement.revision) }
     }.get(4, TimeUnit.SECONDS)
     internal fun cancelActivation(id: String) {
-        val invalidate = synchronized(fastLock) {
-            synchronized(pendingStops) { pendingStops.add(id) }
-            pendingRequest.get()?.takeIf { it.handle.id == id }?.let { pendingRequest.set(null) }
-            val original = currentHandle.get()
-            if (original != null && (aliases[original.id] ?: original.id) == (aliases[id] ?: id)) {
-                currentHandle.set(null); currentDemand = null; localRevision.incrementAndGet(); clearReadyLocked(); usable = false; true
-            } else false
+        val invalidate = synchronized(NotificationPolicy.process.gate) {
+            synchronized(fastLock) {
+                synchronized(pendingStops) { pendingStops.add(id) }
+                pendingRequest.get()?.takeIf { it.handle.id == id }?.let { pendingRequest.set(null) }
+                val original = currentHandle.get()
+                if (original != null && (aliases[original.id] ?: original.id) == (aliases[id] ?: id)) {
+                    NotificationPolicy.process.retireLocked()
+                    currentHandle.set(null); currentDemand = null; localRevision.incrementAndGet(); clearReadyLocked(); usable = false; true
+                } else false
+            }
         }
+        NotificationPolicy.process.publish()
         if (invalidate) invalidateInput()
         scheduleDrain()
     }
@@ -432,10 +525,15 @@ class PhoneSessionController private constructor(context: Context) {
         launchApp(packageName, bootstrap.status().projectionContext, complete)
     }
     fun launchApp(packageName: String, expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit) {
+        NotificationPolicy.process.explicitChoice()
         appScales.launch(packageName, expected, complete)
     }
-    fun launchAppForScale(packageName: String, expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit): AppScaleTarget =
-        appScales.launch(packageName, expected, complete)
+    fun launchAppForScale(packageName: String, expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit): AppScaleTarget {
+        NotificationPolicy.process.explicitChoice()
+        return appScales.launch(packageName, expected, complete)
+    }
+    internal fun launchNotification(carrier: NotificationLaunchCarrier, settled: (NotificationLaunchSettlement) -> Unit) =
+        appScales.launchNotification(carrier, settled)
     fun projectionDisplayState(complete: (ProjectionDisplayState?) -> Unit) = bootstrap.projectionDisplayState(complete)
 
     fun requestPanelOff(complete: (PanelPowerState?) -> Unit) = bootstrap.requestPanelOff(complete)

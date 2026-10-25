@@ -17,6 +17,8 @@ files += [host/n for n in ['SessionController.kt','SessionAttemptStore.kt','Proj
 files += [protocol/n for n in ['SessionControl.kt','SessionState.kt','ActivationControl.kt','ReceiverUsability.kt','Wire.kt','PhoneInput.kt','Touch.kt','LayoutScale.kt']]
 files += [glass/n for n in ['ReceiverActivationStore.kt','ReceiverTaskRegistry.kt','PairedSessionClient.kt']]
 if a.producer:
+    files += [p for p in (host/'notifications').glob('*.kt') if p.name != 'NotificationAccessPanel.kt']
+    files += [host/'apps'/n for n in ['ChosenApps.kt','ChosenAppStore.kt']]
     files += [host/n for n in ['PhoneSessionController.kt','HostBootstrap.kt','HostForgetCompletion.kt','BootstrapSessionFiles.kt','PanelPower.kt','input/PhoneHidRoute.kt','LaunchOperationDiagnostics.kt',
                               'scale/AppScaleCoordinator.kt','scale/AppScalePreferences.kt','scale/AppScaleStore.kt']]
     files += [suite.parent/'adapter/doubles'/n for n in ['AtomicFile.kt','Context.kt','Json.kt','Os.kt','Annotation.kt','PackageManager.kt','Service.kt','Shizuku.kt','Log.kt']]
@@ -24,6 +26,9 @@ if a.producer:
     files += [host/'hid'/(n+'.kt') for n in ['PhoneHidBindings','PhoneHidController','PhoneHidRuntime','PhoneHidKeyService']]
     files += [suite.parent/'hid/doubles'/n for n in ['Accessibility.kt','AccessibilityEvent.kt','InputManager.kt','KeyEvent.kt','Settings.kt','PackageManager.kt']]
 elif a.composed:
+    files += [p for p in (host/'notifications').glob('*.kt') if p.name != 'NotificationAccessPanel.kt']
+    files += [host/'apps'/n for n in ['ChosenApps.kt','ChosenAppStore.kt']]
+    files += [suite.parent/'adapter/doubles/Json.kt',suite/'producer/Notifications.kt',suite/'producer/NotificationListener.kt']
     files += [host/n for n in ['PhoneSessionController.kt','PanelPower.kt','input/PhoneHidRoute.kt','input/PhoneInputMerger.kt',
                               'hid/PhoneHidBindings.kt','hid/PhoneHidController.kt','hid/PhoneHidRuntime.kt','hid/PhoneHidKeyService.kt',
                               'scale/AppScaleCoordinator.kt','scale/AppScalePreferences.kt','scale/AppScaleStore.kt',

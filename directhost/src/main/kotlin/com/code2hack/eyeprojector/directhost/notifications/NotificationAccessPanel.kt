@@ -7,7 +7,7 @@ import android.widget.TextView
 import com.code2hack.eyeprojector.directhost.R
 import java.io.Closeable
 
-/** Feature-local view for a later allocated mount; closing UI never retires listener ingress. */
+/** Feature-local access/status view; closing UI never retires listener ingress or accepted work. */
 class NotificationAccessPanel internal constructor(context: Context, private val runtime: PhoneNotificationRuntime) : LinearLayout(context), Closeable {
     constructor(context: Context) : this(context, PhoneNotificationRuntime.get(context))
     private val statusText = TextView(context)
@@ -56,6 +56,7 @@ class NotificationAccessPanel internal constructor(context: Context, private val
             NotificationListenerBaseline.OBSERVED -> R.string.notification_baseline_observed
             NotificationListenerBaseline.UNAVAILABLE -> R.string.notification_baseline_unavailable
         }
-        statusText.text = listOf(access, connection, baseline).joinToString("\n") { context.getString(it) }
+        statusText.text = listOf(access, connection, baseline).joinToString("\n") { context.getString(it) } +
+            if (status.launchFailed) "\n" + context.getString(R.string.notification_launch_failed) else ""
     }
 }

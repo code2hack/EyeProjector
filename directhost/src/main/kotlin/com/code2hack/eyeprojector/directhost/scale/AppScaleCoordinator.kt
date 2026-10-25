@@ -7,8 +7,11 @@ import com.code2hack.eyeprojector.protocol.ScaleState
 import com.code2hack.eyeprojector.protocol.ScaleStatus
 import java.io.Closeable
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
+import com.code2hack.eyeprojector.directhost.notifications.*
 
 interface AppScaleBackend {
+    fun launchNotification(carrier: NotificationLaunchCarrier, complete: (NotificationDispatchOutcome) -> Unit)
     fun launch(packageName: String, expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit)
     fun display(expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit)
     fun request(value: Double, expected: ProjectionContext, complete: (ScaleState?) -> Unit)
@@ -33,10 +36,21 @@ data class AppScalePanelState(
  * A replacement Session has its own lane and never waits for a retired callback.
  */
 class AppScaleCoordinator(private val store: AppScaleStore, private val backend: AppScaleBackend) {
-    private data class Work(val target: AppScaleTarget, val kind: String, val requested: Double?, val panelOwner: Any?, val cancel: () -> Unit, val run: (done: () -> Unit) -> Unit)
+    private class NotificationWork(val carrier: NotificationLaunchCarrier, val settled: (NotificationLaunchSettlement) -> Unit) {
+        var outcome = NotificationDispatchOutcome.rejected(carrier)
+        var feedbackFailed = false
+    }
+    private class Work(val target: AppScaleTarget, val kind: String, val requested: Double?, val panelOwner: Any?,
+        val cancel: () -> Unit, val run: (done: () -> Unit) -> Unit, val notification: NotificationWork? = null) {
+        var finished = false
+        lateinit var lane: Lane
+    }
     private class Lane {
         val queue = ArrayDeque<Work>()
-        var busy = false
+        var active: Work? = null
+        val busy: Boolean get() = active != null
+        val settlements = ArrayDeque<NotificationLaunchSettlement>()
+        val receivers = ArrayDeque<(NotificationLaunchSettlement) -> Unit>()
         var draining = false
     }
     private val lanes = mutableMapOf<ProjectionContext, Lane>()
@@ -53,27 +67,93 @@ class AppScaleCoordinator(private val store: AppScaleStore, private val backend:
         observers.add(observer); observer(state)
         return Closeable { observers.remove(observer) }
     }
-    private fun publish(next: AppScalePanelState?) { state = next; observers.toList().forEach { it(next) } }
+    private fun publish(next: AppScalePanelState?): Boolean {
+        state = next
+        var success = true
+        observers.toList().forEach { try { it(next) } catch (_: Exception) { success = false } }
+        return success
+    }
     private fun current(target: AppScaleTarget) = state?.target == target
-    private fun enqueue(target: AppScaleTarget, kind: String, cancel: () -> Unit = {}, requested: Double? = null, owner: Any? = null, run: (done: () -> Unit) -> Unit) {
+    private fun enqueue(target: AppScaleTarget, kind: String, cancel: () -> Unit = {}, requested: Double? = null,
+        owner: Any? = null, notification: NotificationWork? = null, run: (done: () -> Unit) -> Unit) {
         val lane = lanes.getOrPut(target.context) { Lane() }
-        lane.queue.addLast(Work(target, kind, requested, owner, cancel, run)); drain(lane)
+        val work = Work(target, kind, requested, owner, cancel, run, notification).also { it.lane = lane }
+        try { lane.queue.addLast(work); drain(lane) }
+        catch (_: Exception) {
+            if (!work.finished) {
+                notification?.let { it.outcome = NotificationDispatchOutcome.fault(it.carrier, NotificationFaultStage.COORDINATOR, "ENQUEUE") }
+                runCatching(work.cancel)
+                finish(work)
+            }
+        }
+    }
+    private fun finish(work: Work) {
+        if (work.finished) return
+        work.finished = true
+        val lane = work.lane
+        if (lane.active === work) lane.active = null
+        work.notification?.let {
+            lane.settlements.addLast(NotificationLaunchSettlement(it.carrier, it.outcome))
+            lane.receivers.addLast(it.settled)
+        }
+        drain(lane)
     }
     private fun drain(lane: Lane) {
-        if (lane.busy || lane.draining) return
+        if (lane.draining) return
         lane.draining = true
         try {
             while (!lane.busy && lane.queue.isNotEmpty()) {
                 val work = lane.queue.removeFirst()
-                if (!current(work.target) || (work.kind in setOf("pinch", "read") && (panel != work.target || panelOwner != work.panelOwner))) { work.cancel(); continue }
-                lane.busy = true
-                work.run { lane.busy = false; drain(lane) }
+                if (work.finished) continue
+                if (!current(work.target) || (work.kind in setOf("pinch", "read") && (panel != work.target || panelOwner != work.panelOwner))) {
+                    runCatching(work.cancel)
+                    finish(work)
+                    continue
+                }
+                lane.active = work
+                try { work.run { finish(work) } }
+                catch (_: Exception) {
+                    if (!work.finished) {
+                        work.notification?.let { it.outcome = NotificationDispatchOutcome.fault(it.carrier, NotificationFaultStage.COORDINATOR, "BACKEND") }
+                        runCatching(work.cancel)
+                        finish(work)
+                    }
+                }
             }
         } finally {
             lane.draining = false
-            if (!lane.busy && lane.queue.isNotEmpty()) drain(lane)
-            if (!lane.busy && lane.queue.isEmpty()) lanes.entries.removeAll { (context, value) ->
-                value === lane && state?.target?.context != context
+            if (!lane.busy && lane.queue.isEmpty()) lanes.entries.removeAll { (context, value) -> value === lane && state?.target?.context != context }
+            // No S-owned busy/draining bookkeeping remains. Callback entry is NOT used as settlement.
+            while (lane.settlements.isNotEmpty()) {
+                val settlement = lane.settlements.removeFirst()
+                val receiver = lane.receivers.removeFirst()
+                runCatching { receiver(settlement) }
+            }
+        }
+    }
+
+    internal fun launchNotification(carrier: NotificationLaunchCarrier, settled: (NotificationLaunchSettlement) -> Unit) {
+        val expected = carrier.ready.target
+        val packageName = carrier.packageName
+        val target = AppScaleTarget(UUID.randomUUID().toString(), packageName, expected)
+        val work = NotificationWork(carrier, settled)
+        panel = null; panelOwner = null; dispatchedRequested = null; acceptedRequested = null; saveFailed = false
+        work.feedbackFailed = !publish(AppScalePanelState(target))
+        enqueue(target, "launch", notification = work) { done ->
+            val delivered = AtomicBoolean()
+            backend.launchNotification(carrier) callback@{ outcome ->
+                if (!delivered.compareAndSet(false, true)) return@callback
+                var result = outcome
+                try {
+                    if (current(target) && outcome.commitment == NotificationCommitment.COMMITTED) {
+                        val display = outcome.result
+                        val confirmed = display?.context == expected && display.requestedPackage == packageName && display.foregroundPackage == packageName
+                        if (!publish(state!!.copy(launch = display, detail = if (confirmed) "RESTORING" else "LAUNCH_UNCONFIRMED"))) work.feedbackFailed = true
+                        if (confirmed) request(target, store.read(packageName), save = false, kind = "restore")
+                    }
+                    if (work.feedbackFailed) result = outcome.feedbackFailure()
+                } catch (_: Exception) { result = outcome.feedbackFailure() }
+                finally { work.outcome = result; done() }
             }
         }
     }
@@ -83,7 +163,9 @@ class AppScaleCoordinator(private val store: AppScaleStore, private val backend:
         panel = null; panelOwner = null; dispatchedRequested = null; acceptedRequested = null; saveFailed = false
         publish(AppScalePanelState(target))
         enqueue(target, "launch", { complete(null) }) { done ->
-            backend.launch(packageName, expected) { result ->
+            val delivered = AtomicBoolean()
+            backend.launch(packageName, expected) callback@{ result ->
+                if (!delivered.compareAndSet(false, true)) return@callback
                 try {
                     if (current(target)) {
                         val confirmed = result?.context == expected && result.requestedPackage == packageName &&
@@ -108,7 +190,7 @@ class AppScaleCoordinator(private val store: AppScaleStore, private val backend:
             lanes.entries.removeAll { !it.value.busy }
             panel = null; panelOwner = null; dispatchedRequested = null; acceptedRequested = null; saveFailed = false
             publish(null)
-            abandoned.forEach { it.cancel() }
+            abandoned.forEach { runCatching(it.cancel); finish(it) }
         }
     }
 

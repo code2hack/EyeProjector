@@ -45,6 +45,7 @@ class FakeService : IHostBootstrap, android.os.IBinder {
     var stopGate:java.util.concurrent.CountDownLatch?=null
     val scaleRequests = mutableListOf<Pair<Long, Double>>()
     var scaleReads = 0
+    var beforeScale: (() -> Unit)? = null
     var scalePayloadOverride: ByteArray? = null
     var currentScale = ScaleState(0, 1.0, Geometry(480, 640), null, ScaleStatus.READY, false)
     var display = ProjectionDisplayState(generation = "fixture:child", displayId = 47, status = ProjectionLaunchStatus.READY,
@@ -96,6 +97,7 @@ class FakeService : IHostBootstrap, android.os.IBinder {
     }
     override fun destroy() { destroys++; if (exitOnDestroy) die() }
     override fun requestScale(requestId: Long, scale: Double, expectedOwnerEpoch: String, expectedProjectionToken: String): ByteArray {
+        beforeScale?.invoke()
         check(alive)
         if (PanelContext(expectedOwnerEpoch, expectedProjectionToken) != currentPanel.context || state != "STREAMING")
             return ScaleState(requestId, scale, null, null, ScaleStatus.UNAVAILABLE, false).bytes()

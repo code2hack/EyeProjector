@@ -13,6 +13,10 @@ class AppScaleCoordinatorTest {
         override fun write(packageName: String, scale: Double): Boolean { values[packageName] = scale; return true }
     }
     private class Backend : AppScaleBackend {
+        override fun launchNotification(carrier: com.code2hack.eyeprojector.directhost.notifications.NotificationLaunchCarrier,
+            complete: (com.code2hack.eyeprojector.directhost.notifications.NotificationDispatchOutcome) -> Unit) {
+            error("Notification route is outside this legacy profile fixture")
+        }
         data class Call(val kind: String, val pkg: String? = null, val value: Double? = null,
             val context: ProjectionContext, val finish: (Any?) -> Unit)
         val calls = ArrayDeque<Call>()

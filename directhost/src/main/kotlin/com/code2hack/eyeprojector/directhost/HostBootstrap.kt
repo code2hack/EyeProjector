@@ -1,5 +1,7 @@
 package com.code2hack.eyeprojector.directhost
 
+import com.code2hack.eyeprojector.directhost.notifications.*
+
 import com.code2hack.eyeprojector.directhost.activation.ActivationContextAuthority
 import com.code2hack.eyeprojector.directhost.activation.ActivationContextPublisher
 import java.io.Closeable
@@ -270,6 +272,11 @@ class HostBootstrap private constructor(private val context: Context) {
         displayOperation(expected, LaunchOperationDiagnostics.Kind.LAUNCH, packageName,
             { service, requestId -> service.launchApp(requestId, packageName, expected.ownerEpoch, expected.projectionToken) }, complete)
 
+    internal fun launchNotification(carrier: NotificationLaunchCarrier, complete: (NotificationDispatchOutcome) -> Unit) {
+        displayOperation(carrier.ready.target, LaunchOperationDiagnostics.Kind.LAUNCH, carrier.packageName,
+            { _, _ -> error("Notification uses the fixed original Binder call") }, {}, carrier, complete)
+    }
+
     fun projectionDisplayState(complete: (ProjectionDisplayState?) -> Unit) =
         projectionDisplayState(current.projectionContext, complete)
 
@@ -278,7 +285,8 @@ class HostBootstrap private constructor(private val context: Context) {
             { service, _ -> service.projectionDisplayState(expected.ownerEpoch, expected.projectionToken) }, complete)
 
     private fun displayOperation(expected: ProjectionContext, kind: LaunchOperationDiagnostics.Kind, selectedPackage: String?,
-        operation: (IHostBootstrap, Long) -> ByteArray, complete: (ProjectionDisplayState?) -> Unit) {
+        operation: (IHostBootstrap, Long) -> ByteArray, complete: (ProjectionDisplayState?) -> Unit,
+        notification: NotificationLaunchCarrier? = null, dispatched: ((NotificationDispatchOutcome) -> Unit)? = null) {
         // Capture before the first queue hop. The server independently validates these
         // same identities when selecting its exact Bridge/Session, including Binder reuse.
         val service = remote
@@ -303,22 +311,44 @@ class HostBootstrap private constructor(private val context: Context) {
             catch (_: Throwable) { match = null } // Diagnostic allocation cannot affect this original decision.
             return accepted
         }
-        displayExecutor.execute {
+        val work = Runnable {
+            var committed = false
+            var dispatchOutcome: NotificationDispatchOutcome? = null
             var available: Boolean? = null
             var calling = false
             var decoding = false
             val result = runCatching {
                 val expectedAvailable = expected.available.also { available = it }
                 if (!expectedAvailable || !matches()) {
+                    if (notification != null) dispatchOutcome = if (!expectedAvailable)
+                        NotificationDispatchOutcome.fault(notification, NotificationFaultStage.PRE_CALL, "INVALID_CONTEXT")
+                        else NotificationDispatchOutcome.rejected(notification)
                     LaunchOperationDiagnostics.emit({ LaunchOperationDiagnostics.Event(requestId, kind, selectedPackage,
                         LaunchOperationDiagnostics.Stage.PRE_CALL, LaunchOperationDiagnostics.Outcome.SKIPPED, available, match,
                         if (!expectedAvailable) LaunchOperationDiagnostics.Reason.EXPECTED_CONTEXT_UNAVAILABLE else null) })
                     null
                 } else {
-                    LaunchOperationDiagnostics.emit({ LaunchOperationDiagnostics.Event(requestId, kind, selectedPackage,
-                        LaunchOperationDiagnostics.Stage.PRE_CALL, LaunchOperationDiagnostics.Outcome.ADMITTED, available, match) })
-                    calling = true
-                    val payload = operation(service!!, requestId)
+                    val payload: ByteArray?
+                    if (notification == null) {
+                        LaunchOperationDiagnostics.emit({ LaunchOperationDiagnostics.Event(requestId, kind, selectedPackage,
+                            LaunchOperationDiagnostics.Stage.PRE_CALL, LaunchOperationDiagnostics.Outcome.ADMITTED, available, match) })
+                        calling = true
+                        payload = operation(service!!, requestId)
+                    } else {
+                        val originalService = service!!
+                        val originalPackage = notification.packageName
+                        val originalOwner = expected.ownerEpoch
+                        val originalToken = expected.projectionToken
+                        if (!notification.facade.tryCommitActivationReady(notification.ready, notification.permit)) {
+                            dispatchOutcome = NotificationDispatchOutcome.rejected(notification)
+                            payload = null
+                        } else {
+                            committed = true; calling = true
+                            // Only fixed original arguments. No diagnostic/callback/queue/lookup here.
+                            payload = originalService.launchApp(requestId, originalPackage, originalOwner, originalToken)
+                        }
+                    }
+                    if (payload == null) return@runCatching null
                     decoding = true
                     ProjectionDisplayState.from(payload).also {
                         LaunchOperationDiagnostics.emit({ LaunchOperationDiagnostics.Event(requestId, kind, selectedPackage,
@@ -326,11 +356,16 @@ class HostBootstrap private constructor(private val context: Context) {
                     }
                 }
             }.onFailure {
+                if (notification != null) dispatchOutcome = NotificationDispatchOutcome.fault(notification,
+                    if (decoding) NotificationFaultStage.DECODE else if (calling) NotificationFaultStage.BINDER else NotificationFaultStage.PRE_CALL,
+                    it.javaClass.simpleName)
                 LaunchOperationDiagnostics.emit({ LaunchOperationDiagnostics.Event(requestId, kind, selectedPackage,
                     LaunchOperationDiagnostics.Stage.RESULT, if (decoding) LaunchOperationDiagnostics.Outcome.DECODE_EXCEPTION
                     else if (calling) LaunchOperationDiagnostics.Outcome.OPERATION_EXCEPTION
                     else LaunchOperationDiagnostics.Outcome.PRE_CALL_EXCEPTION, available, match, error = it) })
             }.getOrNull()
+            if (committed) LaunchOperationDiagnostics.emit({ LaunchOperationDiagnostics.Event(requestId, kind, selectedPackage,
+                LaunchOperationDiagnostics.Stage.AFTER_CALL, LaunchOperationDiagnostics.Outcome.ADMITTED, available, match) })
             main.post {
                 val selected = result.takeIf {
                     var resultContextMatch: Boolean? = null
@@ -341,8 +376,16 @@ class HostBootstrap private constructor(private val context: Context) {
                         available, match, result = it, resultContextMatch = resultContextMatch) })
                     accepted
                 }
-                complete(selected)
+                if (notification == null) complete(selected)
+                else dispatched!!(if (committed) NotificationDispatchOutcome(NotificationCommitment.COMMITTED, selected,
+                    faultStage = dispatchOutcome?.faultStage, faultCode = dispatchOutcome?.faultCode)
+                    else dispatchOutcome ?: NotificationDispatchOutcome.rejected(notification))
             }
+        }
+        try { displayExecutor.execute(work) }
+        catch (error: Exception) {
+            if (notification == null) main.post { complete(null) }
+            else main.post { dispatched!!(NotificationDispatchOutcome.fault(notification, NotificationFaultStage.ENQUEUE, error.javaClass.simpleName)) }
         }
     }
 

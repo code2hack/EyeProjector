@@ -20,26 +20,44 @@ interface ChosenAppStorage {
     fun read(): List<ChosenApp>
     fun write(apps: List<ChosenApp>)
 }
+interface ChosenAppMutation {
+    fun isCurrent(): Boolean
+    fun finished(success: Boolean)
+}
 
 /**
  * The ordered selection used by both the Phone panel and the projected home.
  * Reading the catalog never removes a saved choice: reinstalling an app restores its icon.
  * Removal writes only this store, without any package-management or app-data operation.
  */
-class ChosenAppStore(private val storage: ChosenAppStorage) {
+class ChosenAppStore(private val storage: ChosenAppStorage,
+    private val beforeMutation: ((String, Boolean) -> ChosenAppMutation)? = null) {
     fun read(): List<ChosenApp> = synchronized(lock) { storage.read().toList() }
 
-    fun add(app: InstalledApp) = synchronized(lock) {
-        val current = storage.read()
-        if (current.none { it.packageName == app.packageName }) {
-            storage.write(current + ChosenApp(app.packageName, app.label))
+    fun add(app: InstalledApp) = mutate(app.packageName, true) { mutation ->
+        synchronized(lock) {
+            if (mutation?.isCurrent() == false) return@synchronized
+            val current = storage.read()
+            if (mutation?.isCurrent() == false) return@synchronized
+            if (current.none { it.packageName == app.packageName }) storage.write(current + ChosenApp(app.packageName, app.label))
         }
     }
 
-    fun remove(packageName: String) = synchronized(lock) {
-        val current = storage.read()
-        val next = current.filterNot { it.packageName == packageName }
-        if (next != current) storage.write(next)
+    fun remove(packageName: String) = mutate(packageName, false) { mutation ->
+        synchronized(lock) {
+            if (mutation?.isCurrent() == false) return@synchronized
+            val current = storage.read()
+            if (mutation?.isCurrent() == false) return@synchronized
+            val next = current.filterNot { it.packageName == packageName }
+            if (next != current) storage.write(next)
+        }
+    }
+
+    private inline fun mutate(packageName: String, chosen: Boolean, operation: (ChosenAppMutation?) -> Unit) {
+        // Intent precedes even waiting for the store lock/read. No I/O under policy authority.
+        val mutation = beforeMutation?.invoke(packageName, chosen)
+        var success = false
+        try { operation(mutation); success = true } finally { mutation?.finished(success) }
     }
 
     fun entries(catalog: AppCatalog): List<ChosenAppEntry> = read().map { saved ->
