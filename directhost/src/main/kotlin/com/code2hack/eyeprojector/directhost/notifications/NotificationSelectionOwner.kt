@@ -43,6 +43,7 @@ internal class NotificationSelectionOwner(
     private class Submission(val carrier: NotificationLaunchCarrier) {
         var returned = false
         var settlement: NotificationLaunchSettlement? = null
+        var settlementObserved = false
     }
     private class Current(val selection: NotificationSelection, val handle: ActivationHandle) {
         var closed = false
@@ -67,12 +68,48 @@ internal class NotificationSelectionOwner(
     private var latestAcceptedReceipt = -1L
     private var draining = false
     private var again = false
+    private class PipelineObserver(val receive: (NotificationPipelineObservation) -> Unit) { var active = true }
+    private val pipelineObservers = linkedSetOf<PipelineObserver>()
     private val policyObservation = policy.observe { post { drain(); changed() } }
     var lastOutcome: NotificationDispatchOutcome? = null; private set
     val failed: Boolean get() = current?.fault != null || lastOutcome?.faultStage != null || policy.persistenceFailed
 
     fun receipt(packageName: String) = policy.receipt(packageName)
     fun access(approval: NotificationAccessApproval) = policy.access(approval)
+
+    /** Main-owned, no registration replay. Close suppresses queued, not already executing delivery. */
+    fun observePipeline(receive: (NotificationPipelineObservation) -> Unit): Closeable {
+        val original = PipelineObserver(receive)
+        pipelineObservers.add(original)
+        return Closeable { original.active = false; pipelineObservers.remove(original) }
+    }
+
+    private fun publishPipeline(stage: NotificationPipelineStage, selection: NotificationSelection,
+        handle: ActivationHandle, arm: Any? = null, ready: ActivationReady<ProjectionContext>? = null,
+        carrier: NotificationLaunchCarrier? = null, outcome: NotificationDispatchOutcome? = null) {
+        capturePipeline(stage, selection, handle, arm, ready, carrier, outcome)?.invoke()
+    }
+
+    private fun capturePipeline(stage: NotificationPipelineStage, selection: NotificationSelection,
+        handle: ActivationHandle, arm: Any? = null, ready: ActivationReady<ProjectionContext>? = null,
+        carrier: NotificationLaunchCarrier? = null, outcome: NotificationDispatchOutcome? = null): (() -> Unit)? {
+        if (pipelineObservers.isEmpty()) return null
+        val event = NotificationPipelineObservation(stage, selection.observation, selection, handle,
+            arm, ready, carrier, outcome, selection.permit.state)
+        // Capture before posting; delivery never resolves newest G/D/context. No observer enters
+        // policy/fast locks or the fixed final claim-to-Binder interval. Scheduling/observer faults
+        // are isolated here without swallowing any primary product operation's exception.
+        val recipients = pipelineObservers.toList()
+        return { runCatching { post { recipients.forEach { if (it.active) runCatching { it.receive(event) } } } }; Unit }
+    }
+
+    private fun publishSettlement(original: Current, submission: Submission) {
+        if (!submission.returned || submission.settlement == null || submission.settlementObserved) return
+        submission.settlementObserved = true
+        publishPipeline(NotificationPipelineStage.SETTLED, original.selection, original.handle,
+            ready = submission.carrier.ready, carrier = submission.carrier,
+            outcome = submission.settlement!!.outcome)
+    }
 
     fun accept(observation: NotificationIngressObservation) {
         val result = observation.event
@@ -93,6 +130,7 @@ internal class NotificationSelectionOwner(
         val prepared = policy.prepare(originalTicket) { readEligibility(result.record.packageName) } ?: return
         val selection = NotificationSelection(observation, port.facade)
         val handle = port.admit(selection, prepared) ?: return
+        publishPipeline(NotificationPipelineStage.DEMAND_ADMITTED, selection, handle)
         if (selection.permit.state != LaunchCommitPermit.State.PENDING) return
         latestAcceptedReceipt = observation.receipt
         lastOutcome = null
@@ -150,6 +188,7 @@ internal class NotificationSelectionOwner(
                     lastOutcome = outcome
                     original.fault = null
                     original.faultAt = null
+                    publishSettlement(original, submission)
                     if (selection.permit.state != LaunchCommitPermit.State.PENDING) { detach(original); continue }
                     if (outcome.commitment == NotificationCommitment.ADAPTER_FAULT) {
                         original.fault = outcome
@@ -199,6 +238,8 @@ internal class NotificationSelectionOwner(
                     val sent = Submission(carrier)
                     original.lastTried = readyKey
                     original.submission = sent // Before invocation, including inline settlement.
+                    val publication = capturePipeline(NotificationPipelineStage.SUBMISSION_STARTED, selection, original.handle,
+                        arm = arm, ready = ready, carrier = carrier)
                     try {
                         port.submit(carrier) { settlement ->
                             if (settlement.carrier === carrier && sent.settlement == null) sent.settlement = settlement
@@ -214,7 +255,14 @@ internal class NotificationSelectionOwner(
                             original.faultAt = readyKey
                             if (selection.observation.receipt == latestAcceptedReceipt) lastOutcome = original.fault
                         }
-                    } finally { sent.returned = true; settleDetached(original, sent) }
+                    } finally {
+                        sent.returned = true
+                        // Capture denotes invocation, but dispatch after its return. Even an
+                        // inline test post cannot reenter a manual choice before this submit
+                        // and let the older invocation supersede that newer coordinator target.
+                        publication?.invoke()
+                        settleDetached(original, sent)
+                    }
                     again = true
                     changed()
                     continue
@@ -228,6 +276,8 @@ internal class NotificationSelectionOwner(
                     val registration = port.ready(original.handle) { ready ->
                         if (current === original && original.arm === next && !original.closed && !next.fired) {
                             next.fired = true; next.value = ready
+                            publishPipeline(NotificationPipelineStage.READY_OBSERVED, selection, original.handle,
+                                arm = next, ready = ready)
                             drain()
                         }
                     }
@@ -282,6 +332,9 @@ internal class NotificationSelectionOwner(
         if (current === original) current = null
         original.selection.permit.retire()
         retiringOwners.add(original) // Before close/changed can reenter with a newer G.
+        publishPipeline(NotificationPipelineStage.OWNER_DETACHED, original.selection, original.handle,
+            arm = original.arm, ready = original.arm?.value ?: original.submission?.carrier?.ready,
+            carrier = original.submission?.carrier)
         runCatching { detachStream(original) }
         original.arm?.let { runCatching { detachArm(original, it) } }
         original.submission?.let { settleDetached(original, it) }
@@ -294,6 +347,7 @@ internal class NotificationSelectionOwner(
             if (original.selection.observation.receipt == latestAcceptedReceipt) lastOutcome = submission.settlement!!.outcome
             original.submission = null
             releaseRetired(original)
+            publishSettlement(original, submission)
             changed()
         }
     }

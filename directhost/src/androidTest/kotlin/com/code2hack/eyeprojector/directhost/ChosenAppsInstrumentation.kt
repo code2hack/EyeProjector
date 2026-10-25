@@ -37,6 +37,12 @@ class ChosenAppsInstrumentation : Instrumentation() {
         try {
             when (arguments.getString("operation", "ui")) {
                 "ui" -> testUi()
+                "notification-probe" -> {
+                    // This diagnostic reports its stages; readiness/event receipt is not feature PASS.
+                    com.code2hack.eyeprojector.directhost.notifications.NotificationProbeChecks.run(this, targetContext, arguments, result)
+                    finish(if (result.getString("result") == "DIAGNOSTIC_ERROR") Activity.RESULT_CANCELED else Activity.RESULT_OK, result)
+                    return
+                }
                 "snapshot-probe" -> com.code2hack.eyeprojector.directhost.activation.snapshot.NativeSnapshotChecks.run(targetContext, arguments, result)
                 "app-scale" -> AppScaleChecks.run(this, targetContext)
                 "app-scale-persist-write" -> AppScaleChecks.persistence(targetContext, true)

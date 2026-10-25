@@ -1,4 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <application>
         <service android:name=".activation.snapshot.NativeSnapshotProbeService"
             android:exported="false" android:process=":snapshot_probe" />

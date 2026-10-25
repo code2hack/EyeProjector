@@ -79,6 +79,8 @@ internal class PhoneNotificationRuntime(
         eventObservers.add(observer)
         return Closeable { eventObservers.remove(observer) }
     }
+    fun observePipeline(observer: (NotificationPipelineObservation) -> Unit): Closeable =
+        selection?.observePipeline(observer) ?: Closeable { }
 
     fun connected(connection: NotificationListenerConnection, snapshot: (Set<String>) -> NotificationSnapshot) {
         val previous = session
