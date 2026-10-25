@@ -34,6 +34,31 @@ settled uncommitted dispatch fault with the same G/D/permit; it is not proof tha
 an unrelated failed executor was repaired. Registration/close without established
 detachment and submit without actual settlement remain explicitly unresolved.
 
+Cardinality is scoped to each original G: one attempted stream, at most one
+unresolved arm and one unsettled submission. Retired G retains its exact stream,
+arm and submission obligations until their own return, confirmed close and
+actual settlement allow release. An old return/close/callback cannot operate on
+the new G or overwrite its outcome. A no-handle exception or failed close is not
+confirmation of cleanup, including after a late callback. The retired set never
+blocks a fresh G. Deliberately failing/unknown ports cannot prove global physical
+registration nonoverlap across different G; the ordinary concrete facade posts
+observations and has no intentional throwing registration/close boundary. No
+global block, cleanup queue, retry timer, expiry or cap is supplied by these tests.
+
+The ten correction65 cases also exercise original local removal order before
+its selection effect. One actual runtime case reenters after removal1 has been
+classified but before its effect, admitting same-record G2; G2 survives old1 and
+ordinary later matching removal3 retires it. A separate chosen-read reproduction
+reenters before classification: its old removal consumes the classifier record,
+so the later removal remains REMOVAL_UNMATCHED while G2 survives. The classifier
+is unchanged. These explicit modeled boundaries do not establish Android read
+reentry reachability, semantic message novelty or native same-key/time identity.
+An escaped old submit cannot repopulate the outcome cleared by a newer G; later
+old settlement remains scoped to its own original work.
+Use `--correction65-only` for the isolated ten-case run; the default also renews
+the full composition and existing JUnit cases. Parent/current comparisons retain
+all input hashes and qualify their actual source/fixture differences separately.
+
 The saved63 pure helper/actor composition scenario constructs an already admitted
 primitive loss obligation. It checks the exact imported helper under the real65
 wrappers and actual actor. It does not sample/map native state, exercise native

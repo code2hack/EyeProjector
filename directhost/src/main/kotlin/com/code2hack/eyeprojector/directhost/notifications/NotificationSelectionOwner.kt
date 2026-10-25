@@ -48,6 +48,9 @@ internal class NotificationSelectionOwner(
         var closed = false
         var stream: Closeable? = null
         var streamReturned = false
+        var streamRegistrationReturned = false
+        var streamClosing = false
+        var streamDetached = false
         var latest: ReadyKey? = null
         var lastTried: ReadyKey? = null
         var blockedHint: ReadyKey? = null
@@ -58,7 +61,9 @@ internal class NotificationSelectionOwner(
         var faultAt: ReadyKey? = null
     }
     private var current: Current? = null
-    private val retiringSubmissions = mutableSetOf<Current>()
+    // Retain original cleanup obligations, including unknown exceptional ports.
+    // This set never gates admission or registration for a different G.
+    private val retiringOwners = mutableSetOf<Current>()
     private var latestAcceptedReceipt = -1L
     private var draining = false
     private var again = false
@@ -75,7 +80,8 @@ internal class NotificationSelectionOwner(
             current?.let { original ->
                 val selected = original.selection.observation
                 // Cross-ingress equality/absence is not proof of matching removal.
-                if (selected.scope.connection === observation.scope.connection && selected.event.record == result.record)
+                if (observation.receipt > selected.receipt && selected.scope.connection === observation.scope.connection &&
+                    selected.event.record == result.record)
                     policy.revoke(original.selection)
             }
             drain()
@@ -99,16 +105,28 @@ internal class NotificationSelectionOwner(
         }
         val original = Current(selection, handle)
         current = original
-        val stream = port.observe(handle) { value ->
-            if (current === original && !original.closed) {
-                original.latest = if (value.phase == ActivationPhase.READY && value.attempt != null && value.target != null &&
-                    value.binding != null && value.authority != 0L) ReadyKey(handle, value.attempt, value.target, value.binding, value.authority) else null
-                if (value.phase == ActivationPhase.CANCELED) selection.permit.retire()
-                drain()
+        try {
+            val stream = port.observe(handle) { value ->
+                if (current === original && !original.closed) {
+                    original.latest = if (value.phase == ActivationPhase.READY && value.attempt != null && value.target != null &&
+                        value.binding != null && value.authority != 0L) ReadyKey(handle, value.attempt, value.target, value.binding, value.authority) else null
+                    if (value.phase == ActivationPhase.CANCELED) selection.permit.retire()
+                    drain()
+                }
             }
+            original.streamReturned = true
+            original.streamRegistrationReturned = true
+            original.stream = stream // A late return still belongs to this original G.
+            if (original.closed) detachStream(original)
+        } catch (_: Exception) {
+            original.fault = NotificationDispatchOutcome(NotificationCommitment.ADAPTER_FAULT,
+                faultStage = NotificationFaultStage.PRE_CALL,
+                faultCode = if (original.streamRegistrationReturned) "STREAM_CLOSE_UNRESOLVED" else "OBSERVATION_UNRESOLVED")
+            if (current === original) changed()
+        } finally {
+            original.streamReturned = true
+            releaseRetired(original)
         }
-        original.streamReturned = true
-        if (current === original && !original.closed) original.stream = stream else stream.close()
         drain()
     }
 
@@ -122,7 +140,7 @@ internal class NotificationSelectionOwner(
                 val original = current ?: break
                 val selection = original.selection
                 if (selection.permit.state != LaunchCommitPermit.State.PENDING) { detach(original); continue }
-                if (!original.streamReturned) continue
+                if (!original.streamReturned || !original.streamRegistrationReturned) continue
                 val submission = original.submission
                 if (submission != null) {
                     if (!submission.returned || submission.settlement == null) continue
@@ -158,7 +176,7 @@ internal class NotificationSelectionOwner(
                 val arm = original.arm
                 if (arm != null) {
                     if (!arm.returned || !arm.fired) continue
-                    try { if (!detachArm(arm)) continue }
+                    try { if (!detachArm(original, arm)) continue }
                     catch (_: Exception) {
                         original.fault = NotificationDispatchOutcome(NotificationCommitment.ADAPTER_FAULT,
                             faultStage = NotificationFaultStage.PRE_CALL, faultCode = "CLOSE_UNRESOLVED")
@@ -194,7 +212,7 @@ internal class NotificationSelectionOwner(
                             // S until its matching receipt actually arrives.
                             original.fault = NotificationDispatchOutcome.fault(carrier, NotificationFaultStage.COORDINATOR, "SUBMISSION_UNRESOLVED")
                             original.faultAt = readyKey
-                            lastOutcome = original.fault
+                            if (selection.observation.receipt == latestAcceptedReceipt) lastOutcome = original.fault
                         }
                     } finally { sent.returned = true; settleDetached(original, sent) }
                     again = true
@@ -215,7 +233,7 @@ internal class NotificationSelectionOwner(
                     }
                     next.returned = true; next.registrationReturned = true
                     next.handle = registration
-                    if (current !== original || original.arm !== next || original.closed || next.fired) detachArm(next)
+                    if (current !== original || original.arm !== next || original.closed || next.fired) detachArm(original, next)
                 } catch (error: Exception) {
                     next.returned = true
                     // No returned handle means detachment cannot be established.
@@ -226,37 +244,48 @@ internal class NotificationSelectionOwner(
                         faultCode = if (next.registrationReturned) "CLOSE_UNRESOLVED" else "REGISTRATION_UNRESOLVED")
                     original.faultAt = next.requestedAt
                     changed()
+                } finally {
+                    releaseRetired(original)
                 }
                 if (next.fired) again = true
             } while (again)
         } finally { draining = false }
     }
 
-    private fun detachArm(arm: Arm): Boolean {
+    private fun detachArm(original: Current, arm: Arm): Boolean {
         if (!arm.returned || !arm.registrationReturned || arm.closing) return false
         if (arm.detached) return true
-        val registration = arm.handle
+        val registration = arm.handle ?: return false
         arm.closing = true
         try {
-            registration?.close()
+            registration.close()
             arm.detached = true
             arm.handle = null
             return true
-        } finally { arm.closing = false }
+        } finally { arm.closing = false; releaseRetired(original) }
+    }
+    private fun detachStream(original: Current): Boolean {
+        if (!original.streamReturned || !original.streamRegistrationReturned || original.streamClosing) return false
+        if (original.streamDetached) return true
+        val registration = original.stream ?: return false
+        original.streamClosing = true
+        try {
+            registration.close()
+            original.streamDetached = true
+            original.stream = null
+            return true
+        } finally { original.streamClosing = false; releaseRetired(original) }
     }
     private fun detach(original: Current) {
         if (original.closed) return
         original.closed = true
         if (current === original) current = null
         original.selection.permit.retire()
-        val stream = original.stream
-        original.stream = null
-        runCatching { stream?.close() }
-        original.arm?.let { runCatching { detachArm(it) } }
-        original.submission?.let {
-            retiringSubmissions.add(original)
-            settleDetached(original, it)
-        }
+        retiringOwners.add(original) // Before close/changed can reenter with a newer G.
+        runCatching { detachStream(original) }
+        original.arm?.let { runCatching { detachArm(original, it) } }
+        original.submission?.let { settleDetached(original, it) }
+        releaseRetired(original)
         policy.release(original.selection)
         changed()
     }
@@ -264,9 +293,15 @@ internal class NotificationSelectionOwner(
         if (original.closed && original.submission === submission && submission.returned && submission.settlement != null) {
             if (original.selection.observation.receipt == latestAcceptedReceipt) lastOutcome = submission.settlement!!.outcome
             original.submission = null
-            retiringSubmissions.remove(original)
+            releaseRetired(original)
             changed()
         }
+    }
+    private fun releaseRetired(original: Current) {
+        val arm = original.arm
+        val armResolved = arm == null || (arm.returned && arm.registrationReturned && arm.detached)
+        if (original.closed && original.streamReturned && original.streamRegistrationReturned && original.streamDetached &&
+            armResolved && original.submission == null) retiringOwners.remove(original)
     }
     override fun close() { current?.let(::detach); policyObservation.close() }
 }

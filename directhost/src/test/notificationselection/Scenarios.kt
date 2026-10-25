@@ -28,7 +28,8 @@ private fun await(message: String, condition: () -> Boolean) {
     check(condition()) { message }
 }
 
-private class NotificationFixture(portFactory: (FacadeNotificationPort) -> NotificationSelectionPort = { it }) : AutoCloseable {
+private class NotificationFixture(portFactory: (FacadeNotificationPort) -> NotificationSelectionPort = { it },
+    initialSnapshot: (String) -> NotificationSnapshot = { NotificationSnapshot.Available(emptyList()) }) : AutoCloseable {
     val actual = Fixture()
     val pkg = "example.notification${identifiers.incrementAndGet()}"
     val policy = NotificationPolicy.process
@@ -38,6 +39,7 @@ private class NotificationFixture(portFactory: (FacadeNotificationPort) -> Notif
     val runtime: PhoneNotificationRuntime
     val connection = NotificationListenerConnection()
     var changedHook: (() -> Unit)? = null
+    var approvalHook: (() -> Unit)? = null
     private var time = 0L
     init {
         choices.add(InstalledApp(pkg, pkg))
@@ -45,9 +47,9 @@ private class NotificationFixture(portFactory: (FacadeNotificationPort) -> Notif
             { packageName -> choices.read().any { it.packageName == packageName } to preferences.isEnabled(packageName) },
             { Handler(android.os.Looper.getMainLooper()).post(it) }, { changedHook?.invoke() })
         runtime = PhoneNotificationRuntime({ choices.read().map { it.packageName }.toSet() },
-            { changed -> ChosenApps.observe(actual.context, changed) }, { NotificationAccessApproval.GRANTED },
+            { changed -> ChosenApps.observe(actual.context, changed) }, { approvalHook?.invoke(); NotificationAccessApproval.GRANTED },
             { work, complete -> complete(work()) }, { it() }, owner)
-        runtime.connected(connection) { NotificationSnapshot.Available(emptyList()) }
+        runtime.connected(connection) { initialSnapshot(pkg) }
         Handler.flush()
     }
     fun post(): NotificationIngressObservation = checkNotNull(runtime.posted(connection, pkg) { NotificationRecord(pkg, "synthetic-key", ++time) })
@@ -85,38 +87,62 @@ private class ControlledPort(private val actual: FacadeNotificationPort) : Notif
     data class Pending(val carrier: NotificationLaunchCarrier, val settled: (NotificationLaunchSettlement) -> Unit)
     private class Registration(val handle: ActivationHandle, val receive: (ActivationReady<ProjectionContext>) -> Unit) {
         var closed = false; var fired = false
+        var delivered: ActivationReady<ProjectionContext>? = null
     }
+    private class Stream(val handle: ActivationHandle, val receive: (ActivationState<ProjectionContext>) -> Unit) { var closed = false }
     private val registrations = mutableListOf<Registration>()
+    private val streams = mutableListOf<Stream>()
     private var latest: ActivationState<ProjectionContext>? = null
     val sent = mutableListOf<Pending>()
     var arms = 0
     var detached = 0
     var beforeArmReturn: (() -> Unit)? = null
+    var beforeStreamReturn: (() -> Unit)? = null
     var duringClose: (() -> Unit)? = null
+    var failArmClose: ((ActivationHandle) -> Boolean)? = null
+    var failStreamClose: ((ActivationHandle) -> Boolean)? = null
     var duringSubmit: ((Pending) -> Unit)? = null
     var throwAfterSubmit = false
     var throwBeforeArmReturn = false
+    var throwBeforeStreamReturn = false
     override fun admit(selection: NotificationSelection, snapshot: NotificationPolicy.Snapshot) = actual.admit(selection, snapshot)
-    override fun observe(handle: ActivationHandle, receive: (ActivationState<ProjectionContext>) -> Unit) = actual.observe(handle) { state ->
-        latest = state; receive(state)
-        registrations.toList().forEach(::deliver)
+    override fun observe(handle: ActivationHandle, receive: (ActivationState<ProjectionContext>) -> Unit): Closeable {
+        val stream = Stream(handle, receive)
+        streams.add(stream)
+        val underlying = actual.observe(handle) { state ->
+            latest = state; receive(state)
+            registrations.toList().forEach(::deliver)
+        }
+        beforeStreamReturn?.invoke()
+        if (throwBeforeStreamReturn) error("synthetic stream return lost")
+        return Closeable {
+            if (!stream.closed) {
+                if (failStreamClose?.invoke(handle) == true) error("synthetic stream close failure")
+                underlying.close(); stream.closed = true
+            }
+        }
     }
     private fun deliver(registration: Registration) {
         val state = latest ?: return
         if (!registration.closed && !registration.fired && state.handle === registration.handle && state.phase == ActivationPhase.READY &&
             state.attempt != null && state.target != null && state.binding != null && state.authority != 0L) {
             registration.fired = true
-            registration.receive(ActivationReady(state.handle, state.attempt, state.target, state.binding, state.authority))
+            val ready = ActivationReady(state.handle, state.attempt, state.target, state.binding, state.authority)
+            registration.delivered = ready
+            registration.receive(ready)
         }
     }
     override fun ready(handle: ActivationHandle, receive: (ActivationReady<ProjectionContext>) -> Unit): Closeable {
-        check(registrations.none { !it.closed }) { "successor arm registered before predecessor detached" }
+        check(registrations.none { it.handle === handle && !it.closed }) { "same-G successor arm registered before predecessor detached" }
         arms++
         val registration = Registration(handle, receive)
         registrations.add(registration); deliver(registration)
         beforeArmReturn?.invoke()
         if (throwBeforeArmReturn) error("synthetic registration return lost")
-        return Closeable { if (!registration.closed) { registration.closed = true; detached++; duringClose?.invoke() } }
+        return Closeable { if (!registration.closed) {
+            if (failArmClose?.invoke(handle) == true) error("synthetic arm close failure")
+            registration.closed = true; detached++; duringClose?.invoke()
+        } }
     }
     override fun submit(carrier: NotificationLaunchCarrier, settled: (NotificationLaunchSettlement) -> Unit) {
         val pending = Pending(carrier, settled)
@@ -125,6 +151,10 @@ private class ControlledPort(private val actual: FacadeNotificationPort) : Notif
     }
     fun settle(pending: Pending, outcome: NotificationDispatchOutcome) = pending.settled(NotificationLaunchSettlement(pending.carrier, outcome))
     fun lateReady(index: Int, ready: ActivationReady<ProjectionContext>) = registrations[index].receive(ready)
+    fun readyAt(index: Int) = checkNotNull(registrations[index].delivered)
+    fun lateStream(index: Int, state: ActivationState<ProjectionContext>) = streams[index].receive(state)
+    fun streamClosed(index: Int) = streams[index].closed
+    fun armClosed(index: Int) = registrations[index].closed
 }
 
 private fun policyRegressions() {
@@ -553,13 +583,201 @@ private fun adoptedMergeComposition() {
     }
 }
 
-fun main() {
+private fun currentOwner(f: NotificationFixture) = checkNotNull(field(f.owner, "current").get(f.owner))
+private fun retiredOwners(f: NotificationFixture): Set<*> {
+    val owned = f.owner.javaClass.declaredFields.single { it.name in setOf("retiringOwners", "retiringSubmissions") }
+    owned.isAccessible = true
+    return owned.get(f.owner) as Set<*>
+}
+
+private fun correction65Scenarios() {
+    var failures = 0
+    fun scenario(name: String, work: () -> Unit) {
+        try { work(); println("PASS correction65 $name") }
+        catch (error: Throwable) { failures++; println("FAIL correction65 $name"); error.printStackTrace() }
+    }
+    scenario("Q2 old removal1 effect cannot revoke same-record G2; ordinary later matching removal3 still retires it") {
+        NotificationFixture(initialSnapshot = { pkg -> NotificationSnapshot.Available(listOf(NotificationRecord(pkg, "synthetic-key", 10))) }).use { f ->
+            val record = NotificationRecord(f.pkg, "synthetic-key", 10)
+            var newer: NotificationIngressObservation? = null
+            var newerSelection: NotificationSelection? = null
+            f.approvalHook = {
+                f.approvalHook = null
+                newer = f.runtime.posted(f.connection, f.pkg) { record }
+                newerSelection = selected(f)
+            }
+            val old = checkNotNull(f.runtime.removed(f.connection, f.pkg) { record })
+            val selected = checkNotNull(newerSelection)
+            check(old.event.kind == NotificationEventKind.REMOVED_CURRENT && checkNotNull(newer).event.kind == NotificationEventKind.NEW_RECORD)
+            check(old.receipt == 1L && selected.observation.receipt == 2L && selected.observation == newer)
+            check(selected.permit.state == LaunchCommitPermit.State.PENDING) { "older removal1 retired newer G2" }
+            val later = checkNotNull(f.runtime.removed(f.connection, f.pkg) { record })
+            check(later.receipt == 3L && later.event.kind == NotificationEventKind.REMOVED_CURRENT)
+            check(selected.permit.state == LaunchCommitPermit.State.RETIRED)
+        }
+    }
+    scenario("Q2 chosen-read reentry preserves newer G while retaining actual classifier REMOVAL_UNMATCHED provenance") {
+        NotificationFixture().use { f ->
+            val record = NotificationRecord(f.pkg, "synthetic-key", 10)
+            var once = true
+            var newer: NotificationIngressObservation? = null
+            var newerSelection: NotificationSelection? = null
+            SharedPreferences.beforeRead = { key -> if (key == "ordered_apps" && once) {
+                once = false
+                newer = f.runtime.posted(f.connection, f.pkg) { record }
+                newerSelection = selected(f)
+            } }
+            val old = checkNotNull(f.runtime.removed(f.connection, f.pkg) { record })
+            SharedPreferences.beforeRead = null
+            val selected = checkNotNull(newerSelection)
+            check(old.receipt < checkNotNull(newer).receipt && old.event.kind == NotificationEventKind.REMOVED_CURRENT)
+            check(selected.permit.state == LaunchCommitPermit.State.PENDING) { "pre-read old removal retired reentrant newer G" }
+            val later = checkNotNull(f.runtime.removed(f.connection, f.pkg) { record })
+            check(later.event.kind == NotificationEventKind.REMOVAL_UNMATCHED && selected.permit.state == LaunchCommitPermit.State.PENDING)
+        }
+    }
+    lateinit var port: ControlledPort
+    scenario("Q1 no-handle R1 remains retired UNKNOWN while fresh G2 progresses; old callback proves no cleanup or new outcome") {
+        NotificationFixture({ ControlledPort(it).also { value -> port = value } }).use { f ->
+            port.throwBeforeArmReturn = true
+            f.post(); val old = currentOwner(f); val first = selected(f)
+            f.goalReady(); val oldReady = port.readyAt(0)
+            port.throwBeforeArmReturn = false
+            f.post(); val second = selected(f)
+            check(retiredOwners(f).contains(old)) { "old no-handle registration obligation was dropped" }
+            check(first !== second && first.permit.state == LaunchCommitPermit.State.RETIRED)
+            f.goalReady(); val sent = port.sent.single(); check(sent.carrier.selection === second)
+            val latest = NotificationDispatchOutcome.fault(sent.carrier, NotificationFaultStage.ENQUEUE, "FRESH_G")
+            port.settle(sent, latest); port.lateReady(0, oldReady)
+            check(f.owner.lastOutcome === latest && selected(f) === second && second.permit.state == LaunchCommitPermit.State.PENDING)
+            val arm = field(old, "arm").get(old)!!
+            check(!field(arm, "registrationReturned").getBoolean(arm) && !field(arm, "detached").getBoolean(arm))
+            check(retiredOwners(f).contains(old) && !port.armClosed(0))
+        }
+    }
+    scenario("Q1 failed R1 close retains exact original handle while G2 progresses and late R1 cannot launch or clobber it") {
+        NotificationFixture({ ControlledPort(it).also { value -> port = value } }).use { f ->
+            f.post(); val old = currentOwner(f); val first = selected(f)
+            port.failArmClose = { it === first.handle }
+            f.goalReady(); val oldReady = port.readyAt(0)
+            val arm = field(old, "arm").get(old)!!; val closeable = field(arm, "handle").get(arm)
+            check(closeable != null && port.sent.isEmpty())
+            f.post(); val second = selected(f)
+            check(retiredOwners(f).contains(old)) { "failed original arm close obligation was dropped" }
+            check(field(arm, "handle").get(arm) === closeable && !field(arm, "detached").getBoolean(arm))
+            f.goalReady(); val sent = port.sent.single(); check(sent.carrier.selection === second)
+            port.lateReady(0, oldReady)
+            check(port.sent.size == 1 && selected(f) === second && second.permit.state == LaunchCommitPermit.State.PENDING)
+            check(retiredOwners(f).contains(old) && !port.armClosed(0))
+        }
+    }
+    scenario("Q1 settling retired S1 cannot discard failed stream cleanup or overwrite G2 outcome") {
+        NotificationFixture({ ControlledPort(it).also { value -> port = value } }).use { f ->
+            f.post(); f.goalReady(); val old = currentOwner(f); val first = port.sent.single()
+            val stream = field(old, "stream").get(old)
+            port.failStreamClose = { it === first.carrier.ready.handle }
+            f.post(); val second = selected(f)
+            check(retiredOwners(f).contains(old) && field(old, "stream").get(old) === stream) { "original failed stream handle was dropped" }
+            f.goalReady(); val latest = port.sent.last(); check(port.sent.size == 2 && latest.carrier.selection === second)
+            val outcome = NotificationDispatchOutcome.fault(latest.carrier, NotificationFaultStage.ENQUEUE, "LATEST_G")
+            port.settle(latest, outcome)
+            port.settle(first, NotificationDispatchOutcome.rejected(first.carrier))
+            port.lateStream(0, ActivationState(first.carrier.ready.handle, ActivationPhase.CANCELED))
+            port.lateReady(0, first.carrier.ready)
+            check(field(old, "submission").get(old) == null && retiredOwners(f).contains(old))
+            check(field(old, "stream").get(old) === stream && !port.streamClosed(0))
+            check(f.owner.lastOutcome === outcome && selected(f) === second && second.permit.state == LaunchCommitPermit.State.PENDING)
+        }
+    }
+    scenario("Q1 late original stream return attaches and closes only G1 after reentrant G2") {
+        NotificationFixture({ ControlledPort(it).also { value -> port = value } }).use { f ->
+            var original: Any? = null
+            port.beforeStreamReturn = {
+                port.beforeStreamReturn = null
+                original = currentOwner(f)
+                f.post()
+                check(retiredOwners(f).contains(original)) { "in-flight original stream return lost its retired owner" }
+            }
+            f.post(); val second = selected(f)
+            check(port.streamClosed(0) && !port.streamClosed(1) && !retiredOwners(f).contains(original))
+            f.goalReady(); check(port.sent.single().carrier.selection === second)
+        }
+    }
+    scenario("Q1 late original R1 return detaches only R1 after reentrant G2; captured R1 Ready remains inert") {
+        NotificationFixture({ ControlledPort(it).also { value -> port = value } }).use { f ->
+            var original: Any? = null
+            port.beforeArmReturn = {
+                port.beforeArmReturn = null
+                original = currentOwner(f)
+                f.goalReady() // Actual D1 Ready callback occurs before R1 registration return.
+                f.post()
+                check(retiredOwners(f).contains(original)) { "in-flight original R1 return lost its retired owner" }
+            }
+            f.post(); val oldReady = port.readyAt(0); val second = selected(f)
+            check(port.armClosed(0) && !port.armClosed(1) && !retiredOwners(f).contains(original))
+            f.goalReady(); check(port.sent.single().carrier.selection === second)
+            port.lateReady(0, oldReady); check(port.sent.size == 1 && selected(f) === second)
+        }
+    }
+    scenario("Q1 unknown stream registration stays owned across fresh G2 without inventing a handle") {
+        NotificationFixture({ ControlledPort(it).also { value -> port = value } }).use { f ->
+            port.throwBeforeStreamReturn = true
+            f.post(); val old = currentOwner(f); val first = selected(f)
+            port.throwBeforeStreamReturn = false
+            f.post(); val second = selected(f)
+            check(retiredOwners(f).contains(old)) { "unknown original stream registration was dropped" }
+            f.goalReady(); check(port.sent.single().carrier.selection === second)
+            port.lateStream(0, ActivationState(first.handle!!, ActivationPhase.CANCELED))
+            check(selected(f) === second && second.permit.state == LaunchCommitPermit.State.PENDING && retiredOwners(f).contains(old))
+            check(!field(old, "streamRegistrationReturned").getBoolean(old) && !port.streamClosed(0))
+        }
+    }
+    scenario("Q1 ordinary concrete facade replacement resolves original cleanup and commits only current G") {
+        NotificationFixture().use { f ->
+            f.post(); val old = currentOwner(f); val first = selected(f)
+            f.post(); val second = selected(f)
+            check(first.permit.state == LaunchCommitPermit.State.RETIRED && !retiredOwners(f).contains(old))
+            check(field(old, "stream").get(old) == null)
+            val arm = field(old, "arm").get(old)!!; check(field(arm, "detached").getBoolean(arm))
+            f.goalReady()
+            await("ordinary facade current G committed") { f.owner.lastOutcome?.commitment == NotificationCommitment.COMMITTED }
+            check(second.permit.state == LaunchCommitPermit.State.COMMITTED && f.actual.service.launches.count { it == f.pkg } == 1)
+            check(retiredOwners(f).isEmpty())
+        }
+    }
+    scenario("Q1 escaped old submit cannot repopulate newer G's cleared outcome; later old settlement remains scoped") {
+        NotificationFixture({ ControlledPort(it).also { value -> port = value } }).use { f ->
+            var old: Any? = null
+            var second: NotificationSelection? = null
+            port.throwAfterSubmit = true
+            port.duringSubmit = {
+                if (port.sent.size == 1) {
+                    old = currentOwner(f)
+                    f.post(); second = selected(f); f.goalReady()
+                } else port.throwAfterSubmit = false
+            }
+            f.post(); f.goalReady()
+            check(port.sent.size == 2 && selected(f) === second && retiredOwners(f).contains(old))
+            check(f.owner.lastOutcome == null) { "escaped old submit overwrote newer G's cleared outcome" }
+            val first = port.sent.first(); val latest = port.sent.last()
+            val outcome = NotificationDispatchOutcome.fault(latest.carrier, NotificationFaultStage.ENQUEUE, "LATEST_G")
+            port.settle(latest, outcome); port.settle(first, NotificationDispatchOutcome.rejected(first.carrier))
+            check(f.owner.lastOutcome === outcome && selected(f) === second && !retiredOwners(f).contains(old))
+        }
+    }
+    check(failures == 0) { "$failures correction65 scenarios failed" }
+    println("RESULT correction65 scenarios=10 failures=0; explicit reentry/failing-port boundaries, no global physical nonoverlap/native claim")
+}
+
+fun main(args: Array<String>) {
+    if (args.contentEquals(arrayOf("--correction65-only"))) { correction65Scenarios(); return }
     policyRegressions()
     realPipeline()
     receiptBeforeRead()
     ownershipRecovery()
     coordinatorOwnership()
     adoptedMergeComposition()
+    correction65Scenarios()
     val junit = org.junit.runner.JUnitCore.runClasses(NotificationEventsTest::class.java, NotificationIngressRuntimeTest::class.java,
         ChosenAppStoreTest::class.java, AppScaleCoordinatorTest::class.java)
     junit.failures.forEach { println(it.trace) }

@@ -5,6 +5,7 @@ from pathlib import Path
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--output-dir',type=Path,required=True)
 p.add_argument('--source-root',type=Path,help='Exact production source snapshot; fixtures remain current and are separately retained')
+p.add_argument('--correction65-only',action='store_true',help='Run only modeled local-order and retired-registration correction cases')
 a=p.parse_args(); out=a.output_dir.resolve();out.mkdir(parents=True,exist_ok=False)
 root=a.source_root.resolve() if a.source_root else Path(__file__).resolve().parents[4]; suite=Path(__file__).resolve().parents[1]/'activation'
 host=root/'directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost'
@@ -42,6 +43,7 @@ java=str(Path(os.environ.get('JAVA_HOME','/usr/lib/jvm/java-17-openjdk-amd64'))/
 cp=os.pathsep.join(map(str,jars)); jar=out/'activation.jar'
 commands={'compile':[java,'-Xmx2g','-cp',cp,'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler','-no-stdlib','-no-reflect','-jvm-target','17','-classpath',cp,'-d',str(jar)]+compiled,
           'run':[java,'-cp',str(jar)+os.pathsep+cp,'com.code2hack.eyeprojector.directhost.notifications.selectiontest.ScenariosKt']}
+if a.correction65_only: commands['run'].append('--correction65-only')
 result={'inputs':inputs,'dependencies':[{'path':str(f),'sha256':sha(f)} for f in jars],'commands':commands,'compileExit':None,'runExit':None,'scope':'Actual facade+HostBootstrap+AppScaleCoordinator+notification selection+canonical policy/store adapters. Android/Shizuku/Binder/JSON/TLS boundaries doubled; explicit delivery/settlement adversarial cases use ControlledPort; no native/device/physical proof', 'runner':{'path':str(Path(__file__).resolve()),'sha256':sha(Path(__file__).resolve())}}
 try:
     for phase,limit in [('compile',90),('run',60)]:
