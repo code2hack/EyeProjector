@@ -12,6 +12,9 @@ data class ProjectionContext(val ownerEpoch: String = "", val projectionToken: S
 /** Captured once under Bridge admission; invoking it never resolves a newer Session. */
 internal interface CapturedProjection {
     fun receiverUsability(): SessionUsabilitySnapshot = SessionUsabilitySnapshot(ProjectionContext(), retired = true)
+    fun phoneHidSnapshot(): com.code2hack.eyeprojector.directhost.activation.snapshot.NativeSnapshotDescriptor? = null
+    fun phoneHidStampedEdge(routeId: Long, edge: com.code2hack.eyeprojector.protocol.PhoneHidEdge,
+        regionId: String, word: Long) = Unit
     fun phoneHidEdge(routeId: Long, edge: com.code2hack.eyeprojector.protocol.PhoneHidEdge)
     fun launchApp(requestId: Long, packageName: String): ProjectionDisplayState
     fun projectionDisplayState(): ProjectionDisplayState

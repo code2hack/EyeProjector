@@ -22,7 +22,7 @@ fun main() {
     val bootstrap=HostBootstrap.current
     bootstrap.value=HostBootstrap.Status(HostBootstrap.Setup.AVAILABLE,"STOPPED")
     val sessions=PhoneSessionController.get(Context())
-    val runtime=PhoneHidRuntime.get(Context())
+    val runtime=PhoneHidRuntime.get(Context()).also { it.controller.activation=historicalHidPort(sessions) }
     val service=PhoneHidKeyService(); service.onServiceConnected()
     val lane=sessions.javaClass.getDeclaredField("featureLane").apply { isAccessible=true }.get(sessions) as ScheduledExecutorService
     val command=sessions.javaClass.getDeclaredMethod("command",SessionControl.Request::class.java).apply { isAccessible=true }
@@ -74,10 +74,10 @@ fun main() {
         val count=touches.size
         check(edge(2000));check(edge(2020,2000,KeyEvent.ACTION_UP));bootstrap.drainInput()
         check(touches.size==count && directive().wakeRevision==before && !sessions.needsActivation())
-        println("COUNTEREXAMPLE HID27: stale facade PRESENTED + actual merger unavailable -> bound press consumed/discarded with no wake; NOT WAKE PASS")
+        println("HISTORICAL_LEGACY_PORT COUNTEREXAMPLE HID27: stale facade PRESENTED + actual merger unavailable -> bound press consumed/discarded with no wake; NOT WAKE PASS")
         check(!edge(2100,k=196,s=701));check(!edge(2120,2100,KeyEvent.ACTION_UP,k=196,s=701))
         check(directive().wakeRevision==before)
-        println("COUNTEREXAMPLE HID27: same ordering -> unassigned press passes with no wake; NOT WAKE PASS")
+        println("HISTORICAL_LEGACY_PORT COUNTEREXAMPLE HID27: same ordering -> unassigned press passes with no wake; NOT WAKE PASS")
 
         report(2,false); check(sessions.needsActivation())
         val blocked=CountDownLatch(1); val release=CountDownLatch(1)
@@ -176,7 +176,7 @@ fun main() {
         units.failures.forEach{println(it.toString())}
         check(units.wasSuccessful())
         println("PASS ${units.runCount} canonical Function/cleanup and widget JUnit cases")
-        println("KNOWN_GAP: HID27 ordering reproduced with actual facade/HID/merger; acceptance remains unresolved")
+        println("HISTORICAL_LEGACY_PORT: retained HID27 legacy-port counterexamples, not the production native capture; new producer --transport evidence is separate")
     } finally {
         service.onDestroy()
         lane.shutdownNow();lane.awaitTermination(2,TimeUnit.SECONDS)

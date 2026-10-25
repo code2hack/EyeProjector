@@ -19,6 +19,7 @@ internal fun inputAuthorityRegression(){
   try {
    val d=f.ready().handle
    f.report(ReceiverUsabilityMode.LOCAL_PANEL);Handler.flush()
+   f.nativeLocal(runtime) // Explicit native memory primitive boundary; actual reader/offer installed.
    check(!f.sessions.needsActivation()) // Input stays normal although the original PROJECTED D is pending.
    val device=InputDevice(42,"actual-producer-hid",7,8,"External fixture")
    val key=201;val scan=801
@@ -50,6 +51,7 @@ internal fun inputAuthorityRegression(){
    val after=f.service.inputCalls.size
    check(edge(2040,2000,KeyEvent.ACTION_UP)==handled)
    if(okay)check(f.service.inputCalls.size==after) // Fresh readiness cannot replay the owned wake release.
+   f.nativeAwaitReady(runtime)
    val normal=edge(3000);check(normal==bound);check(edge(3020,3000,KeyEvent.ACTION_UP)==bound)
    if(okay)println("PASS actual input authority ABA $label keeps full wake/old passed gesture; fresh local input remains normal while PROJECTED D waits")
   } finally {

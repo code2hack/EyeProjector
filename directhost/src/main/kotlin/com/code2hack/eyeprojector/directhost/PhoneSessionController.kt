@@ -24,12 +24,13 @@ class PhoneSessionController private constructor(context: Context) {
     private val fastLock = contextAuthority.lock
     private val main = Handler(Looper.getMainLooper())
     private val stateObservers = CopyOnWriteArraySet<() -> Unit>()
-    private val inputInvalidators = CopyOnWriteArraySet<() -> Unit>()
+    private val inputInvalidators = CopyOnWriteArraySet<(Boolean) -> Unit>()
     val bootstrap = HostBootstrap.get(context)
     val store = PeerStore(File(context.filesDir, "session"))
     private val featureLane = Executors.newSingleThreadScheduledExecutor()
     private val pendingBackend = AtomicReference<HostBootstrap.Status?>()
-    private data class LocalRequest(val handle: ActivationHandle, val cause: ActivationCause, val expectedEpoch: String? = null)
+    private data class LocalRequest(val handle: ActivationHandle, val cause: ActivationCause, val expectedEpoch: String? = null,
+        val hidWake: HidWakeRequest? = null)
     private val pendingRequest = AtomicReference<LocalRequest?>()
     private val pendingStops = linkedSetOf<String>()
     private val pendingReleased = AtomicReference<HostBootstrap.Status?>()
@@ -47,6 +48,9 @@ class PhoneSessionController private constructor(context: Context) {
     private var genericProducerVersion = -1L
     private var projectedProducerVersion = -1L
     private var turnProducerVersion = -1L // Feature-lane owned capture, never refreshed by an old publisher.
+    private var hidRegionId: String? = null // Primitive setup authority only; never a mapping/address.
+    private var hidRegionContext = ProjectionContext()
+    private var hidRegionGeneration = 0L
     private var inputOwner: String? = null
     private var inputTarget = ProjectionContext()
     private lateinit var contextRegistration: Closeable
@@ -111,34 +115,135 @@ class PhoneSessionController private constructor(context: Context) {
         current == null || !usable || fact?.eligible != true || fact.context != inputTarget ||
             genericProducerVersion != contextAuthority.version || (aliases[current.id] ?: current.id) != inputOwner
     }
-    internal fun onInputInvalidated(action: () -> Unit) { inputInvalidators.add(action) }
-    private fun invalidateInput() {
-        val cancel = { inputInvalidators.forEach { runCatching { it() } }; Unit }
+    /** One cached original qualification. Native reading/FD setup is a separate key-lane owner. */
+    internal fun captureHidAuthority(): HidInputAuthority = synchronized(fastLock) {
+        val h = currentHandle.get(); val fact = contextAuthority.fact
+        val matching = h != null && (aliases[h.id] ?: h.id) == inputOwner && fact?.eligible == true &&
+            fact.context == inputTarget && inputTarget.available && genericProducerVersion == contextAuthority.version &&
+            readyAttempt?.id == inputTarget.ownerEpoch
+        HidInputAuthority(h, if (matching) readyAttempt?.id else null,
+            if (matching) inputTarget else ProjectionContext(), contextAuthority.version, localRevision.get(), hidRegionGeneration)
+    }
+    private fun originalHidScopeCurrentLocked(original: HidInputAuthority): Boolean {
+        val current = currentHandle.get()
+        val old = original.handle
+        if (old == null) return current == null && original.admissionRevision == localRevision.get()
+        if (current == null || (aliases[current.id] ?: current.id) != (aliases[old.id] ?: old.id)) return false
+        if (original.attemptId != null && readyAttempt?.id != original.attemptId) return false
+        if (original.context.available) {
+            val fact = contextAuthority.fact
+            if (fact?.eligible != true || fact.context != original.context || contextAuthority.version != original.producerVersion) return false
+        }
+        return true
+    }
+    /** Map/install work has finished on the key lane before primitive authority is registered. */
+    internal fun installHidRegion(original: HidInputAuthority, regionId: String): HidInputAuthority? = synchronized(fastLock) {
+        if (original.handle == null || !original.context.available || !originalHidScopeCurrentLocked(original)) return@synchronized null
+        hidRegionId = regionId; hidRegionContext = original.context; hidRegionGeneration++
+        original.copy(regionGeneration = hidRegionGeneration)
+    }
+    internal fun isHidAuthorityCurrent(original: HidInputAuthority): Boolean = synchronized(fastLock) {
+        originalHidScopeCurrentLocked(original)
+    }
+    internal fun retireHidRegion(original: HidInputAuthority) = synchronized(fastLock) {
+        if (original.regionGeneration == hidRegionGeneration && original.context == hidRegionContext) {
+            hidRegionId = null; hidRegionContext = ProjectionContext(); hidRegionGeneration++
+        }
+    }
+    /** Original scope validation, pure identity and merge are one fast transition; effects follow it. */
+    internal fun requestHidActivation(wake: HidWakeRequest, originalSetup: HidInputAuthority? = null): ActivationHandle? {
+        val handle = synchronized(fastLock) {
+            if (originalSetup != null && !originalHidScopeCurrentLocked(originalSetup)) return@synchronized null
+            if (!originalHidScopeCurrentLocked(wake.authority) || wake.disposition == PhoneHidDisposition.USABLE ||
+                wake.disposition == PhoneHidDisposition.NONE && !validHidWakeLocked(wake)) return@synchronized null
+            val h = requestIdentityLocked(ActivationCause.HID_PRESS)
+            val admitted = wake.copy(authority = wake.authority.copy(handle = h), admitted = true)
+            if (wake.disposition == PhoneHidDisposition.NONE) {
+                clearReadyLocked(); usable = false; localRevision.incrementAndGet()
+            }
+            enqueueLocalRequestLocked(LocalRequest(h, ActivationCause.HID_PRESS, hidWake = admitted))
+            h
+        }
+        if (handle != null) {
+            if (wake.disposition == PhoneHidDisposition.NONE) invalidateInput(preserveLearning = true)
+            scheduleDrain(); invalidateState()
+        }
+        return handle
+    }
+    internal fun onInputInvalidated(action: () -> Unit) { inputInvalidators.add { action() } }
+    /** Presentation loss retires projected routes, while an original row capture may still learn its UP. */
+    internal fun onHidInputInvalidated(action: (preserveLearning: Boolean) -> Unit) { inputInvalidators.add(action) }
+    private fun invalidateInput(preserveLearning: Boolean = false) {
+        val cancel = { inputInvalidators.forEach { runCatching { it(preserveLearning) } }; Unit }
         if (Looper.myLooper() == Looper.getMainLooper()) cancel() else main.post { cancel() }
     }
 
     /** Immediate local identity capture only. HID never waits for this writer, disk or Binder. */
     internal fun requestActivation(cause: ActivationCause): ActivationHandle {
-        val handle = synchronized(fastLock) {
-            val h = currentHandle.get() ?: ActivationHandle("$localNonce.${offers.incrementAndGet()}", cause).also {
-                currentHandle.set(it); localRevision.incrementAndGet()
-                if (!initialized && firstOffer == null) firstOffer = it.id
-            }
-            if (cause == ActivationCause.NOTIFICATION) {
-                ActivationHandle(h.id, cause, "$localNonce.d${offers.incrementAndGet()}", ActivationGoal.PROJECTED).also { d ->
-                    currentDemand = d; projectedActivation = null; projectedProducerVersion = -1
-                    localRevision.incrementAndGet()
-                    pendingRequest.set(LocalRequest(d,cause))
-                }
-            } else {
-                // One existing latest-value slot; weaker input never replaces a pending PROJECTED request.
-                val pending = pendingRequest.get()
-                if (pending?.handle?.demandId == null) pendingRequest.set(LocalRequest(h,cause))
-                h
-            }
-        }
+        val handle = synchronized(fastLock) { requestIdentityLocked(cause) }
         scheduleDrain(); invalidateState()
         return handle
+    }
+    /** Pure identity transition; caller owns fastLock, effects and notification policy stay outside. */
+    private fun requestIdentityLocked(cause: ActivationCause): ActivationHandle {
+        val h = currentHandle.get() ?: ActivationHandle("$localNonce.${offers.incrementAndGet()}", cause).also {
+            currentHandle.set(it); localRevision.incrementAndGet()
+            if (!initialized && firstOffer == null) firstOffer = it.id
+        }
+        return if (cause == ActivationCause.NOTIFICATION) {
+            ActivationHandle(h.id, cause, "$localNonce.d${offers.incrementAndGet()}", ActivationGoal.PROJECTED).also { d ->
+                currentDemand = d; projectedActivation = null; projectedProducerVersion = -1
+                localRevision.incrementAndGet()
+                enqueueLocalRequestLocked(LocalRequest(d, cause))
+            }
+        } else {
+            enqueueLocalRequestLocked(LocalRequest(h, cause)); h
+        }
+    }
+    /** H-scoped payload validity is independent of whether its former D was superseded. */
+    private fun validHidWakeLocked(wake: HidWakeRequest): Boolean {
+        val original = wake.authority
+        val old = original.handle ?: return false
+        val current = currentHandle.get() ?: return false
+        if ((aliases[current.id] ?: current.id) != (aliases[old.id] ?: old.id)) return false
+        if (original.attemptId != null && readyAttempt?.id != original.attemptId) return false
+        if (wake.admitted) {
+            // A later UNKNOWN setup sample cannot erase an already admitted NONE obligation.
+            // This never grants input/Ready and never transfers it to a different A/C/H.
+            if (original.context.available && contextAuthority.fact?.context != original.context) return false
+        } else if (!originalHidScopeCurrentLocked(original)) return false
+        return when (wake.disposition) {
+            PhoneHidDisposition.USABLE -> false
+            PhoneHidDisposition.UNKNOWN -> true // Unestablished setup is not a remote NONE observation.
+            PhoneHidDisposition.NONE -> original.context.available && original.attemptId != null &&
+                wake.regionId != null && wake.word != null && (wake.word ushr 2) != 0L && (wake.word and 3L) == 0L &&
+                (wake.admitted || wake.regionId == hidRegionId && original.context == hidRegionContext &&
+                    original.regionGeneration == hidRegionGeneration)
+        }
+    }
+    /** ONE latest slot. Also used by actor exception requeue; no old-D CAS-null loss. */
+    private fun enqueueLocalRequestLocked(request: LocalRequest) {
+        val old = pendingRequest.get()
+        val oldCurrent = old?.takeIf { currentLocked(it.handle) }
+        val incoming = request.takeIf { currentLocked(it.handle) }
+        val projected = currentDemand?.takeIf(::currentLocked)
+        val selected = when {
+            projected != null && incoming?.handle === projected -> incoming
+            projected != null && oldCurrent?.handle === projected -> oldCurrent
+            projected != null -> LocalRequest(projected, ActivationCause.NOTIFICATION)
+            incoming != null -> incoming
+            else -> oldCurrent
+        } ?: return
+        val incomingLoss = request.hidWake?.takeIf(::validHidWakeLocked)
+        val oldLoss = old?.hidWake?.takeIf(::validHidWakeLocked)
+        val loss = when {
+            incomingLoss?.disposition == PhoneHidDisposition.NONE && oldLoss?.disposition == PhoneHidDisposition.NONE ->
+                if (incomingLoss.regionId == oldLoss.regionId && (oldLoss.word!! ushr 2) > (incomingLoss.word!! ushr 2)) oldLoss else incomingLoss
+            incomingLoss?.disposition == PhoneHidDisposition.NONE -> incomingLoss
+            oldLoss?.disposition == PhoneHidDisposition.NONE -> oldLoss
+            else -> incomingLoss ?: oldLoss
+        }
+        pendingRequest.set(selected.copy(hidWake = loss))
     }
     private fun currentLocked(handle: ActivationHandle): Boolean {
         val current = currentHandle.get() ?: return false
@@ -274,19 +379,7 @@ class PhoneSessionController private constructor(context: Context) {
                         cancelId != null || report?.mode == ReceiverUsabilityMode.NONE || cleanupId != null || failedId != null).notify) invalidateInput()
             }
             val reply = control?.let(activation::command)
-            synchronized(fastLock) { pendingRequest.getAndSet(null) }?.let { request ->
-                try {
-                    if (request.handle.id !in activation.journal.canceled &&
-                        (request.expectedEpoch == null || controller.acceptsStartCaller(request.expectedEpoch)))
-                        if (synchronized(fastLock) { currentLocked(request.handle) })
-                            activation.request(request.cause, request.handle.id, request.handle.demandId)
-                } catch (error: Exception) {
-                    synchronized(fastLock) {
-                        if (currentLocked(request.handle)) pendingRequest.compareAndSet(null, request)
-                    }
-                    throw error
-                }
-            }
+            synchronized(fastLock) { pendingRequest.getAndSet(null) }?.let(::applyLocalRequest)
             pendingForget.getAndSet(null)?.let { done ->
                 try { activation.stop(); bootstrap.stopBeforeForget(done) }
                 catch (error: Exception) { pendingForget.compareAndSet(null, done); throw error }
@@ -297,6 +390,22 @@ class PhoneSessionController private constructor(context: Context) {
             usable = false; featureDetail = "Activation pending: ${error.javaClass.simpleName}"
             invalidateState() // Keep durable intent pending; a later ordered turn retries reconciliation.
             return null
+        }
+    }
+    /** One already-selected actor request. Selection and effects retain their original independent H/D scopes. */
+    private fun applyLocalRequest(request: LocalRequest) {
+        try {
+            val wake = synchronized(fastLock) { request.hidWake?.takeIf(::validHidWakeLocked) }
+            val requestCurrent = synchronized(fastLock) { currentLocked(request.handle) }
+            if (request.handle.id !in activation.journal.canceled && requestCurrent &&
+                (request.expectedEpoch == null || controller.acceptsStartCaller(request.expectedEpoch)) &&
+                (request.hidWake == null || wake != null || request.cause != ActivationCause.HID_PRESS))
+                activation.request(request.cause, request.handle.id, request.handle.demandId)
+            // Superseding D alone cannot discard valid original H-scoped loss.
+            wake?.let(activation::observeHidWake)
+        } catch (error: Exception) {
+            synchronized(fastLock) { enqueueLocalRequestLocked(request) }
+            throw error
         }
     }
     private fun publishActivation(revision: Long) {

@@ -72,7 +72,9 @@ internal class Fixture(val ownerEpoch: String = "session-owner", val child: Chil
     fun state(): ProjectionDisplayState = type.getDeclaredMethod("projectionDisplayState").apply { isAccessible = true }.invoke(session) as ProjectionDisplayState
     fun launch(id: Long, pkg: String): ProjectionDisplayState =
         type.getDeclaredMethod("launchApp",Long::class.javaPrimitiveType,String::class.java).apply { isAccessible = true }.invoke(session,id,pkg) as ProjectionDisplayState
-    override fun close() { runCatching { closeSession() }; timer.shutdownNow(); directory.deleteRecursively() }
+    override fun close() { runCatching { closeSession() }; timer.shutdownNow()
+        (get("nativeSetup") as ExecutorService).awaitTermination(3,TimeUnit.SECONDS) // Test teardown only; production never joins.
+        directory.deleteRecursively() }
 }
 internal open class Adapter : ProjectionLaunchAdapter {
     val calls = mutableListOf<Int>()

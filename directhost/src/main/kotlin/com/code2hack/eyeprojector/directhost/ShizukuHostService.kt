@@ -123,6 +123,21 @@ class ShizukuHostService internal constructor(
         target.phoneHidEdge(routeId, edge)
     }
 
+    override fun phoneHidSnapshot(expectedOwnerEpoch: String, expectedProjectionToken: String):
+        com.code2hack.eyeprojector.directhost.activation.snapshot.NativeSnapshotDescriptor? {
+        val expected = ProjectionContext(expectedOwnerEpoch, expectedProjectionToken)
+        val original = panelRoutes.capture(expected.ownerEpoch)?.target?.captureProjection(expected) ?: return null
+        return original.phoneHidSnapshot() // Admission has ended before descriptor FD duplication.
+    }
+
+    override fun phoneHidStampedEdge(routeId: Long, typedEdge: ByteArray, expectedOwnerEpoch: String,
+        expectedProjectionToken: String, regionId: String, word: Long) {
+        val expected = ProjectionContext(expectedOwnerEpoch, expectedProjectionToken)
+        val original = panelRoutes.capture(expected.ownerEpoch)?.target?.captureProjection(expected) ?: return
+        val edge = runCatching { com.code2hack.eyeprojector.protocol.PhoneHidEdge.from(typedEdge) }.getOrNull() ?: return
+        original.phoneHidStampedEdge(routeId, edge, regionId, word)
+    }
+
     private fun captureLaunchTarget(expected: ProjectionContext): CapturedProjection? =
         panelRoutes.capture(expected.ownerEpoch)?.target?.captureProjection(expected)
 

@@ -21,7 +21,7 @@ internal fun projectedDemandScenarios(){
  PhoneHidRuntime::class.java.getDeclaredField("instance").apply{isAccessible=true}.set(null,null)
  val b=HostBootstrap().also{it.value=HostBootstrap.Status(HostBootstrap.Setup.AVAILABLE,"STOPPED")};HostBootstrap.current=b
  val s=PhoneSessionController.get(Context());val writer=lane(s)
- val runtime=PhoneHidRuntime.get(Context());val service=PhoneHidKeyService();service.onServiceConnected()
+ val runtime=PhoneHidRuntime.get(Context()).also { it.controller.activation=historicalHidPort(s) };val service=PhoneHidKeyService();service.onServiceConnected()
  val command=s.javaClass.getDeclaredMethod("command",SessionControl.Request::class.java).apply{isAccessible=true}
  fun request(r:SessionControl.Request)=command.invoke(s,r) as SessionState
  fun directive()=s.state().activation!!.directive!!

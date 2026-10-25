@@ -4,6 +4,9 @@ import com.code2hack.eyeprojector.protocol.*
 
 class ShizukuHostService
 interface IHostBootstrap {
+    fun phoneHidSnapshot(expectedOwnerEpoch:String,expectedProjectionToken:String):com.code2hack.eyeprojector.directhost.activation.snapshot.NativeSnapshotDescriptor?=null
+    fun phoneHidStampedEdge(routeId:Long,typedEdge:ByteArray,expectedOwnerEpoch:String,expectedProjectionToken:String,regionId:String,word:Long) {}
+
     fun phoneHidEdge(routeId: Long, typedEdge: ByteArray, expectedOwnerEpoch: String, expectedProjectionToken: String) {}
     fun start(identity: ByteArray, password: ByteArray, legacy: ByteArray?, endpoint: ByteArray, paired: ByteArray?, sessionEpoch: String): String
     fun status(): String
@@ -25,6 +28,16 @@ class FakeService : IHostBootstrap, android.os.IBinder {
     val inputCalls = mutableListOf<InputCall>()
     val inputWrites = mutableListOf<InputCall>()
     var beforeInput: (() -> Unit)? = null
+    var snapshotProvider: (() -> com.code2hack.eyeprojector.directhost.activation.snapshot.NativeSnapshotDescriptor?)? = null
+    var stampedInput: ((Long, PhoneHidEdge, String, Long) -> Unit)? = null
+    override fun phoneHidSnapshot(expectedOwnerEpoch:String,expectedProjectionToken:String):com.code2hack.eyeprojector.directhost.activation.snapshot.NativeSnapshotDescriptor? =
+        if (ProjectionContext(expectedOwnerEpoch,expectedProjectionToken)==context) snapshotProvider?.invoke() else null
+    override fun phoneHidStampedEdge(routeId:Long,typedEdge:ByteArray,expectedOwnerEpoch:String,expectedProjectionToken:String,regionId:String,word:Long) {
+        beforeInput?.invoke()
+        val call=InputCall(routeId,PhoneHidEdge.from(typedEdge),ProjectionContext(expectedOwnerEpoch,expectedProjectionToken))
+        inputCalls.add(call)
+        if (call.expected==context) { stampedInput?.invoke(routeId,call.edge,regionId,word); inputWrites.add(call) }
+    }
     override fun phoneHidEdge(routeId: Long, typedEdge: ByteArray, expectedOwnerEpoch: String, expectedProjectionToken: String) {
         beforeInput?.invoke()
         val call = InputCall(routeId, PhoneHidEdge.from(typedEdge), ProjectionContext(expectedOwnerEpoch, expectedProjectionToken))

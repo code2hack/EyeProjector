@@ -11,6 +11,7 @@ import java.io.DataOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicReference
 
 /** Owns its FD. Binder return marshalling closes the sender's independently duplicated FD. */
 class NativeSnapshotDescriptor internal constructor(
@@ -77,33 +78,44 @@ internal class NativeSnapshotWriter private constructor(
 ) : Closeable {
     enum class Publication { PUBLISHED, ROTATE_REQUIRED, RETIRED }
     private var stamp = 0L
-    private var retired = false
-    private var closed = false
-    @Synchronized fun descriptor(): NativeSnapshotDescriptor {
+    private val descriptorResources = Any()
+    @Volatile private var retired = false
+    @Volatile private var closed = false
+    private var word = 0L
+    // FD duplication may block. It never owns the publication monitor used by NONE/RETIRED.
+    fun descriptor(): NativeSnapshotDescriptor = synchronized(descriptorResources) {
         check(!closed && !retired)
         val parcel = Parcel.obtain()
         val duplicate = try {
             memory.writeToParcel(parcel, 0); parcel.setDataPosition(0)
             SharedMemory.CREATOR.createFromParcel(parcel)
         } finally { parcel.recycle() }
-        return NativeSnapshotDescriptor(duplicate, context, regionId, offset, closeAfterReturn = true)
+        NativeSnapshotDescriptor(duplicate, context, regionId, offset, closeAfterReturn = true)
     }
+    @Synchronized fun publishedWord(): Long = word
     @Synchronized fun publish(mode: Int): Publication {
         require(mode in SnapshotWord.NONE..SnapshotWord.PROJECTED)
         if (retired || closed) return Publication.RETIRED
         if (stamp == SnapshotWord.MAX_STAMP) { retire(); return Publication.ROTATE_REQUIRED }
-        NativeSnapshotAccess.releaseCell(address, SnapshotWord.pack(++stamp, mode))
+        word = SnapshotWord.pack(++stamp, mode)
+        NativeSnapshotAccess.releaseCell(address, word)
         return Publication.PUBLISHED
     }
     @Synchronized fun retire() {
         if (retired || closed) return
         retired = true
-        NativeSnapshotAccess.releaseCell(address, SnapshotWord.pack(stamp, SnapshotWord.RETIRED))
+        word = SnapshotWord.pack(stamp, SnapshotWord.RETIRED)
+        NativeSnapshotAccess.releaseCell(address, word)
     }
-    @Synchronized override fun close() {
-        if (closed) return
-        retire(); closed = true
-        try { SharedMemory.unmap(mapping) } finally { memory.close() }
+    override fun close() {
+        synchronized(this) {
+            if (closed) return
+            retire(); closed = true
+        }
+        // Retirement is already visible; no publisher can use address after closed was set.
+        synchronized(descriptorResources) {
+            try { SharedMemory.unmap(mapping) } finally { memory.close() }
+        }
     }
     companion object {
         fun create(context: ProjectionContext): NativeSnapshotWriter {
@@ -127,7 +139,7 @@ internal class NativeSnapshotWriter private constructor(
 }
 
 /**
- * Sole reader lane owns install/read/clear. No production callback lane is selected yet.
+ * Sole reader lane owns install/read/clear. PhoneHidRuntime uses the main/key callback lane.
  * Setup/clear assert lane affinity; the intended fresh-key operation only loads one primitive cell.
  * Captured routes must carry context/regionId/word/proxy facts, never this address or ByteBuffer.
  */
@@ -137,28 +149,50 @@ internal class NativeSnapshotReadLane {
     private var address = 0L
     var context: ProjectionContext? = null; private set
     var regionId: String? = null; private set
+    /** Only the setup worker owns this mapping until its one-way handover to the key lane. */
+    internal class Prepared internal constructor(buffer: ByteBuffer, internal val address: Long,
+        val context: ProjectionContext, val regionId: String) : Closeable {
+        private val mapping = AtomicReference<ByteBuffer?>(buffer)
+        internal fun take(): ByteBuffer = checkNotNull(mapping.getAndSet(null)) { "Prepared snapshot already transferred" }
+        override fun close() { mapping.getAndSet(null)?.let(SharedMemory::unmap) }
+    }
     fun install(descriptor: NativeSnapshotDescriptor, expected: ProjectionContext) {
-        var fresh: ByteBuffer? = null
+        check(Thread.currentThread() === lane)
+        installPrepared(prepare(descriptor, expected))
+    }
+    fun installPrepared(prepared: Prepared) {
         try {
             check(Thread.currentThread() === lane)
-            NativeSnapshotAccess.prepare()
-            require(descriptor.context == expected)
-            val buffer = descriptor.memory.mapReadOnly(); fresh = buffer
-            SnapshotLayout.validate(buffer, descriptor)
-            val captured = NativeSnapshotAccess.bindCell(buffer, descriptor.cellOffset)
             clear()
-            mapping = buffer; fresh = null; address = captured
-            context = descriptor.context; regionId = descriptor.regionId
-        } finally {
-            try { fresh?.let(SharedMemory::unmap) } finally { descriptor.close() }
-        }
+            mapping = prepared.take(); address = prepared.address
+            context = prepared.context; regionId = prepared.regionId
+        } finally { prepared.close() }
     }
     /** Only call on the installation lane. No other thread may clear/unmap while this executes. */
-    fun read(): Long = if (address == 0L) SnapshotWord.RETIRED.toLong() else NativeSnapshotAccess.acquireCell(address)
+    fun read(): Long {
+        check(Thread.currentThread() === lane)
+        return if (address == 0L) SnapshotWord.RETIRED.toLong() else NativeSnapshotAccess.acquireCell(address)
+    }
     fun clear() {
         check(Thread.currentThread() === lane)
         address = 0L; context = null; regionId = null
         val old = mapping; mapping = null
         old?.let(SharedMemory::unmap)
+    }
+    companion object {
+        /** Binder/loader/map/header work runs outside key ingress and all authority/control locks. */
+        fun prepare(descriptor: NativeSnapshotDescriptor, expected: ProjectionContext): Prepared {
+            var fresh: ByteBuffer? = null
+            try {
+                NativeSnapshotAccess.prepare()
+                require(descriptor.context == expected)
+                val buffer = descriptor.memory.mapReadOnly(); fresh = buffer
+                SnapshotLayout.validate(buffer, descriptor)
+                val captured = NativeSnapshotAccess.bindCell(buffer, descriptor.cellOffset)
+                return Prepared(buffer, captured, descriptor.context, descriptor.regionId).also { fresh = null }
+            } finally {
+                try { fresh?.let(SharedMemory::unmap) } finally { descriptor.close() }
+            }
+        }
     }
 }

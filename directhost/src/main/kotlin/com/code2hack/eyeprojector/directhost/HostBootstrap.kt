@@ -7,6 +7,8 @@ import com.code2hack.eyeprojector.protocol.ScaleState
 import com.code2hack.eyeprojector.protocol.PhoneHidEdge
 import com.code2hack.eyeprojector.protocol.PhoneHidPhase
 import com.code2hack.eyeprojector.directhost.input.PhoneHidRoute
+import com.code2hack.eyeprojector.directhost.activation.snapshot.PhoneHidSnapshotSource
+import com.code2hack.eyeprojector.directhost.activation.snapshot.NativeSnapshotReadLane
 import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Context
@@ -250,7 +252,35 @@ class HostBootstrap private constructor(private val context: Context) {
     fun launchApp(packageName: String, complete: (ProjectionDisplayState?) -> Unit) =
         launchApp(packageName, current.projectionContext, complete)
 
-    /** Captures before any asynchronous Binder hop; subsequent edges never fetch the new singleton. */
+    /** Pure original capture; caller executes prepare on its non-deadline setup worker. */
+    internal fun capturePhoneHidSnapshot(expected: ProjectionContext): PhoneHidSnapshotSource? {
+        if (!expected.available) return null
+        val service = remote ?: return null
+        val binding = bindingGeneration
+        fun matches() = remote === service && bindingGeneration == binding && current.projectionContext == expected
+        if (!matches()) return null
+        return object : PhoneHidSnapshotSource {
+            override val context = expected
+            override fun current() = matches()
+            override fun prepare(): NativeSnapshotReadLane.Prepared? {
+                if (!matches()) return null
+                val descriptor = service.phoneHidSnapshot(expected.ownerEpoch, expected.projectionToken) ?: return null
+                if (!matches()) { descriptor.close(); return null }
+                val prepared = NativeSnapshotReadLane.prepare(descriptor, expected)
+                if (!matches()) { prepared.close(); return null }
+                return prepared
+            }
+            override fun route(down: PhoneHidEdge, regionId: String, word: Long): PhoneHidRoute? {
+                if (down.phase != PhoneHidPhase.DOWN || down.repeatCount != 0 || !matches()) return null
+                val id = inputRoutes.incrementAndGet()
+                return PhoneHidRoute(down, binding) { edge ->
+                    service.phoneHidStampedEdge(id, edge.bytes(), expected.ownerEpoch, expected.projectionToken, regionId, word)
+                }.also { it.submit(down) }
+            }
+        }
+    }
+
+    /** Compatibility route; production HID selects its original stamped snapshot source instead. */
     fun capturePhoneHidRoute(down: PhoneHidEdge): PhoneHidRoute? {
         if (down.phase != PhoneHidPhase.DOWN || down.repeatCount != 0) return null
         val snapshot = current

@@ -79,6 +79,21 @@ internal class PhoneActivationEngine(
         return handle!!
     }
 
+    /** Original observed native NONE, never pointer absence or setup UNKNOWN. Writer lane only. */
+    fun observeHidWake(wake: HidWakeRequest): Boolean {
+        if (wake.disposition != PhoneHidDisposition.NONE) return false
+        val original = wake.authority; val c = journal.current ?: return false
+        if (!c.desired || c.id in journal.canceled || original.handle == null ||
+            resolve(original.handle.id) != c.id || original.attemptId != c.attempt ||
+            original.context != context() || original.context.ownerEpoch != c.ownerEpoch ||
+            wake.regionId == null || wake.word == null || (wake.word ushr 2) == 0L || (wake.word and 3L) != 0L) return false
+        presentation = null; inputPresentation = null
+        localAttempt?.let(local::invalidatePresentation)
+        if (!demandPending) save(journal.copy(current = c.copy(wakeRevision = c.wakeRevision + 1)))
+        demandPending = true
+        return true
+    }
+
     fun start(expectedEpoch: String? = null): SessionState {
         if (expectedEpoch != null && !core.acceptsStartCaller(expectedEpoch)) return core.state()
         request(ActivationCause.PHONE_START)

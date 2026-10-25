@@ -36,8 +36,10 @@ queue and drained with a bounded wait. The actual executor is shut down through
 test reflection at suite exit to avoid retaining a worker JVM thread.
 
 The protocol action/phase/edge and opaque route types are exact authorized444
-seam doubles. The session facade has the exact `capturePhoneHidRoute`,
-`submitPhoneHid` and `cancelPhoneHid` signatures. Capture records the original
+seam doubles. The session facade records `capturePhoneHidRoute`, `submitPhoneHid` and
+`cancelPhoneHid`, with explicit unavailable setup and scoped-value methods for
+the current Runtime. Isolated routing cases select a named ready local port;
+they do not select production native transport. Capture records the original
 DOWN once; submit and cancellation retain the returned opaque identity. No
 shared protocol implementation, session/controller backend, Binder transport,
 gesture injection or projection target selection is compiled by this suite.
@@ -98,10 +100,15 @@ separate check. Device qualification remains open.
 
 Issue63 Phone-local activation cases compile the actual generic
 `PhoneActivationOwner`, `PhoneHidActivation` injection port and narrow controller/
-service hooks. The production Runtime intentionally retains the explicit
-`Unwired` default until shared session/controller allocation; service composition
-cases install a recording port on that actual controller and restore it afterward.
-Immutable fixture targets stand in for an eventual exact `ProjectionContext`.
+service hooks. The production Runtime now selects its typed original native snapshot capture.
+This isolated suite selects explicit recording/ready ports on that actual
+controller; its facade supplies no native descriptor. The actual native Kotlin
+region/lease classes compile on explicit JNI/SharedMemory/Parcel doubles to
+close Runtime dependencies, but isolated cases do not establish their use.
+Fixture targets stand in for `ProjectionContext`. The separate activation runner
+with `--producer --transport` composes the actual Bootstrap, facade, Runtime,
+KeyService, controller, native Kotlin reader/writer, Session and merger; its
+Android/JNI/FD/Binder boundaries and evidence remain separately identified.
 No activation persistence, retry scheduler, Phone backend owner, control schema,
 Glasses receiver, physical wake or background Activity capability is supplied by
 these seams.
@@ -116,3 +123,14 @@ Stop/page/device/service retirement, missing/changed device metadata, request
 failure, sticky learning while disconnected and unchanged ready pass-through.
 The actual service attachment cases reuse the existing external/nonvirtual/native
 exclusions and do not treat metadata change as a new attachment.
+
+
+Correction77 routes eligible attachment through the same one captured disposition
+as fresh keys. Production USABLE attachment is an idempotent join without a
+latest-owner request; NONE/UNKNOWN retain the captured scoped wake/setup path.
+The existing scoped helper represents these HID observations as HID_PRESS while
+the caller port retains HID_ATTACHMENT. Attachment creates no raw gesture or
+target edge. Its actual Runtime/KeyService/Session/engine proof is in the
+activation runner's `--producer --transport` suite; `--attachment-only` isolates
+that subset and `--source-root` binds the preserved parent production snapshot.
+The isolated HID port cases here retain separate caller/gesture/learning scope.

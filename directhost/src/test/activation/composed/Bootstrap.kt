@@ -23,6 +23,7 @@ class HostBootstrap {
         val route = com.code2hack.eyeprojector.directhost.input.PhoneHidRoute(down,1) { edge -> inputWork.add { original.edge(id,edge) } }
         capturedDowns++; route.submit(down); return route
     }
+    internal fun capturePhoneHidSnapshot(expected: ProjectionContext): com.code2hack.eyeprojector.directhost.activation.snapshot.PhoneHidSnapshotSource? = null // Explicit unavailable descriptor boundary; transport fixtures override separately.
     fun drainInput() { while (true) (inputWork.poll() ?: return).invoke() }
     fun stopBeforeForget(complete: () -> Unit) { stop(); complete() }
     enum class Setup { MISSING, UNAVAILABLE, UPDATE_REQUIRED, AUTHORIZATION_REQUIRED, SHELL_REQUIRED, AVAILABLE }
