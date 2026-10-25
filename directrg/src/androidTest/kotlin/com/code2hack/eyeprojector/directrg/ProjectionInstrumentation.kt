@@ -38,6 +38,19 @@ internal fun fixtureBootstrapReady(
 ): Boolean = state in listOf("WAITING_FOR_VIDEO", "STREAMING") && tls in listOf("TLSv1.2", "TLSv1.3") &&
     !peerAddress.isNullOrBlank() && !localAddress.isNullOrBlank() && width in 1..4096 && height in 1..4096 && touchesSent == 0L
 
+/** Test setup only: one existing elapsed-time allowance, with a per-leg constructor nanoTime age. */
+internal class FixtureSetupPhase(val runId: String, val producerRunStartedMonoNs: Long, val setupStartElapsedMs: Long) {
+    val setupDeadlineElapsedMs = setupStartElapsedMs + 180_000
+    var sessionStartedMonoNs: Long? = null; private set
+    val priorMediaLegSessionStarts = mutableListOf<Long?>()
+    fun observeSession(startedMonoNs: Long) { if (sessionStartedMonoNs == null) sessionStartedMonoNs = startedMonoNs }
+    fun mediaExpired(nowMonoNs: Long): Boolean = sessionStartedMonoNs?.let { nowMonoNs - it >= 15_000_000_000L } ?: false
+    fun beginOwnedReconnectLeg() {
+        priorMediaLegSessionStarts.add(sessionStartedMonoNs)
+        sessionStartedMonoNs = null
+    }
+}
+
 /** Explicit bounded on-RG test driver. No input/media loop runs on a computer. */
 class ProjectionInstrumentation : Instrumentation() {
     private lateinit var args: Bundle
@@ -48,6 +61,88 @@ class ProjectionInstrumentation : Instrumentation() {
     private var currentSetupStage = "NOT_STARTED"
     private var lastStatusObservation: JSONObject? = null
     private var baselineActivity: Activity? = null
+    private var fixtureSetupPhase: FixtureSetupPhase? = null
+    private var fixtureWitnessFile: File? = null
+    private var fixtureWitnessSignature: String? = null
+    private val fixtureWitnessHistory = JSONArray()
+    private val fixtureWitnessFailures = JSONArray()
+
+    private fun startFixtureSetup(id: String): FixtureSetupPhase {
+        val phase = FixtureSetupPhase(id, checkNotNull(runStartedNs), SystemClock.elapsedRealtime())
+        fixtureSetupPhase = phase
+        setupReport?.put("fixtureSetupStartElapsedMs", phase.setupStartElapsedMs)
+            ?.put("fixtureSetupDeadlineElapsedMs", phase.setupDeadlineElapsedMs)
+            ?.put("fixtureSetupWitnessHistory", fixtureWitnessHistory)
+            ?.put("fixtureSetupWitnessFailures", fixtureWitnessFailures)
+        setupStage("FIXTURE_SETUP_PREPARING")
+        val destination = File(targetContext.filesDir, "probe-$id-fixture-setup.json")
+        check(destination.createNewFile()) { "Existing fixture setup witness" }
+        fixtureWitnessFile = destination
+        publishFixtureSetup(phase, "PREPARING")
+        return phase
+    }
+
+    private fun beginOwnedReconnectLeg(phase: FixtureSetupPhase) {
+        phase.beginOwnedReconnectLeg()
+        setupReport?.put("fixturePriorMediaLegSessionStarts", JSONArray().apply {
+            phase.priorMediaLegSessionStarts.forEach { put(it ?: JSONObject.NULL) }
+        })?.put("fixtureMediaLeg", phase.priorMediaLegSessionStarts.size + 1)
+            ?.put("fixtureOwnedReconnectFreshAfterMonoNs", freshAfterNs)
+        publishFixtureSetup(phase, "WAIT_MEDIA_SESSION")
+    }
+
+    private fun fixtureStatusRejection(value: JSONObject?, atMonoNs: Long): String? {
+        if (value == null) return "NO_VALIDATED_STATUS"
+        val bound = if (freshAfterNs == 0L) runStartedNs else freshAfterNs
+        return receiverStatusRejection(value.optString("state"), diagnosticClockLong(value.opt("startedMonoNs")),
+            diagnosticClockLong(value.opt("elapsedMs")), bound, atMonoNs)
+    }
+    private fun fixtureGeometryReady(phase: FixtureSetupPhase, value: JSONObject?): Boolean {
+        return value != null && phase.sessionStartedMonoNs == value.getLong("startedMonoNs") && fixtureBootstrapReady(value.getString("state"),
+            value.optString("tls"), value.optString("peerAddress"), value.optString("localAddress"),
+            value.optInt("width", 0), value.optInt("height", 0), value.optLong("touchesSent", -1))
+    }
+
+    /** Returns existing status validity at publication, not operation authority. Quiet errors cannot mask cleanup. */
+    private fun publishFixtureSetup(phase: FixtureSetupPhase, stage: String, value: JSONObject? = null, quiet: Boolean = false): Boolean {
+        try {
+            val observedElapsed = SystemClock.elapsedRealtime()
+            val observedMono = System.nanoTime() // After status() validation/read; never subtract from elapsed or host clocks.
+            val rejection = fixtureStatusRejection(value, observedMono)
+            val validated = value?.takeIf { rejection == null }
+            val geometryReady = stage in listOf("GEOMETRY_READY", "WAIT_GO") &&
+                observedElapsed < phase.setupDeadlineElapsedMs && fixtureGeometryReady(phase, validated)
+            val current = validated?.let { source -> JSONObject().apply {
+                for (key in listOf("state", "startedMonoNs", "elapsedMs", "tls", "width", "height", "peerAddress",
+                        "localAddress", "touchesSent", "driverStatusRead")) if (source.has(key)) put(key, source.get(key))
+            } }
+            val signature = listOf(stage, geometryReady, rejection, validated?.opt("startedMonoNs"),
+                validated?.opt("state"), validated?.opt("tls"), validated?.opt("width"), validated?.opt("height"),
+                validated?.opt("peerAddress"), validated?.opt("localAddress"), validated?.opt("touchesSent")).toString()
+            // A ready witness must refresh its publication clock while the existing Go poll continues.
+            if (!quiet && !geometryReady && signature == fixtureWitnessSignature) return validated != null
+            val witness = JSONObject().put("schemaVersion", 1).put("runId", phase.runId)
+                .put("producerRunStartedMonoNs", phase.producerRunStartedMonoNs)
+                .put("setupStartElapsedMs", phase.setupStartElapsedMs).put("setupDeadlineElapsedMs", phase.setupDeadlineElapsedMs)
+                .put("observedElapsedMs", observedElapsed).put("observedMonoNs", observedMono).put("phase", stage)
+                .put("geometryReady", geometryReady).put("statusValidated", validated != null)
+                .put("statusValidationRejection", rejection ?: JSONObject.NULL)
+                .put("sessionStartedMonoNs", phase.sessionStartedMonoNs ?: JSONObject.NULL)
+                .put("status", current ?: JSONObject.NULL)
+            val destination = checkNotNull(fixtureWitnessFile)
+            val temporary = File(destination.parentFile, destination.name + ".tmp")
+            check(temporary.createNewFile()) { "Existing fixture setup witness temporary" }
+            temporary.writeText(witness.toString())
+            check(temporary.renameTo(destination)) { "Fixture setup witness publication failed" }
+            fixtureWitnessSignature = signature
+            fixtureWitnessHistory.put(witness)
+            return validated != null
+        } catch (error: Throwable) {
+            runCatching { fixtureWitnessFailures.put(JSONObject(startupErrorFields(error))) }
+            if (!quiet) throw error
+            return false
+        }
+    }
     private fun startupSnapshot(activity: Activity?, destination: JSONObject) {
         if (activity !is ReceiverActivity) {
             destination.put("startupSnapshotScope", "No owned Receiver Activity returned")
@@ -186,30 +281,73 @@ class ProjectionInstrumentation : Instrumentation() {
             if (done.count == 0L) bitmap.recycle()
         }
     }
-    private fun waitStreaming() {
+    private fun waitStreaming(fixture: FixtureSetupPhase? = null) {
         setupStage("WAIT_STREAM")
-        val deadline = SystemClock.elapsedRealtime() + 15_000
+        val mediaDeadline = SystemClock.elapsedRealtime() + 15_000
+        val deadline = if (fixture == null) mediaDeadline else minOf(mediaDeadline, fixture.setupDeadlineElapsedMs)
         while (SystemClock.elapsedRealtime() < deadline) {
-            if (runCatching { status().optString("state") == "STREAMING" }.getOrDefault(false)) {
-                setupStage("STREAM_READY"); return
+            if (runCatching { status().optString("state") == "STREAMING" }.getOrDefault(false) &&
+                (fixture == null || SystemClock.elapsedRealtime() < fixture.setupDeadlineElapsedMs)) {
+                setupStage("STREAM_READY")
+                if (fixture != null && SystemClock.elapsedRealtime() >= fixture.setupDeadlineElapsedMs) break
+                return
             }
             Thread.sleep(100)
         }
+        if (fixture != null && SystemClock.elapsedRealtime() >= fixture.setupDeadlineElapsedMs) {
+            error("Shared fixture setup deadline expired waiting for stream")
+        }
         error("No rendered stream")
     }
-    private fun waitFixtureGeometry() {
-        setupStage("WAIT_FIXTURE_GEOMETRY")
-        val deadline = SystemClock.elapsedRealtime() + 15_000
-        while (SystemClock.elapsedRealtime() < deadline) {
-            val ready = runCatching {
-                val value = status()
-                fixtureBootstrapReady(value.getString("state"), value.optString("tls"), value.optString("peerAddress"),
-                    value.optString("localAddress"), value.getInt("width"), value.getInt("height"), value.getLong("touchesSent"))
-            }.getOrDefault(false)
-            if (ready) { setupStage("FIXTURE_GEOMETRY_READY"); return }
+    private fun waitFixtureGeometry(fixture: FixtureSetupPhase) {
+        setupStage("WAIT_FIXTURE_MEDIA_SESSION")
+        publishFixtureSetup(fixture, "WAIT_MEDIA_SESSION")
+        while (SystemClock.elapsedRealtime() < fixture.setupDeadlineElapsedMs) {
+            var value = runCatching { status() }.getOrNull()
+            if (value != null && value.optString("state") in listOf("CONNECTING", "WAITING_FOR_VIDEO", "STREAMING")) {
+                val first = fixture.sessionStartedMonoNs == null
+                fixture.observeSession(value.getLong("startedMonoNs"))
+                if (first) {
+                    setupStage("WAIT_FIXTURE_GEOMETRY")
+                    value = runCatching { status() }.getOrNull()
+                }
+                publishFixtureSetup(fixture, "WAIT_GEOMETRY", value)
+                val ready = fixtureGeometryReady(fixture, value)
+                if (SystemClock.elapsedRealtime() >= fixture.setupDeadlineElapsedMs) break
+                if (ready && (first || !fixture.mediaExpired(System.nanoTime()))) {
+                    setupStage("FIXTURE_GEOMETRY_READY")
+                    if (SystemClock.elapsedRealtime() >= fixture.setupDeadlineElapsedMs) break
+                    val confirmed = runCatching { status() }.getOrNull()
+                    if (fixtureGeometryReady(fixture, confirmed) && (first || !fixture.mediaExpired(System.nanoTime())) &&
+                        publishFixtureSetup(fixture, "GEOMETRY_READY", confirmed) &&
+                        SystemClock.elapsedRealtime() < fixture.setupDeadlineElapsedMs) return
+                    publishFixtureSetup(fixture, "WAIT_GEOMETRY", confirmed)
+                }
+            } else publishFixtureSetup(fixture, if (fixture.sessionStartedMonoNs == null) "WAIT_MEDIA_SESSION" else "WAIT_GEOMETRY", value)
+            if (fixture.mediaExpired(System.nanoTime())) error("Fixture media geometry deadline expired after first fresh session start")
             Thread.sleep(100)
         }
-        error("No authenticated fixture geometry")
+        error(if (fixture.sessionStartedMonoNs == null) "Shared fixture setup deadline expired before fresh current-run media session"
+              else "Shared fixture setup deadline expired before authenticated fixture geometry")
+    }
+    private fun waitFixtureGo(id: String, fixture: FixtureSetupPhase) {
+        setupStage("WAIT_FIXTURE_GO")
+        val go = File(targetContext.filesDir, "probe-$id.go")
+        while (SystemClock.elapsedRealtime() < fixture.setupDeadlineElapsedMs) {
+            val value = runCatching { status() }.getOrNull()
+            val ready = fixtureGeometryReady(fixture, value)
+            val publishedValid = publishFixtureSetup(fixture, "WAIT_GO", value)
+            if (ready && publishedValid && go.isFile && SystemClock.elapsedRealtime() < fixture.setupDeadlineElapsedMs) {
+                setupStage("FIXTURE_GO_RECEIVED")
+                if (SystemClock.elapsedRealtime() >= fixture.setupDeadlineElapsedMs) break
+                val confirmed = runCatching { status() }.getOrNull()
+                if (fixtureGeometryReady(fixture, confirmed) && publishFixtureSetup(fixture, "GO_RECEIVED", confirmed) &&
+                    SystemClock.elapsedRealtime() < fixture.setupDeadlineElapsedMs) return
+                publishFixtureSetup(fixture, "WAIT_GO", confirmed)
+            }
+            Thread.sleep(100)
+        }
+        error("Bounded fixture setup did not complete within the shared deadline")
     }
     private fun unauthenticated(): Boolean {
         val directory = File(targetContext.filesDir, "session")
@@ -287,6 +425,7 @@ class ProjectionInstrumentation : Instrumentation() {
                 val seconds = args.getString("seconds")?.toInt() ?: 10
                 require(seconds in 1..660)
                 val waitForFixture = args.getString("waitForGo") == "true"
+                val fixtureSetup = if (waitForFixture) startFixtureSetup(id) else null
                 if (operation == "audio-volume") {
                     priorVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
                     report.put("priorMusicVolume", priorVolume)
@@ -305,7 +444,7 @@ class ProjectionInstrumentation : Instrumentation() {
                     report.put("initiator", "Phone Start; no Glasses Connect invocation")
                     setupStage("WAIT_PHONE_START", activity)
                 } else clickConnect(activity)
-                if (waitForFixture) waitFixtureGeometry() else waitStreaming()
+                if (waitForFixture) waitFixtureGeometry(fixtureSetup!!) else waitStreaming()
                 if (operation == "connected-panel") report.put("connectedPanel", ConnectedPanelChecks.run(this, activity as ReceiverActivity))
                 report.put("connected", status())
                 if (operation == "reconnect") {
@@ -313,6 +452,7 @@ class ProjectionInstrumentation : Instrumentation() {
                     runOnMainSync { activity!!.finish() }; Thread.sleep(1500)
                     require(status().getString("state") == "STOPPED")
                     freshAfterNs = System.nanoTime()
+                    fixtureSetup?.let { beginOwnedReconnectLeg(it) }
                     baselineActivity = null
                     setupStage("RECONNECT_ACTIVITY_LAUNCH", null)
                     activity = startActivitySync(intent)
@@ -321,17 +461,14 @@ class ProjectionInstrumentation : Instrumentation() {
                     waitForIdleSync(); Thread.sleep(250)
                     setupStage("RECONNECT_ACTIVITY_IDLE", activity)
                     clickConnect(activity)
-                    if (waitForFixture) waitFixtureGeometry() else waitStreaming()
+                    if (waitForFixture) waitFixtureGeometry(fixtureSetup!!) else waitStreaming()
                     require(status().getLong("touchesSent") == 0L)
                     report.put("reconnected", status())
                 }
                 if (waitForFixture) {
-                    val go = File(targetContext.filesDir, "probe-$id.go")
-                    val deadline = SystemClock.elapsedRealtime() + 180_000
-                    while (!go.isFile && SystemClock.elapsedRealtime() < deadline) Thread.sleep(100)
-                    require(go.isFile) { "Bounded fixture setup did not complete" }
+                    waitFixtureGo(id, fixtureSetup!!)
                     report.put("fixtureSetupBeforeMeasurement", true)
-                    waitStreaming()
+                    waitStreaming(fixtureSetup)
                 }
                 if (operation == "scale") {
                     runLiveScaleProbe(this, activity, args, report, id)
@@ -441,6 +578,7 @@ class ProjectionInstrumentation : Instrumentation() {
             }
             report.put("passed", true)
         } catch (error: Exception) {
+            fixtureSetupPhase?.let { publishFixtureSetup(it, "SETUP_FAILED", quiet = true) }
             report.put("errorType", error.javaClass.simpleName)
             report.put("failureSetupStage", currentSetupStage)
             report.put("failureActivityScope", when {
@@ -458,6 +596,7 @@ class ProjectionInstrumentation : Instrumentation() {
             report.put("causeClasses", causes)
         }
         finally {
+            fixtureSetupPhase?.let { publishFixtureSetup(it, "SETUP_FINISHED", quiet = true) }
             measurementStarted?.let { report.put("actualMeasurementMs", (measurementEnded ?: SystemClock.elapsedRealtime()) - it) }
             if (activity != null) report.put("baselineTeardown", "FINISH_OWNED_ACTIVITY")
             activity?.let { runOnMainSync { it.finish() } }
