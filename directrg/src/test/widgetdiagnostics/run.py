@@ -105,7 +105,7 @@ internal class ExtractedLocalReplayDriver {
     if helper.exists():
         sources.append(helper)
     sources += [actual / name for name in ("LocalPointerDispatcher.kt", "HeldPointerDispatcher.kt", "PadGestureRecognizer.kt")]
-    sources += [root / "protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol" / name for name in ("Touch.kt", "Wire.kt", "PhoneInput.kt")]
+    sources += [root / "protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol" / name for name in ("Touch.kt", "Wire.kt", "ActivationControl.kt", "ReceiverUsability.kt", "PhoneInput.kt")]
     sources += sorted((suite / "doubles").glob("*.kt")) + [suite / "Scenarios.kt", generated]
     cache = Path(os.environ.get("GRADLE_USER_HOME", Path.home() / ".gradle")) / "caches/modules-2/files-2.1"
     dependencies = (

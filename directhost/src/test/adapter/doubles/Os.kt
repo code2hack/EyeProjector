@@ -1,5 +1,9 @@
 package android.os
-class Looper { companion object { fun getMainLooper() = Looper() } }
+class Looper { companion object {
+ private val main=Looper();private val owner=Thread.currentThread()
+ fun getMainLooper()=main
+ fun myLooper():Looper?=if(Thread.currentThread()===owner)main else null
+} }
 class Handler(looper: Looper) {
  fun post(callback: () -> Unit): Boolean { if (defer) pending.add(callback) else callback(); return true }
  companion object {

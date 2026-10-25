@@ -18,13 +18,22 @@ import org.junit.rules.TemporaryFolder
 class RetainedReceiverSessionTest {
     @get:Rule val temporary = TemporaryFolder()
     private val size = Geometry(480, 640)
-    private class View : ReceiverSessionOwner.View {
+    internal class View : ReceiverSessionOwner.View {
         val states = mutableListOf<ReceiverSessionOwner.Snapshot>()
         val inputs = mutableListOf<ReceiverInput>()
         override fun state(snapshot: ReceiverSessionOwner.Snapshot) { states.add(snapshot) }
         override fun input(source: ProjectionSession, event: ReceiverInput) { inputs.add(event) }
     }
-    private inner class Fixture : AutoCloseable {
+    internal inner class Fixture(withFeature: Boolean = false) : AutoCloseable {
+        val feature = if (withFeature) ReceiverActivationStore(temporary.newFolder().resolve("feature.properties")).also {
+            it.startIncarnation()
+            val first = ReceiverLaunchScope("old-scope", "old-trigger", 7)
+            it.launch(first, "old-admission")
+            it.accept(ActivationReply(ActivationDirective("H1", true, 1, "old-owner"), TriggerReceipt("old-trigger", "H1", TriggerDisposition.MAPPED)))
+            val current = ReceiverLaunchScope("current-scope", "current-trigger", 8)
+            it.launch(current, "current-admission")
+            it.accept(ActivationReply(ActivationDirective("H2", true, 1, "retained-phone-owner"), TriggerReceipt("current-trigger", "H2", TriggerDisposition.MAPPED)))
+        } else null
         val queue = LinkedBlockingQueue<() -> Unit>()
         val commands = LinkedBlockingQueue<SessionControl.Request>()
         val resources = mutableListOf<Boolean>()
@@ -56,10 +65,10 @@ class RetainedReceiverSessionTest {
                     session.javaClass.getDeclaredField("output").apply { isAccessible = true }.set(session, DataOutputStream(bytes))
                     try { session.receive(Frame(Wire.GEOMETRY, payload = size.bytes())) }
                     catch (error: Exception) { throw AssertionError("decoder construction", error) }
-                }, clientFactory = { state, unavailable ->
+                }, feature = feature, clientFactory = { state, unavailable ->
                     observation = state
                     PairedSessionClient(temporary.newFolder(), state, unavailable,
-                        { request, _ -> commands.add(request); null }, { queue.add(it) })
+                        { request, _ -> commands.add(request); null }, { queue.add(it) }, feature = feature)
                 })
             owner.attach(view, first)
             observation(SessionState("retained-phone-owner", SessionPhase.AVAILABLE))
@@ -74,6 +83,151 @@ class RetainedReceiverSessionTest {
         fun frame(pts: Long = 0) { owner.session!!.receive(Frame(Wire.VIDEO, pts, byteArrayOf(1))) }
         fun streaming() { frame(); pumpUntil("current window presented") { owner.snapshot().state == "STREAMING" } }
         override fun close() { EGL14.failCurrent = false; EGL14.failSwap = false; EGL14.failQuery = false; owner.close(); pump() }
+    }
+
+    private fun mode(session: ProjectionSession): ReceiverUsability = session.javaClass.getDeclaredField("sourceUsability").apply { isAccessible = true }.get(session) as ReceiverUsability
+
+    @Test fun revisionOnlyPublicationDoesNotRecursivelyRedeliverUiSnapshot() {
+        Fixture(withFeature=true).use { f ->
+            var calls=0
+            val view=object:ReceiverSessionOwner.View {
+                override fun state(snapshot:ReceiverSessionOwner.Snapshot) {
+                    check(++calls<4) { "Mode publication recursively delivered the same UI state" }
+                    // Explicit UI cancellation boundary: Activity cancellation advances this owner revision,
+                    // then its passive pointer producer re-publishes current presentation.
+                    f.owner.advanceInputRevision();f.owner.presentation(this,true,true)
+                }
+                override fun input(source:ProjectionSession,event:ReceiverInput)=Unit
+            }
+            f.owner.attach(view,null)
+            assertTrue(calls in 1..2)
+            assertEquals(ReceiverUsabilityMode.LOCAL_PANEL,mode(f.owner.session!!).mode)
+        }
+    }
+
+    @Test fun explicitLocalPanelFocusAndDetachDoNotDependOnProjectedVideo() {
+        Fixture(withFeature = true).use { f ->
+            val session = f.owner.session!!
+            f.owner.presentation(f.view, true, true)
+            assertEquals(ReceiverUsabilityMode.LOCAL_PANEL, mode(session).mode)
+            f.owner.presentation(f.view, false, true)
+            assertEquals(ReceiverUsabilityMode.NONE, mode(session).mode)
+            f.owner.presentation(f.view, true, true)
+            f.owner.detach(f.view)
+            assertEquals(ReceiverUsabilityMode.NONE, mode(session).mode)
+            f.owner.presentation(f.view, true, true) // Retired view has no authority.
+            assertEquals(ReceiverUsabilityMode.NONE, mode(session).mode)
+        }
+    }
+
+    @Test fun changedDirectiveCannotStampAnotherOwnerOnOriginalMedia() {
+        Fixture(withFeature = true).use { f ->
+            val session = f.owner.session!!
+            f.owner.presentation(f.view, true, true)
+            f.feature!!.accept(ActivationReply(ActivationDirective("H3", true, 1, "new-owner")))
+            // The real client can accept on its executor before main receives the peer update.
+            f.owner.presentation(f.view, false, true)
+            assertEquals("retained-phone-owner", mode(session).ownerEpoch)
+            assertEquals(ReceiverUsabilityMode.NONE, mode(session).mode)
+        }
+    }
+
+    @Test fun pausedPositiveOwnerCannotOvertakeReplacementLossFromNoneOrProjected() {
+        for(initiallyShown in listOf(false,true)) Fixture(withFeature=true).use { f ->
+            f.streaming();f.owner.presentation(f.view,initiallyShown,false)
+            val session=f.owner.session!!
+            val entered=java.util.concurrent.CountDownLatch(1);val release=java.util.concurrent.CountDownLatch(1)
+            val first=java.util.concurrent.atomic.AtomicBoolean(true)
+            val ownerCounter=f.owner.javaClass.getDeclaredField("usabilityRevision").apply{isAccessible=true}.get(f.owner) as java.util.concurrent.atomic.AtomicLong
+            session.javaClass.getDeclaredField("nextUsabilityRevision").apply{isAccessible=true}.set(session,{
+                if(first.compareAndSet(true,false)){entered.countDown();check(release.await(3,TimeUnit.SECONDS))}
+                ownerCounter.incrementAndGet()
+            } as () -> Long)
+            val publishing=Thread { f.owner.advanceInputRevision();f.owner.presentation(f.view,true,false) }
+            publishing.start();assertTrue(entered.await(2,TimeUnit.SECONDS))
+            val geometry=Thread { session.receive(Frame(Wire.GEOMETRY,payload=Geometry(640,480).bytes())) }
+            geometry.start()
+            val end=System.nanoTime()+TimeUnit.SECONDS.toNanos(2)
+            while(geometry.state!=Thread.State.BLOCKED && System.nanoTime()<end)Thread.yield()
+            assertEquals(Thread.State.BLOCKED,geometry.state)
+            release.countDown();publishing.join(2000);geometry.join(2000)
+            assertFalse(publishing.isAlive);assertFalse(geometry.isAlive)
+            assertEquals(ReceiverUsabilityMode.NONE,mode(session).mode)
+            // A late legacy positive callback cannot override the source's newer explicit NONE.
+            session.presentation(true)
+            session.headPointer(HeadPointerState(99,1,true,false,1f,1f,null,null),Long.MAX_VALUE)
+            val point=session.javaClass.getDeclaredField("lastHeadPointer").apply{isAccessible=true}.get(session) as HeadPointerState
+            assertFalse(point.available)
+        }
+    }
+
+    @Test fun decoderGenerationFencePrecedesConcurrentOwnerPublicationAndNoneAllocation() {
+        Fixture(withFeature=true).use { f ->
+            f.streaming();f.owner.presentation(f.view,true,false)
+            val session=f.owner.session!!
+            val entered=java.util.concurrent.CountDownLatch(1);val release=java.util.concurrent.CountDownLatch(1)
+            val first=java.util.concurrent.atomic.AtomicBoolean(true)
+            val revisions=java.util.concurrent.atomic.AtomicLong(mode(session).revision+10)
+            session.javaClass.getDeclaredField("nextUsabilityRevision").apply{isAccessible=true}.set(session,{
+                if(first.compareAndSet(true,false)){entered.countDown();check(release.await(3,TimeUnit.SECONDS))}
+                revisions.incrementAndGet()
+            } as () -> Long)
+            val geometry=Thread { session.receive(Frame(Wire.GEOMETRY,payload=Geometry(640,480).bytes())) }
+            geometry.start();assertTrue(entered.await(2,TimeUnit.SECONDS))
+            val publishing=Thread { f.owner.advanceInputRevision();f.owner.presentation(f.view,true,false) }
+            publishing.start()
+            val until=System.nanoTime()+TimeUnit.SECONDS.toNanos(2)
+            while(mode(session).mode!=ReceiverUsabilityMode.NONE && System.nanoTime()<until)Thread.yield()
+            val publishedMode=mode(session).mode
+            release.countDown();geometry.join(2000);publishing.join(2000)
+            assertFalse(geometry.isAlive);assertFalse(publishing.isAlive)
+            assertEquals(ReceiverUsabilityMode.NONE,publishedMode)
+        }
+    }
+
+    @Test fun replacementNoneCannotBeUndoneByOwnerPublishBeforeQueuedGeometryDelivery() {
+        Fixture(withFeature = true).use { f ->
+            f.streaming();f.owner.presentation(f.view, true, false)
+            val session=f.owner.session!!
+            assertEquals(ReceiverUsabilityMode.PROJECTED,mode(session).mode)
+            session.receive(Frame(Wire.GEOMETRY,payload=Geometry(640,480).bytes()))
+            assertEquals(ReceiverUsabilityMode.NONE,mode(session).mode)
+            // Deliberately do not pump the queued replacement invalidation yet.
+            f.owner.presentation(f.view, false, false);f.owner.presentation(f.view, true, false)
+            assertEquals(ReceiverUsabilityMode.NONE,mode(session).mode)
+            f.pump()
+            assertEquals(ReceiverUsabilityMode.NONE,mode(session).mode)
+            f.frame(33_333);f.pumpUntil("current replacement frame restores actual projected mode") {
+                mode(session).mode==ReceiverUsabilityMode.PROJECTED
+            }
+        }
+    }
+
+    @Test fun oldScopeCancellationDoesNotReleaseCurrentMediaOrPresentation() {
+        Fixture(withFeature = true).use { f ->
+            f.streaming()
+            f.owner.presentation(f.view, true, true)
+            val session = f.owner.session
+            assertTrue(f.feature!!.presentation!!.presented)
+            f.owner.disconnect(scope = ReceiverLaunchScope("old-scope", "old-trigger", 7), activationId = "H1")
+            f.pump()
+            assertSame(session, f.owner.session)
+            assertEquals(0, f.codec.releases.get())
+            assertEquals("STREAMING", f.owner.snapshot().state)
+            assertTrue(f.feature.presentation!!.presented)
+        }
+    }
+
+    @Test fun idempotentLaunchOnRecreationRetainsStaticStreamingWithoutNewEncodedFrame() {
+        Fixture(withFeature = true).use { f ->
+            f.streaming(); val session = f.owner.session
+            f.owner.launch(ReceiverLaunchScope("current-scope", "current-trigger", 8))
+            assertEquals("STREAMING", f.owner.snapshot().state)
+            f.owner.detach(f.view)
+            f.owner.attach(f.view, Surface())
+            f.pumpUntil("static retained image after repeated same trigger") { f.owner.snapshot().state == "STREAMING" }
+            assertSame(session, f.owner.session)
+        }
     }
 
     @Test fun repeatedPauseSurfaceLossAndActivityReplacementKeepSameSessionAndStaticImage() {

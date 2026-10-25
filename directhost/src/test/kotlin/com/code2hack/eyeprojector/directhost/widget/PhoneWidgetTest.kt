@@ -11,6 +11,8 @@ class PhoneWidgetTest {
         var sequence = 0
         val starts = mutableListOf<String>()
         var stops = 0
+        var activationId: String? = null
+        val activationStops = mutableListOf<String>()
         var beforeStart: (() -> Unit)? = null
         var beforeStop: (() -> Unit)? = null
         val core = SessionController({ starts.add(it) }, { stops++ }, { "epoch-${sequence++}" })
@@ -22,9 +24,10 @@ class PhoneWidgetTest {
         val queries = mutableListOf<(PanelPowerState?) -> Unit>()
         val commands = mutableListOf<Pair<ProjectionContext, (PanelPowerState?) -> Unit>>()
         var refreshes = 0
-        override fun snapshot() = PhoneWidgetSnapshot(core.state(), paired, setup, backend, detail, projection)
+        override fun snapshot() = PhoneWidgetSnapshot(core.state(), paired, setup, backend, detail, projection, activationId = activationId)
         override fun start(expectedEpoch: String): SessionState { beforeStart?.invoke(); return core.start(expectedEpoch) }
         override fun stop(expectedEpoch: String): SessionState { beforeStop?.invoke(); return core.stop(expectedEpoch) }
+        override fun stopActivation(activationId: String) { activationStops.add(activationId); if(this.activationId==activationId)this.activationId=null }
         override fun requestPanelOff(expected: ProjectionContext, complete: (PanelPowerState?) -> Unit) { commands.add(expected to complete) }
         override fun panelState(complete: (PanelPowerState?) -> Unit) { queries.add(complete) }
         override fun refresh() { refreshes++ }
@@ -39,6 +42,17 @@ class PhoneWidgetTest {
             core.stop(); core.backend(owner, "STOPPED")
             backend = "STOPPED"; projection = ProjectionContext()
         }
+    }
+
+    @Test fun pendingWholeActivationStopDoesNotDependOnBackendAttemptEpoch() {
+        val s=Sessions();s.activationId="H2"
+        val actions=PhoneWidgetActions(s) { fail("Unexpected panel command") }
+        assertFalse(s.snapshot().canStart)
+        assertEquals(PhoneWidgetRoute.COMPLETE,actions.deliver(PhoneWidgetAction(PhoneWidgetCommand.STOP,"old-A",activationId="H2")))
+        assertEquals(listOf("H2"),s.activationStops);assertEquals(0,s.stops)
+        s.activationId="H3"
+        assertEquals(PhoneWidgetRoute.OPEN_STATUS,actions.deliver(PhoneWidgetAction(PhoneWidgetCommand.STOP,"old-A",activationId="H2")))
+        assertEquals(listOf("H2"),s.activationStops);assertEquals("H3",s.activationId)
     }
 
     @Test fun inactiveStartDispatchesToExistingOwnerAndDuplicateCannotToggleToStop() {

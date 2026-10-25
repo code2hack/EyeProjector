@@ -17,10 +17,12 @@ internal class PhoneWidgetSessionAdapter(private val sessions: PhoneSessionContr
         val backend = sessions.bootstrap.status()
         return PhoneWidgetSnapshot(session, runCatching { sessions.store.pairedPeer() != null }.getOrDefault(false),
             backend.setup == HostBootstrap.Setup.AVAILABLE, backend.backend, backend.detail, backend.projectionContext,
-            initialSetupPending = initialSetup != null && backend === initialSetup && session.phase == SessionPhase.UNKNOWN)
+            initialSetupPending = initialSetup != null && backend === initialSetup && session.phase == SessionPhase.UNKNOWN,
+            activationId = sessions.activationId())
     }
     override fun start(expectedEpoch: String) = sessions.start(expectedEpoch)
     override fun stop(expectedEpoch: String) = sessions.stop(expectedEpoch)
+    override fun stopActivation(activationId: String) = sessions.cancelActivation(activationId)
     override fun requestPanelOff(expected: ProjectionContext, complete: (PanelPowerState?) -> Unit) = sessions.requestPanelOff(expected, complete)
     override fun panelState(complete: (PanelPowerState?) -> Unit) = sessions.panelState(complete)
     override fun refresh() = sessions.bootstrap.refresh()

@@ -64,7 +64,7 @@ class HostActivity : Activity() {
     }
     private val observer: (HostBootstrap.Status) -> Unit = { state ->
         val session = sessions.state()
-        val sessionText = when (session.phase) {
+        val sessionText = if (sessions.activationId() != null) sessions.activationStatus() else when (session.phase) {
             SessionPhase.STARTING -> "Starting projection"
             SessionPhase.AVAILABLE -> "Waiting for the paired Glasses to connect"
             SessionPhase.CONNECTING -> "Connecting; waiting for displayed video"
@@ -76,7 +76,7 @@ class HostActivity : Activity() {
         }
         status.text = getString(R.string.host_status, setupText(state.setup), sessionText + "\n" + backendText(state))
         start.isEnabled = pairingPanel.isPaired() && !pairingPanel.forgetting && state.setup == HostBootstrap.Setup.AVAILABLE &&
-            !session.phase.active && session.phase !in setOf(SessionPhase.STOPPING, SessionPhase.UNKNOWN) &&
+            sessions.activationId() == null && !session.phase.active && session.phase !in setOf(SessionPhase.STOPPING, SessionPhase.UNKNOWN) &&
             state.backend !in listOf("STARTING", "STOPPING", "READY", "SESSION_STARTING", "STREAMING", "STOP_UNVERIFIED") &&
             state.detail !in listOf("FORGET_PENDING", "RESTORE_SHIZUKU_TO_VERIFY_STOP")
         authorize.isEnabled = state.setup == HostBootstrap.Setup.AUTHORIZATION_REQUIRED
@@ -109,8 +109,7 @@ class HostActivity : Activity() {
             bootstrap.refresh()
         }, { complete ->
             start.isEnabled = false; stop.isEnabled = false
-            sessions.stop()
-            bootstrap.stopBeforeForget { complete(); stop.isEnabled = true }
+            sessions.stopBeforeForget { complete(); stop.isEnabled = true }
         }, sessions.pairing)
         pairingPanel.addView(start, 2)
         pairingPanel.addView(stop, 3)

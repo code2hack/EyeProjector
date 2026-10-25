@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.22.1)
+project(eyeprojector_snapshot LANGUAGES C)
+add_library(eyeprojector_snapshot SHARED snapshot_cell.c)
+set_target_properties(eyeprojector_snapshot PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS NO)
+target_compile_options(eyeprojector_snapshot PRIVATE -O2 -Wall -Wextra -Werror -fvisibility=hidden)
+target_link_options(eyeprojector_snapshot PRIVATE -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384)

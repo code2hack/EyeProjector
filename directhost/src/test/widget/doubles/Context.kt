@@ -31,9 +31,9 @@ class Intent() {
     var data: Uri? = null
     var type: Class<*>? = null
     var flags = 0
-    private val extras = mutableMapOf<String, Any>()
+    private val extras = mutableMapOf<String, Any?>()
     constructor(context: Context, component: Class<*>) : this() { type = component }
-    fun putExtra(key: String, value: String): Intent { extras[key] = value; return this }
+    fun putExtra(key: String, value: String?): Intent { extras[key] = value; return this }
     fun putExtra(key: String, value: Int): Intent { extras[key] = value; return this }
     fun getStringExtra(key: String) = extras[key] as? String
     fun getIntExtra(key: String, default: Int) = extras[key] as? Int ?: default

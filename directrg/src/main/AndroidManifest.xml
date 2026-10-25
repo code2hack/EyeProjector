@@ -6,7 +6,7 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <application android:theme="@android:style/Theme.Material.NoActionBar" android:label="EyeProjector" android:allowBackup="false" android:dataExtractionRules="@xml/no_backup" android:icon="@android:drawable/ic_media_play" android:usesCleartextTraffic="false">
-        <service android:name=".ReceiverSessionService" android:exported="false" android:foregroundServiceType="connectedDevice" android:stopWithTask="true" />
+        <service android:name=".ReceiverSessionService" android:exported="false" android:foregroundServiceType="connectedDevice" android:stopWithTask="false" />
         <activity android:name=".ReceiverActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

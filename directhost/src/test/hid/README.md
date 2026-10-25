@@ -10,7 +10,7 @@ JAVA_HOME=/path/to/jdk17 python3 directhost/src/test/hid/run.py \
 
 One isolated compilation includes the complete actual `PhoneHidBindings`,
 `PhoneHidController`, `PhoneHidRuntime`, `PhoneHidKeyService` and `PhoneHidPanel`
-production sources, the actual store JUnit tests, and this fixture. The runner
+production sources, the feature-local activation ownership helpers, the actual store JUnit tests, and this fixture. The runner
 does not copy their routing into test adapters. It snapshots the actual
 HostActivity and extracts its four HID helpers plus complete `onResume`,
 `onStop`, `onDestroy` and `onBackPressed` method bodies using a unique marker and
@@ -94,3 +94,25 @@ enablement or key filtering, actual input delivery, descriptor stability,
 Bluetooth behavior, physical pointer/scroll/Function behavior, device output,
 default suppression or assembled acceptance. A real SDK compilation is a
 separate check. Device qualification remains open.
+
+
+Issue63 Phone-local activation cases compile the actual generic
+`PhoneActivationOwner`, `PhoneHidActivation` injection port and narrow controller/
+service hooks. The production Runtime intentionally retains the explicit
+`Unwired` default until shared session/controller allocation; service composition
+cases install a recording port on that actual controller and restore it afterward.
+Immutable fixture targets stand in for an eventual exact `ProjectionContext`.
+No activation persistence, retry scheduler, Phone backend owner, control schema,
+Glasses receiver, physical wake or background Activity capability is supplied by
+these seams.
+
+The local owner cases exercise overlap, repeated externally driven recovery,
+release-before-retry, cancellation before admission, canceled-old-attempt release,
+observer reentry, one-shot exact-target readiness and presentation loss without
+allocating another backend. HID cases exercise bound and unassigned wake presses,
+readiness changes inside request callbacks, same-key old-wake/new-normal and
+old-normal/new-wake ordering, constructing/released Function route cancellation,
+Stop/page/device/service retirement, missing/changed device metadata, request
+failure, sticky learning while disconnected and unchanged ready pass-through.
+The actual service attachment cases reuse the existing external/nonvirtual/native
+exclusions and do not treat metadata change as a new attachment.

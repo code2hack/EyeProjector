@@ -6,6 +6,7 @@ import android.hardware.input.InputManager
 /** In-memory preferences and service lookup only; no Android storage or service binding. */
 open class Context {
     val resources = Resources()
+    val filesDir: java.io.File get() = Environment.filesDir
     val inputManager get() = Environment.inputManager
     val applicationContext: Context get() = this
     val packageName = "com.code2hack.eyeprojector.directhost"
@@ -28,6 +29,7 @@ open class Context {
 }
 
 object Environment {
+    var filesDir = java.nio.file.Files.createTempDirectory("phone-hid-source-").toFile()
     val inputManager = InputManager()
     val accessibility = android.view.accessibility.AccessibilityManager()
     val startedActivities = mutableListOf<Intent>()

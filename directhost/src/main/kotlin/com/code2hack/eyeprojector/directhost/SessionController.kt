@@ -294,5 +294,23 @@ class SessionController(
         if (state == "FAILED" || detail == "SESSION_SETUP_REQUIRED") backend(epoch, "FAILED", detail)
     }
 
+    /** Read on the feature lane; FAILED/UNKNOWN and sent Stop never establish release. */
+    data class Ownership(val state: SessionState, val resourceOwner: String?, val releasing: Boolean,
+        val unresolved: Boolean, val retentionFailed: Boolean) {
+        val released: Boolean get() = state.phase != SessionPhase.UNKNOWN && resourceOwner == null && !releasing && !unresolved && !retentionFailed
+    }
+    @Synchronized fun ownership(): Ownership {
+        return Ownership(current, actualOwner(), releasing, stopUnresolved, retentionFailed)
+    }
+    @Synchronized fun acceptsStartCaller(expectedEpoch: String) = expectedEpoch == current.epoch
+    @Synchronized fun stopCallerOwner(expectedEpoch: String): String? {
+        val owner = attempts[expectedEpoch]?.owner ?: expectedEpoch
+        return when { owner == actualOwner() -> owner; owner == current.epoch -> actualOwner(); else -> null }
+    }
+    @Synchronized fun acceptsStopCaller(expectedEpoch: String): Boolean {
+        val owner = attempts[expectedEpoch]?.owner ?: expectedEpoch
+        return owner == actualOwner() || owner == current.epoch
+    }
+
     companion object { private const val STORAGE_FAILURE = "SESSION_CONTROL_STATE_UNAVAILABLE" }
 }

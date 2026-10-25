@@ -8,6 +8,10 @@ import com.code2hack.eyeprojector.protocol.PhoneHidEdge
 class PhoneSessionController {
     data class Call(val kind: String, val route: PhoneHidRoute?, val edge: PhoneHidEdge?, val at: Long?)
     val calls = mutableListOf<Call>()
+    fun needsActivation() = false
+    internal fun requestActivation(cause: com.code2hack.eyeprojector.directhost.activation.ActivationCause) =
+        com.code2hack.eyeprojector.directhost.activation.ActivationHandle("fixture",cause)
+    fun onInputInvalidated(action: () -> Unit) = Unit
     var next = 0
     var targetAvailable = true
     var onCapture: (PhoneHidEdge) -> Unit = {}

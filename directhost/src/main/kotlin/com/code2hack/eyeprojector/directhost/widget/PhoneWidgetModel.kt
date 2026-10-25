@@ -14,12 +14,13 @@ internal data class PhoneWidgetSnapshot(
     val backendDetail: String? = null,
     val projection: ProjectionContext = ProjectionContext(),
     val initialSetupPending: Boolean = false,
+    val activationId: String? = null,
 ) {
     val needsSetup: Boolean get() = !paired || !setupAvailable ||
         session.detail == "SESSION_SETUP_REQUIRED" || backendDetail == "SESSION_SETUP_REQUIRED" ||
         backendDetail in setOf("FORGET_PENDING", "RESTORE_SHIZUKU_TO_VERIFY_STOP")
     // FAILED may still own resources while teardown is pending. Only STOPPED confirms release.
-    val canStart: Boolean get() = session.phase in setOf(SessionPhase.INACTIVE, SessionPhase.FAILED) && backend == "STOPPED"
+    val canStart: Boolean get() = activationId == null && session.phase in setOf(SessionPhase.INACTIVE, SessionPhase.FAILED) && backend == "STOPPED"
     val canPanelOff: Boolean get() = !needsSetup && session.phase == SessionPhase.STREAMING && backend == "STREAMING" && projection.available
     val primary: PhoneWidgetCommand get() = if (canStart) PhoneWidgetCommand.START else PhoneWidgetCommand.STOP
 }
@@ -29,6 +30,7 @@ internal data class PhoneWidgetAction(
     val command: PhoneWidgetCommand,
     val epoch: String,
     val projection: ProjectionContext = ProjectionContext(),
+    val activationId: String? = null,
 )
 
 /** This port delegates to PhoneSessionController; it never creates an owner or backend. */
@@ -36,6 +38,7 @@ internal interface PhoneWidgetSession {
     fun snapshot(): PhoneWidgetSnapshot
     fun start(expectedEpoch: String): SessionState
     fun stop(expectedEpoch: String): SessionState
+    fun stopActivation(activationId: String)
     fun requestPanelOff(expected: ProjectionContext, complete: (PanelPowerState?) -> Unit)
     fun panelState(complete: (PanelPowerState?) -> Unit)
     fun refresh()
@@ -51,6 +54,13 @@ internal class PhoneWidgetActions(
         val actual = sessions.snapshot()
         sessions.refresh()
         if (action.command == PhoneWidgetCommand.STATUS) return PhoneWidgetRoute.OPEN_STATUS
+        // Explicit whole-H Stop covers pending/retrying H even when the old A still releases.
+        // Legacy epoch-bound actions retain their original core-attempt semantics below.
+        if (action.command == PhoneWidgetCommand.STOP && action.activationId != null) {
+            if (action.activationId != actual.activationId) return PhoneWidgetRoute.OPEN_STATUS
+            sessions.stopActivation(action.activationId)
+            return if (actual.needsSetup) PhoneWidgetRoute.OPEN_STATUS else PhoneWidgetRoute.COMPLETE
+        }
         // Re-read at delivery, then let the controller atomically check this epoch again.
         if (action.epoch != actual.session.epoch) return PhoneWidgetRoute.OPEN_STATUS
         return when (action.command) {
