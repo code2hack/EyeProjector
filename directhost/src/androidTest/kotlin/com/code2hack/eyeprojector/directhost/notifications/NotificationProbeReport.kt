@@ -49,6 +49,13 @@ internal class NotificationProbeReport(val runId: String, val packageName: Strin
         "enqueueFaultFamily" to "UNOBSERVED", "producerCallbackFaultFamily" to "UNOBSERVED", "helperFaultFamily" to "UNOBSERVED",
         "helperFaultPoint" to "UNOBSERVED",
         "traceReportFaultFamily" to "UNOBSERVED",
+        "trace.packageRevisionUnit" to "PROCESS_LOCAL_POLICY_INTENT_REVISION",
+        "trace.originalPackagePolicyRevision" to "UNOBSERVED",
+        "trace.prepareChosen" to "UNOBSERVED", "trace.prepareOn" to "UNOBSERVED",
+        "trace.comparedPackagePolicyRevision" to "UNOBSERVED",
+        "trace.latestAssignment.revision" to "UNKNOWN", "trace.latestAssignment.writer" to "UNKNOWN",
+        "trace.latestAssignment.changeKind" to "UNKNOWN", "trace.latestAssignment.desired" to "UNKNOWN",
+        "trace.latestAssignment.changeRevision" to "UNKNOWN",
         "producerCallbackObservation" to "UNOBSERVED", "helperAppendObservation" to "UNOBSERVED",
         "enqueueSemantics" to "POST_UNIT_RETURN_NOT_QUEUE_ACCEPTANCE",
     ).apply { NotificationAdmissionCheck.entries.forEach { put("traceCheck.${it.name}", "UNOBSERVED") } }
@@ -134,6 +141,24 @@ internal class NotificationProbeReport(val runId: String, val packageName: Strin
         values["acceptFaultFamily"] = snapshot.acceptFault.name
         NotificationAdmissionCheck.entries.forEachIndexed { index, check ->
             snapshot.checks.getOrNull(index)?.let { values["traceCheck.${check.name}"] = it.name }
+        }
+        if (snapshot.originalPackageRevisionObserved)
+            values["trace.originalPackagePolicyRevision"] = snapshot.originalPackageRevision.toString()
+        if (snapshot.prepareValuesObserved) {
+            values["trace.prepareChosen"] = snapshot.preparedChosen.toString()
+            values["trace.prepareOn"] = snapshot.preparedEnabled.toString()
+        }
+        if (snapshot.comparedPackageRevisionObserved)
+            values["trace.comparedPackagePolicyRevision"] = snapshot.comparedPackageRevision.toString()
+        // Diagnostic consistency only. Never use a stale/unbound latest record as writer proof.
+        val assignment = snapshot.latestAssignment
+        if (snapshot.comparedPackageRevisionObserved && assignment != null &&
+            assignment.assignedRevision == snapshot.comparedPackageRevision) {
+            values["trace.latestAssignment.revision"] = assignment.assignedRevision.toString()
+            values["trace.latestAssignment.writer"] = assignment.writerKind.name
+            values["trace.latestAssignment.changeKind"] = assignment.changeKind.name
+            values["trace.latestAssignment.desired"] = assignment.desired.toString()
+            values["trace.latestAssignment.changeRevision"] = assignment.changeRevision.toString()
         }
         snapshot.installedSelection?.let { values["admissionInstalledG"] = label(it, "G") }
         snapshot.returnedHandle?.let { values["admissionReturnedHandle"] = label(it, "DH") }

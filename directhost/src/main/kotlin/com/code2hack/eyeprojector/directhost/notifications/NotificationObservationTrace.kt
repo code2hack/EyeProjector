@@ -11,6 +11,16 @@ internal enum class NotificationAdmissionCheck { PACKAGE, PACKAGE_REVISION, CHOI
 internal enum class NotificationCheckResult { NOT_EVALUATED, MATCHED, REJECTED }
 internal enum class NotificationDiagnosticFaultFamily { NONE, SECURITY, ARGUMENT, STATE, INTERRUPTED, LINKAGE, CAST, OTHER }
 internal enum class NotificationHelperFaultPoint { NONE, BEFORE_APPEND, APPEND_UNCONFIRMED }
+internal enum class NotificationPolicyWriterKind { BEGIN, FAILED_CURRENT_FINISH }
+internal enum class NotificationPolicyChangeKind { MEMBERSHIP, ON }
+
+/** One observed assignment, not an intent/history/cause reconstruction. No owner/window references. */
+internal class NotificationPolicyAssignment(
+    val assignedRevision: Long, val writerKind: NotificationPolicyWriterKind,
+    val changeKind: NotificationPolicyChangeKind, val desired: Boolean, val changeRevision: Long,
+) {
+    override fun toString() = "NotificationPolicyAssignment(metadata omitted)"
+}
 
 internal fun notificationDiagnosticFault(error: Throwable): NotificationDiagnosticFaultFamily = when (error) {
     is SecurityException -> NotificationDiagnosticFaultFamily.SECURITY
@@ -39,6 +49,10 @@ internal class NotificationObservationSnapshot(
     val prepareFault: NotificationDiagnosticFaultFamily, val acceptFault: NotificationDiagnosticFaultFamily,
     val checks: List<NotificationCheckResult>, val installedSelection: Any?, val returnedHandle: Any?,
     val delivery: NotificationDeliverySnapshot,
+    val originalPackageRevisionObserved: Boolean = false, val originalPackageRevision: Long = 0,
+    val prepareValuesObserved: Boolean = false, val preparedChosen: Boolean = false, val preparedEnabled: Boolean = false,
+    val comparedPackageRevisionObserved: Boolean = false, val comparedPackageRevision: Long = 0,
+    val latestAssignment: NotificationPolicyAssignment? = null,
 ) {
     override fun toString() = "NotificationObservationSnapshot(metadata omitted)"
 }
@@ -80,6 +94,16 @@ internal class NotificationObservationTrace {
     var callbackFault = NotificationDiagnosticFaultFamily.NONE
     var helperFault = NotificationDiagnosticFaultFamily.NONE
     var helperFaultPoint = NotificationHelperFaultPoint.NONE
+    // Primitive presence flags keep observed 0/false distinct from absent data without boxing
+    // or allocating new diagnostic objects if an already captured box outlives registration.
+    var originalPackageRevisionObserved = false
+    var originalPackageRevision = 0L
+    var prepareValuesObserved = false
+    var preparedChosen = false
+    var preparedEnabled = false
+    var comparedPackageRevisionObserved = false
+    var comparedPackageRevision = 0L
+    var latestAssignment: NotificationPolicyAssignment? = null
 
     fun snapshot(expectedOriginal: Any): NotificationObservationSnapshot? {
         if (original !== expectedOriginal) return null // Correlation only; never an admission gate.
@@ -89,7 +113,10 @@ internal class NotificationObservationTrace {
             installedSelection, returnedHandle,
             NotificationDeliverySnapshot(captured, enqueueAttempted, enqueueReturned, enqueueFaults,
                 callbackEntered, callbackReturned, callbackFaults, inactiveSkipped,
-                helperEntered, helperAppended, helperFaults, enqueueFault, callbackFault, helperFault, helperFaultPoint))
+                helperEntered, helperAppended, helperFaults, enqueueFault, callbackFault, helperFault, helperFaultPoint),
+            originalPackageRevisionObserved, originalPackageRevision,
+            prepareValuesObserved, preparedChosen, preparedEnabled,
+            comparedPackageRevisionObserved, comparedPackageRevision, latestAssignment)
     }
 
     override fun toString() = "NotificationObservationTrace(metadata omitted)"
