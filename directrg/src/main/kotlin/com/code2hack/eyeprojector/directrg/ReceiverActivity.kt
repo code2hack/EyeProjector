@@ -684,6 +684,74 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         return true
     }
 
+    /** Test-only holder: original references stay private and never resolve a successor at teardown. */
+    internal interface FixtureTeardownTarget {
+        val sessionStartedMonoNs: Long
+        fun disconnect(onCompletion: () -> Unit)
+        fun observe(): FixtureTeardownObservation
+    }
+    internal data class FixtureTeardownObservation(
+        val readStartMonoNs: Long,
+        val readEndMonoNs: Long,
+        val originalSessionStartedMonoNs: Long,
+        val ownerState: String,
+        val ownerSessionPresent: Boolean,
+        val ownerSessionMatchesOriginal: Boolean,
+        val currentSessionStartedMonoNs: Long?,
+        val currentActivationMatchesOriginal: Boolean?,
+        val originalTriggerCaptured: Boolean,
+        val originalActivationCaptured: Boolean,
+        val originalTriggerCanceled: Boolean?,
+        val originalTriggerAcknowledged: Boolean?,
+        val originalActivationCancellationRecorded: Boolean?,
+        val originalActivationPendingCancel: Boolean?,
+    )
+
+    /** Main-thread, fixture-local capture; absent/inconsistent provenance is diagnostic UNKNOWN. */
+    internal fun captureFixtureTeardownTarget(expectedSessionStartedMonoNs: Long): FixtureTeardownTarget? {
+        val capturedOwner = owner ?: return null
+        val capturedBinder = serviceBinder ?: return null
+        if (capturedBinder.owner !== capturedOwner || !::launchScope.isInitialized) return null
+        val capturedSession = session ?: return null
+        val memory = capturedOwner.snapshot()
+        if (memory.session !== capturedSession || capturedSession.observationStartedMonoNs != expectedSessionStartedMonoNs) return null
+        val capturedScope = launchScope.copy()
+        val capturedActivation = visibleActivation
+        val capturedFeature = capturedBinder.feature
+        val trigger = capturedScope.trigger.takeIf { it.isNotEmpty() }
+        val capturedTrigger = trigger?.let { capturedFeature.state.triggers[it] }
+        if (trigger != null && capturedTrigger?.scope != capturedScope) return null
+        val mappedActivation = capturedTrigger?.activation
+        if (mappedActivation != null && capturedActivation != null && mappedActivation != capturedActivation) return null
+        if (mappedActivation != null && memory.activationId != null && mappedActivation != memory.activationId) return null
+        if (capturedActivation != null && memory.activationId != capturedActivation) return null
+        if (trigger == null && capturedActivation == null) return null
+        // An empty wake trigger is absence of T, not a trigger awaiting acknowledgment.
+        // Pass null explicitly with captured H; never use the owner's currentScope default.
+        val dispatchScope = capturedScope.takeIf { trigger != null }
+        val capturedStart = capturedSession.observationStartedMonoNs
+        return object : FixtureTeardownTarget {
+            override val sessionStartedMonoNs = capturedStart
+            override fun disconnect(onCompletion: () -> Unit) {
+                capturedOwner.disconnect(notifyPeer = true, complete = {
+                    try { onCompletion() } catch (_: Throwable) { /* Observation cannot break reconciliation. */ }
+                }, scope = dispatchScope, activationId = capturedActivation)
+            }
+            override fun observe(): FixtureTeardownObservation {
+                val begin = System.nanoTime()
+                val current = capturedOwner.snapshot()
+                val state = capturedFeature.state
+                val originalTrigger = trigger?.let { state.triggers[it] }?.takeIf { it.scope == capturedScope }
+                return FixtureTeardownObservation(begin, System.nanoTime(), capturedStart, current.state,
+                    current.session != null, current.session === capturedSession,
+                    current.session?.observationStartedMonoNs,
+                    capturedActivation?.let { current.activationId == it },
+                    trigger != null, capturedActivation != null, originalTrigger?.canceled, originalTrigger?.acknowledged,
+                    capturedActivation?.let { it in state.canceled }, capturedActivation?.let { it in state.pendingCancel })
+            }
+        }
+    }
+
     /** Main-thread diagnostic reads only; no pairing/config I/O or activation/presentation mutation. */
     internal fun startupDiagnosticSnapshot(): Map<String, Any?> {
         val memory = owner?.snapshot()

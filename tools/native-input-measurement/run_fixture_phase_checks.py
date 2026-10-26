@@ -178,6 +178,15 @@ private class Bundle { fun putString(key: String, value: String) {} }
 private class WindowPresentationRecorder {
     fun finish(instrumentation: Any, report: JSONObject, currentStatus: () -> JSONObject, minimumStartMonoNs: Long) {}
 }
+/** Nullable compile boundary only; actual teardown recorder behavior has its own source-bound suite. */
+private class FixtureTeardownRecorder {
+    fun requestDisconnect(instrumentation: Any) {}
+    fun finishRequested() {}
+    fun finishReturned() {}
+    fun finishFailed(error: Throwable) {}
+    fun complete(instrumentation: Any, report: JSONObject, currentStatus: () -> JSONObject, minimumStartMonoNs: Long) {}
+    fun release() {}
+}
 
 @TOP_LEVEL@
 
@@ -205,6 +214,7 @@ private open class DriverBase {
 }
 private class CurrentDriver : DriverBase() {
     private var fixtureSetupPhase: FixtureSetupPhase? = null
+    private var fixtureTeardownRecorder: FixtureTeardownRecorder? = null
     private var fixtureWitnessFile: File? = null
     private var fixtureWitnessSignature: String? = null
     private val fixtureWitnessHistory = JSONArray()
@@ -670,6 +680,8 @@ def main():
         parser.error('Parent/current bootstrap predicate differs; do not substitute current logic for the parent')
     method_names = ['startFixtureSetup', 'publishFixtureSetup', 'status', 'clickConnect',
                     'waitFixtureGeometry', 'waitFixtureGo', 'waitStreaming']
+    if re.search(r'^    private fun finishFixtureTeardown\(', text, re.M):
+        method_names.append('finishFixtureTeardown')
     method_names += [name for name in ['fixtureStatusRejection', 'fixtureGeometryReady', 'beginOwnedReconnectLeg']
                      if re.search(r'^    private fun '+name+r'\b', text, re.M)]
     methods = '\n'.join(method(text, name) for name in method_names)
@@ -692,6 +704,18 @@ def main():
         end = source.index('                    if (operation == "audio-volume")', start)
         return source[start:end]
     current_measurement, parent_measurement = measurement(text), measurement(parent)
+    capture_line = '                    captureFixtureTeardown(activity, report.getJSONObject("first"), fixtureSetup, operation)\n'
+    capture_count = text.count(capture_line)
+    if capture_count not in (0, 1):
+        parser.error('Expected at most the one allocated fixture teardown capture annotation')
+    if capture_count:
+        first_at = text.index('                    report.put("first", status())')
+        capture_at = text.index(capture_line)
+        measurement_at = text.index('                    val start = SystemClock.elapsedRealtime()', first_at)
+        if not first_at < capture_at < measurement_at:
+            parser.error('Fixture teardown capture moved into measurement or before accepted first status')
+        if text.count('captureFixtureTeardown(activity, report.getJSONObject("first"), fixtureSetup, operation)') != 1:
+            parser.error('Unexpected duplicate fixture teardown capture call')
     def without_diagnostic_annotations(body):
         counts = [body.count(line) for line in diagnostic_measurement_lines]
         if counts not in ([0, 0, 0], [1, 1, 1]):
@@ -730,6 +754,8 @@ def main():
     java = str(Path(os.environ['JAVA_HOME'])/'bin/java') if os.environ.get('JAVA_HOME') else 'java'
     cp = os.pathsep.join(map(str, jars)); jar = output/'fixture-phase-checks.jar'
     sources = [directory/'ReceiverStartupDiagnostics.kt', generated]
+    if 'finishFixtureTeardown' in method_names:
+        sources.append(directory/'NativeInputObservationRunState.kt')
     compile_command = [java,'-Xmx512m','-cp',cp,'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler',
         '-no-stdlib','-no-reflect','-jvm-target','17','-classpath',cp,'-d',str(jar)]+list(map(str,sources))
     prefix = [java,'-Xmx256m','-cp',str(jar)+os.pathsep+cp]
@@ -739,12 +765,13 @@ def main():
     sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
     result = {'scope':'Current/parent exact extracted wait/status/bootstrap/publisher/finally methods with fake '
               'distinct clocks and owned token JSON/files; actual diagnostic predicate compiled. No Android, Looper, '
-              'vendor, device or Worker62 consumer/release/future proof; collector is a nullable finally stub. '
+              'vendor, device or Worker62 consumer/release/future proof; presentation/teardown collectors are nullable finally compile stubs. '
               'Ordinary measurement body is byte-identical after removal of only the three allocated diagnostic annotation lines.',
         'inputs':[{'path':str(p),'sha256':sha(p)} for p in inputs],
         'dependencies':[{'path':str(p),'sha256':sha(p)} for p in jars],
         'measurementBodySha256':hashlib.sha256(normalized_current.encode()).hexdigest(),
         'rawMeasurementBodySha256':hashlib.sha256(current_measurement.encode()).hexdigest(),
+        'fixtureTeardownCaptureAnnotation':{'count':capture_count,'outsideMeasurementBeforeStart':bool(capture_count)},
         'diagnosticMeasurementAnnotations':[
             {'line':line.rstrip('\n'),'currentCount':current_annotation_counts[index],
              'parentCount':parent_annotation_counts[index]}

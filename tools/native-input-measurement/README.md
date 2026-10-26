@@ -167,3 +167,52 @@ These are source/host checks, with no Android Looper/GPU/driver, optical/native-
 original release or full issue66 acceptance. Source-equivalent preexisting APKs are superseded for
 these changed main/test sources; a new affected Receiver build and separate device allocation are
 required before runtime observations.
+
+## Original fixture teardown observation (322/332)
+
+The existing gated `input-observation` and `static-content` fixtures capture an opaque teardown
+target at the first accepted measurement status, before the measurement timer starts. The target
+retains the original bound owner, feature state, copied launch scope, nullable visible activation
+and actual Receiver session. The status session start is provenance, not cancellation authority.
+Missing or inconsistent original binding stays UNKNOWN and does not gate measurement or cause a
+later capture from current state. Ordinary non-gated measurements do not install this observation.
+
+Teardown invokes only the captured owner's existing disconnect API with explicit original arguments.
+A nonempty captured trigger retains that exact scope. A wake-created empty trigger uses explicit
+`scope=null` with its captured non-null activation: this is the existing H-only form, not the API's
+current-scope default. A valid original trigger can retain a null activation, which remains unknown.
+No current/global Stop, successor owner/session, service fallback, new trigger or token is selected.
+Original authority values stay private; reports export primitive facts and session provenance only.
+
+The existing window-presentation recorder finishes first. Disconnect request, return and its existing
+completion callback are distinct observations. An already closed owner can complete inline, so the
+callback alone establishes neither original-H release nor Phone/backend settlement. Original
+cancellation-recorded and pending facts remain separate. Existing `Activity.finish` runs independently
+of the request and diagnostic failures. A test-only lifecycle override calls the original superclass
+exactly once and records destroy entry, actual return or throw for the captured Activity. The product
+Activity destructor still reads its own mutable fields; the new holder pins only the explicit request,
+not all later lifecycle cancellation. Destroy return is not callback quiescence or full cleanup.
+
+One observation wait can consume only the remaining **original** fixture setup deadline on the same
+device elapsed clock. It never resets or extends 180 seconds. Missing/expired allowance or a missing
+target means no await and retains pending/UNKNOWN facts. A destroy throw ends that observation-attempt
+leg without becoming a successful return. There is no local replacement for the host's 360-second
+child bound, no new 15-second wait, retry, sleep or quiet-time test. Witness174, per-leg15, shared180,
+measurement75, sleep15/wake35 and synthetic55 behavior remain unchanged.
+
+Post-teardown status is revalidated after blocking reads using the existing predicate and an explicit
+original-session comparison. Missing values never match each other; a fresh successor remains a
+mismatch and never becomes a teardown target. The existing three-second age check applies only to
+active states. A same-session terminal STOPPED file is therefore not automatically a fresh publication
+after the teardown request. Receipt/read spans and original status clocks retain that distinction.
+
+The report keeps measurement results, callback/status/lifecycle facts and natural host-child terminal
+separate. It does not invent a full-trial/H/STOPPED pass. Diagnostic main/callback/status/JSON failures
+are contained, held references are released independently, and existing baseline/audio/report/finish
+legs continue. An instrumentation-finish return cannot be claimed in a report written before that call.
+
+The focused runner exercises the actual captured-target and observation source with explicit host
+doubles and a finite bound of at most 120 seconds per invocation. Its source/process evidence is
+distinct from Android/Looper/device execution. These changed main/test inputs require a separately
+allocated Receiver unit/Main/AndroidTest/lint build. Original214/292 release and full H remain UNKNOWN;
+no physical/native-input/optical/full-issue acceptance follows from this harness change.
