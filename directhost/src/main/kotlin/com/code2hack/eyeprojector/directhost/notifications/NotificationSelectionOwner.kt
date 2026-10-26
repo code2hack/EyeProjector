@@ -68,7 +68,11 @@ internal class NotificationSelectionOwner(
     private var latestAcceptedReceipt = -1L
     private var draining = false
     private var again = false
-    private class PipelineObserver(val receive: (NotificationPipelineObservation) -> Unit) { var active = true }
+    private class PipelineObserver(val receive: (NotificationPipelineObservation) -> Unit) {
+        var active = true
+        // Policy retains only this opaque token, not this observer/callback/Owner graph.
+        val diagnosticToken = runCatching { Any() }.getOrNull()
+    }
     private val pipelineObservers = linkedSetOf<PipelineObserver>()
     private val policyObservation = policy.observe { post { drain(); changed() } }
     var lastOutcome: NotificationDispatchOutcome? = null; private set
@@ -77,7 +81,10 @@ internal class NotificationSelectionOwner(
     fun receipt(packageName: String): NotificationPolicy.Receipt {
         val original = policy.receipt(packageName) // Capture cancellation scope before diagnostic work.
         if (pipelineObservers.isNotEmpty())
-            original.diagnostic = runCatching { NotificationObservationTrace() }.getOrNull()
+            original.diagnostic = runCatching { NotificationObservationTrace().also {
+                it.originalPackageRevision = original.revision
+                it.originalPackageRevisionObserved = true
+            } }.getOrNull()
         return original
     }
     fun access(approval: NotificationAccessApproval) = policy.access(approval)
@@ -86,7 +93,12 @@ internal class NotificationSelectionOwner(
     fun observePipeline(receive: (NotificationPipelineObservation) -> Unit): Closeable {
         val original = PipelineObserver(receive)
         pipelineObservers.add(original)
-        return Closeable { original.active = false; pipelineObservers.remove(original) }
+        original.diagnosticToken?.let { policy.pipelineObserverAdded(it) }
+        return Closeable {
+            original.active = false
+            pipelineObservers.remove(original)
+            original.diagnosticToken?.let { policy.pipelineObserverRemoved(it) }
+        }
     }
 
     private fun publishPipeline(stage: NotificationPipelineStage, selection: NotificationSelection,
@@ -143,7 +155,12 @@ internal class NotificationSelectionOwner(
     fun accept(observation: NotificationIngressObservation) {
         var diagnostic = observation.diagnostic?.takeIf { it.original === observation || it.original == null }
         if (diagnostic == null && pipelineObservers.isNotEmpty()) {
-            diagnostic = runCatching { NotificationObservationTrace() }.getOrNull()
+            diagnostic = runCatching { NotificationObservationTrace().also { box ->
+                observation.admission?.let { original ->
+                    box.originalPackageRevision = original.revision
+                    box.originalPackageRevisionObserved = true
+                }
+            } }.getOrNull()
             observation.diagnostic = diagnostic
         }
         diagnostic?.original = observation
