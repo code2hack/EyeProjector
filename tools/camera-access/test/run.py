@@ -66,8 +66,9 @@ def group_members(pgid):
     return result
 
 
-def stage(argv, directory, label, deadline):
+def stage(argv, directory, label, deadline, environment):
     intent = {"startedAt": now(), "argv": argv, "cwd": str(directory),
+              "env": environment,
               "scope": "Only this local cached javac/JVM type-double child group",
               "remainingTotalSeconds": max(0, deadline - time.monotonic())}
     write_once(directory / (label + "-intent.json"), intent)
@@ -84,7 +85,8 @@ def stage(argv, directory, label, deadline):
             # No actual producer/ADB/service process is started by this runner.
             with defer_signals() as spawn_signals:
                 process = subprocess.Popen(argv, cwd=directory, stdout=stream,
-                                           stderr=subprocess.STDOUT, start_new_session=True)
+                                           stderr=subprocess.STDOUT, start_new_session=True,
+                                           env=environment)
                 result["pid"] = result["pgid"] = process.pid
                 result["initialGroupMembers"] = group_members(process.pid)
                 write_once(directory / (label + "-running.json"), result)
@@ -147,8 +149,8 @@ def main():
                         help="Closed parent tools/camera-access/src directory for the selected scenario")
     parser.add_argument("--current-source-dir", type=Path, default=SUITE.parent / "src")
     parser.add_argument("--java-home", type=Path, default=Path("/usr/lib/jvm/java-17-openjdk-amd64"))
-    parser.add_argument("--scenario", choices=("failure", "inventory"), default="failure",
-                        help="inventory runs targeted213 concurrency checks without rerunning the old23")
+    parser.add_argument("--scenario", choices=("failure", "inventory", "transaction"), default="failure",
+                        help="Select only the affected full-source harness; historical results are not added")
     args = parser.parse_args()
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -175,7 +177,8 @@ def main():
 
     try:
         doubles = [snapshot(p, p.relative_to(SUITE), "suite") for p in sorted((SUITE / "doubles").rglob("*.java"))]
-        harness_name = "InventoryScenarios" if args.scenario == "inventory" else "ProducerScenarios"
+        harness_name = {"failure": "ProducerScenarios", "inventory": "InventoryScenarios",
+                        "transaction": "TransactionScenarios"}[args.scenario]
         harness = snapshot(SUITE / "java" / PRODUCER / (harness_name + ".java"),
                            Path("java") / PRODUCER / (harness_name + ".java"), "suite")
         snapshot(Path(__file__), Path("run.py"), "suite")
@@ -185,6 +188,8 @@ def main():
             sources[label] = [snapshot(source_root / PRODUCER / name, PRODUCER / name, label)
                               for name in ("CameraAccessMain.java", "SyntheticStream.java")]
         result["javaHome"] = str(args.java_home.resolve())
+        result["childEnvironment"] = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
+                                      "JAVA_HOME": result["javaHome"]}
         result["toolSha256"] = {name: digest(args.java_home / "bin" / name) for name in ("javac", "java")}
         write_once(output / "inputs.json", result)
         for label in ("parent", "current"):
@@ -198,7 +203,7 @@ def main():
                                        "com.code2hack.eyeprojector.cameraaccess." + harness_name, label]),
             )
             for name, argv in commands:
-                observed = stage(argv, output, name, deadline)
+                observed = stage(argv, output, name, deadline, result["childEnvironment"])
                 result["stages"].append(observed)
                 print(name + ": " + ("PASS" if observed["passed"] else "FAIL"), flush=True)
                 if not observed["passed"]:

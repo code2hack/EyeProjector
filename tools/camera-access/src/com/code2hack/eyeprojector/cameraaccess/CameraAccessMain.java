@@ -12,7 +12,9 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
+import android.os.Parcel;
 import android.os.Process;
+import android.os.RemoteException;
 import android.view.Surface;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -193,6 +195,32 @@ public final class CameraAccessMain {
         private final long callbackId = resources.openCallback();
         // Each registration owns a separate callback/map; stream IDs can repeat on reopen.
         private final Map<Integer, SyntheticStream> streams = new HashMap<>();
+        private void transaction(String phase, int code, Parcel data, int flags,
+                Boolean result, Throwable primary) {
+            try {
+                event("callback_transaction", "phase", phase,
+                        "attachedDescriptor", IVirtualCameraCallback.DESCRIPTOR,
+                        "callbackId", callbackId, "ownerPid", Process.myPid(),
+                        "code", code, "flags", flags,
+                        "dataSize", data.dataSize(), "dataPosition", data.dataPosition(),
+                        "dataAvail", data.dataAvail(), "result", result,
+                        "primaryExceptionClass", primary == null ? null : primary.getClass().getName());
+            } catch (Throwable diagnosticFailure) {
+                // Observation must not replace the original Binder result or exception.
+            }
+        }
+        @Override public boolean onTransact(int code, Parcel data, Parcel reply, int flags)
+                throws RemoteException {
+            transaction("before", code, data, flags, null, null);
+            try {
+                boolean result = super.onTransact(code, data, reply, flags);
+                transaction("after", code, data, flags, result, null);
+                return result;
+            } catch (RemoteException | RuntimeException | Error primary) {
+                transaction("after", code, data, flags, null, primary);
+                throw primary;
+            }
+        }
         private void entry(String operation, int id, Object... details) {
             Object[] fields = new Object[16 + details.length];
             Object[] base = {"operation", operation, "streamId", id,

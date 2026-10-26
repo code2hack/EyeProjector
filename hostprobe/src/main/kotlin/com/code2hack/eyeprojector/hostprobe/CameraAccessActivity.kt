@@ -276,6 +276,9 @@ class CameraAccessActivity : Activity(), TextureView.SurfaceTextureListener {
                 event(name, "error" to error?.toString(), "reason" to closeReason,
                     "openPending" to ownershipOpenPending(), "configurationPending" to ownershipConfigurationPending(),
                     "deviceObserved" to ownershipDeviceObserved(), "sessionObserved" to ownershipSessionObserved(),
+                    "sessionClosedObserved" to ownershipSessionClosedObserved(),
+                    "sessionRetirementBasis" to ownershipSessionRetirementBasis(),
+                    "parentDeviceClosedObserved" to ownershipParentDeviceClosedObserved(),
                     "allocatedOutputCount" to allocatedOutputCount)
             },
             completed = {
@@ -288,6 +291,9 @@ class CameraAccessActivity : Activity(), TextureView.SurfaceTextureListener {
         private fun ownershipConfigurationPending(): Boolean = ownership.configurationPending
         private fun ownershipDeviceObserved(): Boolean = ownership.device != null
         private fun ownershipSessionObserved(): Boolean = ownership.session != null
+        private fun ownershipSessionClosedObserved(): Boolean = ownership.sessionClosedObserved
+        private fun ownershipSessionRetirementBasis(): String? = ownership.sessionRetirementBasis
+        private fun ownershipParentDeviceClosedObserved(): Boolean = ownership.parentDeviceClosedObserved
         fun event(name: String, vararg fields: Pair<String, Any?>) {
             record(name, "cameraId" to request.id, "generation" to request.epoch,
                 "outputMode" to request.mode.wire, *fields)
@@ -559,7 +565,9 @@ internal class CameraCloseOwner<D : Any, S : Any>(
     var configurationPending = false; private set
     var closing = false; private set
     var complete = false; private set
-    private var deviceTerminal = false
+    var parentDeviceClosedObserved = false; private set
+    var sessionClosedObserved = false; private set
+    var sessionRetirementBasis: String? = null; private set
     private var sessionTerminal = false
     private var deviceCloseSent = false
     private var sessionCloseSent = false
@@ -572,12 +580,13 @@ internal class CameraCloseOwner<D : Any, S : Any>(
         device = value
         openPending = false
         drive()
-        return !complete && !deviceTerminal
+        return !complete && !parentDeviceClosedObserved
     }
     fun sessionArrived(value: S): Boolean {
         if (complete || (session != null && session !== value)) { event("ignored_session_callback", null); return false }
         session = value
         configurationPending = false
+        retireSessionByParentDeviceClosed()
         drive()
         return !complete && !sessionTerminal
     }
@@ -587,6 +596,7 @@ internal class CameraCloseOwner<D : Any, S : Any>(
         configurationPending = false
         // Android defines onConfigureFailed as a closed failed session, without requiring onClosed.
         sessionTerminal = true
+        if (sessionRetirementBasis == null) sessionRetirementBasis = "CONFIGURATION_FAILED"
         event("session_configure_failed", null)
         requestClose()
     }
@@ -594,17 +604,32 @@ internal class CameraCloseOwner<D : Any, S : Any>(
         if (complete || (device != null && device !== value)) { event("ignored_camera_callback", null); return }
         device = value
         openPending = false
-        deviceTerminal = true
+        parentDeviceClosedObserved = true
         event("camera_closed", null)
+        retireSessionByParentDeviceClosed()
         requestClose()
     }
     fun sessionClosed(value: S) {
-        if (complete || (session != null && session !== value)) { event("ignored_session_callback", null); return }
+        if ((session != null && session !== value) || (complete && session !== value)) {
+            event("ignored_session_callback", null); return
+        }
+        if (sessionClosedObserved) return
         session = value
         configurationPending = false
         sessionTerminal = true
+        sessionClosedObserved = true
+        if (sessionRetirementBasis == null) sessionRetirementBasis = "SESSION_CLOSED"
         event("session_closed", null)
-        requestClose()
+        if (!complete) requestClose()
+    }
+    private fun retireSessionByParentDeviceClosed() {
+        if (parentDeviceClosedObserved && session != null && !sessionTerminal) {
+            // The actual original parent callback is a resource fence, not a session callback.
+            // Pending configuration remains a separate unresolved leg until its own callback.
+            sessionTerminal = true
+            sessionRetirementBasis = "PARENT_DEVICE_CLOSED"
+            event("session_retired_by_parent_device_closed", null)
+        }
     }
     fun requestClose() {
         if (complete) return
@@ -622,12 +647,12 @@ internal class CameraCloseOwner<D : Any, S : Any>(
                 catch (error: Exception) { event("session_close_unconfirmed", error) }
             }
             val originalDevice = device
-            if (originalDevice != null && !deviceTerminal && !deviceCloseSent) {
+            if (originalDevice != null && !parentDeviceClosedObserved && !deviceCloseSent) {
                 deviceCloseSent = true
                 try { closeDevice(originalDevice) }
                 catch (error: Exception) { event("camera_close_unconfirmed", error) }
             }
-            if (openPending || configurationPending || (device != null && !deviceTerminal) ||
+            if (openPending || configurationPending || (device != null && !parentDeviceClosedObserved) ||
                 (session != null && !sessionTerminal)) return
             try { releaseOutputs() }
             catch (error: Exception) { event("outputs_release_unconfirmed", error); return }
