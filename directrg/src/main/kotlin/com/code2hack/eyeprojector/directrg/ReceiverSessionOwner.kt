@@ -6,6 +6,7 @@ import com.code2hack.eyeprojector.protocol.*
 import java.io.Closeable
 import java.io.File
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 /** Serialized on the service's main thread; no Activity is a transport/session owner. */
 internal class ReceiverSessionOwner(
@@ -25,6 +26,13 @@ internal class ReceiverSessionOwner(
         PairedSessionClient(directory, state, unavailable, deliver = deliver, feature = feature)
     },
 ) : Closeable {
+    companion object {
+        @Volatile internal var windowPresentationObserver: WindowPresentationObserver? = null
+    }
+
+    private data class CallbackReceipt(val originalStartedMonoNs: Long?, val generation: Long,
+        val receivedMonoNs: Long, val readEndMonoNs: Long)
+
     interface View {
         fun state(snapshot: Snapshot)
         fun input(source: ProjectionSession, event: ReceiverInput)
@@ -69,6 +77,43 @@ internal class ReceiverSessionOwner(
     fun start() = client.start()
     fun snapshot() = Snapshot(session, attachment.epoch, peer, requested,
         if (session != null && mediaState == "STREAMING" && !currentDisplayed) "DISPLAY_DETACHED" else mediaState, session?.geometry, feature?.directive?.activationId)
+    /** Diagnostic reads only: no locks, publication, revision allocation, I/O or authority export. */
+    private fun windowObservation(original: ProjectionSession?, originalOutput: ReceiverVideoOutput?,
+        callbackWindow: Surface, originalEpoch: String): OwnerWindowSnapshot? = try {
+        val begin = System.nanoTime()
+        val generationBefore = windowGeneration.get()
+        val current = session
+        val currentOutput = output
+        val currentWindow = window
+        val report = feature?.presentation
+        val directive = feature?.directive
+        val incarnation = feature?.incarnation
+        val usability = current?.observationUsability()
+        val geometry = current?.geometry
+        val currentClosed = closed
+        val state = mediaState
+        val displayedAt = displayedGeneration
+        val shown = currentDisplayed
+        val usable = uiUsable
+        val panel = localPanel
+        val revision = inputRevision
+        val generationAfter = windowGeneration.get()
+        val stable = current === session && currentOutput === output && currentWindow === window &&
+            report === feature?.presentation && directive === feature?.directive && incarnation === feature?.incarnation &&
+            usability === current?.observationUsability() && geometry === current?.geometry &&
+            generationBefore == generationAfter && revision == inputRevision
+        OwnerWindowSnapshot(begin, System.nanoTime(), generationBefore, generationAfter,
+            current?.observationStartedMonoNs, original?.let { current === it },
+            originalOutput?.let { currentOutput === it }, currentWindow === callbackWindow,
+            currentClosed, state, displayedAt, shown, usable, panel, revision,
+            report?.mode?.name, report?.revision, report?.let { it.ownerEpoch == originalEpoch },
+            report?.let { fact -> directive?.let { demand ->
+                fact.activationId == demand.activationId && fact.ownerEpoch == demand.ownerEpoch &&
+                    fact.wakeRevision == demand.wakeRevision && fact.incarnation == incarnation
+            } }, usability?.mode?.name, usability?.revision, usability?.inputRevision,
+            usability?.let { it.ownerEpoch == originalEpoch }, geometry?.width, geometry?.height, stable)
+    } catch (_: Throwable) { null } // Diagnostics never replace a product failure.
+
     private fun publish(notifyView: Boolean = true) {
         val d = feature?.demand()
         if (d != null) {
@@ -171,11 +216,42 @@ internal class ReceiverSessionOwner(
         var nextOutput: ReceiverVideoOutput? = null
         try {
             resourcesHeld = true; resources(true)
-            val video = outputFactory({ surface, generation -> deliver {
-                if (!closed && !currentDisplayed && output === nextOutput && window === surface && windowGeneration.get() == generation && mediaState == "STREAMING") {
-                    displayedGeneration = generation; displayed = true; session?.presentation(true); publish()
+            // No diagnostic origin allocation while disabled. A later installation cannot invent
+            // the original reference of an output that predates observation: its origin stays unknown.
+            val originalSession = if (windowPresentationObserver == null) null else AtomicReference<ProjectionSession?>()
+            val video = outputFactory({ surface, generation ->
+                val observer = windowPresentationObserver
+                val source = if (observer == null) null else originalSession?.get()
+                val receipt = if (observer == null) null else try {
+                    val begin = System.nanoTime()
+                    CallbackReceipt(source?.observationStartedMonoNs, generation, begin, System.nanoTime())
+                } catch (_: Throwable) { null }
+                deliver {
+                    if (receipt == null) {
+                        if (!closed && !currentDisplayed && output === nextOutput && window === surface && windowGeneration.get() == generation && mediaState == "STREAMING") {
+                            displayedGeneration = generation; displayed = true; session?.presentation(true); publish()
+                        }
+                    } else {
+                        val before = windowObservation(source, nextOutput, surface, epoch)
+                        var entered = false
+                        var completed = false
+                        try {
+                            if (!closed && !currentDisplayed && output === nextOutput && window === surface && windowGeneration.get() == generation && mediaState == "STREAMING") {
+                                entered = true
+                                displayedGeneration = generation; displayed = true; session?.presentation(true); publish()
+                            }
+                            completed = true
+                        } finally {
+                            // Existing callback/effects always run; token matching controls evidence only.
+                            if (windowPresentationObserver === observer) try {
+                                observer?.presented(SuccessfulWindowReceipt(receipt.originalStartedMonoNs,
+                                    receipt.generation, receipt.receivedMonoNs, before, entered, completed,
+                                    windowObservation(source, nextOutput, surface, epoch), receipt.readEndMonoNs))
+                            } catch (_: Throwable) { /* An observer cannot mask the callback's primary failure. */ }
+                        }
+                    }
                 }
-            } }, { error -> deliver { if (output === nextOutput) {
+            }, { error -> deliver { if (output === nextOutput) {
                 if (error is PresentationSurfaceLost) {
                     if (window === error.surface && windowGeneration.get() == error.generation) {
                         displayed = false; window = null; windowGeneration.incrementAndGet()
@@ -215,6 +291,8 @@ internal class ReceiverSessionOwner(
                 }
             } }, nextUsabilityRevision = usabilityRevision::incrementAndGet)
             feature?.incarnation?.let { next.usability(ReceiverUsability(epoch, it, usabilityRevision.incrementAndGet(), inputRevision, ReceiverUsabilityMode.NONE)) }
+            // Publish the immutable original reference before starting any frame-producing session work.
+            originalSession?.set(next)
             next.presentation(false); session = next; startSession(next)
         } catch (error: Exception) {
             android.util.Log.e("EyeProjector", "Retained renderer setup failed", error)

@@ -108,6 +108,9 @@ class ProjectionSession(
     @Volatile var scaleState: ScaleState? = null
         private set
     private val started = System.nanoTime()
+    /** Read-only diagnostic provenance; neither accessor publishes or allocates a revision. */
+    internal val observationStartedMonoNs: Long get() = started
+    internal fun observationUsability(): ReceiverUsability? = sourceUsability
     private val stats = JSONObject().put("state", "CONNECTING").put("audio", "system-bluetooth")
     private var packets = 0L
     private var changes = 0L
