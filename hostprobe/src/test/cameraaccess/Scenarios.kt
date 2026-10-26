@@ -1,9 +1,17 @@
 package com.code2hack.eyeprojector.hostprobe
 
+private data class Observation(
+    val event: String,
+    val sessionClosedObserved: Boolean,
+    val sessionRetirementBasis: String?,
+    val parentDeviceClosedObserved: Boolean,
+)
+
 private class Rig {
     val device = Any()
     val session = Any()
     val events = mutableListOf<String>()
+    val observations = mutableListOf<Observation>()
     val deviceCalls = mutableListOf<Any>()
     val sessionCalls = mutableListOf<Any>()
     var releases = 0
@@ -20,11 +28,13 @@ private class Rig {
         },
         closeSession = { sessionCalls.add(it); if (reentrant) ownerSessionClosed(it) },
         releaseOutputs = { if (releaseFailure) throw IllegalStateException("output close uncertain"); releases++ },
-        event = { name, _ -> events.add(name) },
+        event = { name, _ -> events.add(name); observations.add(observation(name)) },
         completed = { completions++; afterCompletion() },
     )
     private fun ownerDeviceClosed(value: Any): Unit = owner.deviceClosed(value)
     private fun ownerSessionClosed(value: Any): Unit = owner.sessionClosed(value)
+    private fun observation(name: String) = Observation(name, owner.sessionClosedObserved,
+        owner.sessionRetirementBasis, owner.parentDeviceClosedObserved)
     fun opened() { owner.expectOpen(); check(owner.deviceArrived(device)) }
     fun configured() { opened(); owner.expectConfiguration(); check(owner.sessionArrived(session)) }
 }
@@ -42,22 +52,37 @@ fun main() {
         r.owner.deviceClosed(r.device)
         check(r.owner.complete && r.releases == 1 && r.completions == 1)
     }
-    scenario("pending configuration waits even when camera closes before late configured session") {
+    scenario("pending configuration survives parent closure until original late session arrives") {
         val r = Rig(); r.opened(); r.owner.expectConfiguration(); r.owner.requestClose()
         r.owner.deviceClosed(r.device)
         check(!r.owner.complete && r.releases == 0)
+        check(r.owner.configurationPending && r.owner.parentDeviceClosedObserved)
+        check("session_retired_by_parent_device_closed" !in r.events)
         r.owner.sessionArrived(r.session)
-        check(r.sessionCalls == listOf(r.session) && !r.owner.complete)
-        r.owner.sessionClosed(r.session)
         check(r.owner.complete && r.releases == 1)
+        check(r.sessionCalls.isEmpty() && !r.owner.sessionClosedObserved)
+        check(r.owner.sessionRetirementBasis == "PARENT_DEVICE_CLOSED")
     }
-    scenario("normal configured resources resolve only after both original callbacks in either order") {
+    scenario("original parent callback retires configured session without inventing its callback") {
         for (sessionFirst in listOf(false, true)) {
             val r = Rig(); r.configured(); r.owner.requestClose()
-            if (sessionFirst) r.owner.sessionClosed(r.session) else r.owner.deviceClosed(r.device)
-            check(!r.owner.complete && r.releases == 0)
-            if (sessionFirst) r.owner.deviceClosed(r.device) else r.owner.sessionClosed(r.session)
+            if (sessionFirst) {
+                r.owner.sessionClosed(r.session)
+                check(!r.owner.complete && r.releases == 0)
+            }
+            r.owner.deviceClosed(r.device)
             check(r.owner.complete && r.releases == 1)
+            check(r.owner.parentDeviceClosedObserved && r.owner.sessionClosedObserved == sessionFirst)
+            check(r.owner.sessionRetirementBasis == if (sessionFirst) "SESSION_CLOSED" else "PARENT_DEVICE_CLOSED")
+            check(("session_closed" in r.events) == sessionFirst)
+            val completion = r.observations.single { it.event == "consumer_close_completed" }
+            check(completion.parentDeviceClosedObserved && completion.sessionClosedObserved == sessionFirst)
+            if (!sessionFirst) {
+                val camera = r.events.indexOf("camera_closed")
+                val retired = r.events.indexOf("session_retired_by_parent_device_closed")
+                check(camera >= 0 && retired > camera && r.events.indexOf("consumer_close_completed") > retired)
+                check(completion.sessionRetirementBasis == "PARENT_DEVICE_CLOSED")
+            }
         }
     }
     scenario("configure failure is an actual terminal path without invented session_closed") {
@@ -66,11 +91,14 @@ fun main() {
         check("session_configure_failed" in r.events && "session_closed" !in r.events)
         r.owner.deviceClosed(r.device)
         check(r.owner.complete && r.completions == 1)
+        check(!r.owner.sessionClosedObserved && r.owner.sessionRetirementBasis == "CONFIGURATION_FAILED")
+        check("session_retired_by_parent_device_closed" !in r.events)
     }
     scenario("wrong resource callback cannot release original resource or complete successor") {
         val a = Rig(); a.configured(); a.owner.requestClose()
         a.owner.deviceClosed(Any()); a.owner.sessionClosed(Any())
         check(!a.owner.complete && a.releases == 0)
+        check(!a.owner.parentDeviceClosedObserved && !a.owner.sessionClosedObserved)
         val b = Rig()
         a.afterCompletion = { b.opened() }
         a.owner.sessionClosed(a.session); a.owner.deviceClosed(a.device)
@@ -90,6 +118,52 @@ fun main() {
         check(r.deviceCalls.size == 1 && !r.owner.complete)
         r.owner.deviceClosed(r.device)
         check(r.owner.complete && r.completions == 1)
+    }
+    scenario("session and device close returns are not the actual parent closure fence") {
+        val r = Rig(); r.configured(); r.owner.requestClose()
+        check(r.deviceCalls == listOf(r.device) && r.sessionCalls == listOf(r.session))
+        check(!r.owner.parentDeviceClosedObserved && !r.owner.sessionClosedObserved)
+        check(!r.owner.complete && r.releases == 0)
+        check("session_retired_by_parent_device_closed" !in r.events)
+        r.owner.requestClose() // A disconnected/error request alone supplies no new observation.
+        check(!r.owner.complete && r.deviceCalls.size == 1 && r.sessionCalls.size == 1)
+    }
+    scenario("late real session callback is observed separately after parent retirement exactly once") {
+        val r = Rig(); r.configured(); r.owner.requestClose(); r.owner.deviceClosed(r.device)
+        val completion = r.observations.single { it.event == "consumer_close_completed" }
+        check(!completion.sessionClosedObserved && completion.sessionRetirementBasis == "PARENT_DEVICE_CLOSED")
+        r.owner.sessionClosed(Any())
+        check(!r.owner.sessionClosedObserved && "session_closed" !in r.events)
+        r.owner.sessionClosed(r.session)
+        check(r.owner.sessionClosedObserved && r.owner.sessionRetirementBasis == "PARENT_DEVICE_CLOSED")
+        check(r.events.count { it == "session_closed" } == 1)
+        val late = r.observations.single { it.event == "session_closed" }
+        check(late.sessionClosedObserved && late.parentDeviceClosedObserved)
+        check(!completion.sessionClosedObserved) // The prior completion snapshot is not rewritten.
+        r.owner.sessionClosed(r.session); r.owner.deviceClosed(r.device); r.owner.requestClose()
+        check(r.releases == 1 && r.completions == 1 && r.events.count { it == "session_closed" } == 1)
+    }
+    scenario("parent retirement does not erase an independently pending configuration leg") {
+        val r = Rig(); r.configured(); r.owner.expectConfiguration(); r.owner.requestClose()
+        r.owner.deviceClosed(r.device)
+        check(r.owner.configurationPending && !r.owner.complete && r.releases == 0)
+        check(!r.owner.sessionClosedObserved && r.owner.sessionRetirementBasis == "PARENT_DEVICE_CLOSED")
+        r.owner.sessionArrived(Any())
+        check(r.owner.configurationPending && !r.owner.complete)
+        r.owner.sessionArrived(r.session)
+        check(r.owner.complete && !r.owner.configurationPending && r.releases == 1)
+    }
+    scenario("output fault after actual parent retirement remains pending without duplicate closes") {
+        val r = Rig(); r.configured(); r.owner.requestClose(); r.releaseFailure = true
+        r.owner.deviceClosed(r.device)
+        check(!r.owner.complete && r.completions == 0 && "outputs_release_unconfirmed" in r.events)
+        check(!r.owner.sessionClosedObserved && r.owner.sessionRetirementBasis == "PARENT_DEVICE_CLOSED")
+        r.owner.configurationFailed(r.session) // A late actual path cannot rewrite the retirement basis.
+        check(!r.owner.complete && r.owner.sessionRetirementBasis == "PARENT_DEVICE_CLOSED")
+        r.releaseFailure = false; r.owner.requestClose()
+        check(r.owner.complete && r.releases == 1 && r.completions == 1)
+        check(r.deviceCalls.size == 1 && r.sessionCalls.size == 1)
+        check(r.events.count { it == "session_retired_by_parent_device_closed" } == 1)
     }
     scenario("invoked open exception is not a synthesized callback or early release") {
         val r = Rig(); r.owner.expectOpen(); r.owner.requestClose()

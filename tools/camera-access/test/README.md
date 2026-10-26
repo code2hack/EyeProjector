@@ -36,6 +36,21 @@ return sentinels, fill output arrays and inject stage faults; they render no pix
 JSONObject captures structured production events and emits simple JSON. Its recorded
 class origins are host-double origins, not Android implementation evidence.
 
+`--scenario transaction` selects the narrow337 transaction-observation harness.
+It compiles full parent213 and current producers against a controlled superclass
+delegate and scalar-only Parcel/RemoteException substitutes. The parent
+counterexample retains the missing callback-node transaction evidence. Current
+controls verify exact code/data/reply/flags identity, one delegation, true/unknown
+false results, scalar states before/after delegate changes, unchanged reply state,
+and same-instance checked RemoteException/RuntimeException/Error propagation.
+Scalar accessor, JSON and output faults cannot replace the delegate result or
+primary exception. Forbidden payload/cursor fixture methods fail the control if
+used. A normal actual-source callback/Surface-owner/token-cleanup path remains
+exercised through the controlled delegate. No real Parcel bytes, Binder decoding,
+transaction method table, oneway IPC, Android thread or device result is modeled.
+The harness starts no fixture worker threads. Earlier23+2/10+3 results are not
+rerun or summed by selecting transaction mode.
+
 Handler queues immediate work rather than running inline. Delayed ticks never loop
 automatically. HandlerThread starts no native/JVM background thread; its inherited
 join therefore proves nothing about the real Android producer thread or process.

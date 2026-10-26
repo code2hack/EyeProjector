@@ -6,13 +6,23 @@ import java.util.Map;
 public final class JSONObject {
     public static final Object NULL = new Object();
     private static final List<Map<String, Object>> EVENTS = new ArrayList<>();
+    private static String failureEvent;
+    private static Throwable eventFailure;
     private final Map<String, Object> fields = new LinkedHashMap<>();
     private boolean recorded;
     public JSONObject put(String key, Object value) throws JSONException {
         if (key == null) throw new JSONException("Null key");
+        if ("event".equals(key) && value.equals(failureEvent)) {
+            if (eventFailure instanceof JSONException) throw (JSONException) eventFailure;
+            if (eventFailure instanceof RuntimeException) throw (RuntimeException) eventFailure;
+            if (eventFailure instanceof Error) throw (Error) eventFailure;
+        }
         fields.put(key, value == NULL ? null : value); return this;
     }
-    public static synchronized void reset() { EVENTS.clear(); }
+    public static synchronized void reset() { EVENTS.clear(); failureEvent = null; eventFailure = null; }
+    public static synchronized void failEvent(String name, Throwable failure) {
+        failureEvent = name; eventFailure = failure;
+    }
     public static synchronized List<Map<String, Object>> events() { return new ArrayList<>(EVENTS); }
     private static String quote(String text) {
         StringBuilder out = new StringBuilder("\"");

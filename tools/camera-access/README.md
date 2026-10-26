@@ -63,6 +63,17 @@ Unavailable metadata remains unresolved; validity is not an admission/permission
 Class-loader descriptions are observations, not a verified platform sender/schema
 or loaded-code digest. No Binder token, parcel contents or image pixels are dumped.
 
+The callback's `onTransact` also emits `callback_transaction` observations before
+and after exactly one unchanged superclass delegation. Each row carries its own
+attached constant descriptor, callback identity, actor PID, timestamp, code, flags
+and scalar Parcel size/position/available-byte observations. After rows retain the
+actual Boolean result or the primary exception class; the original return or same
+exception instance is preserved. Diagnostic faults are contained independently.
+No parcel contents, reply fields, Binder objects or cursor operations are inspected
+or changed. An absent diagnostic is unresolved evidence, not a transaction success.
+These rows associate observations with this callback object; they do not name the
+sender's intended method, establish its method table or change the pinned AIDL.
+
 A callback's Surface has one explicit release owner, shared with its stream after
 handoff. Failed initialization is reported with its FIRST exception, operation stage
 and full stack before cleanup. Cleanup faults are reported separately; absent-Surface
