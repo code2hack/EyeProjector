@@ -108,29 +108,66 @@ internal object NotificationProbeChecks {
                             observation.scope.connection, observation.scope.membership, event.epoch, observation,
                             event.record.packageName, event.record.key, event.record.postTime,
                             event.origin.name, event.kind.name, event.baseline.name, observation.admission != null,
+                            observation.admission, try { observation.diagnostic } catch (lookupFailure: Throwable) {
+                                recordSafely { report.uncorrelatedHelperFault(notificationDiagnosticFault(lookupFailure)) }
+                                null
+                            },
                         ))
                         signal.release()
                     }
                 }
                 pipelineRegistration = runtime!!.observePipeline { event ->
-                    if (event.ingress.event.record.packageName == packageName) {
-                        val ready = event.ready
-                        val carrier = event.carrier
-                        val outcome = event.outcome
-                        val result = outcome?.result
-                        report.pipeline(NotificationProbeReport.Pipeline(
-                            event.ingress, event.selection, event.demand, event.stage.name, event.permitState.name,
-                            event.demand.goal.name, event.arm, ready, ready?.binding?.activationId, ready?.attempt,
-                            ready?.target, carrier,
-                            (ready == null || ready.handle === event.demand) && (carrier == null ||
-                                (carrier.selection === event.selection && carrier.selection.observation === event.ingress && carrier.ready === ready)),
-                            outcome?.commitment?.name, outcome?.rejection?.name, outcome?.faultStage?.name,
-                            outcome?.let { result != null }, result?.status?.name,
-                            result?.let { ready != null && it.context == ready.target },
-                            result?.let { it.requestedPackage == packageName }, result?.let { it.foregroundPackage == packageName },
-                        ))
-                        signal.release()
+                    // Entry itself precedes the first ingress getter. This run-scoped fact does
+                    // not yet identify an original receipt and must not borrow the latest one.
+                    recordSafely { report.helperCallbackEntry() }
+                    var box: NotificationObservationTrace? = null
+                    var appendInvoked = false
+                    var matchingPackage = false
+                    try {
+                        val original = event.ingress
+                        // A diagnostic lookup/recording failure must not replace a detailed-row
+                        // fault or prevent an otherwise normal observer from constructing its row.
+                        try { box = original.diagnostic?.takeIf { it.original === original } }
+                        catch (recordingFailure: Throwable) {
+                            recordSafely { report.uncorrelatedHelperFault(notificationDiagnosticFault(recordingFailure)) }
+                        }
+                        recordSafely { box?.let { it.helperEntered++ } }
+                        if (original.event.record.packageName == packageName) {
+                            matchingPackage = true
+                            val ready = event.ready
+                            val carrier = event.carrier
+                            val outcome = event.outcome
+                            val result = outcome?.result
+                            val row = NotificationProbeReport.Pipeline(
+                                original, event.selection, event.demand, event.stage.name, event.permitState.name,
+                                event.demand.goal.name, event.arm, ready, ready?.binding?.activationId, ready?.attempt,
+                                ready?.target, carrier,
+                                (ready == null || ready.handle === event.demand) && (carrier == null ||
+                                    (carrier.selection === event.selection && carrier.selection.observation === original && carrier.ready === ready)),
+                                outcome?.commitment?.name, outcome?.rejection?.name, outcome?.faultStage?.name,
+                                outcome?.let { result != null }, result?.status?.name,
+                                result?.let { ready != null && it.context == ready.target },
+                                result?.let { it.requestedPackage == packageName }, result?.let { it.foregroundPackage == packageName },
+                            )
+                            appendInvoked = true
+                            report.pipeline(row)
+                            recordSafely { box?.let { it.helperAppended++ } }
+                        }
+                    } catch (primary: Throwable) {
+                        recordSafely {
+                            val family = notificationDiagnosticFault(primary)
+                            val originalBox = box
+                            if (originalBox == null) report.uncorrelatedHelperFault(family)
+                            else {
+                                originalBox.helperFaults++
+                                originalBox.helperFault = family
+                                originalBox.helperFaultPoint = if (appendInvoked) NotificationHelperFaultPoint.APPEND_UNCONFIRMED
+                                    else NotificationHelperFaultPoint.BEFORE_APPEND
+                            }
+                        }
+                        throw primary // Preserve the exact original Throwable for the producer's existing catch.
                     }
+                    if (matchingPackage) signal.release()
                 }
                 report.put("pipelineObserver", "REGISTERED_CURRENT_PROCESS_NO_REPLAY")
                 runtime!!.refresh()
@@ -308,6 +345,8 @@ internal object NotificationProbeChecks {
             write(output, report, diagnosticComplete)
         }
     }
+
+    private inline fun recordSafely(work: () -> Unit) { try { work() } catch (_: Throwable) { } }
 
     private fun cleanupOwned(context: Context, arguments: Bundle, output: Bundle, report: NotificationProbeReport) {
         val token = arguments.getString("fixtureToken").orEmpty()

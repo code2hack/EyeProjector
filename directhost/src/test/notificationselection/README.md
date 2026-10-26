@@ -6,9 +6,14 @@ Run with JDK 17 and the pinned Kotlin/JUnit dependencies already cached locally:
 python3 directhost/src/test/notificationselection/run.py --output-dir /absolute/new/run-directory
 ```
 
-Compilation is bounded to 90 seconds and execution to 60 seconds. Every run
-uses a new directory and retains exact compiler inputs, dependency hashes,
-commands, artifact, logs and exit codes. Failed and superseded attempts remain
+The entire cached check is bounded to 115 seconds, including input capture;
+compilation receives at most 85 seconds, scenario execution at most 25 seconds,
+and the JDK version query at most 5 seconds within that same overall budget.
+Each compiler/JVM invocation has a new owned process group, with timeout cleanup
+and terminal closure recorded. Every run uses a new directory and retains exact
+source/runner snapshots and modes, dependency/JDK hashes, argv, artifact, logs
+and exit codes. Source or runner changes invalidate current-input attribution.
+Failed and superseded attempts remain
 separate evidence; their overlapping pass lines are never summed.
 
 This compiles the actual facade, accepted activation engine/producer, Bootstrap,
@@ -78,3 +83,30 @@ descriptor transport or establish physical usability. The broader composed HID
 suite retains its known HID27 counterexample separately. No suite here establishes
 system notification delivery, foreground Android behavior, hardware wake, global
 Home intent, native transport or full issue65 acceptance.
+
+The observation219 cases exercise the actual policy/facade/owner/runtime trace
+with observation enabled and disabled. Seven direct facade cases obtain snapshots
+through actual receipt/prepare calls and canonical reads/mutations, then verify the
+first evaluated rejection and every later NOT_EVALUATED predicate. The direct
+unchosen case is an adversarial admission boundary; ordinary runtime extraction
+does not admit an already unchosen package. No Snapshot/revision/private policy
+field is fabricated to make an install succeed. A separate fake-null port case
+does not invoke installation and must leave its reason unknown. A deliberately
+lossy return after actual admission retains its observed installed G while leaving
+the returned handle unknown; it must not fabricate DEMAND publication.
+
+Other cases cover original G/D/DEMAND correlation, caught eligibility exceptions,
+exact primary non-Exception propagation with observation disabled/enabled,
+missing tickets, filtered/old receipts, pre-read Stop, explicit-choice read reentry,
+ingress replacement, scheduler/callback Throwable, inline callbacks outside the
+actual gate/fastLock, and closed/late-original recipients. A post adapter returning
+Unit while retaining no callback is deliberately modeled; returned scheduling
+never establishes enqueue acceptance or delivery. Disabled cases assert null
+diagnostic storage and unchanged functional outcomes, not a heap-allocation
+profiler result. Immutable snapshots and equal-but-distinct ingress copies retain
+the original object correlation boundary. These tests do not identify actual198's
+cause, demonstrate Android scheduling/reentry, or establish device behavior.
+
+Use `--observation219-only` for those affected cases. The default renews them plus
+the existing composition/JUnit cases; the focused and full counts overlap and
+must not be summed. The existing `--correction65-only` selector remains available.

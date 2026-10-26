@@ -100,3 +100,70 @@ Producer and host use the exact phases `PREPARING`, `WAIT_MEDIA_SESSION`, `WAIT_
 Publication uses an owned same-directory temporary file and rename. Successful witness history and separate publication errors remain in the owned final report. A normal publication failure aborts setup before Go/input; failure/final publication catches its own errors so it cannot replace the primary failure or interrupt the existing cleanup. The paired host retains its one dispatch-based 180-second allowance and existing 360-second child bound; this producer does not change the host's Future/child lifecycle or create another total timer. Actual event timing, media transport/startup cause and physical continuity remain unproven by these phase controls.
 
 `run_fixture_phase_checks.py --output-dir /private/new-phase-checks --parent-driver /private/preserved/ProjectionInstrumentation.kt` compiles the actual extracted phase/status/witness/finally code with cached JDK17/Kotlin only, under a 120-second command budget. Distinct virtual clock origins and file/JSON doubles exercise delayed media creation, the shared deadline, stale status, cancellation and publication failures. Source-derived witness samples are host fixtures for the paired consumer, not Android JSON/filesystem or device evidence. The exact source, generated fixture, logs and input/dependency hashes bind each attempt; preserved parent failures are controlled counterexamples rather than observed Android failures.
+
+
+### Successful window callback observation (236)
+
+Existing gated `input-observation` and `static-content` instrumentation runs also collect
+`windowPresentationObservation`. The optional `ReceiverSessionOwner.windowPresentationObserver`
+is normally null. It observes the existing `RetainedVideoOutput` callback after a successful
+`eglSwapBuffers` return, including repeated successful draws when the owner is already displayed.
+The renderer, acceptance guard/effect order, input/usability revision allocation and lifecycle
+operations retain their existing behavior. This observation adds no setup, Go, measurement or
+input admission condition.
+
+The immutable receipt records the original output's session constructor `startedMonoNs`, callback
+window generation and receipt span, followed by independent owner snapshots before and after the
+existing serialized callback. These snapshots include actual current-session/output/window match
+facts, session geometry, media state, and the actual stored presentation report and applied session
+usability modes/revisions. Reported `PROJECTED`, `LOCAL_PANEL` and `NONE` remain distinct;
+`presentationActive`, the local `live` flag, or entry into the existing acceptance branch alone
+cannot establish PROJECTED usability. A repeated successful callback may leave
+`existingAcceptanceBranchEntered=false` because the original state transition already occurred.
+A post-delivery snapshot may reflect reentry from the original publish callback. Stable sampled
+references and before/after spans do not establish an atomic GL/main/control tuple.
+
+Original session provenance is retained only when observation was enabled at output construction.
+Installing later leaves that original reference UNKNOWN, even when the current session can be read.
+A stale output/session/window or generation is recorded as such; diagnostic comparisons never
+suppress rendering or input. Collector aliases are per-run labels derived from S and generation,
+not native handles or authority. No Surface, pixel, key, activation identity or private configuration
+is exported.
+
+The existing callback does not expose draw cause, texture/frame identity or actual GL window size;
+those fields remain UNKNOWN. Session geometry is not GL window geometry. A successful window
+submission is separate from decoder `rendered`, a new VIDEO packet, GPU completion and optical
+presentation. Actual same-S report samples with present counter values can support a sampled
+non-config VIDEO/decoder-callback plateau. They do not identify an individual callback as a cached
+frame. Do not substitute a static boolean, missing-counter defaults, equal changing-packet hashes,
+callback counts or nominal 30/40/55-second positions for that evidence.
+
+The collector installs before the owned Activity launch. It only queues immutable receipt values
+on the callback path; JSON/status reads and report assembly run on the instrumentation thread.
+Exact recorder disable/detach and independent drain/export occur before the existing Activity
+finish. Final-status freshness is rechecked with the existing predicate after blocking main/status
+reads and is scoped to `finalStatusObservedMonoNs`; it is not freshness at a later file read or a
+teardown completion witness. `expectedSessionStartedMonoNs` retains the first measurement status S;
+`finalStatusMatchesMeasurementSession` is null if either side is unavailable and false for a fresh
+successor, even when `finalStatusValidated` is true. Current-run freshness alone never proves the
+same measurement session. Callback/export/install/detach failures remain diagnostic metadata
+and cannot turn the existing measurement into a new pass or failure. Pending deliveries cannot
+be attached to a replacement recorder. Coverage stays UNKNOWN when capture or export is incomplete.
+
+Three diagnostic annotations retain actual measurement-start and synthetic-tap dispatch start/return
+clock spans. System.nanoTime, Android elapsed time and uptime remain separately labeled; never
+subtract timestamps from different domains. The tap marker invalidates any later quiet interval;
+use its observed dispatch span, not the nominal tap setting or a presumed target-injection time.
+The fixture harness removes only these three exact annotation lines before comparing all remaining
+measurement-body bytes with the preserved parent. Existing witness174, shared setup180 seconds,
+explicit reconnect-leg15 seconds, child360 seconds, measurement75 seconds and synthetic event55
+seconds remain unchanged. Ordinary non-gated3-second measurement does not install this collector.
+
+`run_presentation_checks.py` compiles the actual owner/session/renderer and existing test fixture
+against host Android/GL/TLS doubles. `run_presentation_collection_checks.py` compiles the actual
+collector, DTO, main-dispatch failure transport and status predicate against narrow host doubles.
+Each invocation has an owned finite120-second host bound and retained process/thread closure.
+These are source/host checks, with no Android Looper/GPU/driver, optical/native-HID, H settlement,
+original release or full issue66 acceptance. Source-equivalent preexisting APKs are superseded for
+these changed main/test sources; a new affected Receiver build and separate device allocation are
+required before runtime observations.

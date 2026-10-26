@@ -20,17 +20,26 @@ internal class NotificationPolicy {
     val persistenceFailed: Boolean get() = synchronized(gate) { failedMutations.isNotEmpty() }
 
     class Snapshot internal constructor(val packageName: String, val revision: Long, val choiceRevision: Long,
-        val accessRevision: Long, val chosen: Boolean, val enabled: Boolean)
-    class Receipt internal constructor(val packageName: String, val revision: Long, val choiceRevision: Long, val accessRevision: Long)
+        val accessRevision: Long, val chosen: Boolean, val enabled: Boolean,
+        internal val diagnostic: NotificationObservationTrace? = null)
+    class Receipt internal constructor(val packageName: String, val revision: Long, val choiceRevision: Long, val accessRevision: Long,
+        internal var diagnostic: NotificationObservationTrace? = null)
     class Change internal constructor(val packageName: String, val isMembership: Boolean, val desired: Boolean, val revision: Long)
 
     /** Capture BEFORE blocking reads. An intervening intent invalidates this original receipt. */
-    fun receipt(packageName: String): Receipt = synchronized(gate) {
-        Receipt(packageName, packageRevisions[packageName] ?: 0, choiceRevision, accessRevision)
+    fun receipt(packageName: String, diagnostic: NotificationObservationTrace? = null): Receipt = synchronized(gate) {
+        Receipt(packageName, packageRevisions[packageName] ?: 0, choiceRevision, accessRevision, diagnostic)
     }
-    fun prepare(original: Receipt, read: () -> Pair<Boolean, Boolean>): Snapshot? {
-        val values = try { read() } catch (_: Exception) { return null }
-        return Snapshot(original.packageName, original.revision, original.choiceRevision, original.accessRevision, values.first, values.second)
+    fun prepare(original: Receipt, diagnostic: NotificationObservationTrace? = original.diagnostic,
+        read: () -> Pair<Boolean, Boolean>): Snapshot? {
+        val values = try { read() } catch (error: Exception) {
+            diagnostic?.prepare = NotificationPrepareDisposition.READ_EXCEPTION
+            diagnostic?.prepareFault = notificationDiagnosticFault(error)
+            return null
+        }
+        diagnostic?.prepare = NotificationPrepareDisposition.RETURNED
+        return Snapshot(original.packageName, original.revision, original.choiceRevision, original.accessRevision,
+            values.first, values.second, diagnostic)
     }
 
     fun access(value: NotificationAccessApproval) {
@@ -79,11 +88,35 @@ internal class NotificationPolicy {
 
     /** Caller holds gate and then acquires the facade fastLock, never the reverse. */
     fun installLocked(selection: NotificationSelection, snapshot: Snapshot): Boolean {
-        if (snapshot.packageName != selection.packageName || snapshot.revision != (packageRevisions[snapshot.packageName] ?: 0) ||
-            snapshot.choiceRevision != choiceRevision || snapshot.accessRevision != accessRevision || access != NotificationAccessApproval.GRANTED ||
-            !(membership[snapshot.packageName] ?: snapshot.chosen) || !(enabled[snapshot.packageName] ?: snapshot.enabled)) return false
+        // The original predicate's order and short circuit are unchanged. Only the comparison
+        // actually evaluated is copied; later checks remain NOT_EVALUATED. No callbacks or reads
+        // beyond those in that predicate occur under gate, including when a diagnostic is active.
+        val diagnostic = snapshot.diagnostic
+        val packageMatches = snapshot.packageName == selection.packageName
+        diagnostic?.packageCheck = if (packageMatches) NotificationCheckResult.MATCHED else NotificationCheckResult.REJECTED
+        if (!packageMatches) { diagnostic?.install = NotificationInstallDisposition.REJECTED; return false }
+        val packageRevisionMatches = snapshot.revision == (packageRevisions[snapshot.packageName] ?: 0)
+        diagnostic?.packageRevision = if (packageRevisionMatches) NotificationCheckResult.MATCHED else NotificationCheckResult.REJECTED
+        if (!packageRevisionMatches) { diagnostic?.install = NotificationInstallDisposition.REJECTED; return false }
+        val choiceMatches = snapshot.choiceRevision == choiceRevision
+        diagnostic?.choiceRevision = if (choiceMatches) NotificationCheckResult.MATCHED else NotificationCheckResult.REJECTED
+        if (!choiceMatches) { diagnostic?.install = NotificationInstallDisposition.REJECTED; return false }
+        val accessMatches = snapshot.accessRevision == accessRevision
+        diagnostic?.accessRevision = if (accessMatches) NotificationCheckResult.MATCHED else NotificationCheckResult.REJECTED
+        if (!accessMatches) { diagnostic?.install = NotificationInstallDisposition.REJECTED; return false }
+        val approved = access == NotificationAccessApproval.GRANTED
+        diagnostic?.approval = if (approved) NotificationCheckResult.MATCHED else NotificationCheckResult.REJECTED
+        if (!approved) { diagnostic?.install = NotificationInstallDisposition.REJECTED; return false }
+        val chosen = membership[snapshot.packageName] ?: snapshot.chosen
+        diagnostic?.chosen = if (chosen) NotificationCheckResult.MATCHED else NotificationCheckResult.REJECTED
+        if (!chosen) { diagnostic?.install = NotificationInstallDisposition.REJECTED; return false }
+        val on = enabled[snapshot.packageName] ?: snapshot.enabled
+        diagnostic?.enabled = if (on) NotificationCheckResult.MATCHED else NotificationCheckResult.REJECTED
+        if (!on) { diagnostic?.install = NotificationInstallDisposition.REJECTED; return false }
         selected?.permit?.retire()
         selected = selection; revision++; choiceRevision++
+        diagnostic?.installedSelection = selection
+        diagnostic?.install = NotificationInstallDisposition.INSTALLED
         return true
     }
     fun retireLocked() { revision++; choiceRevision++; selected?.permit?.retire() }

@@ -43,12 +43,16 @@ private class NotificationFixture(portFactory: (FacadeNotificationPort) -> Notif
     val connection = NotificationListenerConnection()
     var changedHook: (() -> Unit)? = null
     var approvalHook: (() -> Unit)? = null
+    var eligibilityHook: ((String) -> Pair<Boolean, Boolean>)? = null
+    var ownerPostHook: (((() -> Unit)) -> Unit)? = null
     private var time = 0L
     init {
         choices.add(InstalledApp(pkg, pkg))
         owner = NotificationSelectionOwner(portFactory(FacadeNotificationPort(actual.sessions)), policy,
-            { packageName -> choices.read().any { it.packageName == packageName } to preferences.isEnabled(packageName) },
-            { Handler(android.os.Looper.getMainLooper()).post(it) }, { changedHook?.invoke() })
+            { packageName -> eligibilityHook?.invoke(packageName)
+                ?: (choices.read().any { it.packageName == packageName } to preferences.isEnabled(packageName)) },
+            { work -> val hook = ownerPostHook; if (hook != null) hook(work) else Handler(android.os.Looper.getMainLooper()).post(work) },
+            { changedHook?.invoke() })
         runtime = PhoneNotificationRuntime({ choices.read().map { it.packageName }.toSet() },
             { changed -> ChosenApps.observe(actual.context, changed) }, { approvalHook?.invoke(); NotificationAccessApproval.GRANTED },
             { work, complete -> complete(work()) }, { it() }, owner)
@@ -67,6 +71,7 @@ private class NotificationFixture(portFactory: (FacadeNotificationPort) -> Notif
         goalReady()
     }
     override fun close() {
+        eligibilityHook = null; ownerPostHook = null; approvalHook = null; changedHook = null
         SharedPreferences.beforeRead = null; SharedPreferences.beforeApply = null; SharedPreferences.deferListeners = false
         owner.close(); runtime.disconnected(connection); SharedPreferences.flush()
         // Resolve this fixture's explicit failed-write indicators independently;
@@ -825,8 +830,321 @@ private fun correction65Scenarios() {
     println("RESULT correction65 scenarios=10 failures=0; explicit reentry/failing-port boundaries, no global physical nonoverlap/native claim")
 }
 
+private fun observation219Scenarios() {
+    var count = 0
+    fun scenario(name: String, work: () -> Unit) {
+        work(); count++; println("PASS observation219 $name")
+    }
+    fun original(f: NotificationFixture, ticket: NotificationPolicy.Receipt?, receipt: Long = 1,
+        pkg: String = f.pkg, kind: NotificationEventKind = NotificationEventKind.NEW_RECORD): NotificationIngressObservation =
+        NotificationIngressObservation(NotificationReceiptScope(f.connection, Any()),
+            NotificationEventResult(NotificationIngressEpoch(), NotificationEventOrigin.POSTED_CALLBACK,
+                NotificationRecord(pkg, "synthetic-observation219", receipt), kind, NotificationBaselineState.READY),
+            receipt, ticket)
+    fun snapshot(f: NotificationFixture, n: NotificationIngressObservation): NotificationObservationSnapshot {
+        check(!Thread.holdsLock(f.policy.gate)) { "Diagnostic copies belong outside the actual policy gate" }
+        return checkNotNull(checkNotNull(n.diagnostic).snapshot(n))
+    }
+    fun noInstall(s: NotificationObservationSnapshot) {
+        check(s.install == NotificationInstallDisposition.NOT_OBSERVED && s.installedSelection == null)
+        check(s.checks.all { it == NotificationCheckResult.NOT_EVALUATED })
+    }
+    fun assertRejected(s: NotificationObservationSnapshot, first: Int) {
+        check(s.install == NotificationInstallDisposition.REJECTED && s.installedSelection == null)
+        check(s.checks.size == NotificationAdmissionCheck.entries.size)
+        s.checks.forEachIndexed { index, result ->
+            check(result == when { index < first -> NotificationCheckResult.MATCHED
+                index == first -> NotificationCheckResult.REJECTED
+                else -> NotificationCheckResult.NOT_EVALUATED }) { "Wrong actual short circuit at $index for $first: $result" }
+        }
+    }
+
+    scenario("disabled and enabled original acceptance preserve the actual G/D/permit and create no disabled trace") {
+        for (enabled in listOf(false, true)) NotificationFixture().use { f ->
+            val events = mutableListOf<NotificationPipelineObservation>()
+            val observer = if (enabled) f.owner.observePipeline { event ->
+                check(!Thread.holdsLock(f.policy.gate))
+                check(!Thread.holdsLock(field(f.actual.sessions, "fastLock").get(f.actual.sessions)))
+                events.add(event)
+            } else null
+            check((f.owner.receipt(f.pkg).diagnostic != null) == enabled)
+            val n = f.post(); val g = selected(f); val d = checkNotNull(g.handle)
+            check(g.observation === n && g.permit.state == LaunchCommitPermit.State.PENDING)
+            check(f.actual.sessions.isActivationCurrent(d))
+            if (enabled) {
+                val before = snapshot(f, n)
+                check(before.original === n && before.disposition == NotificationAcceptDisposition.FACADE_HANDLE)
+                check(before.prepare == NotificationPrepareDisposition.RETURNED && before.install == NotificationInstallDisposition.INSTALLED)
+                check(before.installedSelection === g && before.returnedHandle === d && before.checks.all { it == NotificationCheckResult.MATCHED })
+                check(before.delivery.captured >= 1 && before.delivery.enqueueAttempted >= 1)
+                Handler.flush()
+                val demand = events.first { it.stage == NotificationPipelineStage.DEMAND_ADMITTED }
+                check(demand.ingress === n && demand.selection === g && demand.demand === d)
+                check(snapshot(f, n).delivery.callbackReturned >= 1)
+                // Immutable copies and original identity do not turn equal data-class copies into N.
+                check(before.delivery.callbackEntered == 0L)
+                val copy = n.copy()
+                check(copy == n && copy !== n && checkNotNull(n.diagnostic).snapshot(copy) == null)
+            } else {
+                check(n.diagnostic == null && checkNotNull(n.admission).diagnostic == null)
+                Handler.flush(); check(events.isEmpty())
+            }
+            observer?.close()
+            check(f.owner.receipt(f.pkg).diagnostic == null)
+        }
+    }
+
+    for (first in NotificationAdmissionCheck.entries.indices) scenario("actual install rejects ${NotificationAdmissionCheck.entries[first]} first without evaluating later predicates") {
+        for (enabled in listOf(false, true)) NotificationFixture().use { f ->
+            val beforeDemand = field(f.actual.sessions, "currentDemand").get(f.actual.sessions)
+            if (first == 4) f.policy.access(NotificationAccessApproval.DENIED)
+            if (first == 5) f.choices.remove(f.pkg)
+            if (first == 6) f.preferences.setEnabled(f.pkg, false)
+            Handler.flush()
+            val diagnostic = if (enabled) NotificationObservationTrace() else null
+            val ticket = f.policy.receipt(f.pkg, diagnostic)
+            val n = original(f, ticket, pkg = if (first == 0) "example.other219" else f.pkg)
+            val prepared = checkNotNull(f.policy.prepare(ticket) {
+                f.choices.read().any { it.packageName == f.pkg } to f.preferences.isEnabled(f.pkg)
+            })
+            when (first) {
+                1 -> f.preferences.setEnabled(f.pkg, false)
+                2 -> f.policy.explicitChoice()
+                3 -> f.policy.access(NotificationAccessApproval.DENIED)
+            }
+            val selection = NotificationSelection(n, f.actual.sessions)
+            val returned = FacadeNotificationPort(f.actual.sessions).admit(selection, prepared)
+            check(returned == null && selection.permit.state == LaunchCommitPermit.State.RETIRED)
+            check(field(f.actual.sessions, "currentDemand").get(f.actual.sessions) === beforeDemand)
+            if (enabled) {
+                val s = snapshot(f, n); assertRejected(s, first)
+                check(s.prepare == NotificationPrepareDisposition.RETURNED && s.returnedHandle == null)
+            } else check(n.diagnostic == null && ticket.diagnostic == null && prepared.diagnostic == null)
+        }
+    }
+
+    scenario("caught eligibility Exception records the original read fault without changing enabled or disabled outcomes") {
+        for (enabled in listOf(false, true)) NotificationFixture().use { f ->
+            val beforeDemand = field(f.actual.sessions, "currentDemand").get(f.actual.sessions)
+            val observer = if (enabled) f.owner.observePipeline { error("Rejected read must not publish DEMAND") } else null
+            var reads = 0
+            f.eligibilityHook = { reads++; throw SecurityException("synthetic-private-message-not-exported") }
+            val n = f.post()
+            check(reads == 1 && field(f.actual.sessions, "currentDemand").get(f.actual.sessions) === beforeDemand)
+            if (enabled) {
+                val s = snapshot(f, n)
+                check(s.disposition == NotificationAcceptDisposition.PREPARE_UNAVAILABLE && s.prepare == NotificationPrepareDisposition.READ_EXCEPTION)
+                check(s.prepareFault == NotificationDiagnosticFaultFamily.SECURITY && s.acceptFault == NotificationDiagnosticFaultFamily.NONE)
+                noInstall(s)
+            } else check(n.diagnostic == null)
+            observer?.close()
+        }
+    }
+
+    scenario("fake facade null cannot invent install rejection or accepted G/D") {
+        NotificationFixture({ actual -> object : NotificationSelectionPort by actual {
+            override fun admit(selection: NotificationSelection, snapshot: NotificationPolicy.Snapshot): ActivationHandle? = null
+        } }).use { f ->
+            val beforeDemand = field(f.actual.sessions, "currentDemand").get(f.actual.sessions)
+            val observer = f.owner.observePipeline { error("Null port must not publish DEMAND") }
+            val n = f.post(); val s = snapshot(f, n)
+            check(s.disposition == NotificationAcceptDisposition.FACADE_NULL && s.prepare == NotificationPrepareDisposition.RETURNED)
+            check(s.returnedHandle == null); noInstall(s)
+            check(field(f.actual.sessions, "currentDemand").get(f.actual.sessions) === beforeDemand)
+            observer.close()
+        }
+    }
+
+    scenario("an actual install followed by fake facade null retains installed G without inventing a returned handle or DEMAND") {
+        NotificationFixture({ actual -> object : NotificationSelectionPort by actual {
+            override fun admit(selection: NotificationSelection, snapshot: NotificationPolicy.Snapshot): ActivationHandle? {
+                checkNotNull(actual.admit(selection, snapshot))
+                return null // Explicit return-loss boundary after the actual source admission.
+            }
+        } }).use { f ->
+            var delivered = 0
+            val observer = f.owner.observePipeline { delivered++ }
+            val n = f.post(); val s = snapshot(f, n)
+            val g = s.installedSelection as NotificationSelection
+            try {
+                check(s.disposition == NotificationAcceptDisposition.FACADE_NULL && s.install == NotificationInstallDisposition.INSTALLED)
+                check(s.checks.all { it == NotificationCheckResult.MATCHED } && s.returnedHandle == null)
+                check(g.observation === n && f.actual.sessions.isActivationCurrent(checkNotNull(g.handle)))
+                Handler.flush()
+                check(delivered == 0 && snapshot(f, n).delivery.captured == 0L)
+            } finally {
+                // The deliberately lossy port never supplied G to Owner's lifetime bookkeeping.
+                g.permit.retire(); f.policy.release(g); observer.close()
+            }
+        }
+    }
+
+    scenario("non-Exception eligibility failure preserves the exact primary Throwable with observation disabled and enabled") {
+        for (enabled in listOf(false, true)) NotificationFixture().use { f ->
+            val beforeDemand = field(f.actual.sessions, "currentDemand").get(f.actual.sessions)
+            val observer = if (enabled) f.owner.observePipeline { error("Thrown preparation must not publish") } else null
+            val failure = AssertionError("synthetic primary eligibility error")
+            f.eligibilityHook = { throw failure }
+            val n = original(f, f.owner.receipt(f.pkg))
+            check(runCatching { f.owner.accept(n) }.exceptionOrNull() === failure)
+            check(field(f.actual.sessions, "currentDemand").get(f.actual.sessions) === beforeDemand)
+            if (enabled) {
+                val s = snapshot(f, n)
+                check(s.disposition == NotificationAcceptDisposition.THREW && s.acceptFault == NotificationDiagnosticFaultFamily.OTHER)
+                check(s.prepare == NotificationPrepareDisposition.NOT_OBSERVED && s.prepareFault == NotificationDiagnosticFaultFamily.NONE)
+                check(s.returnedHandle == null); noInstall(s)
+            } else check(n.diagnostic == null)
+            observer?.close()
+        }
+    }
+
+    scenario("missing ticket filtered kind and old receipt remain distinct without fabricating preparation") {
+        NotificationFixture().use { f ->
+            val observer = f.owner.observePipeline { }
+            val missing = original(f, null)
+            check(missing.diagnostic == null)
+            f.owner.accept(missing)
+            val ms = snapshot(f, missing)
+            check(ms.disposition == NotificationAcceptDisposition.MISSING_TICKET && ms.prepare == NotificationPrepareDisposition.NOT_OBSERVED)
+            noInstall(ms)
+            val filtered = original(f, f.owner.receipt(f.pkg), kind = NotificationEventKind.DUPLICATE_OR_REPLAY)
+            f.owner.accept(filtered)
+            val fs = snapshot(f, filtered)
+            check(fs.disposition == NotificationAcceptDisposition.FILTERED_KIND && fs.prepare == NotificationPrepareDisposition.NOT_OBSERVED)
+            noInstall(fs)
+            val accepted = f.post(); val old = original(f, f.owner.receipt(f.pkg), receipt = accepted.receipt)
+            f.owner.accept(old)
+            val os = snapshot(f, old)
+            check(os.disposition == NotificationAcceptDisposition.OLD_RECEIPT && os.prepare == NotificationPrepareDisposition.NOT_OBSERVED)
+            noInstall(os)
+            check(snapshot(f, accepted).disposition == NotificationAcceptDisposition.FACADE_HANDLE)
+            observer.close()
+        }
+    }
+
+    scenario("original ticket precedes first blocking chosen read and Stop rejects it without adopting replacement authority") {
+        NotificationFixture().use { f ->
+            val observer = f.owner.observePipeline { }
+            var once = true
+            SharedPreferences.beforeRead = { key -> if (key == "ordered_apps" && once) {
+                once = false; f.actual.sessions.stop()
+            } }
+            val n = f.post(); SharedPreferences.beforeRead = null
+            val s = snapshot(f, n)
+            check(n.admission != null && s.disposition == NotificationAcceptDisposition.FACADE_NULL)
+            assertRejected(s, NotificationAdmissionCheck.CHOICE_REVISION.ordinal)
+            check(s.returnedHandle == null && f.actual.sessions.activationId() == null)
+            val fresh = f.post()
+            check(snapshot(f, fresh).disposition == NotificationAcceptDisposition.FACADE_HANDLE)
+            observer.close()
+        }
+    }
+
+    scenario("eligibility read reentry preserves captured revisions and original N despite a newer explicit choice") {
+        NotificationFixture().use { f ->
+            val observer = f.owner.observePipeline { }
+            var reads = 0
+            f.eligibilityHook = { packageName ->
+                reads++; f.policy.explicitChoice()
+                f.choices.read().any { it.packageName == packageName } to f.preferences.isEnabled(packageName)
+            }
+            val n = f.post(); val s = snapshot(f, n)
+            check(reads == 1 && n.admission != null && s.prepare == NotificationPrepareDisposition.RETURNED)
+            assertRejected(s, NotificationAdmissionCheck.CHOICE_REVISION.ordinal)
+            check(s.original === n && s.returnedHandle == null)
+            observer.close()
+        }
+    }
+
+    scenario("post-classification ingress retirement reports scope change without accepting the captured ticket") {
+        NotificationFixture().use { f ->
+            val observer = f.owner.observePipeline { }
+            val receipts = mutableListOf<NotificationIngressObservation>()
+            val beforeDemand = field(f.actual.sessions, "currentDemand").get(f.actual.sessions)
+            val events = f.runtime.observeEvents { receipts.add(it) }
+            f.approvalHook = { f.approvalHook = null; f.runtime.disconnected(f.connection) }
+            val n = f.post(); val s = snapshot(f, n)
+            check(receipts.single() === n && n.admission != null)
+            check(s.disposition == NotificationAcceptDisposition.RUNTIME_SCOPE_CHANGED && s.prepare == NotificationPrepareDisposition.NOT_OBSERVED)
+            noInstall(s)
+            check(field(f.actual.sessions, "currentDemand").get(f.actual.sessions) === beforeDemand)
+            events.close(); observer.close()
+        }
+    }
+
+    scenario("callback Throwable is recorded and isolated from actual admitted product work") {
+        NotificationFixture().use { f ->
+            val observer = f.owner.observePipeline { throw NoSuchMethodError("synthetic-linkage-only-not-real-ABI") }
+            val n = f.post(); val g = selected(f)
+            Handler.flush()
+            val s = snapshot(f, n)
+            check(s.disposition == NotificationAcceptDisposition.FACADE_HANDLE && s.install == NotificationInstallDisposition.INSTALLED)
+            check(s.installedSelection === g && s.returnedHandle === g.handle)
+            check(s.delivery.callbackEntered >= 1 && s.delivery.callbackFaults >= 1 && s.delivery.callbackFault == NotificationDiagnosticFaultFamily.LINKAGE)
+            check(s.delivery.callbackReturned == 0L && g.permit.state == LaunchCommitPermit.State.PENDING)
+            check(f.actual.sessions.isActivationCurrent(checkNotNull(g.handle)))
+            observer.close()
+        }
+    }
+
+    scenario("scheduler Throwable is isolated while Unit return without delivery never claims accepted enqueue") {
+        for (throwing in listOf(false, true)) NotificationFixture().use { f ->
+            val observer = f.owner.observePipeline { error("Held or throwing post cannot deliver") }
+            f.ownerPostHook = { if (throwing) throw AssertionError("synthetic scheduler fault") }
+            val n = f.post(); val g = selected(f); val s = snapshot(f, n)
+            check(s.disposition == NotificationAcceptDisposition.FACADE_HANDLE && s.installedSelection === g)
+            check(s.delivery.captured == 1L && s.delivery.enqueueAttempted == 1L && s.delivery.callbackEntered == 0L)
+            if (throwing) {
+                check(s.delivery.enqueueReturned == 0L && s.delivery.enqueueFaults == 1L && s.delivery.enqueueFault == NotificationDiagnosticFaultFamily.OTHER)
+            } else check(s.delivery.enqueueReturned == 1L && s.delivery.enqueueFaults == 0L)
+            check(g.permit.state == LaunchCommitPermit.State.PENDING && f.actual.sessions.isActivationCurrent(checkNotNull(g.handle)))
+            observer.close()
+        }
+    }
+
+    scenario("inline callbacks run outside gate and fastLock and preserve the actual original admitted selection") {
+        NotificationFixture().use { f ->
+            var delivered: NotificationPipelineObservation? = null
+            val observer = f.owner.observePipeline { event ->
+                check(!Thread.holdsLock(f.policy.gate))
+                check(!Thread.holdsLock(field(f.actual.sessions, "fastLock").get(f.actual.sessions)))
+                if (event.stage == NotificationPipelineStage.DEMAND_ADMITTED) delivered = event
+            }
+            f.ownerPostHook = { it() }
+            val n = f.post(); val g = selected(f); val s = snapshot(f, n)
+            check(checkNotNull(delivered).ingress === n && delivered!!.selection === g && delivered!!.demand === g.handle)
+            check(s.delivery.callbackEntered >= 1 && s.delivery.callbackReturned >= 1 && s.delivery.callbackFaults == 0L)
+            observer.close()
+        }
+    }
+
+    scenario("closing captured recipient suppresses only its queued callback and later original work remains identity scoped") {
+        NotificationFixture().use { f ->
+            var closedCalls = 0
+            val closed = f.owner.observePipeline { closedCalls++ }
+            val seen = mutableListOf<NotificationPipelineObservation>()
+            val active = f.owner.observePipeline { seen.add(it) }
+            val first = f.post(); val firstG = selected(f); val before = snapshot(f, first)
+            closed.close()
+            val second = f.post(); val secondG = selected(f)
+            Handler.flush()
+            check(closedCalls == 0 && seen.any { it.ingress === first } && seen.any { it.ingress === second })
+            val a = snapshot(f, first); val b = snapshot(f, second)
+            check(a.installedSelection === firstG && a.returnedHandle === firstG.handle)
+            check(b.installedSelection === secondG && b.returnedHandle === secondG.handle && firstG !== secondG)
+            check(a.delivery.inactiveSkipped >= 1 && a.delivery.callbackReturned >= 1 && b.delivery.callbackReturned >= 1)
+            check(before.delivery.callbackEntered == 0L && checkNotNull(first.diagnostic).snapshot(second) == null)
+            check(secondG.permit.state == LaunchCommitPermit.State.PENDING)
+            active.close()
+        }
+    }
+    println("RESULT observation219 scenarios=$count failures=0; actual policy/facade/owner/runtime with explicit host delivery boundaries, no actual198 cause/device proof")
+}
+
 fun main(args: Array<String>) {
+    if (args.contentEquals(arrayOf("--observation219-only"))) { observation219Scenarios(); return }
     if (args.contentEquals(arrayOf("--correction65-only"))) { correction65Scenarios(); return }
+    observation219Scenarios()
     policyRegressions()
     realPipeline()
     nativeLossDuringNotification()

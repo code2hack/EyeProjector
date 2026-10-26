@@ -86,7 +86,7 @@ show observation delivery order; inline posting can nest fanout, so they are not
 source clock. Captured permit state is an observation, not a current authority check. An exceptional
 adapter's unresolved lifetime does not establish global physical nonoverlap.
 
-The helper closes both observers independently, cancels only its exact attempted notification
+The helper closes all three original observers independently, cancels only its exact attempted notification
 tag/id and deletes only its newly owned UUID channel in `finally`, including posting failures.
 Before resource creation it emits `OWNED_FIXTURE_INTENT` with a public synthetic `fixtureToken`.
 The fixed channel/tag is `eyeprojector_probe_` plus that token and notification id is 1. This
@@ -105,6 +105,44 @@ reserve/reconcile the app/session around the diagnostic. A fresh process baselin
 reconstruct previously uncommitted G/history. Cleanup or callback suppression cannot undo an
 already committed launch. Receiver foreground, native continuity, global Home and physical
 Glasses wake/display require separate observations.
+
+## Passive original-receipt trace219
+
+The existing pipeline subscription alone enables an optional `NotificationObservationTrace`
+on the original receipt and its original admission ticket. There is no fourth subscription,
+replay, new authority query or diagnostic admission path. The probe compiles the actual production
+trace DTO; its Android/main observation boundaries remain explicit doubles in cached helper checks.
+The pipeline suite separately compiles the actual owner/policy/runtime and their existing facade.
+
+`traceCorrelation` distinguishes an exact original receipt, absent trace, mismatched original and
+trace-rendering fault. The helper copies `snapshot(receipt.original)` on main outside product locks.
+`acceptDisposition`, `prepareDisposition`, `installDisposition`, fault families and the seven
+`traceCheck.<name>` fields report captured facts. `NOT_EVALUATED` preserves short-circuit behavior;
+an unobserved install is not reconstructed from a null/non-null facade return or later chosen/On
+read. `admissionInstalledG` and `admissionReturnedHandle` label only actually captured objects.
+The latter is an opaque returned handle, not a new Ready/goal/claim assertion. These trace fields
+never populate the independent pipeline G/D/Ready/claim fields. Changing the selected receipt
+clears all old trace and pipeline-derived proof before recomputation.
+
+`producerCaptured`, `enqueueAttempted`, `enqueueReturned`, enqueue faults, callback entry/return/
+faults and inactive-skip counts describe their respective cuts. `enqueueSemantics` explicitly says
+`POST_UNIT_RETURN_NOT_QUEUE_ACCEPTANCE`: a returned Unit post is not evidence that Android accepted
+or delivered a queued message. No counter becomes a retry or admission signal.
+
+The helper records callback entry before the first ingress getter. Its run-scoped entry and
+uncorrelated-fault fields do not identify an original receipt; early faults never borrow the
+latest receipt. Once the same-original box is known, `helperEntered`, `helperAppended`,
+`helperFaults`, `helperFaultFamily` and `helperFaultPoint` distinguish entry, normal append return
+and detailed-row faults. `BEFORE_APPEND` means row construction failed before invoking append.
+`APPEND_UNCONFIRMED` means append was invoked but did not return; a partial effect is not ruled out.
+An append counter and a fault can also describe different callbacks for the same original N.
+The identical primary Throwable is rethrown to the producer's existing isolation; recording a
+diagnostic fault cannot replace it. No raw error message, key, ticket or authority token is exported.
+An entire trace-rendering failure is isolated from independent pipeline/result derivation.
+
+Source219 is passive observation, not a functional repair or an established explanation for
+actual198. Previously installed main75 predates this trace and cannot supply these new facts.
+Any later actual event requires its separately allocated reviewed main/test build and device route.
 
 ## Finite Root procedure, after separate build/device allocation
 

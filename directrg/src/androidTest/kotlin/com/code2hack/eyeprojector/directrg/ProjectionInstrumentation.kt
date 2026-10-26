@@ -382,6 +382,7 @@ class ProjectionInstrumentation : Instrumentation() {
         var testFocus: AudioFocusRequest? = null
         var measurementStarted: Long? = null
         var measurementEnded: Long? = null
+        var windowPresentationRecorder: WindowPresentationRecorder? = null
         try {
             val id = args.getString("runId") ?: error("Run identity required")
             require(id.matches(Regex("[A-Za-z0-9_-]{1,48}")))
@@ -426,6 +427,14 @@ class ProjectionInstrumentation : Instrumentation() {
                 require(seconds in 1..660)
                 val waitForFixture = args.getString("waitForGo") == "true"
                 val fixtureSetup = if (waitForFixture) startFixtureSetup(id) else null
+                if (waitForFixture && operation in listOf("input-observation", "static-content")) {
+                    try {
+                        windowPresentationRecorder = WindowPresentationRecorder(id, checkNotNull(runStartedNs))
+                        windowPresentationRecorder?.install(this)
+                    } catch (error: Throwable) {
+                        runCatching { report.put("windowPresentationObservationUnavailable", error.javaClass.simpleName) }
+                    }
+                }
                 if (operation == "audio-volume") {
                     priorVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
                     report.put("priorMusicVolume", priorVolume)
@@ -482,6 +491,7 @@ class ProjectionInstrumentation : Instrumentation() {
                     }
                     val start = SystemClock.elapsedRealtime()
                     measurementStarted = start
+                    windowPresentationRecorder?.measurementStarted(start)
                     val samples = JSONArray()
                     report.put("samples", samples)
                     val tapAt = args.getString("tapAtSeconds")?.toInt() ?: -1
@@ -495,8 +505,10 @@ class ProjectionInstrumentation : Instrumentation() {
                             require(status().getString("state") == "STREAMING")
                             runOnMainSync { require(activity!!.hasWindowFocus() && !activity!!.isFinishing) }
                             val now = SystemClock.uptimeMillis()
+                            windowPresentationRecorder?.tapDispatchStarting(now)
                             sendPointerSync(MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x, y, 0))
                             sendPointerSync(MotionEvent.obtain(now, now + 30, MotionEvent.ACTION_UP, x, y, 0))
+                            windowPresentationRecorder?.tapDispatchReturned(now)
                             report.put("onRGTapElapsedMs", elapsed); tapped = true
                         }
                         if (elapsed >= nextSample) {
@@ -598,6 +610,11 @@ class ProjectionInstrumentation : Instrumentation() {
         finally {
             fixtureSetupPhase?.let { publishFixtureSetup(it, "SETUP_FINISHED", quiet = true) }
             measurementStarted?.let { report.put("actualMeasurementMs", (measurementEnded ?: SystemClock.elapsedRealtime()) - it) }
+            try {
+                windowPresentationRecorder?.finish(this, report, ::status, if (freshAfterNs == 0L) checkNotNull(runStartedNs) else freshAfterNs)
+            } catch (error: Throwable) {
+                runCatching { report.put("windowPresentationObservationFinishFailure", error.javaClass.simpleName) }
+            }
             if (activity != null) report.put("baselineTeardown", "FINISH_OWNED_ACTIVITY")
             activity?.let { runOnMainSync { it.finish() } }
             baselineActivity = null

@@ -10,6 +10,7 @@ import signal
 import stat
 import subprocess
 import sys
+import time
 
 
 def digest(path):
@@ -21,6 +22,7 @@ def now():
 
 
 def bounded(argv, path, seconds):
+    seconds = min(seconds, remaining_budget())
     with path.open('w') as log:
         process = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         try:
@@ -30,6 +32,13 @@ def bounded(argv, path, seconds):
             os.killpg(process.pid, signal.SIGKILL)
             process.wait()
             return {'pid': process.pid, 'exit': process.returncode, 'timeout': True, 'closed': True}
+
+
+def remaining_budget():
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError('Focused overall execution budget exhausted')
+    return remaining
 
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -60,13 +69,18 @@ if missing:
     parser.error('Missing actual source/fixture: ' + ', '.join(missing))
 output = args.output_dir.resolve()
 output.mkdir(parents=True, exist_ok=False)
+runner_snapshot = output / 'runner.py'
+runner_snapshot.write_bytes(Path(__file__).read_bytes())
+runner_snapshot.chmod(stat.S_IMODE(Path(__file__).stat().st_mode))
 record = {'startedUtc': now(), 'scope': 'Actual owner/policy/carrier/types/facade/Bootstrap/coordinator/canonical adapters; explicit Android/Shizuku/Binder/JSON/TLS/native and adversarial delivery/settlement boundaries; no existing-suite counts or device proof',
-          'runner': {'path': str(Path(__file__).resolve()), 'sha256': digest(Path(__file__).resolve())},
+          'runner': {'path': str(Path(__file__).resolve()), 'snapshot': str(runner_snapshot), 'sha256': digest(Path(__file__).resolve()), 'mode': stat.S_IMODE(Path(__file__).stat().st_mode)},
           'sources': [], 'dependencies': [], 'compile': None, 'tests': None}
 exit_code = 1
+deadline = time.monotonic() + 115
+record['overallBudgetSeconds'] = 115
 try:
     java = Path('/usr/lib/jvm/java-17-openjdk-amd64/bin/java')
-    record['java'] = {'path': str(java.resolve()), 'sha256': digest(java.resolve())}
+    record['java'] = {'path': str(java.resolve()), 'sha256': digest(java.resolve()), 'mode': stat.S_IMODE(java.resolve().stat().st_mode)}
     cache = Path(os.environ.get('GRADLE_USER_HOME', Path.home() / '.gradle')) / 'caches/modules-2/files-2.1'
     coordinates = [('org.jetbrains.kotlin', 'kotlin-compiler-embeddable', '2.2.21'), ('org.jetbrains.kotlin', 'kotlin-stdlib', '2.2.21'), ('org.jetbrains.kotlin', 'kotlin-script-runtime', '2.2.21'), ('org.jetbrains.kotlin', 'kotlin-reflect', '1.6.10'), ('org.jetbrains.intellij.deps', 'trove4j', '1.0.20200330'), ('org.jetbrains.kotlinx', 'kotlinx-coroutines-core-jvm', '1.8.0'), ('org.jetbrains', 'annotations', '13.0'), ('junit', 'junit', '4.13.2'), ('org.hamcrest', 'hamcrest-core', '1.3')]
     jars = []
@@ -112,7 +126,7 @@ except Exception as error:
 finally:
     record['finishedUtc'] = now()
     record['sourcesUnchanged'] = all(Path(item['path']).is_file() and digest(Path(item['path'])) == item['sha256'] and stat.S_IMODE(Path(item['path']).stat().st_mode) == item['mode'] for item in record['sources'])
-    record['runnerUnchanged'] = digest(Path(__file__).resolve()) == record['runner']['sha256']
+    record['runnerUnchanged'] = digest(Path(__file__).resolve()) == record['runner']['sha256'] and stat.S_IMODE(Path(__file__).stat().st_mode) == record['runner']['mode']
     record['logs'] = [{'path': str(path), 'sha256': digest(path)} for path in sorted(output.glob('*.log'))]
     record['exit'] = exit_code if record['sourcesUnchanged'] and record['runnerUnchanged'] else 2
     (output / 'result.json').write_text(json.dumps(record, indent=2) + '\n')

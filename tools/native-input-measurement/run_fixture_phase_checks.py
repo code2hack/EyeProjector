@@ -174,6 +174,10 @@ private class AudioManager {
     fun getStreamVolume(stream: Int) = 1
 }
 private class Bundle { fun putString(key: String, value: String) {} }
+/** Nullable dependency for the extracted finally only; this phase suite does not test the collector. */
+private class WindowPresentationRecorder {
+    fun finish(instrumentation: Any, report: JSONObject, currentStatus: () -> JSONObject, minimumStartMonoNs: Long) {}
+}
 
 @TOP_LEVEL@
 
@@ -229,6 +233,7 @@ private class CurrentDriver : DriverBase() {
         val report = report
         var measurementStarted: Long? = SystemClock.elapsedRealtime()
         var measurementEnded: Long? = null
+        val windowPresentationRecorder: WindowPresentationRecorder? = null
         var activity: Activity? = Activity()
         val testFocus: Any? = Any()
         val audioManager = AudioManager()
@@ -677,13 +682,29 @@ def main():
         r'fixtureSetupPhase\?\.let\s*(?=\{\s*publishFixtureSetup\(it, "SETUP_FAILED")', 'actual quiet failure publication')
     reconnect_caller = adapter.activity_lambda(text, r'if \(operation == "reconnect"\)\s*',
                                                'actual explicitly owned reconnect caller')
+    diagnostic_measurement_lines = (
+        '                    windowPresentationRecorder?.measurementStarted(start)\n',
+        '                            windowPresentationRecorder?.tapDispatchStarting(now)\n',
+        '                            windowPresentationRecorder?.tapDispatchReturned(now)\n',
+    )
     def measurement(source):
         start = source.index('                    val start = SystemClock.elapsedRealtime()')
         end = source.index('                    if (operation == "audio-volume")', start)
         return source[start:end]
     current_measurement, parent_measurement = measurement(text), measurement(parent)
-    if current_measurement != parent_measurement:
-        parser.error('Ordinary measurement body changed from parent; source equality assertion must be revisited')
+    def without_diagnostic_annotations(body):
+        counts = [body.count(line) for line in diagnostic_measurement_lines]
+        if counts not in ([0, 0, 0], [1, 1, 1]):
+            parser.error('Expected either no diagnostic annotations or exactly the three allocated annotation lines')
+        for line in diagnostic_measurement_lines:
+            body = body.replace(line, '')
+        if 'windowPresentationRecorder' in body:
+            parser.error('Unexpected presentation collector change inside ordinary measurement body')
+        return body, counts
+    normalized_current, current_annotation_counts = without_diagnostic_annotations(current_measurement)
+    normalized_parent, parent_annotation_counts = without_diagnostic_annotations(parent_measurement)
+    if normalized_current != normalized_parent:
+        parser.error('Ordinary measurement body changed beyond the three allocated diagnostic annotations')
     if text.count('startFixtureSetup(id)') != 1:
         parser.error('Shared setup allowance must have one actual call site')
     start_setup = text.index('startFixtureSetup(id)')
@@ -718,10 +739,16 @@ def main():
     sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
     result = {'scope':'Current/parent exact extracted wait/status/bootstrap/publisher/finally methods with fake '
               'distinct clocks and owned token JSON/files; actual diagnostic predicate compiled. No Android, Looper, '
-              'vendor, device or Worker62 consumer/release/future proof; ordinary measurement body source-identical.',
+              'vendor, device or Worker62 consumer/release/future proof; collector is a nullable finally stub. '
+              'Ordinary measurement body is byte-identical after removal of only the three allocated diagnostic annotation lines.',
         'inputs':[{'path':str(p),'sha256':sha(p)} for p in inputs],
         'dependencies':[{'path':str(p),'sha256':sha(p)} for p in jars],
-        'measurementBodySha256':hashlib.sha256(current_measurement.encode()).hexdigest(),
+        'measurementBodySha256':hashlib.sha256(normalized_current.encode()).hexdigest(),
+        'rawMeasurementBodySha256':hashlib.sha256(current_measurement.encode()).hexdigest(),
+        'diagnosticMeasurementAnnotations':[
+            {'line':line.rstrip('\n'),'currentCount':current_annotation_counts[index],
+             'parentCount':parent_annotation_counts[index]}
+            for index,line in enumerate(diagnostic_measurement_lines)],
         'ownedReconnectCallerSha256':hashlib.sha256(reconnect_caller.encode()).hexdigest(),
         'subjectDriver':{'path':str(driver),'sha256':sha(driver),'extractedMethods':method_names},
         'commands':{'compile':compile_command,'current':current_command},'parentComparisons':{}}

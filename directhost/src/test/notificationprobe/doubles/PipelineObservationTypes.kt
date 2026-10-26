@@ -16,7 +16,7 @@ class NotificationDispatchOutcome internal constructor(internal val commitment: 
     internal val result: ProjectionDisplayState? = null, internal val rejection: NotificationRejection? = null,
     internal val faultStage: NotificationFaultStage? = null, internal val faultCode: String? = null)
 internal enum class NotificationPipelineStage { DEMAND_ADMITTED, READY_OBSERVED, SUBMISSION_STARTED, SETTLED, OWNER_DETACHED }
-internal class NotificationPipelineObservation(val stage: NotificationPipelineStage,
-    val ingress: NotificationIngressObservation, val selection: Any, val demand: ActivationHandle, val arm: Any? = null,
-    val ready: ActivationReady<ProjectionContext>? = null, val carrier: NotificationLaunchCarrier? = null,
+internal open class NotificationPipelineObservation(val stage: NotificationPipelineStage,
+    open val ingress: NotificationIngressObservation, val selection: Any, val demand: ActivationHandle, val arm: Any? = null,
+    open val ready: ActivationReady<ProjectionContext>? = null, val carrier: NotificationLaunchCarrier? = null,
     val outcome: NotificationDispatchOutcome? = null, val permitState: LaunchCommitPermit.State)
