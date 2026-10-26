@@ -78,6 +78,8 @@ private class TestFixture(val inlinePost: Boolean = false, controlled: Boolean =
     private val expectedPolicyPosts = AtomicInteger()
     private val policyScheduleProbe = if (enforceNoObserverPosts) policy.observe { expectedPolicyPosts.incrementAndGet() } else null
     var unexpectedObserverPosts = 0; private set
+    var ownerPosts = 0; private set
+    var ownerPostHook: ((() -> Unit) -> Unit)? = null
     val owner: NotificationSelectionOwner
     val runtime: PhoneNotificationRuntime
     val connection = NotificationListenerConnection()
@@ -88,17 +90,25 @@ private class TestFixture(val inlinePost: Boolean = false, controlled: Boolean =
         owner = NotificationSelectionOwner(port, policy,
             { packageName -> choices.read().any { it.packageName == packageName } to AppNotificationPreferences.open(actual.context).isEnabled(packageName) },
             { work ->
+                ownerPosts++
                 if (enforceNoObserverPosts && expectedPolicyPosts.getAndDecrement() <= 0) {
                     unexpectedObserverPosts++
                     error("no-subscriber path scheduled extra pipeline observation work")
                 }
-                if (inlinePost) work() else deliveries.addLast(work)
+                val hook = ownerPostHook
+                if (hook != null) hook(work)
+                else if (inlinePost) work() else deliveries.addLast(work)
             })
         runtime = PhoneNotificationRuntime({ choices.read().map { it.packageName }.toSet() },
             { changed -> ChosenApps.observe(actual.context, changed) }, { NotificationAccessApproval.GRANTED },
             { work, complete -> complete(work()) }, { it() }, owner)
         runtime.connected(connection) { NotificationSnapshot.Available(emptyList()) }
         pump()
+    }
+    fun snapshot(original: NotificationIngressObservation): NotificationObservationSnapshot {
+        check(!Thread.holdsLock(policy.gate))
+        check(!Thread.holdsLock(field(actual.sessions, "fastLock").get(actual.sessions)))
+        return checkNotNull(checkNotNull(original.diagnostic).snapshot(original))
     }
     fun post() = checkNotNull(runtime.posted(connection, pkg) { NotificationRecord(pkg, "synthetic-platform-key", ++time) })
     fun pump() {
@@ -139,19 +149,54 @@ fun main() {
     var count = 0
     fun scenario(name: String, work: () -> Unit) { checkCase(name, work); count++ }
 
-    scenario("no subscribers add no observer schedule and preserve original submission settlement retirement") {
-        TestFixture(enforceNoObserverPosts = true).use { f ->
-            f.post(); f.ready()
-            check(f.port.sent.size == 1)
-            val original = f.port.sent.single()
-            val outcome = NotificationDispatchOutcome.rejected(original.carrier)
-            f.port.settle(original, outcome); f.pump()
-            check(f.owner.lastOutcome === outcome && f.port.sent.size == 1)
-            f.policy.revoke(original.carrier.selection); f.pump()
-            check(original.carrier.permit.state == LaunchCommitPermit.State.RETIRED)
-            check(field(f.owner, "current").get(f.owner) == null)
-            check(f.unexpectedObserverPosts == 0)
+    scenario("disabled and enabled traces preserve original submission settlement retirement with only existing observer posts") {
+        val functional = mutableListOf<List<Any?>>()
+        val nonObservationPosts = mutableListOf<Long>()
+        for (enabled in listOf(false, true)) TestFixture(enforceNoObserverPosts = !enabled).use { f ->
+            val events = mutableListOf<NotificationPipelineObservation>()
+            val registration = if (enabled) f.owner.observePipeline(events::add) else null
+            try {
+                val beforePosts = f.ownerPosts
+                val n = f.post(); f.ready()
+                check(f.port.sent.size == 1)
+                val original = f.port.sent.single()
+                val selection = original.carrier.selection
+                val handle = checkNotNull(selection.handle)
+                val outcome = NotificationDispatchOutcome.rejected(original.carrier)
+                f.port.settle(original, outcome); f.pump()
+                check(f.owner.lastOutcome === outcome && f.port.sent.size == 1)
+                f.policy.revoke(selection); f.pump()
+                check(selection.observation === n && original.carrier.ready.handle === handle)
+                check(selection.permit.state == LaunchCommitPermit.State.RETIRED)
+                check(field(f.owner, "current").get(f.owner) == null)
+                functional.add(listOf(f.port.sent.size, outcome.commitment, outcome.rejection,
+                    f.owner.lastOutcome === outcome, selection.permit.state,
+                    field(f.owner, "current").get(f.owner) == null))
+                if (enabled) {
+                    val snapshot = f.snapshot(n)
+                    check(snapshot.disposition == NotificationAcceptDisposition.FACADE_HANDLE)
+                    check(snapshot.prepare == NotificationPrepareDisposition.RETURNED && snapshot.install == NotificationInstallDisposition.INSTALLED)
+                    check(snapshot.installedSelection === selection && snapshot.returnedHandle === handle)
+                    check(snapshot.checks.all { it == NotificationCheckResult.MATCHED })
+                    check(events.all { it.ingress === n && it.selection === selection && it.demand === handle })
+                    check(events.single { it.stage == NotificationPipelineStage.DEMAND_ADMITTED }.demand === handle)
+                    val delivery = snapshot.delivery
+                    check(delivery.captured == events.size.toLong() && delivery.captured > 0)
+                    check(delivery.enqueueAttempted == delivery.captured && delivery.enqueueReturned == delivery.captured)
+                    check(delivery.callbackEntered == delivery.captured && delivery.callbackReturned == delivery.captured)
+                    check(delivery.enqueueFaults == 0L && delivery.callbackFaults == 0L && delivery.inactiveSkipped == 0L)
+                    // Main producer observation does not fabricate helper entry or report append.
+                    check(delivery.helperEntered == 0L && delivery.helperAppended == 0L && delivery.helperFaults == 0L)
+                    check(delivery.helperFault == NotificationDiagnosticFaultFamily.NONE && delivery.helperFaultPoint == NotificationHelperFaultPoint.NONE)
+                    nonObservationPosts.add(f.ownerPosts - beforePosts - delivery.enqueueAttempted)
+                } else {
+                    check(n.diagnostic == null && checkNotNull(n.admission).diagnostic == null)
+                    check(events.isEmpty() && f.unexpectedObserverPosts == 0)
+                    nonObservationPosts.add((f.ownerPosts - beforePosts).toLong())
+                }
+            } finally { registration?.close() }
         }
+        check(functional[0] == functional[1] && nonObservationPosts[0] == nonObservationPosts[1])
     }
     scenario("registration has no replay; captured recipients exclude later subscribers") {
         TestFixture().use { f ->
@@ -168,18 +213,72 @@ fun main() {
         TestFixture().use { f ->
             val events = mutableListOf<NotificationPipelineObservation>()
             val registration = f.owner.observePipeline(events::add)
-            f.post(); registration.close(); f.pump(); check(events.isEmpty())
+            val n = f.post()
+            val before = f.snapshot(n).delivery
+            check(before.captured == 1L && before.enqueueAttempted == 1L && before.enqueueReturned == 1L)
+            check(before.callbackEntered == 0L && before.inactiveSkipped == 0L)
+            registration.close(); f.pump(); check(events.isEmpty())
+            val after = f.snapshot(n).delivery
+            check(after.inactiveSkipped == 1L && after.callbackEntered == 0L && after.callbackReturned == 0L)
+            check(after.callbackFaults == 0L && before.inactiveSkipped == 0L)
+            f.ready()
+            check(f.port.sent.single().carrier.selection.observation === n)
+            check(f.snapshot(n).delivery.captured == after.captured)
         }
     }
-    scenario("observer exception is isolated from later observer and actual owner submission") {
+    scenario("producer callback Error is counted and isolated from later observer and actual owner submission") {
         TestFixture().use { f ->
-            val bad = f.owner.observePipeline { error("synthetic observer fault") }
+            val bad = f.owner.observePipeline { throw NoSuchMethodError("synthetic-private-linkage-message") }
             val events = mutableListOf<NotificationPipelineObservation>()
             val good = f.owner.observePipeline(events::add)
-            f.post(); f.ready()
+            val n = f.post(); f.ready()
             check(f.port.sent.size == 1)
             check(events.any { it.stage == NotificationPipelineStage.SUBMISSION_STARTED })
+            val snapshot = f.snapshot(n)
+            val delivery = snapshot.delivery
+            check(snapshot.disposition == NotificationAcceptDisposition.FACADE_HANDLE)
+            check(snapshot.installedSelection === f.port.sent.single().carrier.selection)
+            check(events.all { it.ingress === n })
+            check(delivery.captured == events.size.toLong() && delivery.enqueueFaults == 0L)
+            check(delivery.callbackEntered == delivery.captured * 2 && delivery.callbackReturned == delivery.captured)
+            check(delivery.callbackFaults == delivery.captured && delivery.callbackFault == NotificationDiagnosticFaultFamily.LINKAGE)
+            check(delivery.helperEntered == 0L && delivery.helperAppended == 0L && delivery.helperFaults == 0L)
+            check(delivery.helperFault == NotificationDiagnosticFaultFamily.NONE && delivery.helperFaultPoint == NotificationHelperFaultPoint.NONE)
+            check(!snapshot.toString().contains("synthetic-private-linkage-message"))
+            check(!delivery.toString().contains("synthetic-private-linkage-message"))
             bad.close(); good.close()
+        }
+    }
+    scenario("producer scheduler drop and Throwable remain distinct without changing original admission or later submission") {
+        for (throwing in listOf(false, true)) TestFixture().use { f ->
+            val events = mutableListOf<NotificationPipelineObservation>()
+            val registration = f.owner.observePipeline(events::add)
+            try {
+                f.ownerPostHook = { if (throwing) throw AssertionError("synthetic-private-scheduler-message") }
+                val n = f.post()
+                val before = f.snapshot(n)
+                val selection = checkNotNull(before.installedSelection) as NotificationSelection
+                val handle = checkNotNull(selection.handle)
+                check(before.disposition == NotificationAcceptDisposition.FACADE_HANDLE && before.returnedHandle === handle)
+                check(selection.permit.state == LaunchCommitPermit.State.PENDING && f.actual.sessions.isActivationCurrent(handle))
+                val delivery = before.delivery
+                check(delivery.captured == 1L && delivery.enqueueAttempted == 1L && delivery.callbackEntered == 0L)
+                if (throwing) {
+                    check(delivery.enqueueFaults == 1L && delivery.enqueueReturned == 0L)
+                    check(delivery.enqueueFault == NotificationDiagnosticFaultFamily.OTHER)
+                } else check(delivery.enqueueFaults == 0L && delivery.enqueueReturned == 1L)
+                check(events.isEmpty() && delivery.callbackFaults == 0L && delivery.helperEntered == 0L)
+                // Unit returning without execution is an explicit host boundary, not Handler acceptance.
+                f.ownerPostHook = null
+                f.ready()
+                check(f.port.sent.single().carrier.selection === selection)
+                check(events.none { it.stage == NotificationPipelineStage.DEMAND_ADMITTED })
+                check(events.any { it.stage == NotificationPipelineStage.SUBMISSION_STARTED && it.ingress === n && it.demand === handle })
+                val after = f.snapshot(n).delivery
+                check(after.callbackReturned == events.size.toLong() && after.callbackFaults == 0L)
+                check(after.enqueueFaults == delivery.enqueueFaults && after.enqueueReturned == after.captured - after.enqueueFaults)
+                check(!after.toString().contains("synthetic-private-scheduler-message"))
+            } finally { f.ownerPostHook = null; registration.close() }
         }
     }
     scenario("queued records retain original receipt G D and captured permit state across supersession") {

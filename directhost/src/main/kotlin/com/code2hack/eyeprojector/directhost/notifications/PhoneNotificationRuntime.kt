@@ -26,7 +26,11 @@ internal class NotificationListenerConnection {
 /** Local receipt scope, not proof of native incarnation or accepted app-selection continuity. */
 internal class NotificationReceiptScope(val connection: NotificationListenerConnection, val membership: Any)
 internal data class NotificationIngressObservation(val scope: NotificationReceiptScope, val event: NotificationEventResult,
-    val receipt: Long = 0, val admission: NotificationPolicy.Receipt? = null)
+    val receipt: Long = 0, val admission: NotificationPolicy.Receipt? = null) {
+    // Body property deliberately stays out of data-class equality/copy/component semantics.
+    var diagnostic: NotificationObservationTrace? = admission?.diagnostic
+    init { diagnostic?.let { if (it.original == null) it.original = this } }
+}
 
 /**
  * Main-thread metadata/status owner. NLS callbacks (minSdk32) classify synchronously before any
@@ -150,6 +154,7 @@ internal class PhoneNotificationRuntime(
         // No queue or external observer precedes classification of this captured receipt.
         updateApproval()
         if (session === original && membership === scope.membership) selection?.accept(observation)
+        else observation.diagnostic?.disposition = NotificationAcceptDisposition.RUNTIME_SCOPE_CHANGED
         eventObservers.toList().forEach { observer -> runCatching { observer(observation) } }
         startSnapshot(original)
         publishStatus()

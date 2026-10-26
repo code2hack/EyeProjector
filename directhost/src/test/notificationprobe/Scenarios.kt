@@ -605,10 +605,204 @@ private fun correction136Scenarios(): List<Pair<String, () -> Unit>> = listOf(
     },
 )
 
+private fun tracedIngress(record: StatusBarNotification, box: NotificationObservationTrace): NotificationIngressObservation =
+    NotificationIngressObservation(NotificationEventResult(NotificationRecord(record.packageName, record.key, record.postTime),
+        NotificationEventOrigin.POSTED_CALLBACK, NotificationEventKind.NEW_RECORD),
+        admission = NotificationPolicy.Receipt(record.packageName, 0, 0, 0, box))
+
+private fun admittedFacts(box: NotificationObservationTrace, tokens: PipelineTokens) {
+    box.disposition = NotificationAcceptDisposition.FACADE_HANDLE
+    box.prepare = NotificationPrepareDisposition.RETURNED
+    box.install = NotificationInstallDisposition.INSTALLED
+    box.packageCheck = NotificationCheckResult.MATCHED; box.packageRevision = NotificationCheckResult.MATCHED
+    box.choiceRevision = NotificationCheckResult.MATCHED; box.accessRevision = NotificationCheckResult.MATCHED
+    box.approval = NotificationCheckResult.MATCHED; box.chosen = NotificationCheckResult.MATCHED; box.enabled = NotificationCheckResult.MATCHED
+    box.installedSelection = tokens.selection; box.returnedHandle = tokens.demand
+}
+
+private fun observation219Scenarios(): List<Pair<String, () -> Unit>> = listOf(
+    "219 actual DTO immutable snapshot exports original prepare/install cuts without inventing pipeline proof" to {
+        val original = Any(); val ticket = object { override fun toString(): String = error("Ticket must remain opaque") }
+        val box = NotificationObservationTrace().apply {
+            this.original = original; disposition = NotificationAcceptDisposition.FACADE_NULL
+            prepare = NotificationPrepareDisposition.RETURNED; install = NotificationInstallDisposition.REJECTED
+            packageCheck = NotificationCheckResult.MATCHED; packageRevision = NotificationCheckResult.MATCHED
+            choiceRevision = NotificationCheckResult.REJECTED
+        }
+        val copy = checkNotNull(box.snapshot(original))
+        box.helperEntered = 12; box.choiceRevision = NotificationCheckResult.MATCHED
+        expect(copy.delivery.helperEntered == 0L && copy.checks[2] == NotificationCheckResult.REJECTED, "Snapshot retained live mutable trace state")
+        box.choiceRevision = NotificationCheckResult.REJECTED
+        val report = NotificationProbeReport("host_trace_219", "example.report")
+        report.receipt(NotificationProbeReport.Receipt(Any(), Any(), Any(), original, "example.report", privateKey, 219,
+            "POSTED_CALLBACK", "NEW_RECORD", "READY", true, ticket, box))
+        report.describeOwnedReceipt(privateKey, 219)
+        val fields = report.fields(); sanitized(fields)
+        expect(fields["traceCorrelation"] == "EXACT_ORIGINAL_RECEIPT" && fields["installDisposition"] == "REJECTED" &&
+            fields["traceCheck.CHOICE_REVISION"] == "REJECTED" && fields["traceCheck.ACCESS_REVISION"] == "NOT_EVALUATED",
+            "Short-circuit tri-state source facts were reconstructed incorrectly")
+        expect(fields["admissionInstalledG"] == "UNOBSERVED" && fields["admissionReturnedHandle"] == "UNOBSERVED" &&
+            fields["claim"] == "UNOBSERVED" && fields["projectedDemandD"] == "UNOBSERVED", "Admission trace invented work or claim")
+        expect(fields["enqueueSemantics"] == "POST_UNIT_RETURN_NOT_QUEUE_ACCEPTANCE", "Unit return was called queue acceptance")
+    },
+    "219 actual DTO prepare read fault and nonnull facade return keep unobserved install explicit" to {
+        for (readFault in listOf(false, true)) {
+            val original = Any()
+            val box = NotificationObservationTrace().apply {
+                this.original = original
+                disposition = if (readFault) NotificationAcceptDisposition.PREPARE_UNAVAILABLE else NotificationAcceptDisposition.FACADE_HANDLE
+                prepare = if (readFault) NotificationPrepareDisposition.READ_EXCEPTION else NotificationPrepareDisposition.RETURNED
+                prepareFault = if (readFault) NotificationDiagnosticFaultFamily.STATE else NotificationDiagnosticFaultFamily.NONE
+                if (!readFault) returnedHandle = object { override fun toString(): String = error("Handle must remain opaque") }
+            }
+            val report = NotificationProbeReport("host_trace_219", "example.report")
+            report.receipt(NotificationProbeReport.Receipt(Any(), Any(), Any(), original, "example.report", privateKey, 220,
+                "POSTED_CALLBACK", "NEW_RECORD", "READY", true, Any(), box))
+            report.describeOwnedReceipt(privateKey, 220)
+            val fields = report.fields(); sanitized(fields)
+            expect(fields["installDisposition"] == "NOT_OBSERVED" && fields["traceCheck.PACKAGE"] == "NOT_EVALUATED" &&
+                fields["admissionInstalledG"] == "UNOBSERVED", "A return/null/read fault invented an install comparison")
+            expect(fields["prepareFaultFamily"] == if (readFault) "STATE" else "NONE", "Prepare fault family was lost")
+            expect((fields["admissionReturnedHandle"] != "UNOBSERVED") == !readFault && fields["demandGoal"] == "UNOBSERVED" &&
+                fields["claim"] == "UNOBSERVED", "Opaque facade return was promoted to projected/claim proof")
+        }
+    },
+    "219 actual helper trace absent and enabled retain identical posting observer lifetime and pipeline outcomes" to {
+        val summaries = mutableListOf<List<Any?>>()
+        for (enabled in listOf(false, true)) {
+            val p = Probe()
+            p.context.notifications.onNotify = { platform ->
+                val box = if (enabled) NotificationObservationTrace() else null
+                val ingress = if (box == null) NotificationIngressObservation(NotificationEventResult(
+                    NotificationRecord(platform.packageName, platform.key, platform.postTime), NotificationEventOrigin.POSTED_CALLBACK, NotificationEventKind.NEW_RECORD))
+                    else tracedIngress(platform, box)
+                val tokens = PipelineTokens(ingress, platform.packageName)
+                box?.let { admittedFacts(it, tokens) }
+                Looper.onMain {
+                    p.context.runtime.emitPipeline(tokens.event(NotificationPipelineStage.DEMAND_ADMITTED), box)
+                    p.context.runtime.emit(ingress)
+                }
+            }
+            val fields = p.run("post-owned")
+            summaries.add(listOf(fields["result"], fields["notification.outcome"], fields["notification.pipelineCorrelation"],
+                fields["notification.claim"], p.context.eligibilityReads, p.instrumentation.mainCalls,
+                p.context.notifications.posts.size, p.context.runtime.pipelineCloses))
+            expect(fields["notification.traceCorrelation"] == if (enabled) "EXACT_ORIGINAL_RECEIPT" else "NO_TRACE_BOX", "Trace presence was not distinguished")
+            if (enabled) expect(fields["notification.helperEntered"] == "1" && fields["notification.helperAppended"] == "1" &&
+                fields["notification.enqueueReturned"] == "1" && fields["notification.producerCallbackReturned"] == "1", "Correlated helper delivery facts were not copied")
+            exactCleanup(p)
+        }
+        expect(summaries[0] == summaries[1], "Optional passive trace changed functional/helper calls or subscription cardinality")
+    },
+    "219 actual helper getter Error before append records family and rethrows identical primary to producer boundary" to {
+        for (primary in listOf<Throwable>(NoSuchMethodError(privateFailure), ClassCastException(privateFailure), AssertionError(privateFailure))) {
+            val p = Probe()
+            p.context.notifications.onNotify = { platform ->
+                val box = NotificationObservationTrace(); val ingress = tracedIngress(platform, box)
+                val tokens = PipelineTokens(ingress, platform.packageName); admittedFacts(box, tokens)
+                val event = object : NotificationPipelineObservation(NotificationPipelineStage.DEMAND_ADMITTED, ingress, tokens.selection,
+                    tokens.demand, permitState = LaunchCommitPermit.State.PENDING) {
+                    override val ready: ActivationReady<ProjectionContext>? get() = throw primary
+                }
+                Looper.onMain { p.context.runtime.emitPipeline(event, box); p.context.runtime.emit(ingress) }
+            }
+            val fields = p.run("post-owned")
+            expect(p.context.runtime.lastPipelineFailure === primary, "Diagnostic bookkeeping replaced the original callback Throwable")
+            expect(fields["notification.acceptDisposition"] == "FACADE_HANDLE" && fields["notification.installDisposition"] == "INSTALLED" &&
+                fields["notification.pipelineCorrelation"] == "NO_OBSERVATION_FOR_ORIGINAL_RECEIPT", "Preappend fault was confused with preadmission rejection")
+            expect(fields["notification.helperEntered"] == "1" && fields["notification.helperAppended"] == "0" && fields["notification.helperFaults"] == "1" &&
+                fields["notification.helperFaultPoint"] == "BEFORE_APPEND" && fields["notification.helperFaultFamily"] == notificationDiagnosticFault(primary).name,
+                "Original getter fault point/family was not recorded")
+            expect(fields["notification.helperAppendObservation"] == "BEFORE_APPEND_FAULT_OBSERVED" && fields["notification.producerCallbackFaults"] == "1" &&
+                fields["notification.claim"] == "UNOBSERVED", "Fault/callback counters invented an append or claim")
+            exactCleanup(p)
+        }
+    },
+    "219 before-ingress callback fault stays run-scoped and never adopts latest original receipt" to {
+        val p = Probe(); val primary = NoSuchMethodError(privateFailure)
+        p.context.notifications.onNotify = { platform ->
+            val box = NotificationObservationTrace(); val ingress = tracedIngress(platform, box); val tokens = PipelineTokens(ingress, platform.packageName)
+            admittedFacts(box, tokens)
+            val event = object : NotificationPipelineObservation(NotificationPipelineStage.DEMAND_ADMITTED, ingress, tokens.selection,
+                tokens.demand, permitState = LaunchCommitPermit.State.PENDING) {
+                override val ingress: NotificationIngressObservation get() = throw primary
+            }
+            Looper.onMain { p.context.runtime.emitPipeline(event, box); p.context.runtime.emit(ingress) }
+        }
+        val fields = p.run("post-owned")
+        expect(p.context.runtime.lastPipelineFailure === primary && fields["notification.helperCallbackEntryCountRun"] == "1" &&
+            fields["notification.uncorrelatedHelperFaultCountRun"] == "1" && fields["notification.uncorrelatedHelperFaultFamilyRun"] == "LINKAGE",
+            "Before-ingress fault did not preserve uncorrelated entry/family")
+        expect(fields["notification.helperEntered"] == "0" && fields["notification.helperFaults"] == "0" &&
+            fields["notification.producerCallbackFaults"] == "1" && fields["notification.pipelineCorrelation"] == "NO_OBSERVATION_FOR_ORIGINAL_RECEIPT",
+            "An early uncorrelated callback was assigned to the latest known receipt")
+        exactCleanup(p)
+    },
+    "219 diagnostic lookup failure cannot replace detailed-row primary Error or break independent raw receipt" to {
+        val p = Probe(); val primary = ClassCastException(privateFailure); val recording = NoSuchMethodError(privateFailure)
+        p.context.notifications.onNotify = { platform ->
+            val box = NotificationObservationTrace()
+            val ingress = object : NotificationIngressObservation(NotificationEventResult(NotificationRecord(platform.packageName, platform.key, platform.postTime),
+                NotificationEventOrigin.POSTED_CALLBACK, NotificationEventKind.NEW_RECORD), admission = NotificationPolicy.Receipt(platform.packageName, 0, 0, 0, box)) {
+                override var diagnostic: NotificationObservationTrace?
+                    get() = throw recording
+                    set(value) { }
+            }
+            val tokens = PipelineTokens(ingress, platform.packageName); admittedFacts(box, tokens)
+            val event = object : NotificationPipelineObservation(NotificationPipelineStage.DEMAND_ADMITTED, ingress, tokens.selection,
+                tokens.demand, permitState = LaunchCommitPermit.State.PENDING) {
+                override val ready: ActivationReady<ProjectionContext>? get() = throw primary
+            }
+            Looper.onMain { p.context.runtime.emitPipeline(event, box); p.context.runtime.emit(ingress) }
+        }
+        val fields = p.run("post-owned")
+        expect(p.context.runtime.lastPipelineFailure === primary && fields["notification.outcome"] == "OWNED_SYSTEM_RECEIPT_OBSERVED", "Diagnostic lookup failure changed primary Throwable or raw callback outcome")
+        expect(fields["notification.traceCorrelation"] == "NO_TRACE_BOX" && fields["notification.uncorrelatedHelperFaultCountRun"] == "3" &&
+            fields["notification.uncorrelatedHelperFaultFamilyRun"] == "LINKAGE", "Pipeline lookup, detailed primary and raw-event lookup faults were hidden or reassigned")
+        exactCleanup(p)
+    },
+    "219 mismatched original or changed receipt clears trace proof while keeping independent pipeline derivation" to {
+        val chain = ReportChain(); chain.describeCommitted()
+        val opaque = object { override fun toString(): String = error("Trace identity must not render") }
+        val box = NotificationObservationTrace().apply {
+            original = chain.original; disposition = NotificationAcceptDisposition.FACADE_HANDLE; install = NotificationInstallDisposition.INSTALLED
+            installedSelection = opaque; returnedHandle = Any(); helperFaults = 1; helperFault = NotificationDiagnosticFaultFamily.LINKAGE
+            helperFaultPoint = NotificationHelperFaultPoint.BEFORE_APPEND
+        }
+        val first = chain.receipt.copy(postTime = 219, admissionTicket = Any(), diagnostic = box)
+        chain.report.receipt(first); chain.report.describeOwnedReceipt(privateKey, 219)
+        expect(chain.report.fields()["admissionInstalledG"] != "UNOBSERVED" && chain.report.fields()["helperFaultPoint"] == "BEFORE_APPEND", "N1 did not establish trace facts")
+        val second = first.copy(original = Any(), postTime = 220)
+        chain.report.receipt(second); chain.report.describeOwnedReceipt(privateKey, 220)
+        val fields = chain.report.fields(); sanitized(fields)
+        expect(fields["traceCorrelation"] == "ORIGINAL_IDENTITY_MISMATCH" && fields["admissionInstalledG"] == "UNOBSERVED" &&
+            fields["admissionReturnedHandle"] == "UNOBSERVED" && fields["helperFaultPoint"] == "UNOBSERVED", "Foreign trace or stale trace proof leaked to N2")
+        expect(fields["claim"] == "UNOBSERVED", "Foreign original trace manufactured a claim")
+        chain.report.describeOwnedReceipt(privateKey, 219)
+        expect(chain.report.fields()["claim"] == "COMMITTED_FROM_MATCHING_SETTLEMENT", "Trace refresh suppressed existing independent original pipeline proof")
+    },
+    "219 actual DTO append-unconfirmed fact remains uncertainty rather than before-append or claim proof" to {
+        val original = Any(); val box = NotificationObservationTrace().apply {
+            this.original = original; helperEntered = 1; helperFaults = 1
+            helperFault = NotificationDiagnosticFaultFamily.OTHER; helperFaultPoint = NotificationHelperFaultPoint.APPEND_UNCONFIRMED
+            enqueueAttempted = 1; enqueueReturned = 1; callbackEntered = 1; callbackFaults = 1
+        }
+        val report = NotificationProbeReport("host_trace_219", "example.report")
+        report.receipt(NotificationProbeReport.Receipt(Any(), Any(), Any(), original, "example.report", privateKey, 221,
+            "POSTED_CALLBACK", "NEW_RECORD", "READY", true, Any(), box))
+        report.describeOwnedReceipt(privateKey, 221)
+        val fields = report.fields(); sanitized(fields)
+        expect(fields["helperAppendObservation"] == "APPEND_UNCONFIRMED" && fields["helperFaultPoint"] == "APPEND_UNCONFIRMED" &&
+            fields["helperAppended"] == "0", "Append attempt failure was represented as a proven preappend cut")
+        expect(fields["enqueueReturned"] == "1" && fields["claim"] == "UNOBSERVED" && fields["pipelineCorrelation"] == "NO_OBSERVATION_FOR_ORIGINAL_RECEIPT",
+            "Enqueue/entry/append attempt became delivery or claim proof")
+    },
+)
+
 fun main(args: Array<String>) {
     var failures = 0
     check(args.isEmpty() || args.contentEquals(arrayOf("--correction136-only"))) { "Unknown test selection" }
-    val tests = if (args.isEmpty()) scenarios() + correction136Scenarios() else correction136Scenarios()
+    val tests = if (args.isEmpty()) scenarios() + correction136Scenarios() + observation219Scenarios() else correction136Scenarios()
     for ((name, run) in tests) {
         Build.VERSION.SDK_INT = 35; SystemClock.reset()
         try { run(); println("PASS $name") }

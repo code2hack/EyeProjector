@@ -56,17 +56,21 @@ suite = Path(__file__).resolve().parent
 root = suite.parents[3]
 helper = (args.helper_source_root.resolve() if args.helper_source_root else
           root / 'directhost/src/androidTest/kotlin/com/code2hack/eyeprojector/directhost/notifications')
-sources = [helper / 'NotificationProbeChecks.kt', helper / 'NotificationProbeReport.kt', suite / 'Scenarios.kt']
+sources = [helper / 'NotificationProbeChecks.kt', helper / 'NotificationProbeReport.kt', suite / 'Scenarios.kt',
+           root / 'directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost/notifications/NotificationObservationTrace.kt']
 sources += sorted((suite / 'doubles').glob('*.kt'))
 missing = [str(source) for source in sources if not source.is_file()]
 if missing:
     parser.error('Actual helper/test sources must exist before execution: ' + ', '.join(missing))
 output = args.output_dir.resolve()
 output.mkdir(parents=True, exist_ok=False)
+runner_snapshot = output / 'runner.py'
+runner_snapshot.write_bytes(Path(__file__).read_bytes())
+runner_snapshot.chmod(stat.S_IMODE(Path(__file__).stat().st_mode))
 record = {
     'startedUtc': now(), 'finishedUtc': None,
     'scope': 'Actual androidTest NotificationProbeChecks/NotificationProbeReport against explicit Android and production observation doubles; no Android/system notification/activation/device proof',
-    'runner': {'path': str(Path(__file__).resolve()), 'sha256': digest(Path(__file__).resolve()), 'mode': stat.S_IMODE(Path(__file__).stat().st_mode)},
+    'runner': {'path': str(Path(__file__).resolve()), 'snapshot': str(runner_snapshot), 'sha256': digest(Path(__file__).resolve()), 'mode': stat.S_IMODE(Path(__file__).stat().st_mode)},
     'sources': [], 'auxiliaryInputs': [], 'dependencies': [], 'compile': None, 'tests': None,
     'scenarioSelection': 'correction136-only' if args.correction136_only else 'all-current-helper',
     'helperSourceOverride': str(helper) if args.helper_source_root else None,

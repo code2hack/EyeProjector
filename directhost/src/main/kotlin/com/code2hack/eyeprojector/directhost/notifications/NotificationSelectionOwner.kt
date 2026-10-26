@@ -74,7 +74,12 @@ internal class NotificationSelectionOwner(
     var lastOutcome: NotificationDispatchOutcome? = null; private set
     val failed: Boolean get() = current?.fault != null || lastOutcome?.faultStage != null || policy.persistenceFailed
 
-    fun receipt(packageName: String) = policy.receipt(packageName)
+    fun receipt(packageName: String): NotificationPolicy.Receipt {
+        val original = policy.receipt(packageName) // Capture cancellation scope before diagnostic work.
+        if (pipelineObservers.isNotEmpty())
+            original.diagnostic = runCatching { NotificationObservationTrace() }.getOrNull()
+        return original
+    }
     fun access(approval: NotificationAccessApproval) = policy.access(approval)
 
     /** Main-owned, no registration replay. Close suppresses queued, not already executing delivery. */
@@ -100,7 +105,31 @@ internal class NotificationSelectionOwner(
         // policy/fast locks or the fixed final claim-to-Binder interval. Scheduling/observer faults
         // are isolated here without swallowing any primary product operation's exception.
         val recipients = pipelineObservers.toList()
-        return { runCatching { post { recipients.forEach { if (it.active) runCatching { it.receive(event) } } } }; Unit }
+        val diagnostic = selection.observation.diagnostic?.takeIf { it.original === selection.observation }
+        diagnostic?.let { it.captured++ }
+        return {
+            diagnostic?.let { it.enqueueAttempted++ }
+            try {
+                post {
+                    recipients.forEach { recipient ->
+                        if (recipient.active) {
+                            diagnostic?.let { it.callbackEntered++ }
+                            try {
+                                recipient.receive(event)
+                                diagnostic?.let { it.callbackReturned++ }
+                            } catch (error: Throwable) {
+                                diagnostic?.let { it.callbackFaults++; it.callbackFault = notificationDiagnosticFault(error) }
+                            }
+                        } else diagnostic?.let { it.inactiveSkipped++ }
+                    }
+                }
+                // The post adapter returns Unit. This is NOT Handler enqueue acceptance/delivery.
+                diagnostic?.let { it.enqueueReturned++ }
+            } catch (error: Throwable) {
+                diagnostic?.let { it.enqueueFaults++; it.enqueueFault = notificationDiagnosticFault(error) }
+            }
+            Unit
+        }
     }
 
     private fun publishSettlement(original: Current, submission: Submission) {
@@ -112,8 +141,24 @@ internal class NotificationSelectionOwner(
     }
 
     fun accept(observation: NotificationIngressObservation) {
+        var diagnostic = observation.diagnostic?.takeIf { it.original === observation || it.original == null }
+        if (diagnostic == null && pipelineObservers.isNotEmpty()) {
+            diagnostic = runCatching { NotificationObservationTrace() }.getOrNull()
+            observation.diagnostic = diagnostic
+        }
+        diagnostic?.original = observation
+        try { acceptOriginal(observation, diagnostic) }
+        catch (error: Throwable) {
+            diagnostic?.disposition = NotificationAcceptDisposition.THREW
+            diagnostic?.acceptFault = notificationDiagnosticFault(error)
+            throw error // Preserve the original primary product exception.
+        }
+    }
+
+    private fun acceptOriginal(observation: NotificationIngressObservation, diagnostic: NotificationObservationTrace?) {
         val result = observation.event
         if (result.kind == NotificationEventKind.REMOVED_CURRENT) {
+            diagnostic?.disposition = NotificationAcceptDisposition.REMOVED_CURRENT
             current?.let { original ->
                 val selected = original.selection.observation
                 // Cross-ingress equality/absence is not proof of matching removal.
@@ -124,12 +169,24 @@ internal class NotificationSelectionOwner(
             drain()
             return
         }
-        if (result.kind !in setOf(NotificationEventKind.NEW_RECORD, NotificationEventKind.UPDATED_OR_REPOSTED)) return
-        if (observation.receipt <= latestAcceptedReceipt) return
-        val originalTicket = observation.admission ?: return
-        val prepared = policy.prepare(originalTicket) { readEligibility(result.record.packageName) } ?: return
+        if (result.kind !in setOf(NotificationEventKind.NEW_RECORD, NotificationEventKind.UPDATED_OR_REPOSTED)) {
+            diagnostic?.disposition = NotificationAcceptDisposition.FILTERED_KIND; return
+        }
+        if (observation.receipt <= latestAcceptedReceipt) {
+            diagnostic?.disposition = NotificationAcceptDisposition.OLD_RECEIPT; return
+        }
+        val originalTicket = observation.admission ?: run {
+            diagnostic?.disposition = NotificationAcceptDisposition.MISSING_TICKET; return
+        }
+        val prepared = policy.prepare(originalTicket, diagnostic) { readEligibility(result.record.packageName) } ?: run {
+            diagnostic?.disposition = NotificationAcceptDisposition.PREPARE_UNAVAILABLE; return
+        }
         val selection = NotificationSelection(observation, port.facade)
-        val handle = port.admit(selection, prepared) ?: return
+        val handle = port.admit(selection, prepared) ?: run {
+            diagnostic?.disposition = NotificationAcceptDisposition.FACADE_NULL; return
+        }
+        diagnostic?.returnedHandle = handle
+        diagnostic?.disposition = NotificationAcceptDisposition.FACADE_HANDLE
         publishPipeline(NotificationPipelineStage.DEMAND_ADMITTED, selection, handle)
         if (selection.permit.state != LaunchCommitPermit.State.PENDING) return
         latestAcceptedReceipt = observation.receipt
