@@ -49,6 +49,60 @@ adds lifecycle handling for its own path. This experiment therefore retains its 
 Binder token and explicitly unregisters it. The global `cmd virtual_camera enable_test_camera`
 and `disable_test_camera` commands share a singleton test token and are not used.
 
+## Producer error and Surface ownership evidence
+
+Actual camera188 used historical JAR `c654e3c8` and failed before any changing
+imagery. Its renderer catch dereferenced a null Surface before emitting the preceding
+error; the first exception and null origin were not recorded. That result remains
+failed historical evidence. Matching service registration/descriptor and consumer
+configuration do not prove callback-wire compatibility or rendered frames.
+
+The producer now records owned callback arguments, Surface presence/diagnostic
+validity, calling UID/PID and class-loader descriptions before Handler handoff.
+Unavailable metadata remains unresolved; validity is not an admission/permission gate.
+Class-loader descriptions are observations, not a verified platform sender/schema
+or loaded-code digest. No Binder token, parcel contents or image pixels are dumped.
+
+A callback's Surface has one explicit release owner, shared with its stream after
+handoff. Failed initialization is reported with its FIRST exception, operation stage
+and full stack before cleanup. Cleanup faults are reported separately; absent-Surface
+cleanup owns no object and is an explicit no-op. Failed streams are not published as
+configured. Repeated closure cannot release the same Surface twice. Partial EGL
+cleanup attempts all acquired resources and reports its outcome without replacing
+the initialization error or killing the renderer on an expected cleanup exception.
+Unconfirmed cleanup emits `producer_resources_release_unconfirmed` rather than
+a fabricated `producer_resources_released` completion.
+
+The actor enrolls each callback Surface in an inventory before diagnostics or a
+Handler post. Unregister sweeps every lease for that callback, including a lease
+whose callback has not finished posting and one not yet mapped as a stream.
+Every inventory change emits `producer_resources_state` with a monotonic revision,
+actor PID/inventory identity, active registration callbacks, pending release sweeps,
+owned/pending/unconfirmed counts and `knownClear`. Stream completion includes the
+whole acquired EGL cleanup result, not just the Surface release result. Failed
+cleanup remains recorded; repeated release does not erase it or attempt release
+again. A status command also reports the retained inventory after token removal.
+
+`knownClear` describes only resources known at that observation. A later callback
+first publishes a newer pending state, and late failed cleanup publishes a newer
+unconfirmed state. Neither a clear state nor the legacy release marker establishes
+that future Binder callbacks cannot arrive. A caller must interpret the latest
+applicable inventory state, preserving pending duties when it supersedes an older
+positive marker. The frozen private173 caller's any-marker selection cannot do
+this; its separately allocated correction is required before operational use of
+this producer candidate. No inactivity period or callback-quiescence claim is used.
+
+These are error/ownership repairs, with the same AIDL pin, service route, stream-ID
+reuse and ONE live actor/Binder-token register/status/unregister/quit policy. They
+do not identify Samsung's null origin, create a missing input Surface, recover the
+dead camera188 token or establish real EGL/preview/JPEG/physical success. The orphan
+`v0_1001` remains a separate Manager duty; no new registration/reset is implied.
+
+Cached producer failure checks use the complete production Java files against
+explicit Surface/EGL/Handler/AIDL-shape doubles, not an Android runtime or wire
+implementation. Source/host results and later allocated standalone JAR builds must
+retain their exact parent/current/source/artifact association.
+
 ## Host build (allocated shared build window)
 
 No dependencies are downloaded. The builder verifies every pinned AIDL digest, generates

@@ -8,12 +8,12 @@ import android.opengl.EGLExt;
 import android.opengl.EGLSurface;
 import android.opengl.GLES20;
 import android.os.Handler;
-import android.view.Surface;
+import java.util.function.BooleanSupplier;
 
 /** One serial EGL producer per service-owned input Surface. All methods run on renderer. */
 final class SyntheticStream implements AutoCloseable {
     private final int id;
-    private final Surface surface;
+    private final CameraAccessMain.OwnedSurface surface;
     private final int width;
     private final int height;
     private final Handler handler;
@@ -24,30 +24,40 @@ final class SyntheticStream implements AutoCloseable {
     private long requests;
     private int lastRequest;
     private boolean closed;
+    private boolean cleanupComplete;
     private final Runnable tick = this::draw;
 
-    SyntheticStream(int id, Surface surface, int width, int height, Handler handler) {
+    SyntheticStream(int id, CameraAccessMain.OwnedSurface surface, int width, int height, Handler handler) {
         this.id = id; this.surface = surface; this.width = width; this.height = height; this.handler = handler;
     }
 
     void start() {
+        String stage = "getDisplay";
         try {
             display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
             int[] versions = new int[2];
+            stage = "initialize";
             require(EGL14.eglInitialize(display, versions, 0, versions, 1), "initialize");
             int[] attributes = {EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
                     EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT,
                     EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8,
                     EGL14.EGL_ALPHA_SIZE, 8, EGL14.EGL_NONE};
             EGLConfig[] configs = new EGLConfig[1]; int[] count = new int[1];
+            stage = "config";
             require(EGL14.eglChooseConfig(display, attributes, 0, configs, 0, 1, count, 0) && count[0] > 0, "config");
+            stage = "context";
             context = EGL14.eglCreateContext(display, configs[0], EGL14.EGL_NO_CONTEXT,
                     new int[]{EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE}, 0);
             require(!context.equals(EGL14.EGL_NO_CONTEXT), "context");
-            window = EGL14.eglCreateWindowSurface(display, configs[0], surface, new int[]{EGL14.EGL_NONE}, 0);
+            stage = "window";
+            window = EGL14.eglCreateWindowSurface(display, configs[0], surface.surface(), new int[]{EGL14.EGL_NONE}, 0);
             require(!window.equals(EGL14.EGL_NO_SURFACE), "window");
             handler.post(tick);
-        } catch (RuntimeException error) { close(); throw error; }
+        } catch (RuntimeException error) {
+            // The callback owns partial-start cleanup. Emit the first fault BEFORE it runs.
+            CameraAccessMain.failure("producer_error", "start." + stage, id, error);
+            throw error;
+        }
     }
 
     private void draw() {
@@ -78,7 +88,7 @@ final class SyntheticStream implements AutoCloseable {
             if (frames == 1 || frames % 30 == 0) report();
             handler.postDelayed(tick, 34);
         } catch (RuntimeException error) {
-            CameraAccessMain.event("producer_error", "streamId", id, "error", error.toString());
+            CameraAccessMain.failure("producer_error", "draw", id, error);
             close();
         }
     }
@@ -86,23 +96,45 @@ final class SyntheticStream implements AutoCloseable {
     void captureRequested(int frameId) { requests++; lastRequest = frameId; }
     void report() {
         CameraAccessMain.event("producer_progress", "streamId", id, "postedFrames", frames,
-                "captureRequests", requests, "lastRequest", lastRequest, "closed", closed);
+                "captureRequests", requests, "lastRequest", lastRequest, "closed", closed,
+                "cleanupComplete", cleanupComplete);
     }
     private static void require(boolean ok, String operation) {
         if (!ok) throw new IllegalStateException(operation + " EGL error 0x" + Integer.toHexString(EGL14.eglGetError()));
     }
+    boolean cleanupComplete() { return cleanupComplete; }
+    CameraAccessMain.OwnedSurface ownedSurface() { return surface; }
+    private boolean cleanup(String stage, BooleanSupplier operation) {
+        try {
+            require(operation.getAsBoolean(), stage);
+            return true;
+        } catch (RuntimeException error) {
+            CameraAccessMain.failure("producer_cleanup_error", "close." + stage, id, error);
+            return false;
+        }
+    }
     @Override public void close() {
         if (closed) return;
         closed = true;
-        handler.removeCallbacks(tick);
-        if (!display.equals(EGL14.EGL_NO_DISPLAY)) {
-            EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);
-            if (!window.equals(EGL14.EGL_NO_SURFACE)) EGL14.eglDestroySurface(display, window);
-            if (!context.equals(EGL14.EGL_NO_CONTEXT)) EGL14.eglDestroyContext(display, context);
-            EGL14.eglTerminate(display);
-            EGL14.eglReleaseThread();
+        boolean clean = true;
+        try { handler.removeCallbacks(tick); }
+        catch (RuntimeException error) {
+            CameraAccessMain.failure("producer_cleanup_error", "close.removeCallbacks", id, error);
+            clean = false;
         }
-        surface.release();
+        if (display != null && !EGL14.EGL_NO_DISPLAY.equals(display)) {
+            clean &= cleanup("clearCurrent", () -> EGL14.eglMakeCurrent(display,
+                    EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT));
+            if (window != null && !EGL14.EGL_NO_SURFACE.equals(window))
+                clean &= cleanup("window", () -> EGL14.eglDestroySurface(display, window));
+            if (context != null && !EGL14.EGL_NO_CONTEXT.equals(context))
+                clean &= cleanup("context", () -> EGL14.eglDestroyContext(display, context));
+            clean &= cleanup("terminate", () -> EGL14.eglTerminate(display));
+            clean &= cleanup("thread", EGL14::eglReleaseThread);
+        }
+        clean &= surface.release("stream_close");
+        cleanupComplete = clean;
+        surface.finished(cleanupComplete);
         report();
     }
 }
