@@ -11,6 +11,7 @@ class SurfaceTexture(name: Int) {
     var released = false
     val updates = AtomicInteger()
     @Volatile var latest = 0L
+    val timestamp: Long get() = latest
     fun setOnFrameAvailableListener(listener: OnFrameAvailableListener?, handler: Handler) {
         this.listener = listener; this.handler = handler
     }

@@ -30,6 +30,7 @@ object GLES20 {
     @JvmStatic fun glGetAttribLocation(p: Int, name: String) = 0
     @JvmStatic fun glVertexAttribPointer(id: Int, size: Int, type: Int, normalized: Boolean, stride: Int, data: Buffer) = Unit
     @JvmStatic fun glEnableVertexAttribArray(id: Int) = Unit
+    @JvmStatic fun glDisable(cap: Int) = Unit
     @JvmStatic fun glDrawArrays(type: Int, first: Int, count: Int) = Unit
     @JvmStatic fun glGetError() = 0
     @JvmStatic fun glCreateShader(type: Int) = 1
