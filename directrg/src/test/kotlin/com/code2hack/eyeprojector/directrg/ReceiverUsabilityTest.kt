@@ -25,8 +25,12 @@ class ReceiverUsabilityTest {
     private fun await(s: ProjectionSession) {
         val lane=field(s,"scaleControls").get(s) as OrderedControlDispatcher
         val until=System.nanoTime()+TimeUnit.SECONDS.toNanos(3)
-        while ((lane.snapshot().pending>0 || lane.snapshot().inFlight>0) && System.nanoTime()<until) Thread.yield()
-        assertEquals(0L,lane.snapshot().pending);assertEquals(0L,lane.snapshot().inFlight)
+        var observed = lane.snapshot()
+        while ((observed.pending>0 || observed.inFlight>0) && System.nanoTime()<until) {
+            Thread.yield()
+            observed = lane.snapshot()
+        }
+        assertEquals(0L,observed.pending);assertEquals(0L,observed.inFlight)
     }
     private fun frames(bytes: ByteArrayOutputStream): List<Frame> = DataInputStream(bytes.toByteArray().inputStream()).use { input ->
         buildList { while (input.available()>0) add(Wire.readFrame(input)) }

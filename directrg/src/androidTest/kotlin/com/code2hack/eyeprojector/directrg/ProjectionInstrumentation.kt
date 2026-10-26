@@ -66,6 +66,59 @@ class ProjectionInstrumentation : Instrumentation() {
     private var fixtureWitnessSignature: String? = null
     private val fixtureWitnessHistory = JSONArray()
     private val fixtureWitnessFailures = JSONArray()
+    @Volatile private var fixtureTeardownRecorder: FixtureTeardownRecorder? = null
+
+    private fun captureFixtureTeardown(activity: Activity?, acceptedStatus: JSONObject, fixture: FixtureSetupPhase?, operation: String) {
+        if (fixture == null || operation !in listOf("input-observation", "static-content")) return
+        try {
+            fixtureTeardownRecorder = FixtureTeardownRecorder.capture(this, activity, acceptedStatus, fixture.setupDeadlineElapsedMs)
+        } catch (error: Throwable) {
+            runCatching { setupReport?.put("fixtureTeardownCaptureUnavailable", error.javaClass.simpleName) }
+        }
+    }
+
+    override fun callActivityOnDestroy(activity: Activity) {
+        val observer = fixtureTeardownRecorder
+        try { observer?.destroyEntered(activity) } catch (_: Throwable) { }
+        try { super.callActivityOnDestroy(activity) }
+        catch (error: Throwable) {
+            try { observer?.destroyFailed(activity, error) } catch (_: Throwable) { }
+            throw error
+        }
+        try { observer?.destroyReturned(activity) } catch (_: Throwable) { }
+    }
+
+    private fun finishFixtureTeardown(activity: Activity?, report: JSONObject) {
+        val observer = fixtureTeardownRecorder
+        if (observer == null) {
+            if (activity != null) report.put("baselineTeardown", "FINISH_OWNED_ACTIVITY")
+            activity?.let { runOnMainSync { it.finish() } }
+            return
+        }
+        try { observer.requestDisconnect(this) }
+        catch (error: Throwable) { runCatching { report.put("fixtureTeardownRequestFailure", error.javaClass.simpleName) } }
+        try {
+            runCatching { if (activity != null) report.put("baselineTeardown", "FINISH_OWNED_ACTIVITY") }
+            activity?.let { owned ->
+                try { observer.finishRequested() } catch (_: Throwable) { }
+                nativeInputObservationOnMain({ task -> runOnMainSync { task() } }) {
+                    owned.finish()
+                    try { observer.finishReturned() } catch (_: Throwable) { }
+                }
+            }
+        } catch (error: Throwable) {
+            try { observer.finishFailed(error) } catch (_: Throwable) { }
+        } finally {
+            try {
+                observer.complete(this, report, ::status, if (freshAfterNs == 0L) checkNotNull(runStartedNs) else freshAfterNs)
+            } catch (error: Throwable) {
+                runCatching { report.put("fixtureTeardownObservationFailure", error.javaClass.simpleName) }
+            } finally {
+                try { observer.release() } catch (_: Throwable) { }
+                fixtureTeardownRecorder = null
+            }
+        }
+    }
 
     private fun startFixtureSetup(id: String): FixtureSetupPhase {
         val phase = FixtureSetupPhase(id, checkNotNull(runStartedNs), SystemClock.elapsedRealtime())
@@ -486,6 +539,7 @@ class ProjectionInstrumentation : Instrumentation() {
                     readSurface(activity, id, report)
                 } else {
                     report.put("first", status())
+                    captureFixtureTeardown(activity, report.getJSONObject("first"), fixtureSetup, operation)
                     if (operation == "input-observation") runOnMainSync {
                         report.put("inputBefore", (activity as ReceiverActivity).inputSnapshot())
                     }
@@ -615,8 +669,7 @@ class ProjectionInstrumentation : Instrumentation() {
             } catch (error: Throwable) {
                 runCatching { report.put("windowPresentationObservationFinishFailure", error.javaClass.simpleName) }
             }
-            if (activity != null) report.put("baselineTeardown", "FINISH_OWNED_ACTIVITY")
-            activity?.let { runOnMainSync { it.finish() } }
+            finishFixtureTeardown(activity, report)
             baselineActivity = null
             testFocus?.let { audioManager.abandonAudioFocusRequest(it) }
             priorVolume?.let {
