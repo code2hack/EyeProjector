@@ -222,13 +222,19 @@ class ChosenAppsPanel @JvmOverloads constructor(
 
         fun preview(value: Double, forceText: Boolean = false) {
             updating = true
-            slider.progress = ((value - AppScaleStore.MIN_SCALE) * 100).roundToInt().coerceIn(0, 100)
-            if (forceText || !input.hasFocus()) input.setText(number(value))
+            val progress = ((value - AppScaleStore.MIN_SCALE) * 100).roundToInt().coerceIn(0, 100)
+            if (slider.progress != progress) slider.progress = progress
+            val formatted = number(value)
+            if ((forceText || !input.hasFocus()) && input.text.toString() != formatted) input.setText(formatted)
             updating = false
         }
         fun render(state: AppScalePanelState?) {
             val matching = state?.takeIf { it.target == target }
-            val canEdit = connected && (target == null || matching != null) && matching?.detail != "TARGET_CHANGED"
+            // The first commit always selects the app afresh. A stale observed target
+            // must not prevent that selection; after editing begins, retain the original
+            // target/context cancellation behavior.
+            val canEdit = connected && (!editingStarted ||
+                ((target == null || matching != null) && matching?.detail != "TARGET_CHANGED"))
             input.isEnabled = canEdit
             slider.isEnabled = canEdit
             if (!dragging && !input.hasFocus()) {
@@ -238,6 +244,9 @@ class ChosenAppsPanel @JvmOverloads constructor(
             val observed = matching?.applied?.let { "${number(it)}×" } ?: "—"
             val detail = when {
                 !connected -> "Connect to adjust scale."
+                !editingStarted && target != null && (matching == null ||
+                    matching.detail in setOf("TARGET_CHANGED", "LAUNCH_UNCONFIRMED", "UNAVAILABLE")) ->
+                    "Adjust scale to open this app on the Glasses."
                 target != null && matching == null -> "The projected selection changed."
                 matching?.detail == "OPENING" -> "Opening on the Glasses…"
                 matching?.detail in setOf("REQUESTING", "RESTORING", "PENDING") -> "Applying requested scale…"
@@ -246,7 +255,8 @@ class ChosenAppsPanel @JvmOverloads constructor(
                 matching?.detail in setOf("INVALID_SCALE", "REJECTED") -> "Use a scale from 0.5× to 1.5×."
                 else -> ""
             }
-            feedback.text = "Saved requested: ${number(saved)}×\nObserved: $observed${if (detail.isEmpty()) "" else "\n$detail"}"
+            val text = "Saved requested: ${number(saved)}×\nObserved: $observed${if (detail.isEmpty()) "" else "\n$detail"}"
+            if (feedback.text.toString() != text) feedback.text = text
         }
         fun attach(next: AppScaleTarget) {
             scaleSubscription?.close()
@@ -267,8 +277,8 @@ class ChosenAppsPanel @JvmOverloads constructor(
                 scaleSubscription = null
                 target?.let { coordinator?.detach(it, owner) }
                 target = null
-                attach(action!!.invoke(app))
                 editingStarted = true
+                attach(action!!.invoke(app))
             }
             target?.let { coordinator?.setScale(it, value, owner) }
             lastSubmitted = value

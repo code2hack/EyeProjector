@@ -22,21 +22,22 @@ internal class ManagedProjectionEncoder : Closeable {
     private var formatObserved = false
     private var eosObserved = false
     private val pending = ArrayDeque<ScrcpyRecord>()
-    lateinit var sourceGeometry: Geometry
+    lateinit var inputGeometry: Geometry
         private set
 
     val inputSurface: Surface get() = originalSurface ?: error("Encoder surface is unavailable")
 
-    fun prepare(source: Geometry) {
-        sourceGeometry = source
+    fun prepare(physical: Geometry) {
         val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
         originalCodec = codec // Retain originals before the next fallible native operation.
         val caps = codec.codecInfo.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC).videoCapabilities
             ?: error("AVC video capabilities are unavailable")
         // Surface dimensions follow the selected codec's reported alignment.
         fun aligned(value: Int, alignment: Int) = (value + alignment - 1) / alignment * alignment
+        inputGeometry = Geometry(aligned(physical.width, caps.widthAlignment),
+            aligned(physical.height, caps.heightAlignment))
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC,
-            aligned(source.width, caps.widthAlignment), aligned(source.height, caps.heightAlignment)).apply {
+            inputGeometry.width, inputGeometry.height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, 2_000_000)
             setInteger(MediaFormat.KEY_FRAME_RATE, 30)

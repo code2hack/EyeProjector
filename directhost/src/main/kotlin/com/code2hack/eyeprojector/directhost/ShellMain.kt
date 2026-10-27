@@ -372,6 +372,7 @@ private class Session(
         .put("platformStage", managedPlatformStage)
         .put("callerUid", Process.myUid()).put("statusFile", managedStatusFileName)
         .put("shellContext", synchronized(managedDisplayGate) { managedDisplay }?.shellContextStatus() ?: JSONObject.NULL)
+        .put("geometry", synchronized(managedDisplayGate) { managedDisplay }?.geometryStatus() ?: JSONObject.NULL)
         .put("androidDeviceId", managedDeviceId ?: JSONObject.NULL)
         .put("sourceDisplayId", managedSourceDisplayId ?: JSONObject.NULL)
         .put("scrcpyNewDisplayId", scrcpyNewDisplayId ?: JSONObject.NULL)
@@ -384,7 +385,7 @@ private class Session(
             managedPlatformStage = stage
             if (sourceId != null) managedSourceDisplayId = sourceId
             if (deviceId != null) managedDeviceId = deviceId
-            if (stage == "DISPLAY_ENCODER_STREAM_FAILED") {
+            if (stage in setOf("DISPLAY_ENCODER_STREAM_FAILED", "DISPLAY_LOGICAL_LAYOUT_FAILED", "DISPLAY_OBSERVATION_FAILED")) {
                 managedDisplayFailure = stage
                 if (!managedDisplayCloseRequested) managedDisplayState = "FAILED"
             }
@@ -601,23 +602,34 @@ private class Session(
     val panelContext = PanelContext(context.ownerEpoch, context.projectionToken)
     @Volatile private var lastScaleReportAttempt: ScaleState? = null
     private val scale = LiveScale(
-        resize = { size ->
+        resize = { size -> writeControl(Scrcpy.resize(size)) },
+        publish = { value ->
+            lastScaleReportAttempt = value
+            send(Frame(Wire.SCALE_STATE, value.requestId, value.bytes()))
+        },
+        resizePrecise = { size, requestedScale ->
             if (managedDisplayFactory == null) writeControl(Scrcpy.resize(size))
             else {
                 val original = synchronized(managedDisplayGate) { managedDisplay }
                     ?: error("Managed projection display is unavailable")
                 synchronized(controlLock) {
                     check(running.get())
+                    // A new contact can arrive while the pending state is being sent.
+                    phoneInput.invalidate()
+                    inputControls.cancel()
+                    // Queue only. The stream owner performs the WM change off these locks.
+                    original.resize(requestedScale)
+                }
+            }
+        },
+        beforeRequestPublish = {
+            if (managedDisplayFactory != null) {
+                synchronized(controlLock) {
+                    check(running.get())
                     phoneInput.invalidate()
                     inputControls.cancel()
                 }
-                // Queue only. The stream owner performs native resize/reconfigure off these locks.
-                original.resize(size.width, size.height)
             }
-        },
-        publish = { value ->
-            lastScaleReportAttempt = value
-            send(Frame(Wire.SCALE_STATE, value.requestId, value.bytes()))
         },
     )
     private var localListener: LocalServerSocket? = null
@@ -822,6 +834,7 @@ private class Session(
         if (source != null) {
             // This display already exists. Give it real app content before waiting for
             // encoder metadata; an empty managed display may not produce the first frame.
+            source.prepareInitialLayout()
             launches.initialize(source.sourceDisplayId)
             identifiedDisplay = true
         }
@@ -842,13 +855,31 @@ private class Session(
         var reason = SessionStopReason.VIDEO_END
         try {
             while (running.get()) {
-                val record = if (source != null) source.readRecord { running.get() }
-                    else Scrcpy.readRecord(videoInput!!)
+                val record = if (source != null) {
+                    when (val next = source.readRecord { running.get() }) {
+                        null -> break
+                        is ManagedProjectionDisplay.Read.Layout -> {
+                            val videoGeometry = geometry.get()
+                            if (videoGeometry != null) {
+                                scale.observeManagedLayout(next.source.layout, this) {
+                                    synchronized(controlLock) {
+                                        phoneInput.invalidate()
+                                        inputControls.cancel()
+                                        inputControls.geometry(videoGeometry)
+                                    }
+                                }
+                            }
+                            runCatching { recordManagedProjection() }
+                            continue
+                        }
+                        is ManagedProjectionDisplay.Read.Video -> next.record
+                    }
+                } else Scrcpy.readRecord(videoInput!!) ?: break
                 when (record) {
-                    null -> break
                     is ScrcpyRecord.Session -> {
                         startup.cancel(false)
-                        scale.observe(record, this, managedResize = source != null) {
+                        val layout = source?.layoutGeometry() ?: record.geometry
+                        scale.observe(record, this, managedResize = source != null, observedGeometry = layout) {
                             synchronized(controlLock) {
                                 phoneInput.invalidate()
                                 inputControls.geometry(record.geometry)
@@ -856,6 +887,7 @@ private class Session(
                             }
                             send(Frame(Wire.GEOMETRY, payload = record.geometry.bytes()))
                         }
+                        if (source != null) runCatching { recordManagedProjection() }
                         // Creation is logged before this metadata by the pinned capture. Do not
                         // launch or query while LiveScale holds the output/publication locks.
                         if (!identifiedDisplay) {

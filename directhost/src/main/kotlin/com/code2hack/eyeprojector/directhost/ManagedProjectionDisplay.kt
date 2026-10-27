@@ -12,6 +12,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Process
+import android.view.Display
 import android.view.Surface
 import java.io.Closeable
 import java.lang.reflect.InvocationTargetException
@@ -21,9 +22,12 @@ import java.util.concurrent.Executor
 import java.util.concurrent.FutureTask
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.math.ceil
+import kotlin.math.roundToInt
 import org.json.JSONArray
 import org.json.JSONObject
 import com.code2hack.eyeprojector.protocol.Geometry
+import com.code2hack.eyeprojector.protocol.LayoutScale
 import com.code2hack.eyeprojector.protocol.ScrcpyRecord
 
 /**
@@ -34,6 +38,25 @@ import com.code2hack.eyeprojector.protocol.ScrcpyRecord
 internal class ManagedProjectionDisplay private constructor(
     private val status: (String, Int?, Int?) -> Unit,
 ) : Closeable {
+    internal data class SourceObservation(
+        val logical: Geometry,
+        val physical: Geometry,
+        val densityDpi: Int,
+        val rotation: Int,
+        val scalingDisabled: Boolean,
+    ) {
+        val layout: Geometry get() = Geometry(
+            (logical.width.toDouble() * LayoutScale.DPI / densityDpi).roundToInt(),
+            (logical.height.toDouble() * LayoutScale.DPI / densityDpi).roundToInt())
+    }
+
+    internal sealed interface Read {
+        data class Layout(val source: SourceObservation) : Read
+        data class Video(val record: ScrcpyRecord) : Read
+    }
+
+    internal data class InputMapping(val video: Geometry, val source: SourceObservation)
+
     class Failure(val category: String, cause: Throwable? = null) : Exception(category, cause) {
         // Keep an incomplete original cleanup reachable through its reported failure.
         internal var retainedOwner: ManagedProjectionDisplay? = null
@@ -145,13 +168,19 @@ internal class ManagedProjectionDisplay private constructor(
 
     private var originalDevice: Any? = null
     private var originalDisplay: VirtualDisplay? = null
+    private var originalDisplayUniqueId: String? = null
+    private var originalDisplayInfoManager: Any? = null
+    private var originalWindowManager: Any? = null
+    private var windowManagerType: Class<*>? = null
+    private var physicalDensityDpi = 0
+    @Volatile private var forcedSizeMayExist = false
     private val displayOperations = Any()
     private val inputOperations = Any()
-    private data class InputMapping(val video: Geometry, val source: Geometry)
     private var inputMapping: InputMapping? = null
-    private var observedSourceGeometry: Geometry? = null
+    private var observedSource: SourceObservation? = null
+    private var observedVideo: Geometry? = null
     private var sourceTransitioning = false
-    private val resizeRequested = AtomicReference<Geometry?>()
+    private val resizeRequested = AtomicReference<Double?>()
     private val displayChanged = AtomicBoolean()
     // Every epoch, including a partially configured or failed original, remains owned here.
     private val originalEncoders = ArrayList<ManagedProjectionEncoder>()
@@ -172,81 +201,172 @@ internal class ManagedProjectionDisplay private constructor(
     val sourceDisplayIdOrNull: Int? get() = capturedDisplayId
     val deviceIdOrNull: Int? get() = capturedDeviceId
 
-    /** Queue only: LiveScale invokes this from its controller, never run codec/display work there. */
-    fun resize(width: Int, height: Int) = synchronized(inputOperations) {
+    /** Queue only: LiveScale invokes this from its controller, never run WM work there. */
+    fun resize(scale: Double) = synchronized(inputOperations) {
         if (closeRequested.get()) throw Failure("DISPLAY_CLOSED")
         inputMapping = null
-        resizeRequested.set(Geometry(width, height))
+        resizeRequested.set(scale)
     }
 
     fun inputGeometry(next: Geometry) = synchronized(inputOperations) {
         if (closeRequested.get()) return@synchronized
-        val source = observedSourceGeometry ?: return@synchronized
-        if (!sourceTransitioning && resizeRequested.get() == null) inputMapping = InputMapping(next, source)
+        val source = observedSource ?: return@synchronized
+        if (!sourceTransitioning && resizeRequested.get() == null && !displayChanged.get()) {
+            inputMapping = InputMapping(next, source)
+        }
     }
 
-    fun withInputMapping(video: Geometry, action: (Int, Int, Int) -> Boolean): Boolean =
+    fun withInputMapping(video: Geometry, action: (Int, InputMapping) -> Boolean): Boolean =
         synchronized(inputOperations) {
             if (closeRequested.get()) return@synchronized false
             if (sourceTransitioning || resizeRequested.get() != null || displayChanged.get()) return@synchronized false
             val mapping = inputMapping ?: return@synchronized false
             if (mapping.video != video) return@synchronized false
-            if (observedSourceGeometry != mapping.source) return@synchronized false
-            action(sourceDisplayId, mapping.source.width, mapping.source.height)
+            if (observedSource != mapping.source) return@synchronized false
+            action(sourceDisplayId, mapping)
         }
 
-    private fun observeSourceGeometry(): Geometry {
-        val display = originalDisplay ?: throw Failure("DISPLAY_NOT_CREATED")
-        val size = Point().also(display.display::getRealSize)
-        val observed = Geometry(size.x, size.y)
+    fun layoutGeometry(): Geometry = synchronized(inputOperations) {
+        observedSource?.layout ?: throw Failure("DISPLAY_GEOMETRY_UNAVAILABLE")
+    }
+
+    fun geometryStatus(): JSONObject = synchronized(inputOperations) {
+        val source = observedSource
+        JSONObject().put("physicalDensityDpi", physicalDensityDpi.takeIf { it > 0 } ?: JSONObject.NULL)
+            .put("logicalWidth", source?.logical?.width ?: JSONObject.NULL)
+            .put("logicalHeight", source?.logical?.height ?: JSONObject.NULL)
+            .put("logicalDensityDpi", source?.densityDpi ?: JSONObject.NULL)
+            .put("layoutWidth", source?.layout?.width ?: JSONObject.NULL)
+            .put("layoutHeight", source?.layout?.height ?: JSONObject.NULL)
+            .put("physicalWidth", source?.physical?.width ?: JSONObject.NULL)
+            .put("physicalHeight", source?.physical?.height ?: JSONObject.NULL)
+            .put("rotation", source?.rotation ?: JSONObject.NULL)
+            .put("scalingDisabled", source?.scalingDisabled ?: JSONObject.NULL)
+            .put("videoWidth", observedVideo?.width ?: JSONObject.NULL)
+            .put("videoHeight", observedVideo?.height ?: JSONObject.NULL)
+            .put("forcedSizeMayExist", forcedSizeMayExist)
+    }
+
+    private fun displayInfo(displayId: Int): Any {
+        val manager = originalDisplayInfoManager ?: throw Failure("DISPLAY_MANAGER_UNAVAILABLE")
+        return manager.javaClass.getMethod("getDisplayInfo", Int::class.javaPrimitiveType)
+            .invoke(manager, displayId) ?: throw Failure("DISPLAY_INFO_UNAVAILABLE")
+    }
+
+    private fun infoInt(info: Any, field: String): Int = info.javaClass.getField(field).getInt(info)
+
+    private fun observeSource(): SourceObservation {
+        val info = displayInfo(sourceDisplayId)
+        val mode = info.javaClass.getMethod("getMode").invoke(info) as? Display.Mode
+            ?: throw Failure("DISPLAY_MODE_UNAVAILABLE")
+        val density = infoInt(info, "logicalDensityDpi")
+        if (density <= 0) throw Failure("DISPLAY_DENSITY_UNAVAILABLE")
+        val observed = SourceObservation(
+            Geometry(infoInt(info, "logicalWidth"), infoInt(info, "logicalHeight")),
+            Geometry(mode.physicalWidth, mode.physicalHeight), density, infoInt(info, "rotation"),
+            (infoInt(info, "flags") and Display::class.java.getField("FLAG_SCALING_DISABLED").getInt(null)) != 0)
         synchronized(inputOperations) {
-            if (observedSourceGeometry != observed) inputMapping = null
-            observedSourceGeometry = observed
+            if (observedSource != observed) inputMapping = null
+            observedSource = observed
         }
         return observed
     }
 
-    private fun attachEncoder(geometry: Geometry) {
-        val encoder = ManagedProjectionEncoder()
-        originalEncoders.add(encoder)
-        activeEncoder = encoder
-        encoder.prepare(geometry)
-        originalDisplay!!.surface = encoder.inputSurface
-        report("DISPLAY_ENCODER_ATTACHED")
+    private fun requireOriginalDisplay() {
+        val manager = originalWindowManager ?: throw Failure("WINDOW_MANAGER_UNAVAILABLE")
+        val type = windowManagerType ?: throw Failure("WINDOW_MANAGER_UNAVAILABLE")
+        val uniqueId = originalDisplayUniqueId ?: throw Failure("DISPLAY_IDENTITY_UNAVAILABLE")
+        val current = type.getMethod("getDisplayIdByUniqueId", String::class.java)
+            .invoke(manager, uniqueId) as Int
+        if (current != sourceDisplayId) throw Failure("DISPLAY_IDENTITY_CHANGED")
+    }
+
+    private fun applyLogicalScale(scale: Double) {
+        requireOriginalDisplay()
+        val manager = originalWindowManager ?: throw Failure("WINDOW_MANAGER_UNAVAILABLE")
+        val type = windowManagerType ?: throw Failure("WINDOW_MANAGER_UNAVAILABLE")
+        // WM's forced size is in the display's natural orientation, before rotation.
+        fun dimension(base: Int) = (base.toDouble() * physicalDensityDpi / LayoutScale.DPI / scale).roundToInt()
+        val setter = type.getMethod("setForcedDisplaySize", Int::class.javaPrimitiveType,
+            Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
+        // An exception can arrive after a remote mutation. Keep the original until clear completes.
+        forcedSizeMayExist = true
+        setter.invoke(manager, sourceDisplayId, dimension(LayoutScale.BASELINE.width),
+            dimension(LayoutScale.BASELINE.height))
+        requireOriginalDisplay()
+    }
+
+    private fun clearLogicalOverride() {
+        requireOriginalDisplay()
+        val manager = originalWindowManager ?: throw Failure("WINDOW_MANAGER_UNAVAILABLE")
+        val type = windowManagerType ?: throw Failure("WINDOW_MANAGER_UNAVAILABLE")
+        type.getMethod("clearForcedDisplaySize", Int::class.javaPrimitiveType).invoke(manager, sourceDisplayId)
+        val initial = Point()
+        val current = Point()
+        type.getMethod("getInitialDisplaySize", Int::class.javaPrimitiveType, Point::class.java)
+            .invoke(manager, sourceDisplayId, initial)
+        type.getMethod("getBaseDisplaySize", Int::class.javaPrimitiveType, Point::class.java)
+            .invoke(manager, sourceDisplayId, current)
+        requireOriginalDisplay()
+        if (initial.x <= 0 || initial.y <= 0 || current != initial) {
+            throw Failure("DISPLAY_OVERRIDE_CLEAR_UNCONFIRMED")
+        }
+        forcedSizeMayExist = false
+    }
+
+    /** Establish the initial layout after the control socket exists, before launching source content. */
+    fun prepareInitialLayout() {
+        try {
+            synchronized(displayOperations) {
+                if (closeRequested.get()) throw Failure("DISPLAY_CLOSED")
+                synchronized(inputOperations) { sourceTransitioning = true; inputMapping = null }
+                applyLogicalScale(1.0)
+                observeSource()
+                synchronized(inputOperations) { sourceTransitioning = false }
+            }
+        } catch (error: Throwable) {
+            report("DISPLAY_LOGICAL_LAYOUT_FAILED")
+            throw if (error is Failure) error else Failure("DISPLAY_LOGICAL_LAYOUT_FAILED", unwrap(error))
+        }
+        report("DISPLAY_LOGICAL_LAYOUT_READY")
     }
 
     /** Single stream reader. Close takes the same ownership lock after this native turn returns. */
-    fun readRecord(keepRunning: () -> Boolean): ScrcpyRecord? {
+    fun readRecord(keepRunning: () -> Boolean): Read? {
+        var stage = "DISPLAY_ENCODER_STREAM_FAILED"
         try {
             return synchronized(displayOperations) {
                 while (!closeRequested.get() && keepRunning()) {
-                    val original = originalDisplay ?: throw Failure("DISPLAY_NOT_CREATED")
+                    if (originalDisplay == null) throw Failure("DISPLAY_NOT_CREATED")
                     val (requested, changed) = synchronized(inputOperations) {
                         val next = resizeRequested.getAndSet(null)
                         val dirty = displayChanged.getAndSet(false)
                         if (next != null || dirty) sourceTransitioning = true
                         next to dirty
                     }
-                    if (requested != null) original.resize(requested.width, requested.height, DENSITY_DPI)
-                    if (requested != null || changed) {
-                        val observed = observeSourceGeometry()
-                        // Even a no-op request needs a fresh observed epoch: each GEOMETRY
-                        // replaces the receiver decoder and must precede new CSD and frame data.
-                        if (requested != null || activeEncoder?.sourceGeometry != observed) {
-                            synchronized(inputOperations) { inputMapping = null }
-                            original.surface = null
-                            activeEncoder?.close()
-                            attachEncoder(observed)
-                        }
-                        synchronized(inputOperations) { sourceTransitioning = false }
+                    if (requested != null) {
+                        stage = "DISPLAY_LOGICAL_LAYOUT_FAILED"
+                        applyLogicalScale(requested)
                     }
-                    activeEncoder?.readRecord()?.let { return@synchronized it }
+                    if (requested != null || changed) {
+                        stage = "DISPLAY_OBSERVATION_FAILED"
+                        val observed = observeSource()
+                        synchronized(inputOperations) { sourceTransitioning = false }
+                        return@synchronized Read.Layout(observed)
+                    }
+                    stage = "DISPLAY_ENCODER_STREAM_FAILED"
+                    activeEncoder?.readRecord()?.let { record ->
+                        if (record is ScrcpyRecord.Session) synchronized(inputOperations) {
+                            observedVideo = record.geometry
+                        }
+                        return@synchronized Read.Video(record)
+                    }
                 }
                 null
             }
         } catch (error: Throwable) {
-            report("DISPLAY_ENCODER_STREAM_FAILED")
-            throw if (error is Failure) error else Failure("DISPLAY_ENCODER_STREAM_FAILED", unwrap(error))
+            report(stage)
+            throw if (error is Failure) error else Failure(stage, unwrap(error))
         }
     }
 
@@ -273,6 +393,17 @@ internal class ManagedProjectionDisplay private constructor(
             if (!handler.post(contextTask)) throw Failure("SHELL_CONTEXT_DISPATCH_FAILED")
             val context = contextTask.get()
             report("SHELL_CONTEXT_READY")
+
+            stage = "DISPLAY_INFO_UNAVAILABLE"
+            val displayInfoManagerType = Class.forName("android.hardware.display.DisplayManagerGlobal")
+            originalDisplayInfoManager = displayInfoManagerType.getMethod("getInstance").invoke(null)
+                ?: throw Failure(stage)
+            physicalDensityDpi = infoInt(displayInfo(Display.DEFAULT_DISPLAY), "logicalDensityDpi")
+            if (physicalDensityDpi <= 0) throw Failure("PHYSICAL_DENSITY_UNAVAILABLE")
+            stage = "WINDOW_MANAGER_UNAVAILABLE"
+            windowManagerType = Class.forName("android.view.IWindowManager")
+            originalWindowManager = Class.forName("android.view.WindowManagerGlobal")
+                .getMethod("getWindowManagerService").invoke(null) ?: throw Failure(stage)
 
             stage = "ASSOCIATION_QUERY_FAILED"
             val cdm = context.getSystemService(CompanionDeviceManager::class.java)
@@ -338,6 +469,15 @@ internal class ManagedProjectionDisplay private constructor(
                     .invoke(manager, deviceId, cameraPolicy) != customPolicy) throw Failure(stage)
             report("VIRTUAL_DEVICE_CREATED")
 
+            stage = "DISPLAY_ENCODER_CREATE_FAILED"
+            fun physicalDimension(base: Int) =
+                ceil(base.toDouble() * physicalDensityDpi / LayoutScale.DPI / LayoutScale.MAX_SCALE).toInt()
+            val encoder = ManagedProjectionEncoder()
+            originalEncoders.add(encoder)
+            activeEncoder = encoder
+            encoder.prepare(Geometry(physicalDimension(LayoutScale.BASELINE.width),
+                physicalDimension(LayoutScale.BASELINE.height)))
+
             stage = "VIRTUAL_DISPLAY_CREATE_FAILED"
             val trusted = DisplayManager::class.java.getField("VIRTUAL_DISPLAY_FLAG_TRUSTED").getInt(null)
             val flags = DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
@@ -345,10 +485,13 @@ internal class ManagedProjectionDisplay private constructor(
             val display = device.javaClass.getMethod("createVirtualDisplay", Int::class.javaPrimitiveType,
                 Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Surface::class.java,
                 Int::class.javaPrimitiveType, Executor::class.java, VirtualDisplay.Callback::class.java)
-                .invoke(device, WIDTH, HEIGHT, DENSITY_DPI, null, flags, null, null) as? VirtualDisplay
+                .invoke(device, encoder.inputGeometry.width, encoder.inputGeometry.height,
+                    physicalDensityDpi, null, flags, null, null) as? VirtualDisplay
                 ?: throw Failure(stage)
             originalDisplay = display
             capturedDisplayId = display.display.displayId
+            originalDisplayUniqueId = Display::class.java.getMethod("getUniqueId")
+                .invoke(display.display) as? String ?: throw Failure("DISPLAY_IDENTITY_UNAVAILABLE")
             stage = "DISPLAY_LISTENER_REGISTER_FAILED"
             val displayManager = context.getSystemService(DisplayManager::class.java)
                 ?: throw Failure("DISPLAY_MANAGER_UNAVAILABLE")
@@ -360,8 +503,11 @@ internal class ManagedProjectionDisplay private constructor(
             }
             originalDisplayListener = listener
             displayManager.registerDisplayListener(listener, handler)
-            stage = "DISPLAY_ENCODER_CREATE_FAILED"
-            attachEncoder(observeSourceGeometry())
+            stage = "DISPLAY_ENCODER_ATTACH_FAILED"
+            display.surface = encoder.inputSurface
+            report("DISPLAY_ENCODER_ATTACHED")
+            stage = "DISPLAY_INFO_UNAVAILABLE"
+            observeSource()
             report("VIRTUAL_DISPLAY_CREATED")
         } catch (error: Throwable) {
             val cause = unwrap(error)
@@ -384,28 +530,34 @@ internal class ManagedProjectionDisplay private constructor(
         report("VIRTUAL_DISPLAY_CLOSING")
         var failure: Failure? = null
         var interrupted = false
-        fun release(category: String, action: () -> Unit) {
-            try { action() } catch (error: Throwable) {
+        fun release(category: String, action: () -> Unit): Boolean {
+            return try { action(); true } catch (error: Throwable) {
                 val cause = unwrap(error)
                 if (cause is InterruptedException) interrupted = true
                 val observed = Failure(category, cause)
                 if (failure == null) failure = observed else failure!!.addSuppressed(observed)
+                false
             }
         }
         try {
             synchronized(inputOperations) { inputMapping = null }
+            var displayReleased = originalDisplay == null
             synchronized(displayOperations) {
                 var producerStopped = originalDisplay == null
                 originalDisplay?.let { original ->
+                    if (forcedSizeMayExist) release("DISPLAY_OVERRIDE_CLEAR_FAILED") { clearLogicalOverride() }
                     release("DISPLAY_ENCODER_DETACH_FAILED") { original.surface = null; producerStopped = true }
-                    release("VIRTUAL_DISPLAY_RELEASE_FAILED") { original.release(); producerStopped = true }
+                    if (!forcedSizeMayExist && release("VIRTUAL_DISPLAY_RELEASE_FAILED") { original.release() }) {
+                        producerStopped = true
+                        displayReleased = true
+                    }
                 }
                 // If both detach and display release fail, retain the live codec/surface as-is.
                 if (producerStopped) originalEncoders.forEach { encoder ->
                     release("DISPLAY_ENCODER_CLOSE_FAILED") { encoder.close() }
                 }
             }
-            originalDevice?.let { original -> release("VIRTUAL_DEVICE_CLOSE_FAILED") {
+            if (displayReleased) originalDevice?.let { original -> release("VIRTUAL_DEVICE_CLOSE_FAILED") {
                 original.javaClass.getMethod("close").invoke(original)
             } }
             originalDisplayListener?.let { original -> release("DISPLAY_LISTENER_REMOVE_FAILED") {
@@ -431,9 +583,6 @@ internal class ManagedProjectionDisplay private constructor(
     }
 
     companion object {
-        private const val WIDTH = 480
-        private const val HEIGHT = 640
-        private const val DENSITY_DPI = 160
         private const val SHELL_PACKAGE = "com.android.shell"
 
         fun create(status: (String, Int?, Int?) -> Unit = { _, _, _ -> }): ManagedProjectionDisplay {

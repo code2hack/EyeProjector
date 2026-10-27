@@ -2,10 +2,12 @@ package com.code2hack.eyeprojector.directhost
 
 import com.code2hack.eyeprojector.protocol.*
 
-/** A control write is only a request. Applied numbers always come from stock session metadata. */
+/** A control write is only a request. Applied numbers come from observed layout metadata. */
 internal class LiveScale(
     private val resize: (Geometry) -> Unit,
     private val publish: (ScaleState) -> Unit,
+    private val resizePrecise: ((Geometry, Double) -> Unit)? = null,
+    private val beforeRequestPublish: (() -> Unit)? = null,
 ) {
     private var value = unavailable()
 
@@ -23,11 +25,12 @@ internal class LiveScale(
             return reply
         }
         value = value.copy(requestId = id, requested = scale, target = target, status = ScaleStatus.PENDING)
+        beforeRequestPublish?.invoke()
         publish(value)
         // Let stock's debouncer coalesce requests. Alignment can make a resize a no-op,
         // so a later request must never wait for a geometry event that may not arrive.
         // Even target == observed must be sent: it cancels a preceding pending resize.
-        resize(target)
+        if (resizePrecise != null) resizePrecise.invoke(target, scale) else resize(target)
         return value
     }
 
@@ -36,11 +39,11 @@ internal class LiveScale(
         record: ScrcpyRecord.Session,
         publicationLock: Any = this,
         managedResize: Boolean = false,
+        observedGeometry: Geometry = record.geometry,
         beforePublish: () -> Unit = {},
     ) {
-        // Managed displays resize through VirtualDisplay, so stock reports a display change
-        // rather than its new-display client-resize flag. Keep that raw flag unchanged.
-        value = value.copy(observed = record.geometry, clientResize = record.clientResize,
+        // Managed layout observations are display changes, not stock client-resize events.
+        value = value.copy(observed = observedGeometry, clientResize = record.clientResize,
             status = when {
                 value.target == null -> ScaleStatus.READY
                 !record.clientResize && !managedResize && value.status == ScaleStatus.PENDING -> ScaleStatus.INTERRUPTED
@@ -55,6 +58,13 @@ internal class LiveScale(
             publish(value)
         }
     }
+
+    fun observeManagedLayout(
+        observed: Geometry,
+        publicationLock: Any = this,
+        beforePublish: () -> Unit = {},
+    ) = observe(ScrcpyRecord.Session(observed, clientResize = false), publicationLock,
+        managedResize = true, beforePublish = beforePublish)
 
     companion object {
         fun unavailable(id: Long = 0, scale: Double = 1.0) =
