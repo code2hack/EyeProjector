@@ -103,6 +103,25 @@ fun serviceContextScenarios(){
             check((b.control.sink as java.io.ByteArrayOutputStream).size() == stockBefore + 32)
             service.phoneHidEdge(42, inputDown.copy(phase = com.code2hack.eyeprojector.protocol.PhoneHidPhase.UP, eventTimeMs = inputAt + 20).bytes(), cb.ownerEpoch, cb.projectionToken)
             println("PASS actual Shizuku typed Phone HID route rejects stale owner and completes current captured Session stock edges")
+            b.type.getDeclaredMethod("prepareHidRegion").apply{isAccessible=true}.invoke(b.session)
+            val original=(b.session as CapturedProjection).receiverUsability()
+            check(service.phoneHidSnapshot(ca.ownerEpoch,ca.projectionToken)==null)
+            val reader=com.code2hack.eyeprojector.directhost.activation.snapshot.NativeSnapshotReadLane()
+            reader.install(checkNotNull(service.phoneHidSnapshot(cb.ownerEpoch,cb.projectionToken)),cb)
+            val word=reader.read();val region=reader.regionId!!
+            val stampedBefore=(b.control.sink as java.io.ByteArrayOutputStream).size()
+            service.phoneHidStampedEdge(140,inputDown.bytes(),ca.ownerEpoch,ca.projectionToken,region,word)
+            check((b.control.sink as java.io.ByteArrayOutputStream).size()==stampedBefore)
+            service.phoneHidStampedEdge(141,inputDown.bytes(),cb.ownerEpoch,cb.projectionToken,region,word)
+            check((b.control.sink as java.io.ByteArrayOutputStream).size()==stampedBefore+32)
+            b.receive(com.code2hack.eyeprojector.protocol.Frame(com.code2hack.eyeprojector.protocol.Wire.RECEIVER_USABILITY,payload=
+                original.fact!!.copy(revision=original.fact.revision+1,mode=com.code2hack.eyeprojector.protocol.ReceiverUsabilityMode.NONE).bytes()))
+            service.phoneHidStampedEdge(141,inputDown.copy(phase=com.code2hack.eyeprojector.protocol.PhoneHidPhase.UP,eventTimeMs=inputAt+20).bytes(),cb.ownerEpoch,cb.projectionToken,region,word)
+            check((b.control.sink as java.io.ByteArrayOutputStream).size()==stampedBefore+64)
+            service.phoneHidStampedEdge(142,inputDown.copy(downTimeMs=inputAt+30,eventTimeMs=inputAt+30).bytes(),cb.ownerEpoch,cb.projectionToken,region,word)
+            check((b.control.sink as java.io.ByteArrayOutputStream).size()==stampedBefore+64)
+            reader.clear()
+            println("PASS actual service/route/Bridge/Session descriptor + stamped endpoint reject stale C/word and retain original UP after NONE; Binder/JNI/FD boundaries explicit")
             val current=routes.capture(b.ownerEpoch)!!.target
             Fixture(b.ownerEpoch).use { replacement ->
                 val adapter=Adapter();replacement.adapter(adapter).initialize(99);replacement.state()

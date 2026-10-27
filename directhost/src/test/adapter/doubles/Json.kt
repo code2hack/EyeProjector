@@ -19,3 +19,12 @@ class JSONObject(private val json: String = "") {
  }
  companion object { val NULL = Any() }
 }
+/** Flat synthetic chosen-app arrays only; not Android JSON/platform parsing proof. */
+class JSONArray(json:String?=null) {
+ private val values=mutableListOf<JSONObject>()
+ init { if(json!=null){require(json.startsWith("["));Regex("\\{[^{}]*\\}").findAll(json).forEach{values.add(JSONObject(it.value))}} }
+ fun length()=values.size
+ fun getJSONObject(index:Int)=values[index]
+ fun put(value:JSONObject):JSONArray{values.add(value);return this}
+ override fun toString()=values.joinToString(",","[","]")
+}

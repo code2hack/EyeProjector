@@ -148,6 +148,8 @@ internal class ExtractedHidIngress(val root: TargetRoot) {
     private val confirmTap = Runnable {}
     private val edgeTick = Runnable {}
     private var edgeScheduled = false
+    private class RetainedRevision { private var revision = 0L; fun advanceInputRevision() = ++revision }
+    private val owner: RetainedRevision? = RetainedRevision()
     private var inputGeneration = 0L
     private var nativeActionsSubmitted = 0L
     private var nativeActionsRejected = 0L
@@ -192,7 +194,7 @@ def main():
     actual = root / 'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg'
     protocol = root / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
     sources = [actual / name for name in ('HeldInputOwner.kt', 'HeldPointerDispatcher.kt', 'LocalPointerDispatcher.kt', 'PadGestureRecognizer.kt', 'HeadPointerModel.kt', 'HeadOrientation.kt')]
-    sources += [protocol / name for name in ('Touch.kt', 'Wire.kt', 'PhoneInput.kt')]
+    sources += [protocol / name for name in ('Touch.kt', 'Wire.kt', 'ActivationControl.kt', 'ReceiverUsability.kt', 'PhoneInput.kt')]
     sources += sorted((suite / 'helddoubles').glob('*.kt')) + [suite / 'HeldLocalScenarios.kt']
     unit = root / 'directrg/src/test/kotlin/com/code2hack/eyeprojector/directrg'
     sources += [unit / name for name in ('HeldInputOwnerTest.kt', 'HeldPointerDispatcherTest.kt')]

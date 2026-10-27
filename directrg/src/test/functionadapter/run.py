@@ -76,15 +76,18 @@ internal class ActivityFunctionWiring : Activity() {
     val connectionView = Boundary()
     val connectButton = Boundary()
     val presentation = SessionPresentation()
-    val attachment = Attachment()
+    var owner: ReceiverSessionOwner? = ReceiverSessionOwner { session = null; streaming = false; presentation.disconnected() }
     var session: Session? = null
-    var peerSession: Peer? = null
-    var sessionClient: PairedSessionClient? = null
+        set(value) { field = value; owner?.session = value }
+    var bound = false
+    val serviceConnection = Any()
+    val sessionView = Any()
+    var disconnectBeforeBinding = false
+    var connectBeforeBinding = false
     var resumed = true
     var streaming = false
     var currentGeometry: Any? = null
     var connectRequested = false
-    var clientGeneration = 0L
     var edgeScheduled = false
     var inputGeneration = 0L
     val confirmTap = Runnable {}
@@ -103,7 +106,9 @@ internal class ActivityFunctionWiring : Activity() {
     private fun projectedInput() = streaming && presentation.projectedInput
     private fun publishHeadPointer() {}
     private fun resize() { cancelInput(); resizes++ }
-    private fun observePeer(peer: Peer) { observed++ }
+    private fun attachPresentation() { owner?.attach() }
+    private fun stopService(intent: Intent): Boolean { owner?.close(); return true }
+    private fun unbindService(connection: Any) {}
     private fun showStatus(text: String) {}
     private fun getString(id: Int) = "resource-$id"
     fun invalidate() = cancelInput()

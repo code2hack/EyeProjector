@@ -1,9 +1,65 @@
 package com.code2hack.eyeprojector.directhost.apps
 
+import com.code2hack.eyeprojector.directhost.notifications.AppNotificationStorage
+import com.code2hack.eyeprojector.directhost.notifications.AppNotificationStore
+import com.code2hack.eyeprojector.directhost.scale.AppScaleStorage
+import com.code2hack.eyeprojector.directhost.scale.AppScaleStore
 import org.junit.Assert.*
 import org.junit.Test
 
 class ChosenAppStoreTest {
+    private class Notifications : AppNotificationStorage {
+        val values = mutableMapOf<String, Boolean>()
+        override fun read(packageName: String) = values[packageName]
+        override fun write(packageName: String, enabled: Boolean) { values[packageName] = enabled }
+    }
+
+    @Test fun notificationsDefaultOnWithoutReplacingExplicitChoices() {
+        val storage = Notifications()
+        val preferences = AppNotificationStore(storage)
+        assertTrue(preferences.isEnabled("example.new"))
+        assertTrue(storage.values.isEmpty()) // The default is not an explicit saved choice.
+        preferences.setEnabled("example.off", false)
+        preferences.setEnabled("example.on", true)
+        assertEquals(mapOf("example.off" to false, "example.on" to true), storage.values)
+        val reopened = AppNotificationStore(storage)
+        assertFalse(reopened.isEnabled("example.off"))
+        assertTrue(reopened.isEnabled("example.on"))
+        assertTrue(reopened.isEnabled("example.new"))
+        reopened.setEnabled("example.off", true)
+        reopened.setEnabled("example.on", false)
+        assertTrue(preferences.isEnabled("example.off")) // Existing consumers read the current choice.
+        assertFalse(preferences.isEnabled("example.on"))
+    }
+
+    @Test fun notificationChoicesLeaveChosenOrderAndScaleIntactAcrossReloadAndReadd() {
+        val selection = Storage()
+        val apps = ChosenAppStore(selection)
+        val alpha = InstalledApp("example.alpha", "Alpha")
+        val beta = InstalledApp("example.beta", "Beta")
+        apps.add(beta); apps.add(alpha)
+        val saved = apps.read()
+        val scales = mutableMapOf("example.alpha" to 1.5, "example.beta" to .75)
+        val scaleStore = AppScaleStore(object : AppScaleStorage {
+            override fun read(packageName: String) = scales[packageName]
+            override fun write(packageName: String, scale: Double): Boolean {
+                scales[packageName] = scale
+                return true
+            }
+        })
+        val storage = Notifications()
+        AppNotificationStore(storage).setEnabled(alpha.packageName, false)
+        AppNotificationStore(storage).setEnabled(beta.packageName, true)
+        assertEquals(saved, ChosenAppStore(selection).entries(Catalog(listOf(alpha, beta))).map { it.app })
+        assertEquals(1.5, scaleStore.read(alpha.packageName), 0.0)
+        assertEquals(.75, scaleStore.read(beta.packageName), 0.0)
+        apps.remove(alpha.packageName)
+        apps.add(alpha.copy(label = "New launcher label"))
+        assertEquals(listOf(beta.packageName, alpha.packageName), apps.read().map { it.packageName })
+        assertFalse(AppNotificationStore(storage).isEnabled(alpha.packageName))
+        assertTrue(AppNotificationStore(storage).isEnabled(beta.packageName))
+    }
+
     private class Storage : ChosenAppStorage {
         private var apps = emptyList<ChosenApp>()
         override fun read() = apps.toList()

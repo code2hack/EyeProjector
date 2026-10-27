@@ -12,6 +12,7 @@ import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.code2hack.eyeprojector.directhost.activation.*
 import com.code2hack.eyeprojector.directhost.ExtractedHostHid
 import com.code2hack.eyeprojector.directhost.PhoneSessionController
 import com.code2hack.eyeprojector.directhost.input.PhoneHidRoute
@@ -25,6 +26,19 @@ private fun equal(expected: Any?, actual: Any?, reason: String) {
     check(expected == actual) { "$reason: expected <$expected>, actual <$actual>" }
 }
 
+/** Explicit ready local port keeps isolated controller/lifecycle tests independent of absent native setup. */
+private fun routedRuntime():PhoneHidRuntime {
+ val runtime=PhoneHidRuntime.get(Context())
+ runtime.controller.activation=object:PhoneHidActivation {
+  override fun needsWake()=false
+  override fun request(cause:ActivationCause)=Unit
+  override fun capture()=PhoneHidCapture(PhoneHidDisposition.USABLE,
+   HidWakeRequest(PhoneHidDisposition.USABLE,PhoneSessionController.fixture.captureHidAuthority()),
+   PhoneSessionController.fixture::capturePhoneHidRoute)
+ }
+ return runtime
+}
+
 private val peripheral = InputDevice(41, "phone-fixture:descriptor", 0x1209, 0x0017, "External Phone fixture")
 private fun binding(device: InputDevice = peripheral, key: Int = 195, scan: Int = 700) = PhoneHidBinding(
     PhoneHidButton(PhoneHidDeviceIdentity(device.descriptor, device.vendorId, device.productId), key, scan),
@@ -33,7 +47,7 @@ private fun event(at: Long, down: Long = at, phase: PhoneHidPhase = PhoneHidPhas
                   device: InputDevice = peripheral, key: Int = 195, scan: Int = 700, repeat: Int = 0) =
     PhoneHidController.Event(device.id, binding(device, key, scan), phase, down, at, repeat)
 
-private class Rig {
+private class Rig(activation: PhoneHidActivation = PhoneHidActivation.Unwired) {
     data class Call(val kind: String, val route: PhoneHidRoute?, val edge: PhoneHidEdge?)
     val calls = mutableListOf<Call>()
     val writes = mutableListOf<String>()
@@ -54,7 +68,7 @@ private class Rig {
         }
         override fun submit(route: PhoneHidRoute, edge: PhoneHidEdge) { calls.add(Call("submit", route, edge)); onSubmit(edge) }
         override fun cancel(route: PhoneHidRoute, eventTimeMs: Long) { calls.add(Call("cancel", route, null)); onCancel() }
-    }, { operation, complete -> jobs.add(Pair(operation, complete)) }, { clock }, { onChanged() })
+    }, { operation, complete -> jobs.add(Pair(operation, complete)) }, { clock }, { onChanged() }, activation)
     fun flush() { while (jobs.isNotEmpty()) { val (operation, complete) = jobs.removeAt(0); operation(); complete() } }
     fun once(action: () -> Unit) { onChanged = { onChanged = {}; action() } }
     fun seed(action: PhoneHidAction, key: Int = 195, scan: Int = 700) { check(bindings.assign(action, binding(key = key, scan = scan))) }
@@ -222,7 +236,7 @@ private fun rows(panel: PhoneHidPanel) = panel.children.filterIsInstance<Button>
 private fun text(panel: PhoneHidPanel) = panel.children.filterIsInstance<TextView>().map { it.text.toString() }
 
 private fun actualPanelServiceAndAsyncPersistenceRetainStickySelectionAndSingleDownRoutes() {
-    val context = Context(); val runtime = PhoneHidRuntime.get(context); val input = runtime.controller
+    val context = Context(); val runtime = routedRuntime(); val input = runtime.controller
     val service = PhoneHidKeyService(); service.onServiceConnected()
     val panel = PhoneHidPanel(context, runtime) {}; panel.open()
     try {
@@ -290,7 +304,7 @@ private fun actualPanelServiceAndAsyncPersistenceRetainStickySelectionAndSingleD
 }
 
 private fun actualServiceCorrelatesChangedMissingAndRetiredReleasesBeforeMetadata() {
-    val runtime = PhoneHidRuntime.get(Context()); val input = runtime.controller
+    val runtime = routedRuntime(); val input = runtime.controller
     input.closePage(); check(input.bindings.assign(PhoneHidAction.TAP, binding()))
     val service = PhoneHidKeyService(); service.onServiceConnected()
     try {
@@ -315,7 +329,7 @@ private fun actualServiceCorrelatesChangedMissingAndRetiredReleasesBeforeMetadat
 }
 
 private fun actualNativeExclusionUnknownKeysAndUnavailableTargetsNeverReplay() {
-    val runtime = PhoneHidRuntime.get(Context()); val input = runtime.controller
+    val runtime = routedRuntime(); val input = runtime.controller
     input.closePage(); input.cancelInput(); check(input.bindings.assign(PhoneHidAction.TAP, binding()))
     val service = PhoneHidKeyService(); service.onServiceConnected()
     try {
@@ -393,7 +407,7 @@ private fun actualSettingsObservationResetFailureAndLifecycleAreTruthful() {
 }
 
 private fun ordinaryHostStopDoesNotCancelOperationalHidAndInterruptRetiresOldOwner() {
-    val runtime = PhoneHidRuntime.get(Context()); val input = runtime.controller
+    val runtime = routedRuntime(); val input = runtime.controller
     input.closePage(); check(input.bindings.assign(PhoneHidAction.TAP, binding()))
     val host = ExtractedHostHid(); val service = PhoneHidKeyService(); service.onServiceConnected()
     try {
@@ -447,7 +461,7 @@ private fun releasedFunctionCallerRouteRetiresAtEveryExplicitBoundary() {
 }
 
 private fun actualServiceFunctionSequenceKeepsOnlyLatestReleasedCallerRoute() {
-    val runtime = PhoneHidRuntime.get(Context()); val input = runtime.controller
+    val runtime = routedRuntime(); val input = runtime.controller
     input.closePage(); input.cancelInput()
     check(input.bindings.assign(PhoneHidAction.FUNCTION, binding(key = 198, scan = 798)))
     val service = PhoneHidKeyService(); service.onServiceConnected()
@@ -555,7 +569,7 @@ private fun passedThroughHoldSurvivesUiAndDeviceTransitionsWithoutLearning() {
         check(PhoneHidAction.entries.all { r.bindings.binding(it) == null })
         equal(if (boundary == "reset") 1 else 0, r.writes.size, "only explicit reset may write")
     }
-    val runtime = PhoneHidRuntime.get(Context()); val input = runtime.controller
+    val runtime = routedRuntime(); val input = runtime.controller
     val service = PhoneHidKeyService(); service.onServiceConnected()
     try {
         for ((index, transition) in listOf("changed", "removed", "missing").withIndex()) {
@@ -608,6 +622,8 @@ fun main() {
         "cold orphan edges stay false while admitted captured and retired edges remain owned" to ::coldOrphanEdgesStayFalseWhileActualOwnedAndRetiredEdgesStayTrue,
         "pass-through hold survives UI and changed removed missing-device transitions without learning" to ::passedThroughHoldSurvivesUiAndDeviceTransitionsWithoutLearning,
     )
+    scenarios.putAll(activationScenarios())
+    scenarios.putAll(wakeScenarios())
     val failures = mutableListOf<String>()
     try {
         scenarios.forEach { (name, run) ->
@@ -615,10 +631,207 @@ fun main() {
             catch (failure: Throwable) { failures.add(name); System.err.println("FAIL: $name"); failure.printStackTrace() }
         }
     } finally {
-        val runtime = PhoneHidRuntime.get(Context())
+        val runtime = routedRuntime()
         val writer = runtime.javaClass.getDeclaredField("writer").apply { isAccessible = true }.get(runtime) as ExecutorService
         writer.shutdownNow(); writer.awaitTermination(2, TimeUnit.SECONDS); MainQueue.drain()
     }
     check(failures.isEmpty()) { "${failures.size}/${scenarios.size} Phone HID host scenarios failed: ${failures.joinToString()}" }
     println("PASS: ${scenarios.size} Phone HID host scenarios; explicit Android/accessibility/session seam doubles only.")
+}
+
+private class WakePort : PhoneHidActivation {
+    var needed = true
+    val requests = mutableListOf<ActivationCause>()
+    var onRequest: () -> Unit = {}
+    override fun needsWake() = needed
+    override fun request(cause: ActivationCause) { requests.add(cause); onRequest() }
+}
+
+private fun wakeOnlyOwnsBoundAndUnboundFullGestureThroughReadiness() {
+    for (bound in listOf(false, true)) {
+        val port = WakePort(); val r = Rig(port)
+        if (bound) r.seed(PhoneHidAction.TAP)
+        port.onRequest = { port.needed = false }
+        check(r.input.accept(event(1000)))
+        check(r.input.accept(event(1005, 1000)))
+        check(r.input.accept(event(1010, 1000, repeat = 1)))
+        check(r.input.accept(event(1020, 1000, PhoneHidPhase.UP)))
+        check(r.input.accept(event(1025, 1000, PhoneHidPhase.CANCEL)))
+        equal(listOf(ActivationCause.HID_PRESS), port.requests, "one request for the original physical press")
+        check(r.calls.isEmpty())
+        equal(bound, r.input.accept(event(1100)), "later ready input preserves ordinary assignment/pass-through")
+        equal(bound, r.input.accept(event(1120, 1100, PhoneHidPhase.UP)), "later ready release preserves disposition")
+        equal(if (bound) listOf("capture", "submit") else emptyList<String>(), r.calls.map { it.kind }, "wake action was never replayed")
+    }
+}
+
+private fun wakeRawOwnershipSurvivesOverlappingSameKeyAndMetadataLoss() {
+    val port = WakePort(); val r = Rig(port); r.seed(PhoneHidAction.TAP)
+    check(r.input.accept(event(1000)))
+    port.needed = false
+    check(r.input.accept(event(1100)))
+    // Same-key later normal DOWN overwrote lastDowns; older wake ownership remains independent.
+    check(r.input.consumeUnavailable(41, 195, 700, 1000, PhoneHidPhase.DOWN, 1))
+    check(r.input.consumeChanged(41, 195, 700, 1000, PhoneHidPhase.UP, PhoneHidDeviceIdentity("changed", 1, 2)))
+    check(r.input.accept(event(1120, 1100, PhoneHidPhase.UP)))
+    equal(listOf("capture", "submit"), r.calls.map { it.kind }, "late old wake release leaves newer route alone")
+    check(r.calls.all { it.edge!!.downTimeMs == 1100L })
+    equal(1, port.requests.size, "metadata loss never requests another activation")
+}
+
+private fun wakeReentryAndCancellationNeverRestoreOldInput() {
+    for (boundary in listOf("cancel", "removed", "connection", "page")) {
+        val port = WakePort(); val r = Rig(port); r.seed(PhoneHidAction.TAP)
+        port.onRequest = {
+            port.onRequest = {}
+            when (boundary) {
+                "cancel" -> r.input.cancelInput()
+                "removed" -> r.input.deviceRemoved(peripheral.id)
+                "connection" -> r.input.connection(false)
+                else -> r.input.openPage()
+            }
+            port.needed = false
+            check(r.input.accept(event(1020, 1000, PhoneHidPhase.CANCEL)))
+            check(r.input.accept(event(1100)))
+            check(r.input.accept(event(1120, 1100, PhoneHidPhase.UP)))
+        }
+        check(r.input.accept(event(1000)))
+        check(r.input.accept(event(1130, 1000, PhoneHidPhase.UP)))
+        equal(1, port.requests.size, "$boundary cannot request from old wake edges")
+        equal(listOf("capture", "submit"), r.calls.map { it.kind }, "$boundary retains only newer ready input")
+        check(r.calls.all { it.edge!!.downTimeMs == 1100L })
+    }
+    val failed = WakePort(); val r = Rig(failed); r.seed(PhoneHidAction.TAP)
+    failed.onRequest = { throw IllegalStateException("local seam request failed") }
+    check(r.input.accept(event(1000)))
+    check(r.input.accept(event(1020, 1000, PhoneHidPhase.UP)))
+    check(r.calls.isEmpty() && failed.requests.size == 1)
+}
+
+private fun wakeDuringStickyLearningPreservesConfigurationAndPassedGestures() {
+    val port = WakePort(); val r = Rig(port)
+    r.input.openPage(); r.input.select(PhoneHidAction.FUNCTION)
+    port.onRequest = { port.needed = false; check(r.input.accept(event(1020, 1000, PhoneHidPhase.UP))) }
+    check(r.input.accept(event(1000)))
+    r.flush()
+    equal(binding(), r.bindings.binding(PhoneHidAction.FUNCTION), "disconnected learning still saves its original row")
+    equal(PhoneHidAction.FUNCTION, r.input.selected, "sticky selection remains")
+    check(r.calls.isEmpty() && port.requests.size == 1)
+
+    val passed = WakePort().apply { needed = false }; val p = Rig(passed)
+    check(!p.input.accept(event(2000)))
+    passed.needed = true
+    check(!p.input.accept(event(2005, 2000)))
+    check(!p.input.accept(event(2010, 2000, repeat = 1)))
+    check(!p.input.accept(event(2020, 2000, PhoneHidPhase.UP)))
+    check(passed.requests.isEmpty())
+    check(p.input.accept(event(2100)))
+    check(p.input.accept(event(2120, 2100, PhoneHidPhase.UP)))
+    equal(1, passed.requests.size, "only the next fresh DOWN may request wake")
+}
+
+private fun actualServiceAttachmentAndWakeUseTheExplicitLocalPort() {
+    val runtime = routedRuntime(); val input = runtime.controller
+    val service = PhoneHidKeyService(); val port = WakePort()
+    input.closePage(); input.cancelInput(); input.activation = port
+    service.onServiceConnected()
+    try {
+        Environment.inputManager.install(peripheral)
+        service.onInputDeviceAdded(peripheral.id)
+        for (excluded in listOf(peripheral.copy(id = 81, isExternal = false),
+            peripheral.copy(id = 82, isVirtual = true), peripheral.copy(id = 83, name = "ROKID,PSOC-TP-R"),
+            peripheral.copy(id = 84, name = "qpnp_pon"))) {
+            Environment.inputManager.install(excluded)
+            service.onInputDeviceAdded(excluded.id)
+        }
+        service.onInputDeviceAdded(999)
+        service.onInputDeviceChanged(peripheral.id)
+        equal(listOf(ActivationCause.HID_ATTACHMENT), port.requests, "only actual eligible attachment requests activation")
+        PhoneSessionController.fixture.clear()
+        val key = 391; val scan = 901; val at = 65000L
+        check(serviceEdge(service, at, key = key, scan = scan))
+        port.needed = false
+        check(serviceEdge(service, at + 10, at, device = null, key = key, scan = scan, repeat = 1, attachment = peripheral.id))
+        service.onInputDeviceRemoved(peripheral.id)
+        check(serviceEdge(service, at + 20, at, KeyEvent.ACTION_UP, device = null, key = key, scan = scan, attachment = peripheral.id))
+        equal(listOf(ActivationCause.HID_ATTACHMENT, ActivationCause.HID_PRESS), port.requests, "missing/removed facts keep original wake disposition")
+        check(!serviceEdge(service, at + 100, key = key, scan = scan))
+        check(!serviceEdge(service, at + 120, at + 100, KeyEvent.ACTION_UP, key = key, scan = scan))
+        check(PhoneSessionController.fixture.calls.isEmpty())
+    } finally { input.activation = PhoneHidActivation.Unwired; service.onDestroy() }
+}
+
+private fun wakeScenarios(): Map<String, () -> Unit> = linkedMapOf(
+    "wake-only bound/unbound DOWN owns repeat and terminal through readiness" to ::wakeOnlyOwnsBoundAndUnboundFullGestureThroughReadiness,
+    "wake raw ownership survives overlapping same-key DOWN and missing/changed device facts" to ::wakeRawOwnershipSurvivesOverlappingSameKeyAndMetadataLoss,
+    "wake request reentry cancellation and failure never restore old target input" to ::wakeReentryAndCancellationNeverRestoreOldInput,
+    "newer wake retires older normal constructing and released Function routes" to ::newerWakeRetiresOldNormalAndConstructingOwners,
+    "wake permits sticky configuration while preserving an old passed gesture" to ::wakeDuringStickyLearningPreservesConfigurationAndPassedGestures,
+    "actual service attachment and raw wake ingress use an explicit unwired local integration port" to ::actualServiceAttachmentAndWakeUseTheExplicitLocalPort,
+)
+
+
+private fun newerWakeRetiresOldNormalAndConstructingOwners() {
+    for (action in listOf(PhoneHidAction.TAP, PhoneHidAction.FUNCTION)) {
+        val port = WakePort().apply { needed = false }; val r = Rig(port); r.seed(action)
+        check(r.input.accept(event(1000)))
+        if (action == PhoneHidAction.FUNCTION) check(r.input.accept(event(1020, 1000, PhoneHidPhase.UP)))
+        port.needed = true
+        check(r.input.accept(event(1100)))
+        check(r.input.accept(event(1120, 1000, PhoneHidPhase.UP)))
+        check(r.input.accept(event(1130, 1100, PhoneHidPhase.UP)))
+        equal(if (action == PhoneHidAction.FUNCTION) listOf("capture", "submit", "cancel") else listOf("capture", "cancel"),
+            r.calls.map { it.kind }, "wake supersedes exact old $action, including its quiet recognition")
+        equal(1, port.requests.size, "one fresh wake request")
+    }
+    val port = WakePort().apply { needed = false }; val r = Rig(port); r.seed(PhoneHidAction.TAP)
+    r.onCapture = {
+        r.onCapture = {}
+        port.needed = true
+        check(r.input.accept(event(1100)))
+        port.needed = false
+        check(r.input.accept(event(1120, 1100, PhoneHidPhase.UP)))
+    }
+    check(r.input.accept(event(1000)))
+    check(r.input.accept(event(1200, 1000, PhoneHidPhase.UP)))
+    equal(listOf("capture", "cancel"), r.calls.map { it.kind }, "constructing original route is canceled on return, never completed after wake")
+    check(r.calls[0].route === r.calls[1].route)
+
+    val early = WakePort().apply { needed = false }; val before = Rig(early); before.seed(PhoneHidAction.TAP)
+    before.input.openPage()
+    before.once { early.needed = true; check(before.input.accept(event(1100))) }
+    check(before.input.accept(event(1000)))
+    check(before.input.accept(event(1200, 1000, PhoneHidPhase.UP)))
+    check(before.calls.isEmpty()) // Newer wake retired the outer normal owner before route construction.
+    equal(1, early.requests.size, "constructing owner did not restore a route")
+
+    val original = WakePort().apply { needed = false }; val captured = Rig(original); captured.seed(PhoneHidAction.TAP)
+    val replacementPort = WakePort()
+    check(captured.input.accept(event(1500)))
+    original.needed = true
+    captured.onCancel = { captured.input.activation = replacementPort }
+    check(captured.input.accept(event(1600)))
+    check(captured.input.accept(event(1620, 1600, PhoneHidPhase.UP)))
+    equal(1, original.requests.size, "wake retains its exact original local activation port")
+    check(replacementPort.requests.isEmpty())
+
+    for (cancelCallback in listOf("up", "stop", "newer")) {
+        val reentrant = WakePort().apply { needed = false }; val s = Rig(reentrant); s.seed(PhoneHidAction.TAP)
+        check(s.input.accept(event(2000)))
+        reentrant.needed = true
+        s.onCancel = {
+            s.onCancel = {}
+            check(s.input.accept(event(2120, 2100, PhoneHidPhase.UP)))
+            if (cancelCallback == "stop") s.input.cancelInput()
+            if (cancelCallback == "newer") {
+                reentrant.needed = false
+                check(s.input.accept(event(2200)))
+                check(s.input.accept(event(2220, 2200, PhoneHidPhase.UP)))
+            }
+        }
+        check(s.input.accept(event(2100)))
+        check(s.calls.none { it.kind == "submit" && it.edge!!.downTimeMs == 2000L })
+        equal(if (cancelCallback == "up") 1 else 0, reentrant.requests.size,
+            "old cancellation $cancelCallback reentry cannot restart a retired wake request")
+    }
 }

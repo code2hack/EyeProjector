@@ -19,10 +19,14 @@ class ShizukuHostService internal constructor(
         OwnedShellSessions(File("/data/local/tmp", "eyeprojector-${context.packageName}-${context.applicationInfo.uid}")), null)
     private val lifecycle = OwnedHostLifecycle()
     @Volatile private var projectionBridge: Bridge? = null
+    @Volatile private var lastProjectionBridge: Bridge? = null
+    private val retiredManagedBridges = java.util.concurrent.ConcurrentHashMap.newKeySet<Bridge>()
     private val panelRoutes = PanelSessionRoutes<Bridge> { it.invalidatePanelOperations() }
     @Volatile private var revokeFailed = false
     @Volatile private var attribution = JSONObject()
     @Volatile private var sessionEpoch = ""
+    private val microphoneEndpoint: ActiveHeadsetSco = ActiveHeadsetSco { microphoneRoute.refresh() }
+    private val microphoneRoute: GlassesMicrophoneRoute = GlassesMicrophoneRoute(microphoneEndpoint::resolve).also { it.start() }
 
     override fun status(): String {
         val snapshot = lifecycle.status()
@@ -36,6 +40,14 @@ class ShizukuHostService internal constructor(
             .put("panelPower", panelPowerJson(panel))
             .put("projectionToken", projection.projectionToken.takeIf { projection.ownerEpoch == route?.owner?.epoch }.orEmpty())
             .put("shellUid", Process.myUid()).put("pid", Process.myPid())
+            .put("glassesMicrophone", microphoneStatus())
+            .put("managedProjection", (route?.target ?: projectionBridge ?: lastProjectionBridge)?.managedProjectionStatus() ?: JSONObject())
+            .put("retiredManagedProjections", org.json.JSONArray().also { values ->
+                retiredManagedBridges.forEach { original ->
+                    if (original.managedProjectionRetired()) retiredManagedBridges.remove(original)
+                    else values.put(original.managedProjectionStatus())
+                }
+            })
             .put("serverSha256", ShellMain.SERVER_SHA256).put("attribution", attribution).toString()
     }
 
@@ -59,11 +71,19 @@ class ShizukuHostService internal constructor(
             projectionBridge = bridge
             panelRoutes.publish(panelOwner, bridge)
             object : OwnedHostLifecycle.Backend {
-                override fun run() = bridge.run()
+                override fun run() {
+                    microphoneRoute.setEnabled(true)
+                    try { bridge.run() } finally { microphoneRoute.setEnabled(false) }
+                }
                 override fun close() {
+                    microphoneRoute.setEnabled(false)
                     try { bridge.close() } finally {
+                        if (bridge.managedProjectionEnabled && !bridge.managedProjectionRetired()) retiredManagedBridges.add(bridge)
                         panelRoutes.complete(panelOwner, bridge, bridge.panelState())
-                        if (projectionBridge === bridge) projectionBridge = null
+                        if (projectionBridge === bridge) {
+                            lastProjectionBridge = bridge
+                            projectionBridge = null
+                        }
                     }
                 }
             }
@@ -83,7 +103,11 @@ class ShizukuHostService internal constructor(
         val apk = File(context.applicationInfo.sourceDir)
         attribution = JSONObject().put("apkSha256", sha256(apk)).put("apk", apk.path)
             .put("sessionDirectory", session.path).put("sessionOwnerUid", Process.myUid())
-        return Bridge(session, jar, reportStatus = report, ownerEpoch = ownerEpoch)
+        val endpoint = java.util.Properties().apply { files.endpoint.inputStream().use { load(it) } }
+        val managedDisplayFactory: (((String, Int?, Int?) -> Unit) -> ManagedProjectionDisplay)? =
+            if (endpoint.getProperty("camera.source") == "glasses") ({ observe -> ManagedProjectionDisplay.create(observe) }) else null
+        return Bridge(session, jar, reportStatus = report, ownerEpoch = ownerEpoch,
+            managedDisplayFactory = managedDisplayFactory)
     }
 
     @Synchronized override fun stop(): String {
@@ -123,6 +147,21 @@ class ShizukuHostService internal constructor(
         target.phoneHidEdge(routeId, edge)
     }
 
+    override fun phoneHidSnapshot(expectedOwnerEpoch: String, expectedProjectionToken: String):
+        com.code2hack.eyeprojector.directhost.activation.snapshot.NativeSnapshotDescriptor? {
+        val expected = ProjectionContext(expectedOwnerEpoch, expectedProjectionToken)
+        val original = panelRoutes.capture(expected.ownerEpoch)?.target?.captureProjection(expected) ?: return null
+        return original.phoneHidSnapshot() // Admission has ended before descriptor FD duplication.
+    }
+
+    override fun phoneHidStampedEdge(routeId: Long, typedEdge: ByteArray, expectedOwnerEpoch: String,
+        expectedProjectionToken: String, regionId: String, word: Long) {
+        val expected = ProjectionContext(expectedOwnerEpoch, expectedProjectionToken)
+        val original = panelRoutes.capture(expected.ownerEpoch)?.target?.captureProjection(expected) ?: return
+        val edge = runCatching { com.code2hack.eyeprojector.protocol.PhoneHidEdge.from(typedEdge) }.getOrNull() ?: return
+        original.phoneHidStampedEdge(routeId, edge, regionId, word)
+    }
+
     private fun captureLaunchTarget(expected: ProjectionContext): CapturedProjection? =
         panelRoutes.capture(expected.ownerEpoch)?.target?.captureProjection(expected)
 
@@ -140,10 +179,30 @@ class ShizukuHostService internal constructor(
 
     private fun currentPanelState(): PanelPowerState = panelRoutes.current()?.target?.panelState() ?: panelRoutes.lastState()
 
+    private fun microphoneStatus(): JSONObject {
+        val value = microphoneRoute.status()
+        return JSONObject().put("phase", value.phase).put("enabled", value.enabled)
+            .put("mode", value.observedMode ?: JSONObject.NULL)
+            .put("communicationOutputId", value.observedCommunicationId ?: JSONObject.NULL)
+            .put("routeAccepted", value.routeAccepted ?: JSONObject.NULL)
+            .put("routeReleaseOutstanding", value.routeReleaseOutstanding)
+            .put("modeReleaseOutstanding", value.modeReleaseOutstanding)
+            .put("failureStage", value.failureStage ?: JSONObject.NULL)
+            .put("failureClass", value.failureClass ?: JSONObject.NULL)
+            .put("headset", microphoneEndpoint.status())
+            .put("recordings", org.json.JSONArray().also { rows -> value.recordings.forEach { recording ->
+                rows.put(JSONObject().put("sessionId", recording.sessionId)
+                    .put("source", recording.clientSource).put("inputId", recording.inputId ?: JSONObject.NULL)
+                    .put("inputType", recording.inputType ?: JSONObject.NULL).put("silenced", recording.silenced))
+            } })
+    }
+
 
 
     override fun destroy() {
         stop()
+        microphoneRoute.close()
+        microphoneEndpoint.close()
         // Shizuku's reserved destroy transaction ends this exact owned process.
         kotlin.system.exitProcess(0)
     }

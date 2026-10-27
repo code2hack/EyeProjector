@@ -30,11 +30,11 @@ protocol = repo / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
 sources = sorted((suite / 'doubles').glob('*.kt')) + [suite / 'Scenarios.kt', suite / 'PhoneActivityScenarios.kt', suite / 'ScaleActivityScenarios.kt', suite / 'P2Scenarios.kt']
 sources += [host / name for name in (
     'PhoneSessionController.kt', 'SessionController.kt', 'SessionAttemptStore.kt',
-    'ProjectionContext.kt', 'ProjectionDisplayState.kt', 'ProjectedHomeActivity.kt', 'HostActivity.kt',
+    'ProjectionContext.kt', 'SessionUsability.kt', 'ProjectionDisplayState.kt', 'ProjectedHomeActivity.kt', 'HostActivity.kt',
     'apps/ChosenAppStore.kt', 'scale/AppScaleCoordinator.kt', 'scale/AppScaleStore.kt',
     'scale/AppScalePreferences.kt', 'scale/AppScaleActivity.kt',
 )]
-sources += [protocol / name for name in ('SessionState.kt', 'Wire.kt', 'PhoneInput.kt', 'Touch.kt', 'LayoutScale.kt')]
+sources += [protocol / name for name in ('SessionState.kt', 'Wire.kt', 'ActivationControl.kt', 'ReceiverUsability.kt', 'PhoneInput.kt', 'Touch.kt', 'LayoutScale.kt')]
 missing = [str(path) for path in sources if not path.is_file()]
 if missing:
     parser.error('Missing source files: ' + ', '.join(missing))

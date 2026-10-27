@@ -32,6 +32,14 @@ internal class OrderedControlDispatcher(private val onFailure: (Exception) -> Un
 
     @Synchronized fun submit(eventTimeMs: Long, isCurrent: () -> Boolean, category: String = "input", preserveTiming: Boolean = true, write: () -> Unit): Boolean {
         if (closed) { rejected++; return false }
+        // A new live burst must not inherit an old write's backpressure offset.
+        // Keep pacing only while earlier work is actually queued or in flight.
+        if (preserveTiming && jobs.isEmpty() && inFlight == 0L) {
+            lastEventMs = null
+            lastDueNs = 0L
+            lastWrittenEventMs = null
+            lastWriteEndNs = 0L
+        }
         val now = System.nanoTime()
         val delta = if (!preserveTiming) 0L else lastEventMs?.let { (eventTimeMs - it).coerceAtLeast(0) * 1_000_000 } ?: 0L
         val due = if (preserveTiming) maxOf(now, lastDueNs + delta) else now

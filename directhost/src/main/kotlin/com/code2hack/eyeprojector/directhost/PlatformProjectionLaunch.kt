@@ -22,8 +22,12 @@ internal class PlatformProjectionLaunch(
     }
 
     override fun foreground(displayId: Int): String? {
+        return foregroundComponent(displayId)?.substringBefore('/')
+    }
+
+    override fun foregroundComponent(displayId: Int): String? {
         val result = commands.run(listOf("/system/bin/dumpsys", "-t", "2", "activity", "activities"), 3000)
-        return if (result.exit == 0 && !result.timedOut) ProjectionLaunchCommands.foreground(result.output, displayId) else null
+        return if (result.exit == 0 && !result.timedOut) ProjectionLaunchCommands.foregroundComponent(result.output, displayId) else null
     }
 
     override fun close() = commands.close()

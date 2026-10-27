@@ -17,6 +17,38 @@ import java.util.concurrent.atomic.AtomicInteger
 class SessionControlTest {
     @get:Rule val temporary = TemporaryFolder()
 
+    @Test fun activationScopesRoundTripIndependentlyOfAttemptsAndMedia() {
+        val incarnation = ReceiverIncarnation("receiver-incarnation", 7)
+        val request = SessionControl.Request(SessionControl.Operation.STATUS, "backend", "admission",
+            ActivationIntent("original-trigger"), CancelTrigger("canceled-trigger", "original-admission"),
+            CancelActivation("whole-activation"), incarnation,
+            PresentationReport("whole-activation", "backend", 3, incarnation, 9, ReceiverUsabilityMode.NONE, "DISPLAY_DETACHED"))
+        val encoded = ByteArrayOutputStream().also { SessionControl.writeRequest(DataOutputStream(it), request) }
+        assertEquals(request, SessionControl.readRequest(DataInputStream(encoded.toByteArray().inputStream())))
+        val state = SessionState("backend", SessionPhase.STOPPING, receipt = AttemptReceipt("admission", "backend", AttemptDisposition.CANCEL_PENDING),
+            activation = ActivationReply(ActivationDirective("whole-activation", false, 3, "backend"),
+                TriggerReceipt("original-trigger", "whole-activation", TriggerDisposition.CANCELED), "whole-activation"))
+        val reply = ByteArrayOutputStream().also { SessionControl.writeState(DataOutputStream(it), state) }
+        assertEquals(state, SessionControl.readState(DataInputStream(reply.toByteArray().inputStream())))
+    }
+
+    @Test fun typedGoalsAndPresentationModesRoundTripWithoutCollapsingLocalAndProjected() {
+        val i = ReceiverIncarnation("typed-receiver", 2)
+        for (mode in ReceiverUsabilityMode.entries) {
+            val report = PresentationReport("H", "A", 4, i, 7, mode)
+            val request = SessionControl.Request(SessionControl.Operation.STATUS, incarnation = i, presentation = report)
+            val bytes = ByteArrayOutputStream().also { SessionControl.writeRequest(DataOutputStream(it), request) }
+            val decoded = SessionControl.readRequest(DataInputStream(bytes.toByteArray().inputStream()))
+            assertEquals(request, decoded)
+            assertEquals(mode != ReceiverUsabilityMode.NONE, decoded.presentation!!.presented)
+        }
+        for (goal in ActivationGoal.entries) {
+            val state = SessionState("A", SessionPhase.STREAMING, activation = ActivationReply(ActivationDirective("H", true, 4, "A", goal)))
+            val bytes = ByteArrayOutputStream().also { SessionControl.writeState(DataOutputStream(it), state) }
+            assertEquals(state, SessionControl.readState(DataInputStream(bytes.toByteArray().inputStream())))
+        }
+    }
+
     @Test fun typedStateRoundTripSeparatesListenerAndRenderedReadiness() {
         for (phase in SessionPhase.entries) {
             val bytes = ByteArrayOutputStream()

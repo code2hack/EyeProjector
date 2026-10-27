@@ -33,7 +33,8 @@ deps = [
 jars = [str(j) for dependency in deps for j in sorted((cache / dependency).rglob('*.jar'))]
 if not jars:
     parser.error('Run the affected Gradle checks first to provision Kotlin compiler dependencies')
-classpath = os.pathsep.join([str(args.protocol_classpath or root / "protocol/build/tmp/kotlin-classes/debug")] + jars)
+source_protocol = not args.composed and not args.panel and args.protocol_classpath is None
+classpath = os.pathsep.join(([] if source_protocol else [str(args.protocol_classpath or root / "protocol/build/tmp/kotlin-classes/debug")]) + jars)
 java_home = os.environ.get('JAVA_HOME')
 java = str(Path(java_home) / 'bin/java') if java_home else shutil.which('java')
 if not java:
@@ -44,7 +45,7 @@ if args.composed:
     sources += sorted((suite.parent / 'panel/doubles').glob('*.kt'))
     sources = [p for p in sources if p != suite.parent / 'panel/doubles/Json.kt']
     sources += sorted((suite.parent / 'composed/doubles').glob('*.kt'))
-    sources += [suite.parent / 'panel/PanelFixtures.kt', suite.parent / 'composed/ComposedScenarios.kt']
+    sources += [suite.parent / 'panel/PanelFixtures.kt', suite.parent / 'panel/UsabilityScenarios.kt', suite.parent / 'composed/ComposedScenarios.kt']
     sources += [actual / name for name in ('HostBootstrap.kt', 'HostForgetCompletion.kt', 'BootstrapSessionFiles.kt', 'SessionController.kt', 'SessionAttemptStore.kt', 'ShizukuHostService.kt', 'OwnedHostLifecycle.kt', 'OwnedShellSessions.kt', 'ShellMain.kt', 'PanelPower.kt', 'PhoneTouchDispatcher.kt', 'HeldInputRelease.kt', 'OwnedRelease.kt', 'LiveScale.kt', 'ProjectionContext.kt', 'ProjectionDisplayState.kt', 'ProjectedAppLaunch.kt', 'PlatformProjectionLaunch.kt')]
     if args.legacy_scale_abi:
         # Each compiler run sees exactly ONE input ABI, matched to the archived production source.
@@ -65,20 +66,34 @@ if args.composed:
                 target.write_text(content)
                 sources[index] = target
 elif args.panel:
-    sources = sorted((suite.parent / 'panel/doubles').glob('*.kt')) + [suite.parent / 'panel/PanelScenarios.kt', suite.parent / 'panel/PanelFixtures.kt', suite / 'doubles/AtomicFile.kt']
+    sources = sorted((suite.parent / 'panel/doubles').glob('*.kt')) + [suite.parent / 'panel/PanelScenarios.kt', suite.parent / 'panel/PanelFixtures.kt', suite.parent / 'panel/UsabilityScenarios.kt', suite.parent / 'panel/NativeTransportScenarios.kt', suite / 'doubles/AtomicFile.kt']
     sources += [actual / name for name in ('ShellMain.kt', 'PanelPower.kt', 'PhoneTouchDispatcher.kt', 'HeldInputRelease.kt', 'OwnedRelease.kt', 'LiveScale.kt', 'ProjectionContext.kt', 'ProjectionDisplayState.kt', 'ProjectedAppLaunch.kt', 'PlatformProjectionLaunch.kt')]
 else:
     sources = sorted((suite / 'doubles').glob('*.kt')) + [suite / 'Scenarios.kt', suite / 'HomeContextScenarios.kt']
     sources += [actual / name for name in ('HostBootstrap.kt', 'HostForgetCompletion.kt', 'BootstrapSessionFiles.kt', 'SessionController.kt', 'SessionAttemptStore.kt', 'PanelPower.kt', 'ProjectionDisplayState.kt', 'ProjectionContext.kt', 'ProjectedHomeActivity.kt')]
     sources += [actual / 'apps/ChosenAppStore.kt']
+sources += [actual / 'SessionUsability.kt']
+if not args.panel:
+    sources += [actual/'activation'/name for name in ('PhoneActivationOwner.kt','LaunchCommitPermit.kt','ActivationContextAuthority.kt')]
+    sources += [actual/'notifications/NotificationLaunchCarrier.kt']
+    if args.composed:
+        sources += [suite/'doubles/NotificationObservation.kt']
 sources += [actual / 'input/PhoneHidRoute.kt'] if not args.panel else []
 sources += [actual / 'input/PhoneInputMerger.kt', actual / 'input/FunctionWork.kt'] if args.panel or args.composed else []
 protocol = root / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
+if source_protocol:
+    sources += [protocol / name for name in ('SessionState.kt', 'SessionControl.kt')]
+    sources += [suite.parent/'activation/composed/Transport.kt']
 if not args.panel and (actual / 'LaunchOperationDiagnostics.kt').exists():
     sources += [actual / 'LaunchOperationDiagnostics.kt']
     if args.composed:
         sources += [suite / 'doubles/Log.kt']
-sources += [protocol / name for name in ('Wire.kt', 'PhoneInput.kt', 'LayoutScale.kt', 'Touch.kt')]
+sources += [protocol / name for name in ('Wire.kt', 'PhoneInput.kt', 'LayoutScale.kt', 'Touch.kt', 'ActivationControl.kt', 'ReceiverUsability.kt')]
+sources += [actual/'activation/snapshot'/n for n in ['NativeSnapshotRegion.kt','SnapshotWord.kt']]
+if not args.panel:
+    sources += [actual/'activation/snapshot/PhoneHidSnapshotLease.kt']
+    sources += [actual/'activation'/n for n in ['PhoneHidActivation.kt','PhoneHidDisposition.kt','HidWakeRequest.kt']]
+sources += sorted((suite.parent/'snapshot/transport/doubles').glob('*.kt'))
 # Retain exact compiler inputs even for preparation failures and later test corrections.
 archive = output / 'compiled-sources'
 archive.mkdir(exist_ok=True)
@@ -93,6 +108,7 @@ compile_command = [java, '-cp', classpath, 'org.jetbrains.kotlin.cli.jvm.K2JVMCo
 with (output / 'compile.log').open('w') as log:
     compiled = subprocess.run(compile_command, stdout=log, stderr=subprocess.STDOUT, timeout=120)
 if compiled.returncode:
+    (output / 'result.json').write_text(json.dumps({'compileExit':compiled.returncode,'scenariosExit':None,'scope':'Actual source compiler closure failed; no execution proof','sources':[{'path':str(p),'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in sources]},indent=2)+'\n')
     print((output / 'compile.log').read_text())
     sys.exit(compiled.returncode)
 with (output / 'scenarios.log').open('w') as log:
@@ -101,6 +117,10 @@ with (output / 'scenarios.log').open('w') as log:
                          stdout=log, stderr=subprocess.STDOUT, timeout=60)
 (output / 'result.json').write_text(json.dumps({
     'compileExit': compiled.returncode, 'scenariosExit': run.returncode,
+    'runner': {'path': str(Path(__file__).resolve()), 'sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()},
+    'compilerCommand': compile_command, 'runtimeClasspath': str(jar) + os.pathsep + classpath,
+    'dependencies': [{'path': path, 'sha256': hashlib.sha256(Path(path).read_bytes()).hexdigest()} for path in jars],
+    'sourceProtocol': source_protocol,
     'sources': [{'path': str(source), 'sha256': hashlib.sha256(source.read_bytes()).hexdigest()} for source in sources],
     'logSha256': hashlib.sha256((output / 'scenarios.log').read_bytes()).hexdigest(),
     'inputAbi': 'legacy3/4' if args.legacy_scale_abi else 'context3/4' if args.composed else 'suite-matched',

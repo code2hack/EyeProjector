@@ -10,17 +10,66 @@ import com.code2hack.eyeprojector.directhost.scale.*
 import com.code2hack.eyeprojector.directhost.input.PhoneHidRoute
 import java.io.File
 import java.util.concurrent.CopyOnWriteArraySet
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicLong
+import java.io.Closeable
+import com.code2hack.eyeprojector.directhost.activation.*
+import com.code2hack.eyeprojector.directhost.notifications.*
 
 /** App-scoped owner survives panel recreation and supplies the same commands to later Phone controls. */
 class PhoneSessionController private constructor(context: Context) {
+    private val contextAuthority = ActivationContextAuthority()
+    private val fastLock = contextAuthority.lock
     private val main = Handler(Looper.getMainLooper())
     private val stateObservers = CopyOnWriteArraySet<() -> Unit>()
-    @Volatile private var lastReadState: SessionState? = null
+    private val inputInvalidators = CopyOnWriteArraySet<(Boolean) -> Unit>()
     val bootstrap = HostBootstrap.get(context)
     val store = PeerStore(File(context.filesDir, "session"))
-    private val attempts = SessionAttemptStore(File(context.filesDir, "session-attempts.properties"))
-    private val controller = SessionController({ epoch -> bootstrap.start(epoch) }, { bootstrap.stop() }, initialPhase = SessionPhase.UNKNOWN,
-        initialCorrelation = attempts.read(), retainCorrelation = attempts::write)
+    private val featureLane = Executors.newSingleThreadScheduledExecutor()
+    private val pendingBackend = AtomicReference<HostBootstrap.Status?>()
+    private data class LocalRequest(val handle: ActivationHandle, val cause: ActivationCause, val expectedEpoch: String? = null,
+        val hidWake: HidWakeRequest? = null)
+    private val pendingRequest = AtomicReference<LocalRequest?>()
+    private val pendingStops = linkedSetOf<String>()
+    private val pendingReleased = AtomicReference<HostBootstrap.Status?>()
+    private val featureFiles = context.filesDir
+    private val drainQueued = AtomicBoolean()
+    // Identity, its pending demand and retirement move together; no effects/callbacks under this lock.
+    private var initialized = false // Guarded by fastLock.
+    private var firstOffer: String? = null
+    private var initialOfferOrigin: Pair<String, String>? = null
+    private var stopInitialOwner = false
+    private val currentHandle = AtomicReference<ActivationHandle?>() // H offer/alias, never D.
+    private var currentDemand: ActivationHandle? = null
+    private var projectedActivation: ActivationState<ProjectionContext>? = null
+    private var readySerial = 0L
+    private var genericProducerVersion = -1L
+    private var projectedProducerVersion = -1L
+    private var turnProducerVersion = -1L // Feature-lane owned capture, never refreshed by an old publisher.
+    private var hidRegionId: String? = null // Primitive setup authority only; never a mapping/address.
+    private var hidRegionContext = ProjectionContext()
+    private var hidRegionGeneration = 0L
+    private var inputOwner: String? = null
+    private var inputTarget = ProjectionContext()
+    private lateinit var contextRegistration: Closeable
+    private lateinit var retiredWitnessRegistration: Closeable
+    private val localNonce = java.util.UUID.randomUUID().toString()
+    private val offers = AtomicLong()
+    private val localRevision = AtomicLong()
+    @Volatile private var publishedRevision = -1L
+    @Volatile private var aliases: Map<String, String> = emptyMap()
+    private val pendingForget = AtomicReference<(() -> Unit)?>(null)
+    @Volatile private var readyTarget = ProjectionContext()
+    @Volatile private var readyAttempt: ActivationAttempt? = null
+    @Volatile private var observedActivation: ActivationState<ProjectionContext>? = null
+    @Volatile private var usable = false
+    @Volatile private var published = SessionState("", SessionPhase.UNKNOWN)
+    @Volatile private var featureDetail = "Reconciling projection ownership"
+    private lateinit var controller: SessionController
+    private lateinit var activation: PhoneActivationEngine
     val pairing = LanPairing(store, PeerRole.PHONE, ::invalidateState, { socket ->
         SessionControl.serve(store.directory, socket, ::command)
     })
@@ -28,6 +77,8 @@ class PhoneSessionController private constructor(context: Context) {
     val appScales = AppScaleCoordinator(AppScalePreferences.open(context), object : AppScaleBackend {
         override fun launch(packageName: String, expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit) =
             bootstrap.launchApp(packageName, expected, complete)
+        override fun launchNotification(carrier: NotificationLaunchCarrier, complete: (NotificationDispatchOutcome) -> Unit) =
+            bootstrap.launchNotification(carrier, complete)
         override fun display(expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit) =
             bootstrap.projectionDisplayState(expected, complete)
         override fun request(value: Double, expected: ProjectionContext, complete: (ScaleState?) -> Unit) =
@@ -36,16 +87,418 @@ class PhoneSessionController private constructor(context: Context) {
     })
 
     init {
-        bootstrap.observe { state ->
-            controller.observeBackend(state.sessionEpoch, state.backend, state.detail.orEmpty(), state.rejectedEpoch)
-            appScales.contextChanged(state.projectionContext, state.backend in setOf("SESSION_STARTING", "STREAMING"))
-            invalidateState()
+        contextRegistration = bootstrap.registerActivationAuthority(contextAuthority)
+        retiredWitnessRegistration = bootstrap.observeRetiredBackendWitness { state ->
+            pendingReleased.set(state); scheduleDrain()
         }
+        bootstrap.observe { state ->
+            val invalid = synchronized(fastLock) {
+                val fact = contextAuthority.fact
+                val lost = usable && (fact?.eligible != true || fact.context != inputTarget)
+                if (lost) { usable = false; clearReadyLocked() }
+                lost
+            }
+            if (invalid) invalidateInput()
+            if (state.backend == "STOPPED" || state.rejectedEpoch != null) pendingReleased.set(state)
+            pendingBackend.set(state)
+            appScales.contextChanged(state.projectionContext, state.backend in setOf("SESSION_STARTING", "STREAMING"))
+            scheduleDrain()
+        }
+        featureLane.scheduleWithFixedDelay({ drain() }, 0, 1, TimeUnit.SECONDS)
         pairing.start()
     }
 
-    fun state(): SessionState = controller.state().also {
-        if (it != lastReadState) { lastReadState = it; invalidateState() }
+    fun state(): SessionState = published
+    internal fun activationId(): String? = currentHandle.get()?.id
+    internal fun activationStatus(): String = featureDetail
+    /** Last authenticated presentation + current local context only, never backend injection acknowledgment. */
+    internal fun needsActivation(): Boolean = synchronized(fastLock) {
+        val current = currentHandle.get()
+        val fact = contextAuthority.fact
+        current == null || !usable || fact?.eligible != true || fact.context != inputTarget ||
+            genericProducerVersion != contextAuthority.version || (aliases[current.id] ?: current.id) != inputOwner
+    }
+    /** One cached original qualification. Native reading/FD setup is a separate key-lane owner. */
+    internal fun captureHidAuthority(): HidInputAuthority = synchronized(fastLock) {
+        val h = currentHandle.get(); val fact = contextAuthority.fact
+        val matching = h != null && (aliases[h.id] ?: h.id) == inputOwner && fact?.eligible == true &&
+            fact.context == inputTarget && inputTarget.available && genericProducerVersion == contextAuthority.version &&
+            readyAttempt?.id == inputTarget.ownerEpoch
+        HidInputAuthority(h, if (matching) readyAttempt?.id else null,
+            if (matching) inputTarget else ProjectionContext(), contextAuthority.version, localRevision.get(), hidRegionGeneration)
+    }
+    private fun originalHidScopeCurrentLocked(original: HidInputAuthority): Boolean {
+        val current = currentHandle.get()
+        val old = original.handle
+        if (old == null) return current == null && original.admissionRevision == localRevision.get()
+        if (current == null || (aliases[current.id] ?: current.id) != (aliases[old.id] ?: old.id)) return false
+        if (original.attemptId != null && readyAttempt?.id != original.attemptId) return false
+        if (original.context.available) {
+            val fact = contextAuthority.fact
+            if (fact?.eligible != true || fact.context != original.context || contextAuthority.version != original.producerVersion) return false
+        }
+        return true
+    }
+    /** Map/install work has finished on the key lane before primitive authority is registered. */
+    internal fun installHidRegion(original: HidInputAuthority, regionId: String): HidInputAuthority? = synchronized(fastLock) {
+        if (original.handle == null || !original.context.available || !originalHidScopeCurrentLocked(original)) return@synchronized null
+        hidRegionId = regionId; hidRegionContext = original.context; hidRegionGeneration++
+        original.copy(regionGeneration = hidRegionGeneration)
+    }
+    internal fun isHidAuthorityCurrent(original: HidInputAuthority): Boolean = synchronized(fastLock) {
+        originalHidScopeCurrentLocked(original)
+    }
+    internal fun retireHidRegion(original: HidInputAuthority) = synchronized(fastLock) {
+        if (original.regionGeneration == hidRegionGeneration && original.context == hidRegionContext) {
+            hidRegionId = null; hidRegionContext = ProjectionContext(); hidRegionGeneration++
+        }
+    }
+    /** Original scope validation, pure identity and merge are one fast transition; effects follow it. */
+    internal fun requestHidActivation(wake: HidWakeRequest, originalSetup: HidInputAuthority? = null): ActivationHandle? {
+        val handle = synchronized(fastLock) {
+            if (originalSetup != null && !originalHidScopeCurrentLocked(originalSetup)) return@synchronized null
+            if (!originalHidScopeCurrentLocked(wake.authority) || wake.disposition == PhoneHidDisposition.USABLE ||
+                wake.disposition == PhoneHidDisposition.NONE && !validHidWakeLocked(wake)) return@synchronized null
+            val h = requestIdentityLocked(ActivationCause.HID_PRESS)
+            val admitted = wake.copy(authority = wake.authority.copy(handle = h), admitted = true)
+            if (wake.disposition == PhoneHidDisposition.NONE) {
+                clearReadyLocked(); usable = false; localRevision.incrementAndGet()
+            }
+            enqueueLocalRequestLocked(LocalRequest(h, ActivationCause.HID_PRESS, hidWake = admitted))
+            h
+        }
+        if (handle != null) {
+            if (wake.disposition == PhoneHidDisposition.NONE) invalidateInput(preserveLearning = true)
+            scheduleDrain(); invalidateState()
+        }
+        return handle
+    }
+    internal fun onInputInvalidated(action: () -> Unit) { inputInvalidators.add { action() } }
+    /** Presentation loss retires projected routes, while an original row capture may still learn its UP. */
+    internal fun onHidInputInvalidated(action: (preserveLearning: Boolean) -> Unit) { inputInvalidators.add(action) }
+    private fun invalidateInput(preserveLearning: Boolean = false) {
+        val cancel = { inputInvalidators.forEach { runCatching { it(preserveLearning) } }; Unit }
+        if (Looper.myLooper() == Looper.getMainLooper()) cancel() else main.post { cancel() }
+    }
+
+    /** Immediate local identity capture only. HID never waits for this writer, disk or Binder. */
+    internal fun requestActivation(cause: ActivationCause): ActivationHandle {
+        val handle = synchronized(NotificationPolicy.process.gate) {
+            synchronized(fastLock) { requestIdentityLocked(cause) }
+        }
+        scheduleDrain(); invalidateState()
+        return handle
+    }
+
+    /** Typed notification G admission and original D creation share Stop's in-memory order. */
+    internal fun admitNotification(selection: NotificationSelection, snapshot: NotificationPolicy.Snapshot): ActivationHandle? {
+        val policy = NotificationPolicy.process
+        val handle = synchronized(policy.gate) {
+            if (!policy.installLocked(selection, snapshot)) { selection.permit.retire(); null }
+            else synchronized(fastLock) { requestIdentityLocked(ActivationCause.NOTIFICATION).also { selection.handle = it } }
+        }
+        if (handle != null) { scheduleDrain(); invalidateState() }
+        policy.publish() // Effects/ordinary callbacks are outside BOTH ordering sections.
+        return handle
+    }
+    private fun requestIdentityLocked(cause: ActivationCause): ActivationHandle {
+        val h = currentHandle.get() ?: ActivationHandle("$localNonce.${offers.incrementAndGet()}", cause).also {
+            currentHandle.set(it); localRevision.incrementAndGet()
+            if (!initialized && firstOffer == null) firstOffer = it.id
+        }
+        return if (cause == ActivationCause.NOTIFICATION) {
+            ActivationHandle(h.id, cause, "$localNonce.d${offers.incrementAndGet()}", ActivationGoal.PROJECTED).also { d ->
+                currentDemand = d; projectedActivation = null; projectedProducerVersion = -1
+                localRevision.incrementAndGet()
+                enqueueLocalRequestLocked(LocalRequest(d, cause))
+            }
+        } else {
+            enqueueLocalRequestLocked(LocalRequest(h, cause)); h
+        }
+    }
+    /** H-scoped payload validity is independent of whether its former D was superseded. */
+    private fun validHidWakeLocked(wake: HidWakeRequest): Boolean {
+        val original = wake.authority
+        val old = original.handle ?: return false
+        val current = currentHandle.get() ?: return false
+        if ((aliases[current.id] ?: current.id) != (aliases[old.id] ?: old.id)) return false
+        if (original.attemptId != null && readyAttempt?.id != original.attemptId) return false
+        if (wake.admitted) {
+            // A later UNKNOWN setup sample cannot erase an already admitted NONE obligation.
+            // This never grants input/Ready and never transfers it to a different A/C/H.
+            if (original.context.available && contextAuthority.fact?.context != original.context) return false
+        } else if (!originalHidScopeCurrentLocked(original)) return false
+        return when (wake.disposition) {
+            PhoneHidDisposition.USABLE -> false
+            PhoneHidDisposition.UNKNOWN -> true // Unestablished setup is not a remote NONE observation.
+            PhoneHidDisposition.NONE -> original.context.available && original.attemptId != null &&
+                wake.regionId != null && wake.word != null && (wake.word ushr 2) != 0L && (wake.word and 3L) == 0L &&
+                (wake.admitted || wake.regionId == hidRegionId && original.context == hidRegionContext &&
+                    original.regionGeneration == hidRegionGeneration)
+        }
+    }
+    /** ONE latest slot. Also used by actor exception requeue; no old-D CAS-null loss. */
+    private fun enqueueLocalRequestLocked(request: LocalRequest) {
+        val old = pendingRequest.get()
+        val oldCurrent = old?.takeIf { currentLocked(it.handle) }
+        val incoming = request.takeIf { currentLocked(it.handle) }
+        val projected = currentDemand?.takeIf(::currentLocked)
+        val selected = when {
+            projected != null && incoming?.handle === projected -> incoming
+            projected != null && oldCurrent?.handle === projected -> oldCurrent
+            projected != null -> LocalRequest(projected, ActivationCause.NOTIFICATION)
+            incoming != null -> incoming
+            else -> oldCurrent
+        } ?: return
+        val incomingLoss = request.hidWake?.takeIf(::validHidWakeLocked)
+        val oldLoss = old?.hidWake?.takeIf(::validHidWakeLocked)
+        val loss = when {
+            incomingLoss?.disposition == PhoneHidDisposition.NONE && oldLoss?.disposition == PhoneHidDisposition.NONE ->
+                if (incomingLoss.regionId == oldLoss.regionId && (oldLoss.word!! ushr 2) > (incomingLoss.word!! ushr 2)) oldLoss else incomingLoss
+            incomingLoss?.disposition == PhoneHidDisposition.NONE -> incomingLoss
+            oldLoss?.disposition == PhoneHidDisposition.NONE -> oldLoss
+            else -> incomingLoss ?: oldLoss
+        }
+        pendingRequest.set(selected.copy(hidWake = loss))
+    }
+    private fun currentLocked(handle: ActivationHandle): Boolean {
+        val current = currentHandle.get() ?: return false
+        return (aliases[current.id] ?: current.id) == (aliases[handle.id] ?: handle.id) &&
+            (handle.demandId == null || currentDemand === handle)
+    }
+    internal fun isActivationCurrent(handle: ActivationHandle): Boolean = synchronized(fastLock) { currentLocked(handle) }
+    private fun stateLocked(handle: ActivationHandle): ActivationState<ProjectionContext> {
+        if (!currentLocked(handle)) return ActivationState(handle, ActivationPhase.CANCELED)
+        val value = if (handle.demandId == null) observedActivation else projectedActivation
+        val captured = value?.takeIf { (aliases[it.handle.id] ?: it.handle.id) == (aliases[handle.id] ?: handle.id) &&
+            it.handle.demandId == handle.demandId }?.copy(handle = handle)
+            ?: return ActivationState(handle, ActivationPhase.PENDING)
+        val version = if (handle.demandId == null) genericProducerVersion else projectedProducerVersion
+        val fact = contextAuthority.fact
+        return if (captured.phase == ActivationPhase.READY &&
+            (version != contextAuthority.version || fact?.eligible != true || fact.context != captured.target))
+            captured.copy(phase = ActivationPhase.AWAITING_PRESENTATION, target = null, authority = 0) else captured
+    }
+    internal fun observeActivation(handle: ActivationHandle, receive: (ActivationState<ProjectionContext>) -> Unit): Closeable {
+        val closed = AtomicBoolean()
+        lateinit var observer: () -> Unit
+        observer = {
+            if (!closed.get()) {
+                val value = synchronized(fastLock) { stateLocked(handle) }
+                if (value.phase == ActivationPhase.CANCELED) { closed.set(true); removeStateObserver(observer) }
+                receive(value) // No callback under the authority lock.
+            }
+        }
+        observeState(observer)
+        return Closeable { closed.set(true); removeStateObserver(observer) }
+    }
+    internal fun whenActivationReady(handle: ActivationHandle, complete: (ActivationReady<ProjectionContext>) -> Unit): Closeable {
+        val closed = AtomicBoolean()
+        val subscription = AtomicReference<Closeable?>()
+        val registration = observeActivation(handle) { value ->
+            if (value.phase == ActivationPhase.CANCELED) { closed.set(true); subscription.get()?.close() }
+            if (!closed.get() && value.phase == ActivationPhase.READY && value.authority != 0L &&
+                value.binding != null && value.target != null && value.attempt != null && isActivationCurrent(handle) &&
+                closed.compareAndSet(false,true)) {
+                subscription.get()?.close()
+                complete(ActivationReady(handle,value.attempt,value.target,value.binding,value.authority))
+            }
+        }
+        subscription.set(registration)
+        if (closed.get()) registration.close()
+        return Closeable { closed.set(true); registration.close() }
+    }
+    /** Final app-side admission only; no launch, query, I/O, callback or main-thread wait. */
+    internal fun tryCommitActivationReady(ready: ActivationReady<ProjectionContext>, permit: LaunchCommitPermit): Boolean = synchronized(fastLock) {
+        val value = if (ready.handle.demandId == null) observedActivation else projectedActivation
+        val version = if (ready.handle.demandId == null) genericProducerVersion else projectedProducerVersion
+        val fact = contextAuthority.fact
+        ready.handle.demandId != null && ready.handle.goal == ActivationGoal.PROJECTED &&
+            currentLocked(ready.handle) && ready.binding != null && ready.authority != 0L &&
+            value?.phase == ActivationPhase.READY && value.authority == ready.authority && value.binding == ready.binding &&
+            value.attempt === ready.attempt && value.target == ready.target && ready.binding.attemptId == ready.attempt.id &&
+            fact?.eligible == true && fact.context == ready.target && version == contextAuthority.version && permit.tryCommit()
+    }
+    private fun clearReadyLocked() {
+        observedActivation = observedActivation?.copy(phase = ActivationPhase.AWAITING_PRESENTATION, target = null, authority = 0)
+        projectedActivation = projectedActivation?.copy(phase = ActivationPhase.AWAITING_PRESENTATION, target = null, authority = 0)
+        genericProducerVersion = -1; projectedProducerVersion = -1
+    }
+    private data class FastRetirement(val revision: Long, val notify: Boolean)
+    private fun retireFastOwner(id: String, cancel: Boolean, inputLost: Boolean): FastRetirement = synchronized(NotificationPolicy.process.gate) {
+        synchronized(fastLock) fast@{
+            val current = currentHandle.get() ?: return@fast FastRetirement(localRevision.get(),false)
+            if ((aliases[current.id] ?: current.id) != id) return@fast FastRetirement(localRevision.get(),false)
+            clearReadyLocked()
+            val notify = usable && inputLost
+            if (inputLost) usable = false
+            if (cancel) {
+                NotificationPolicy.process.retireLocked()
+                currentHandle.set(null); currentDemand = null; localRevision.incrementAndGet()
+                pendingRequest.get()?.takeIf { (aliases[it.handle.id] ?: it.handle.id) == id }?.let { pendingRequest.set(null) }
+            }
+            FastRetirement(localRevision.get(),notify)
+        }
+    }
+    private fun scheduleDrain() {
+        if (drainQueued.compareAndSet(false, true)) featureLane.execute { drainQueued.set(false); drain() }
+    }
+    private fun drain(control: SessionControl.Request? = null): SessionState? {
+        val revision = synchronized(fastLock) {
+            turnProducerVersion = contextAuthority.version
+            localRevision.get()
+        }
+        try {
+            if (!::controller.isInitialized) {
+                val attempts = SessionAttemptStore(File(featureFiles, "session-attempts.properties"))
+                controller = SessionController({ epoch -> bootstrap.start(epoch) }, { bootstrap.stop() }, initialPhase = SessionPhase.UNKNOWN,
+                    initialCorrelation = attempts.read(), retainCorrelation = attempts::write)
+            }
+            if (!::activation.isInitialized) {
+                val journal = ActivationStore(File(featureFiles, "activation.properties"))
+                activation = PhoneActivationEngine(controller, journal::read, journal::write,
+                    { if (store.pairedPeer() == null) "PAIRING_REQUIRED" else bootstrap.status().setup.takeIf { it != HostBootstrap.Setup.AVAILABLE }?.name },
+                    { bootstrap.status().projectionContext }, contextRevision = { synchronized(fastLock) { contextAuthority.version } })
+                synchronized(fastLock) {
+                    // Capture only the journal owner observed BEFORE any feature effects. An initial
+                    // offered ticket can be stopped before its alias is written; never bind it to a later H.
+                    val restored = activation.handle
+                    if (restored != null) {
+                        firstOffer?.let { initialOfferOrigin = it to restored.id }
+                        if (stopInitialOwner) synchronized(pendingStops) { pendingStops.add(restored.id) }
+                    }
+                    initialized = true
+                    if (revision == localRevision.get() && pendingRequest.get() == null && currentHandle.get() == null)
+                        currentHandle.set(restored)
+                }
+            }
+            pendingReleased.getAndSet(null)?.let { state ->
+                controller.observeBackend(state.sessionEpoch, state.backend, state.detail.orEmpty(), state.rejectedEpoch)
+            }
+            pendingBackend.getAndSet(null)?.let { state ->
+                controller.observeBackend(state.sessionEpoch, state.backend, state.detail.orEmpty(), state.rejectedEpoch)
+            }
+            val stopped = synchronized(pendingStops) { pendingStops.toList().also { pendingStops.clear() } }
+            stopped.forEach { id ->
+                try { activation.cancel(id, initialOfferOrigin?.takeIf { it.first == id }?.second) } catch (error: Exception) { synchronized(pendingStops) { pendingStops.add(id) }; throw error }
+            }
+            // Retire fast authority for the ORIGINAL accepted scope before ordered feature/backend effects.
+            control?.let { request ->
+                val cancelId = request.cancelActivation?.activationId?.let(activation::resolve)
+                    ?: request.cancelTrigger?.triggerId?.let { activation.journal.triggers[it]?.activation }
+                val report = request.presentation
+                val observedId = report?.takeIf(activation::acceptsPresentation)?.activationId
+                val legacyOwner = if (request.operation == SessionControl.Operation.STOP)
+                    controller.stopCallerOwner(request.startEpoch.ifEmpty { request.epoch }) else null
+                val cleanupId = legacyOwner?.let { activation.journal.attempts[it]?.activation }
+                val failedId = if (request.operation == SessionControl.Operation.FAILED && controller.ownership().state.epoch == request.epoch)
+                    activation.journal.attempts[request.epoch]?.activation else null
+                val affected = cancelId ?: observedId ?: cleanupId ?: failedId
+                if (affected != null && retireFastOwner(affected, cancelId != null,
+                        cancelId != null || report?.mode == ReceiverUsabilityMode.NONE || cleanupId != null || failedId != null).notify) invalidateInput()
+            }
+            val reply = control?.let(activation::command)
+            synchronized(fastLock) { pendingRequest.getAndSet(null) }?.let(::applyLocalRequest)
+            pendingForget.getAndSet(null)?.let { done ->
+                try { activation.stop(); bootstrap.stopBeforeForget(done) }
+                catch (error: Exception) { pendingForget.compareAndSet(null, done); throw error }
+            }
+            activation.tick(); publishActivation(revision)
+            return reply
+        } catch (error: Exception) {
+            usable = false; featureDetail = "Activation pending: ${error.javaClass.simpleName}"
+            invalidateState() // Keep durable intent pending; a later ordered turn retries reconciliation.
+            return null
+        }
+    }
+    /** One already-selected actor request. Selection and effects retain their original independent H/D scopes. */
+    private fun applyLocalRequest(request: LocalRequest) {
+        try {
+            val wake = synchronized(fastLock) { request.hidWake?.takeIf(::validHidWakeLocked) }
+            val requestCurrent = synchronized(fastLock) { currentLocked(request.handle) }
+            if (request.handle.id !in activation.journal.canceled && requestCurrent &&
+                (request.expectedEpoch == null || controller.acceptsStartCaller(request.expectedEpoch)) &&
+                (request.hidWake == null || wake != null || request.cause != ActivationCause.HID_PRESS))
+                activation.request(request.cause, request.handle.id, request.handle.demandId)
+            // Superseding D alone cannot discard valid original H-scoped loss.
+            wake?.let(activation::observeHidWake)
+        } catch (error: Exception) {
+            synchronized(fastLock) { enqueueLocalRequestLocked(request) }
+            throw error
+        }
+    }
+    private fun publishActivation(revision: Long) {
+        published = activation.state()
+        val actual = activation.handle
+        val journal = activation.journal
+        val mapped = journal.aliases
+        val canceled = journal.canceled
+        val value = actual?.let(activation.local::state)
+        val backend = bootstrap.status() // Outside both publication/claim locks.
+        val c = journal.current
+        val input = activation.inputPresentation
+        val goalReport = activation.goalPresentation
+        val inputAvailable = activation.inputUsable
+        val attempt = activation.attempt
+        val invalidate = synchronized(fastLock) {
+            if (revision != localRevision.get() || turnProducerVersion != contextAuthority.version) return@synchronized false
+            aliases = mapped
+            val offered = currentHandle.get()
+            val pending = pendingRequest.get()
+            if (pending != null && (mapped[pending.handle.id] ?: pending.handle.id) in canceled) pendingRequest.set(null)
+            if (pendingRequest.get() == null) {
+                val selected = if (actual != null && offered != null && (mapped[offered.id] ?: offered.id) == actual.id) offered else actual
+                currentHandle.set(selected)
+                if (selected == null) currentDemand = null
+            }
+            val h = currentHandle.get()
+            val fact = contextAuthority.fact
+            val matches = h != null && (mapped[h.id] ?: h.id) == actual?.id && c?.desired == true
+            val wasUsable = usable
+            inputOwner = actual?.id; inputTarget = backend.projectionContext
+            usable = matches && inputAvailable && inputTarget.available && fact?.eligible == true && fact.context == inputTarget
+            fun binding(demand: ActivationHandle?, report: PresentationReport?) = c?.let {
+                ActivationBinding(it.id,demand?.demandId,demand?.goal ?: ActivationGoal.USABLE,
+                    if (demand == null) report?.wakeRevision ?: it.wakeRevision else it.wakeRevision,
+                    attempt?.id,report?.incarnation,report?.revision)
+            }
+            fun qualify(next: ActivationState<ProjectionContext>, old: ActivationState<ProjectionContext>?, oldVersion: Long): ActivationState<ProjectionContext> {
+                if (next.phase != ActivationPhase.READY) return next
+                val same = old?.phase == ActivationPhase.READY && old.binding == next.binding && old.attempt === next.attempt &&
+                    old.target == next.target && oldVersion == contextAuthority.version
+                return next.copy(authority = if (same) old!!.authority else ++readySerial)
+            }
+            val generic = h?.let { caller ->
+                ActivationState(caller, if (usable && attempt != null) ActivationPhase.READY else value?.phase?.takeUnless { it == ActivationPhase.READY } ?: ActivationPhase.AWAITING_PRESENTATION,
+                    attempt, if (usable) inputTarget else null, value?.detail.orEmpty(), binding(null,input))
+            }
+            observedActivation = generic?.let { qualify(it,observedActivation,genericProducerVersion) }
+            genericProducerVersion = contextAuthority.version
+            val d = currentDemand
+            val demand = if (d != null && matches) {
+                val assigned = c?.demandId == d.demandId && c.goal == d.goal
+                val goalReady = assigned && value?.phase == ActivationPhase.READY && goalReport != null &&
+                    fact?.eligible == true && fact.context == backend.projectionContext && value.target == backend.projectionContext
+                ActivationState(d, if (goalReady) ActivationPhase.READY else if (assigned) value?.phase?.takeUnless { it == ActivationPhase.READY } ?: ActivationPhase.AWAITING_PRESENTATION else ActivationPhase.PENDING,
+                    if (assigned) attempt else null, if (goalReady) backend.projectionContext else null, value?.detail.orEmpty(),
+                    if (assigned) binding(d,goalReport) else null)
+            } else null
+            projectedActivation = demand?.let { qualify(it,projectedActivation,projectedProducerVersion) }
+            projectedProducerVersion = contextAuthority.version
+            readyTarget = value?.target ?: ProjectionContext(); readyAttempt = attempt; publishedRevision = revision
+            featureDetail = when {
+                actual == null -> "Projection inactive"
+                backend.setup != HostBootstrap.Setup.AVAILABLE -> "Setup required: ${backend.setup.name}"
+                projectedActivation?.phase == ActivationPhase.READY -> "Projected presentation ready"
+                c?.goal == ActivationGoal.PROJECTED -> "Waiting for projected presentation"
+                usable -> "Projection presented"
+                value?.phase == ActivationPhase.RELEASING -> "Waiting for projection release"
+                else -> "Connecting/retrying paired projection"
+            }
+            wasUsable && !usable
+        }
+        if (invalidate) invalidateInput()
+        invalidateState()
     }
 
     /** Invalidation only: consumers read the latest state at main-thread delivery, outside core locks. */
@@ -55,27 +508,75 @@ class PhoneSessionController private constructor(context: Context) {
         main.post { stateObservers.forEach { observer -> runCatching { observer() } } }
     }
 
-    fun start(): SessionState = start(null, null)
-    fun start(expectedEpoch: String): SessionState = start(expectedEpoch, null)
-    private fun start(expectedEpoch: String?, proposedEpoch: String?): SessionState {
-        val setup = bootstrap.status().setup
-        return try {
-            controller.start(expectedEpoch, proposedEpoch, setup.takeIf { it != HostBootstrap.Setup.AVAILABLE }?.name)
-        } finally { invalidateState() }
+    fun start(): SessionState { requestActivation(ActivationCause.PHONE_START); return state() }
+    fun start(expectedEpoch: String): SessionState = featureLane.submit<SessionState> {
+        val revision = synchronized(fastLock) { localRevision.get() }
+        drain(); activation.start(expectedEpoch).also { publishActivation(revision) }
+    }.get(4, TimeUnit.SECONDS)
+    fun stop(): SessionState {
+        synchronized(NotificationPolicy.process.gate) {
+            NotificationPolicy.process.retireLocked()
+            synchronized(fastLock) {
+                localRevision.incrementAndGet()
+                val original = currentHandle.getAndSet(null)
+                if (original == null && !initialized) stopInitialOwner = true
+                original?.let {
+                    synchronized(pendingStops) { pendingStops.add(original.id) }
+                    pendingRequest.get()?.takeIf { it.handle.id == original.id }?.let { pendingRequest.set(null) }
+                }
+                currentDemand = null; clearReadyLocked(); usable = false
+            }
+        }
+        NotificationPolicy.process.publish()
+        invalidateInput(); scheduleDrain()
+        return state()
+    }
+    fun stop(expectedEpoch: String): SessionState = featureLane.submit<SessionState> {
+        drain()
+        val owner = if (controller.acceptsStopCaller(expectedEpoch)) controller.stopCallerOwner(expectedEpoch) else null
+        val h = owner?.let { activation.journal.attempts[it]?.activation }
+        val retirement = h?.let { retireFastOwner(it,true,true) }
+            ?: synchronized(fastLock) { FastRetirement(localRevision.get(),false) }
+        if (retirement.notify) invalidateInput()
+        activation.stop(expectedEpoch).also { publishActivation(retirement.revision) }
+    }.get(4, TimeUnit.SECONDS)
+    internal fun cancelActivation(id: String) {
+        val invalidate = synchronized(NotificationPolicy.process.gate) {
+            synchronized(fastLock) {
+                synchronized(pendingStops) { pendingStops.add(id) }
+                pendingRequest.get()?.takeIf { it.handle.id == id }?.let { pendingRequest.set(null) }
+                val original = currentHandle.get()
+                if (original != null && (aliases[original.id] ?: original.id) == (aliases[id] ?: id)) {
+                    NotificationPolicy.process.retireLocked()
+                    currentHandle.set(null); currentDemand = null; localRevision.incrementAndGet(); clearReadyLocked(); usable = false; true
+                } else false
+            }
+        }
+        NotificationPolicy.process.publish()
+        if (invalidate) invalidateInput()
+        scheduleDrain()
     }
 
-    fun stop(): SessionState = try { controller.stop() } finally { invalidateState() }
-    fun stop(expectedEpoch: String): SessionState = try { controller.stop(expectedEpoch) } finally { invalidateState() }
+    fun stopBeforeForget(complete: () -> Unit) {
+        stop()
+        pendingForget.set(complete)
+        scheduleDrain()
+    }
 
     /** Both launchers consume the owning backend's actual display/generation and result. */
     fun launchApp(packageName: String, complete: (ProjectionDisplayState?) -> Unit) {
         launchApp(packageName, bootstrap.status().projectionContext, complete)
     }
     fun launchApp(packageName: String, expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit) {
+        NotificationPolicy.process.explicitChoice()
         appScales.launch(packageName, expected, complete)
     }
-    fun launchAppForScale(packageName: String, expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit): AppScaleTarget =
-        appScales.launch(packageName, expected, complete)
+    fun launchAppForScale(packageName: String, expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit): AppScaleTarget {
+        NotificationPolicy.process.explicitChoice()
+        return appScales.launch(packageName, expected, complete)
+    }
+    internal fun launchNotification(carrier: NotificationLaunchCarrier, settled: (NotificationLaunchSettlement) -> Unit) =
+        appScales.launchNotification(carrier, settled)
     fun projectionDisplayState(complete: (ProjectionDisplayState?) -> Unit) = bootstrap.projectionDisplayState(complete)
 
     fun requestPanelOff(complete: (PanelPowerState?) -> Unit) = bootstrap.requestPanelOff(complete)
@@ -88,11 +589,9 @@ class PhoneSessionController private constructor(context: Context) {
     fun submitPhoneHid(route: PhoneHidRoute, edge: PhoneHidEdge) = route.submit(edge)
     fun cancelPhoneHid(route: PhoneHidRoute, eventTimeMs: Long) = route.cancel(eventTimeMs)
 
-    private fun command(request: SessionControl.Request): SessionState {
-        val unavailable = if (request.operation == SessionControl.Operation.START)
-            bootstrap.status().setup.takeIf { it != HostBootstrap.Setup.AVAILABLE }?.name else null
-        return try { controller.command(request, unavailable) } finally { invalidateState() }
-    }
+    private fun command(request: SessionControl.Request): SessionState = featureLane.submit<SessionState> {
+        drain(request) ?: state().copy(detail = "ACTIVATION_STORAGE_PENDING")
+    }.get(4, TimeUnit.SECONDS)
 
     companion object {
         @SuppressLint("StaticFieldLeak") // Only the applicationContext is passed to app-scoped owners.

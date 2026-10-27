@@ -29,7 +29,7 @@ internal object PhoneWidgetRenderer {
                 else -> R.string.phone_widget_stop_description
             }))
             setOnClickPendingIntent(R.id.phone_widget_primary,
-                PhoneWidgetIntents.pending(context, widgetId, PhoneWidgetAction(primary, snapshot.session.epoch)))
+                PhoneWidgetIntents.pending(context, widgetId, PhoneWidgetAction(primary, snapshot.session.epoch, activationId = snapshot.activationId)))
             setBoolean(R.id.phone_widget_panel, "setEnabled", snapshot.canPanelOff && !panel.submitting && panel.result?.off != PanelSubmission.PENDING)
             setOnClickPendingIntent(R.id.phone_widget_panel, PhoneWidgetIntents.pending(context, widgetId,
                 PhoneWidgetAction(PhoneWidgetCommand.PANEL_OFF, snapshot.session.epoch, snapshot.projection)))

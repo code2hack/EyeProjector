@@ -79,16 +79,18 @@ internal class InertBootstrap {
     fun removeObserver(observer: () -> Unit) = Unit
 }
 internal class InertPairing { fun close() = Unit }
+internal class InertNotificationAccess { fun open() = Unit; fun close() = Unit }
 internal class ExtractedHostHid : Activity() {
     private lateinit var phoneHid: PhoneHidPanel
     private val phoneControls = LinearLayout(this)
     private lateinit var bootstrap: InertBootstrap
     private val pairingPanel = InertPairing()
+    private lateinit var notificationAccess: InertNotificationAccess
     private val main = Handler(Looper.getMainLooper())
     private val sessionTick = Runnable {}
     private val observer: () -> Unit = {}
     val container = LinearLayout(this)
-    init { bootstrap = InertBootstrap(); container.addView(phoneControls); initializePhoneHid(container) }
+    init { bootstrap = InertBootstrap(); notificationAccess = InertNotificationAccess(); container.addView(phoneControls); initializePhoneHid(container) }
     fun panelForTest() = phoneHid
     fun controlsForTest() = phoneControls
     fun openForTest(show: Boolean) = showPhoneHid(show)
@@ -112,8 +114,12 @@ def main():
     production = root / 'directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost'
     actual = [production / 'hid' / name for name in (
         'PhoneHidBindings.kt', 'PhoneHidController.kt', 'PhoneHidRuntime.kt', 'PhoneHidKeyService.kt', 'PhoneHidPanel.kt')]
+    actual += [production / 'activation' / name for name in ('PhoneActivationOwner.kt','PhoneHidActivation.kt','PhoneHidDisposition.kt','HidWakeRequest.kt')]
+    actual += [production/'activation/snapshot'/n for n in ['NativeSnapshotRegion.kt','SnapshotWord.kt','PhoneHidSnapshotLease.kt']]
     fixture = sorted((suite / 'doubles').glob('*.kt')) + [suite / 'Scenarios.kt',
+        root / 'directhost/src/test/activation/ActivationScenarios.kt',
         root / 'directhost/src/test/kotlin/com/code2hack/eyeprojector/directhost/hid/PhoneHidBindingsTest.kt']
+    fixture += sorted((suite.parent/'snapshot/transport/doubles').glob('*.kt'))
     extraction = [production / 'HostActivity.kt']
     metadata = [suite / 'run.py', suite / 'README.md', root / 'directhost/src/main/AndroidManifest.xml',
                 root / 'directhost/src/main/res/xml/phone_hid_accessibility.xml',
@@ -179,7 +185,8 @@ def main():
         'boundaries': {'android': 'In-memory Context/preferences, Accessibility callbacks/settings, View/widget and queued-main Handler doubles',
             'host': 'Exact HID helpers/lifecycle bodies; old bootstrap/pairing UI and initialization container inert',
             'protocol': 'Exact authorized444 enums/edge seam double; no shared protocol production compiled',
-            'session': 'Exact capture/submit/cancel signatures with opaque route identity; no backend implementation compiled'}}
+            'session': 'Exact capture/submit/cancel signatures with opaque route identity; no backend implementation compiled',
+            'activation': 'Actual generic local owner and HID injection port; immutable fixture targets, no shared Phone facade, persistence, control protocol, backend or Glasses wiring'}}
     manifest_path = out / 'source-manifest.json'; manifest_path.write_text(json.dumps(manifest, indent=2) + '\n')
     result = {'scope': 'Complete actual Phone HID store/controller/runtime/panel/Accessibility service and exact Host HID/lifecycle blocks; isolated Android and authorized444 session/protocol seams only, no framework/device/backend or physical acceptance',
         'sourceManifestSha256': digest(manifest_path), 'compileExit': None, 'scenariosExit': None, 'junitExit': None,

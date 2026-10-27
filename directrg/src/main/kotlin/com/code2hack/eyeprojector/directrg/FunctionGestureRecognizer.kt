@@ -122,16 +122,16 @@ internal class FunctionGestureRecognizer(
 
 /** Operation ownership stays in ReceiverActivity's existing contextual methods. */
 internal class FunctionNavigation(
-    private val home: () -> Unit,
-    private val panel: () -> Unit,
+    private val projectedDouble: () -> Unit,
+    private val localDouble: () -> Unit,
     private val back: () -> Unit,
-    private val exit: () -> Unit,
+    private val sleep: () -> Unit,
 ) {
     fun dispatch(action: FunctionGestureRecognizer.Action, projection: Boolean) {
         when (action) {
             FunctionGestureRecognizer.Action.SINGLE -> back()
-            FunctionGestureRecognizer.Action.DOUBLE -> if (projection) home() else panel()
-            FunctionGestureRecognizer.Action.TRIPLE -> if (projection) panel() else exit()
+            FunctionGestureRecognizer.Action.DOUBLE -> if (projection) projectedDouble() else localDouble()
+            FunctionGestureRecognizer.Action.TRIPLE -> sleep()
             FunctionGestureRecognizer.Action.LONG -> Unit
         }
     }

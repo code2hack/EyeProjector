@@ -7,6 +7,7 @@ internal class PhoneWidgetActionTurn(
     private val snapshot: () -> PhoneWidgetSnapshot,
     private val dispatch: () -> PhoneWidgetRoute,
     private val complete: (PhoneWidgetRoute) -> Unit,
+    private val wholeActivationStop: Boolean = false,
 ) {
     var finished = false
         private set
@@ -14,7 +15,7 @@ internal class PhoneWidgetActionTurn(
     fun advance() {
         if (finished) return
         val actual = snapshot()
-        if (actual.session.phase == SessionPhase.UNKNOWN &&
+        if (!wholeActivationStop && actual.session.phase == SessionPhase.UNKNOWN &&
             (!actual.needsSetup || actual.paired && actual.initialSetupPending)) return
         finished = true
         // Dispatch may already have submitted a command before failing. Complete once; never replay it.

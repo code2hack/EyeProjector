@@ -106,16 +106,14 @@ fun main() {
     }
     scenario("actual local triple releases and explicitly requests Home before late peer callback") {
         val a = activity(true); val s = a.session!!; a.showControlPanel()
-        val client = a.sessionClient!!; val observer = client.observer
+        val lifetime = a.owner!!
         // A fresh physical sequence bypasses the previous sequence's duplicate retirement.
         repeat(3) { press(a) }; Handler.advance(500)
-        check(a.finished && !a.resumed && a.session == null && s.closed && client.closed && a.sessionClient == null)
-        check(client.closeEpoch == "epoch")
+        check(a.finished && !a.resumed && a.session == null && s.closed && lifetime.closed)
         check(a.receiver == null && a.unregistrations == 1)
         check(a.launch!!.action == Intent.ACTION_MAIN && Intent.CATEGORY_HOME in a.launch!!.categories)
         check(a.launch!!.flags and Intent.FLAG_ACTIVITY_NEW_TASK != 0)
-        observer(Peer()); check(a.observed == 0)
-        send(a, "CLICK", retired = true); Handler.advance(2000); check(a.session == null && a.observed == 0)
+        send(a, "CLICK", retired = true); Handler.advance(2000); check(a.session == null)
     }
     scenario("actual focus loss cancellation and fast fresh input after focus return") {
         val a = activity(true); val s = a.session!!
@@ -125,13 +123,23 @@ fun main() {
         a.onWindowFocusChanged(true); press(a); Handler.advance(500)
         check(s.navigations == listOf(Navigation.BACK))
     }
-    scenario("actual pause destroy disconnect and late callbacks") {
-        for (end in listOf("pause", "destroy", "disconnect")) {
+    scenario("actual pause and configuration destroy retire native input while preserving media") {
+        for (end in listOf("pause", "destroy")) {
+            val a = activity(true); val s = a.session!!; val lifetime = a.owner!!
+            send(a, "DOUBLE"); val stale = Handler.tasks.toList()
+            when (end) { "pause" -> a.onPause(); else -> a.onDestroy() }
+            stale.forEach { it.run.run() }
+            check(!s.closed && s.navigations.isEmpty() && a.session === s && !lifetime.closed)
+            check(a.receiver == null && lifetime.detached > 0)
+        }
+    }
+    scenario("actual explicit disconnect and finishing destroy release media") {
+        for (end in listOf("disconnect", "finish")) {
             val a = activity(true); val s = a.session!!
             send(a, "DOUBLE"); val stale = Handler.tasks.toList()
-            when (end) { "pause" -> a.onPause(); "destroy" -> a.onDestroy(); else -> a.disconnect() }
-            stale.forEach { it.run.run() }; check(s.closed && s.navigations.isEmpty() && a.session == null)
-            if (end != "disconnect") check(a.receiver == null)
+            if (end == "finish") { a.finish(); a.onDestroy() } else a.disconnect()
+            stale.forEach { it.run.run() }
+            check(s.closed && s.navigations.isEmpty() && a.session == null)
         }
     }
     println("PASS $checks Function adapter/Activity source scenarios; host boundaries only")

@@ -4,6 +4,9 @@ import com.code2hack.eyeprojector.protocol.*
 
 class ShizukuHostService
 interface IHostBootstrap {
+    fun phoneHidSnapshot(expectedOwnerEpoch:String,expectedProjectionToken:String):com.code2hack.eyeprojector.directhost.activation.snapshot.NativeSnapshotDescriptor?=null
+    fun phoneHidStampedEdge(routeId:Long,typedEdge:ByteArray,expectedOwnerEpoch:String,expectedProjectionToken:String,regionId:String,word:Long) {}
+
     fun phoneHidEdge(routeId: Long, typedEdge: ByteArray, expectedOwnerEpoch: String, expectedProjectionToken: String) {}
     fun start(identity: ByteArray, password: ByteArray, legacy: ByteArray?, endpoint: ByteArray, paired: ByteArray?, sessionEpoch: String): String
     fun status(): String
@@ -25,6 +28,16 @@ class FakeService : IHostBootstrap, android.os.IBinder {
     val inputCalls = mutableListOf<InputCall>()
     val inputWrites = mutableListOf<InputCall>()
     var beforeInput: (() -> Unit)? = null
+    var snapshotProvider: (() -> com.code2hack.eyeprojector.directhost.activation.snapshot.NativeSnapshotDescriptor?)? = null
+    var stampedInput: ((Long, PhoneHidEdge, String, Long) -> Unit)? = null
+    override fun phoneHidSnapshot(expectedOwnerEpoch:String,expectedProjectionToken:String):com.code2hack.eyeprojector.directhost.activation.snapshot.NativeSnapshotDescriptor? =
+        if (ProjectionContext(expectedOwnerEpoch,expectedProjectionToken)==context) snapshotProvider?.invoke() else null
+    override fun phoneHidStampedEdge(routeId:Long,typedEdge:ByteArray,expectedOwnerEpoch:String,expectedProjectionToken:String,regionId:String,word:Long) {
+        beforeInput?.invoke()
+        val call=InputCall(routeId,PhoneHidEdge.from(typedEdge),ProjectionContext(expectedOwnerEpoch,expectedProjectionToken))
+        inputCalls.add(call)
+        if (call.expected==context) { stampedInput?.invoke(routeId,call.edge,regionId,word); inputWrites.add(call) }
+    }
     override fun phoneHidEdge(routeId: Long, typedEdge: ByteArray, expectedOwnerEpoch: String, expectedProjectionToken: String) {
         beforeInput?.invoke()
         val call = InputCall(routeId, PhoneHidEdge.from(typedEdge), ProjectionContext(expectedOwnerEpoch, expectedProjectionToken))
@@ -40,8 +53,12 @@ class FakeService : IHostBootstrap, android.os.IBinder {
     var starts = 0
     @Volatile var sessionEpoch = ""
     var statusReads = 0
+    var statusGate:java.util.concurrent.CountDownLatch?=null
+    var statusEntered=java.util.concurrent.CountDownLatch(1)
+    var stopGate:java.util.concurrent.CountDownLatch?=null
     val scaleRequests = mutableListOf<Pair<Long, Double>>()
     var scaleReads = 0
+    var beforeScale: (() -> Unit)? = null
     var scalePayloadOverride: ByteArray? = null
     var currentScale = ScaleState(0, 1.0, Geometry(480, 640), null, ScaleStatus.READY, false)
     var display = ProjectionDisplayState(generation = "fixture:child", displayId = 47, status = ProjectionLaunchStatus.READY,
@@ -80,10 +97,12 @@ class FakeService : IHostBootstrap, android.os.IBinder {
     override fun status(): String {
         check(alive)
         statusReads++
-        return "{\"state\":\"$state\",\"sessionRevoked\":$revoked,\"sessionEpoch\":\"$sessionEpoch\",\"projectionToken\":\"${if (state == "STREAMING") currentPanel.context.projectionToken else ""}\"}"
+        val captured="{\"state\":\"$state\",\"sessionRevoked\":$revoked,\"sessionEpoch\":\"$sessionEpoch\",\"projectionToken\":\"${if (state == "STREAMING") currentPanel.context.projectionToken else ""}\"}"
+        statusEntered.countDown();statusGate?.let{check(it.await(4,java.util.concurrent.TimeUnit.SECONDS))}
+        return captured
     }
     override fun stop(): String {
-        stops++; stopEntered.countDown()
+        stops++; stopEntered.countDown();stopGate?.let{check(it.await(4,java.util.concurrent.TimeUnit.SECONDS))}
         state = if (stopReady) "STOPPED" else "STOP_UNVERIFIED"
         revoked = stopReady
         if (stopReady) currentScale = currentScale.copy(observed = null, target = null, status = ScaleStatus.UNAVAILABLE)
@@ -91,6 +110,7 @@ class FakeService : IHostBootstrap, android.os.IBinder {
     }
     override fun destroy() { destroys++; if (exitOnDestroy) die() }
     override fun requestScale(requestId: Long, scale: Double, expectedOwnerEpoch: String, expectedProjectionToken: String): ByteArray {
+        beforeScale?.invoke()
         check(alive)
         if (PanelContext(expectedOwnerEpoch, expectedProjectionToken) != currentPanel.context || state != "STREAMING")
             return ScaleState(requestId, scale, null, null, ScaleStatus.UNAVAILABLE, false).bytes()

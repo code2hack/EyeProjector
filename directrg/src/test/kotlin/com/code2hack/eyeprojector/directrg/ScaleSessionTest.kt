@@ -54,7 +54,7 @@ class ScaleSessionTest {
             assertTrue(blocked.await(2, TimeUnit.SECONDS))
             assertTrue(session.scroll(Scroll(Tap(30, 40, initial), 160), 1100))
             assertTrue(session.requestScale(1.25, 1))
-            assertTrue(session.requestScale(2.0, 2))
+            assertTrue(session.requestScale(1.5, 2))
             session.replaceDecoder(Geometry(384, 512))
             session.cancelPendingInput()
             assertEquals(1L, dispatcher(session, "controls").snapshot().canceled)
@@ -64,7 +64,7 @@ class ScaleSessionTest {
             val input = DataInputStream(buffer.toByteArray().inputStream())
             val frames = (1..3).map { Wire.readFrame(input) }
             assertEquals(listOf(Wire.TAP, Wire.SCALE_REQUEST, Wire.SCALE_REQUEST), frames.map { it.channel })
-            assertEquals(listOf(1.25, 2.0), frames.drop(1).map { ScaleRequest.from(it.payload).scale })
+            assertEquals(listOf(1.25, 1.5), frames.drop(1).map { ScaleRequest.from(it.payload).scale })
             assertEquals(listOf(1L, 2L), frames.drop(1).map { it.stamp })
             assertEquals(0, input.available())
         } finally { release.countDown(); session.close() }
@@ -86,7 +86,7 @@ class ScaleSessionTest {
             session.close()
             assertEquals(1L, queue.snapshot().canceled)
             assertEquals(0L, queue.snapshot().pending)
-            assertFalse(session.requestScale(2.0))
+            assertFalse(session.requestScale(1.5))
         } finally { release.countDown(); session.close() }
     }
 }

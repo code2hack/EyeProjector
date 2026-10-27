@@ -1,9 +1,15 @@
 package com.code2hack.eyeprojector.directrg
 
+import android.app.ActivityManager
 import android.app.Activity
+import android.Manifest
+import android.content.pm.PackageManager
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.content.ComponentName
+import android.content.ServiceConnection
+import android.os.IBinder
 import android.graphics.Color
 import android.os.Bundle
 import android.os.SystemClock
@@ -18,7 +24,6 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowInsets
 import android.view.WindowInsetsController
-import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -33,13 +38,34 @@ import com.code2hack.eyeprojector.protocol.Navigation
 import com.code2hack.eyeprojector.protocol.Scroll
 import com.code2hack.eyeprojector.protocol.PairingPanel
 import com.code2hack.eyeprojector.protocol.PeerRole
-import com.code2hack.eyeprojector.protocol.SessionControl
-import com.code2hack.eyeprojector.protocol.SessionPhase
-import com.code2hack.eyeprojector.protocol.SessionState
+import com.code2hack.eyeprojector.protocol.ActivationGoal
+import com.code2hack.eyeprojector.protocol.ReceiverDemand
+import com.code2hack.eyeprojector.protocol.ReceiverIncarnation
 import java.io.File
+import java.util.UUID
+import com.code2hack.eyeprojector.directrg.localcamera.forwarding.ReceiverCameraPermissionRequest
 import org.json.JSONObject
 
 class ReceiverActivity : Activity(), SurfaceHolder.Callback {
+    /** Optional instrumentation observer; never owns, consumes or retains the input events. */
+    internal interface NativeInputObserver {
+        fun key(activityId: Int, event: KeyEvent, receiptUptimeMs: Long, receiptElapsedNs: Long)
+        fun motion(activityId: Int, entry: String, event: MotionEvent, receiptUptimeMs: Long, receiptElapsedNs: Long)
+        fun stage(activityId: Int, stage: String, action: PadGestureRecognizer.Action?, deadlineUptimeMs: Long?,
+                  outcome: String?, local: Boolean?, generation: Long, receiptUptimeMs: Long, receiptElapsedNs: Long)
+    }
+    companion object {
+        @Volatile internal var nativeInputObserver: NativeInputObserver? = null
+    }
+    private inline fun observeNativeInput(read: (NativeInputObserver) -> Unit) {
+        val observer = nativeInputObserver ?: return
+        try { read(observer) } catch (_: Throwable) { /* Diagnostics cannot change input handling. */ }
+    }
+    private fun nativeInputStage(stage: String, action: PadGestureRecognizer.Action? = null,
+                                 due: Long? = null, outcome: String? = null, local: Boolean? = null) {
+        observeNativeInput { it.stage(System.identityHashCode(this), stage, action, due, outcome, local,
+            inputGeneration, SystemClock.uptimeMillis(), SystemClock.elapsedRealtimeNanos()) }
+    }
     private lateinit var root: FrameLayout
     private lateinit var screen: ProjectorSurface
     private lateinit var pointer: PointerOverlay
@@ -47,11 +73,138 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var pairingPanel: PairingPanel
     private lateinit var connectButton: Button
     private val presentation = SessionPresentation()
-    private val attachment = SessionAttachment()
-    private var sessionClient: PairedSessionClient? = null
-    private var clientGeneration = 0L
-    private var peerSession: SessionState? = null
+    private var owner: ReceiverSessionOwner? = null
+    private var bound = false
+    private var serviceBinder: ReceiverSessionService.LocalBinder? = null
+    // One opaque identity per actual Activity instance; request codes never reconstruct it.
+    private val cameraPermissionHost = Any()
+    private val cameraPermissionRequests = mutableMapOf<Int,
+        Pair<ReceiverSessionService.LocalBinder, ReceiverCameraPermissionRequest>>()
+    private lateinit var launchScope: ReceiverLaunchScope
+    private var visibleActivation: String? = null
+    private var bindingValid = true
+    private val registeredActivations = mutableSetOf<String>()
     private var connectRequested = false
+    private var disconnectBeforeBinding = false
+    private var connectBeforeBinding = false
+    private var pendingForget: (() -> Unit)? = null
+    private var pendingExit: Pair<ReceiverLaunchScope, String?>? = null
+    private var appliedDemand: ReceiverDemand? = null
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName, binder: IBinder) {
+            val local = binder as ReceiverSessionService.LocalBinder
+            serviceBinder = local; owner = local.owner
+            pendingExit?.let { original ->
+                val done = pendingForget; pendingForget = null
+                owner?.disconnect(complete = done, scope = original.first, activationId = original.second)
+                return
+            }
+            if (!bindingValid) return
+            val requestedWake = intent.getStringExtra(ReceiverWake.ACTIVATION)
+            if (requestedWake != null && !validWake(local, intent)) {
+                bindingValid = false; finish(); return
+            }
+            registerTask(launchScope, visibleActivation)
+            val forget = pendingForget; pendingForget = null
+            if (forget != null) owner?.disconnect(complete = forget, scope = launchScope, activationId = visibleActivation)
+            else if (disconnectBeforeBinding) owner?.disconnect(scope = launchScope, activationId = visibleActivation)
+            else if (launchScope.trigger.isNotEmpty()) owner?.launch(launchScope)
+            val canceledBeforeBinding = forget != null || disconnectBeforeBinding
+            disconnectBeforeBinding = false; connectBeforeBinding = false
+            if (resumed && !canceledBeforeBinding) { attachCameraPermissionHost(); attachPresentation() }
+            // A recreated view needs its first attachment even when goal selection was restored.
+            if (!canceledBeforeBinding && requestedWake != null) ReceiverWake.readIntent(intent)?.let(::applyReceiverDemand)
+        }
+        override fun onServiceDisconnected(name: ComponentName) {
+            serviceBinder?.detachCameraPermissionHost(cameraPermissionHost)
+            owner = null; serviceBinder = null
+            showSnapshot(ReceiverSessionOwner.Snapshot(null, null, null, false, "DISCONNECTED", null))
+        }
+    }
+    private val sessionView = object : ReceiverSessionOwner.View {
+        override fun state(snapshot: ReceiverSessionOwner.Snapshot) { if (resumed) showSnapshot(snapshot) }
+        override fun input(source: ProjectionSession, event: com.code2hack.eyeprojector.protocol.ReceiverInput) {
+            if (session === source && usable()) completedInput.accept(event)
+        }
+    }
+    private fun attachPresentation() {
+        if (!bindingValid || !resumed || !hasWindowFocus()) return
+        owner?.attach(sessionView, screen.holder.surface.takeIf { it.isValid })
+        owner?.presentation(sessionView, usable(), presentation.panelVisible)
+    }
+    private fun attachCameraPermissionHost() {
+        val originalBinder = serviceBinder ?: return
+        if (!resumed || !bindingValid) return
+        originalBinder.attachCameraPermissionHost(cameraPermissionHost) { originalRequest ->
+            runOnUiThread {
+                if (serviceBinder !== originalBinder || !resumed ||
+                    originalRequest.hostIdentity !== cameraPermissionHost ||
+                    !originalBinder.isCameraPermissionRequestCurrent(originalRequest)) return@runOnUiThread
+                cameraPermissionRequests[originalRequest.requestCode] = originalBinder to originalRequest
+                try { requestPermissions(arrayOf(Manifest.permission.CAMERA), originalRequest.requestCode) }
+                catch (error: Throwable) {
+                    cameraPermissionRequests.remove(originalRequest.requestCode)
+                    originalBinder.cameraPermissionRequestFailed(originalRequest, error)
+                }
+            }
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        val captured = cameraPermissionRequests.remove(requestCode) ?: return
+        val index = permissions.indexOf(Manifest.permission.CAMERA)
+        val granted = index >= 0 && index < grantResults.size && grantResults[index] == PackageManager.PERMISSION_GRANTED
+        captured.first.cameraPermissionResult(captured.second, granted)
+    }
+    private fun validWake(local: ReceiverSessionService.LocalBinder, delivered: Intent): Boolean {
+        val d = local.feature.directive ?: return false
+        return bindingValid && pendingExit == null && local.feature.permits(d) &&
+            ReceiverWake.readIntent(delivered) == local.feature.demand()
+    }
+    private fun applyReceiverDemand(demand: ReceiverDemand) {
+        val source = owner ?: return
+        if (!bindingValid || pendingExit != null || source.currentDemand() != demand || appliedDemand == demand) return
+        appliedDemand = demand // Before any callback-producing UI work; repeated intents cannot reset the redraw.
+        if (demand.goal == ActivationGoal.PROJECTED && presentation.panelVisible) {
+            // Fence hidden projected output before cancellation/layout can publish another UI fact.
+            source.presentation(sessionView, false, false)
+            source.attachSurface(sessionView, null)
+            if (!bindingValid || pendingExit != null || owner !== source || source.currentDemand() != demand) return
+            presentation.requestProjected()
+            connectionView.visibility = View.GONE
+            cancelInput(); resize()
+            if (resumed && source.currentDemand() == demand) attachPresentation()
+        } else if (demand.goal == ActivationGoal.PROJECTED && source.snapshot().state == "STREAMING") {
+            // Already current projected pixels can satisfy a new demand without a fresh encoded frame.
+            source.presentation(sessionView, usable(), false)
+        } else if (resumed && source.currentDemand() == demand) attachPresentation()
+    }
+    private fun registerTask(scope: ReceiverLaunchScope, activation: String?) {
+        if (scope.taskId != taskId) return // Retain unknown old association; never reconstruct it from numeric reuse.
+        val task = getSystemService(ActivityManager::class.java).appTasks.firstOrNull {
+            runCatching { it.taskInfo?.taskId == taskId }.getOrDefault(false)
+        }
+        serviceBinder?.register(scope, activation, task)
+    }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        val local = serviceBinder ?: return
+        if (!validWake(local, intent)) return
+        setIntent(intent) // This is delivery state, not an attempt to rewrite the framework task root.
+        ReceiverWake.readIntent(intent)?.let(::applyReceiverDemand)
+    }
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("activationScope", launchScope.id); outState.putString("activationTrigger", launchScope.trigger)
+        outState.putInt("activationTask", launchScope.taskId); outState.putString("visibleActivation", visibleActivation)
+        outState.putBoolean("panelVisible", presentation.panelVisible); outState.putBoolean("hadLive", presentation.live)
+        appliedDemand?.let { d ->
+            outState.putString("appliedH", d.activationId); outState.putString("appliedA", d.ownerEpoch)
+            outState.putLong("appliedWake", d.wakeRevision); outState.putString("appliedGoal", d.goal.name)
+            outState.putString("appliedInc", d.incarnation.id); outState.putLong("appliedIncSequence", d.incarnation.sequence)
+        }
+        super.onSaveInstanceState(outState)
+    }
     private val localButtons = mutableListOf<Button>()
     private lateinit var status: TextView
     private var connectionStatus = ""
@@ -61,11 +214,13 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var longTouch: NativePadLongTouch
     private lateinit var heldInput: HeldPointerDispatcher
     private lateinit var padContact: NativePadContact
+    private lateinit var shellPadContact: NativePadShellContact
     private lateinit var hidInput: HidKeyInput
     private lateinit var hidDevices: AndroidHidInput
     private lateinit var hidPanel: HidBindingsPanel
     private lateinit var mainControls: LinearLayout
     private lateinit var heldOwner: HeldInputOwner
+    private lateinit var classifiedPadLongPress: ClassifiedPadLongPress
     private lateinit var completedInput: CompletedReceiverInput
     private lateinit var functionInput: NativeFunctionInput
     private var nativeActionsSubmitted = 0L
@@ -82,10 +237,24 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     private var edgeScheduled = false
     private var padUps = 0L
     private var inputGeneration = 0L
-    private var pointerSequence = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        setTurnScreenOn(true)
+        val restored = savedInstanceState?.getString("activationScope")
+        launchScope = ReceiverLaunchScope(restored ?: UUID.randomUUID().toString(),
+            savedInstanceState?.getString("activationTrigger") ?: if (intent.hasExtra(ReceiverWake.ACTIVATION)) "" else UUID.randomUUID().toString(),
+            if (restored != null) savedInstanceState.getInt("activationTask") else taskId)
+        visibleActivation = savedInstanceState?.getString("visibleActivation")
+        if (savedInstanceState != null) {
+            presentation.restoreSelection(savedInstanceState.getBoolean("panelVisible", true), savedInstanceState.getBoolean("hadLive", false))
+            val h = savedInstanceState.getString("appliedH")
+            val a = savedInstanceState.getString("appliedA")
+            val i = savedInstanceState.getString("appliedInc")
+            val goal = ActivationGoal.entries.firstOrNull { it.name == savedInstanceState.getString("appliedGoal") }
+            if (h != null && a != null && i != null && goal != null) appliedDemand = ReceiverDemand(h,a,
+                savedInstanceState.getLong("appliedWake"), ReceiverIncarnation(i,savedInstanceState.getLong("appliedIncSequence")),goal)
+        }
         val preferences = getSharedPreferences("projector-input", MODE_PRIVATE)
         settings = LocalInputSettings({ preferences.getString(it, null) }, { k, v -> preferences.edit().putString(k, v).commit() })
         val hidBindings = HidBindings({ preferences.getString("hid.bindings", null) },
@@ -103,18 +272,16 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         status = TextView(this).apply { setTextColor(Color.WHITE); textSize = 18f; gravity = Gravity.CENTER }
         connectButton = Button(this).apply {
             text = getString(R.string.connect)
-            setOnClickListener { if (session != null || connectRequested || attachment.epoch != null) disconnect() else connect() }
+            setOnClickListener { if (session != null || connectRequested) disconnect() else connect() }
         }
         localButtons.add(connectButton)
         pairingPanel = PairingPanel(this, PeerRole.GLASSES, { paired ->
             connectButton.visibility = if (paired) View.VISIBLE else View.GONE
         }, { complete ->
-            val epoch = attachment.epoch ?: peerSession?.takeIf { it.phase.active }?.epoch
-            disconnect(notifyPeer = false)
-            val client = sessionClient
-            if (client == null) complete()
-            else client.disconnect(epoch) { runOnUiThread { complete() } }.forEach(attachment::suppress)
-        })
+            cancelInput()
+            val source = owner
+            if (source == null) pendingForget = complete else source.disconnect(complete = complete, scope = launchScope, activationId = visibleActivation)
+        }, ReceiverPairingOwner.get(this).pairing)
         pairingPanel.addView(connectButton, 2)
         localButtons.add(pairingPanel.forgetButton)
         val settingsPanel = LocalInputSettingsPanel(this, settings, ::showHidBindings) {
@@ -155,7 +322,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         // Admission and position notifications already refresh the model; observing must not publish again.
         heldInput = HeldPointerDispatcher({ pointer.position }) {
             if (!usable()) null
-            else if (connectionView.visibility == View.VISIBLE) { event ->
+            else if (connectionView.visibility == View.VISIBLE) classifiedPadLongPress.route { event ->
                 if (event.phase == Touch.Phase.DOWN && ::completedInput.isInitialized) completedInput.cancel()
                 localInput.touch(event)
             }
@@ -163,7 +330,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
                 val source = session
                 val size = currentGeometry
                 if (source == null || size == null || !projectedInput()) null
-                else { event ->
+                else classifiedPadLongPress.route { event ->
                     val fit = Fit.inside(root.width, root.height, size)
                     val point = event.position
                     val target = if (event.phase == Touch.Phase.DOWN) fit.touch(point.x, point.y, size)
@@ -174,6 +341,15 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             }
         }
         heldOwner = HeldInputOwner(heldInput)
+        classifiedPadLongPress = ClassifiedPadLongPress(heldOwner, SystemClock::uptimeMillis,
+            // The Phone's measured timeout is 500 ms; leave time for its long-press callback.
+            maxOf(500L, ViewConfiguration.getLongPressTimeout().toLong()) + 100L,
+            { deadline, action ->
+                val task = Runnable { action(); updateEdgeScroll() }
+                root.postDelayed(task, (deadline - SystemClock.uptimeMillis()).coerceAtLeast(0))
+                val cancel: () -> Unit = { root.removeCallbacks(task) }
+                cancel
+            })
         completedInput = CompletedReceiverInput(SystemClock::uptimeMillis, { inputGeneration },
             { usable() && connectionView.visibility == View.VISIBLE },
             { heldOwner.cancel(SystemClock.uptimeMillis()) }, localInput::touch, localInput::scroll, localInput::cancel,
@@ -181,17 +357,34 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
                 ReceiverInputKind.PANEL -> showControlPanel()
                 ReceiverInputKind.BACK -> contextualBack()
                 ReceiverInputKind.EXIT -> exitToLauncher()
+                ReceiverInputKind.FUNCTION_DOUBLE -> contextualFunctionDouble()
+                ReceiverInputKind.SLEEP -> sleepGlasses()
                 else -> Unit
             } })
+        shellPadContact = NativePadShellContact(heldOwner,
+            { if (usable() && !padContact.holding) Triple(inputGeneration, session,
+                Pair(currentGeometry, connectionView.visibility == View.VISIBLE)) else null },
+            { pointer.inputPosition() },
+            {
+                // The raw long-key source omits short taps: retire this ambiguity without
+                // enabling the recognizer's global continuous-contact report mode.
+                gestures.cancel(SystemClock.uptimeMillis())
+                schedulePadConfirmation()
+                classifiedPadLongPress.cancel()
+                completedInput.cancel()
+            }, ::updateEdgeScroll)
         padContact = NativePadContact(this, { pointer.inputPosition() }, { event ->
             if (usable()) gestures.accept(event, SystemClock.uptimeMillis()) else cancelInput()
             schedulePadConfirmation()
         }, ::cancelInput)
         longTouch = NativePadLongTouch(this) { at ->
+            observeNativeInput { it.stage(System.identityHashCode(this), "ai_callback", null, at, null, null,
+                inputGeneration, SystemClock.uptimeMillis(), SystemClock.elapsedRealtimeNanos()) }
             if (usable()) gestures.classifyLongPress(at) else gestures.cancel(at)
             schedulePadConfirmation()
         }
-        val functionNavigation = FunctionNavigation(::projectionHome, ::showControlPanel, ::contextualBack, ::exitToLauncher)
+        val functionNavigation = FunctionNavigation(::projectionFunctionDouble, ::localFunctionDouble,
+            ::contextualBack, ::sleepGlasses)
         functionInput = NativeFunctionInput(this,
             { if (usable()) Pair(session, projectionContext) else null },
             { action -> functionNavigation.dispatch(action, projectionContext) },
@@ -229,7 +422,11 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         (connectionView.getChildAt(0) as LinearLayout).addView(hidPanel)
         root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> resize() }
         setContentView(root)
+        shellPadContact.start()
         showStatus(getString(R.string.disconnected))
+        val service = Intent(this, ReceiverSessionService::class.java)
+        startForegroundService(service)
+        bound = bindService(service, serviceConnection, BIND_AUTO_CREATE)
         root.post {
             window.insetsController?.apply {
                 hide(WindowInsets.Type.systemBars())
@@ -270,6 +467,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
 
     /** Passive snapshot: inputPosition() publishes too, so never call it from this producer. */
     private fun publishHeadPointer() {
+        owner?.presentation(sessionView, usable(), presentation.panelVisible)
         val source = session ?: return
         if (!::pointer.isInitialized || root.width <= 0 || root.height <= 0) return
         val position = pointer.position
@@ -277,7 +475,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         val fit = size?.let { Fit.inside(root.width, root.height, it) }
         val projected = connectionView.visibility != View.VISIBLE
         val available = usable() && position.available && (!projected || projectedInput())
-        source.headPointer(HeadPointerState(inputGeneration, ++pointerSequence, available, projected,
+        source.headPointer(HeadPointerState(inputGeneration, 0, available, projected,
             position.x, position.y, fit, size), pointer.expiresAtNs)
     }
 
@@ -325,27 +523,58 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         connectionView.scrollTo(0, 0)
         resize()
     }
-    internal fun projectionHome() {
+    internal fun projectionFunctionDouble() {
         if (!usable() || !projectedInput()) return
-        cancelInput(); session?.navigate(Navigation.HOME)
+        cancelInput(); session?.navigate(Navigation.FUNCTION_DOUBLE)
+    }
+    private fun localFunctionDouble() {
+        if (::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE) showControlPanel()
+        else exitToLauncher()
+    }
+    private fun contextualFunctionDouble() {
+        if (projectionContext) projectionFunctionDouble() else localFunctionDouble()
+    }
+    private fun sleepGlasses() {
+        if (!usable()) return
+        cancelInput()
+        // The existing shell reader owns power injection; Activity pause retains the session.
+        if (!shellPadContact.sleep()) Log.w("EyeProjectorPad", "Glasses sleep needs the local shell reader")
     }
     internal fun contextualBack() {
         cancelInput()
         if (presentation.panelVisible && ::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE) { showControlPanel(); return }
         if (presentation.panelVisible) {
             if (presentation.back()) { connectionView.visibility = View.GONE; resize() }
-            else { disconnect(); finish() }
+            else { finishProjection() }
         } else remoteBack()
+    }
+    private fun finishProjection() {
+        val original = visibleActivation
+        val scope = launchScope
+        resumed = false; bindingValid = false; cancelInput()
+        cancelOriginalOnExit(scope, original)
+        finish()
     }
     internal fun exitToLauncher() {
         // End local interception and invalidate peer callbacks before leaving this Activity.
         resumed = false
         hidDevices.stop(); functionInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
-        val epoch = attachment.epoch ?: peerSession?.takeIf { it.phase.active }?.epoch
-        disconnect()
-        clientGeneration++; sessionClient?.close(epoch); sessionClient = null
+        val original = visibleActivation
+        val scope = launchScope
+        bindingValid = false
+        cancelOriginalOnExit(scope, original)
         startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         finish()
+    }
+
+    private fun cancelOriginalOnExit(scope: ReceiverLaunchScope, activation: String?) {
+        pendingExit = scope to activation
+        val source = owner
+        if (source != null) source.disconnect(scope = scope, activationId = activation)
+        else {
+            // Delivery survives unbinding/Activity destruction and carries only this original scope.
+            startForegroundService(ReceiverSessionService.cancelIntent(this, scope, activation))
+        }
     }
 
     @Deprecated("Android navigation delegates to the current projection/panel context")
@@ -364,18 +593,44 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun dispatchPadAction(action: PadGestureRecognizer.Action) {
+        nativeInputStage("dispatch_enter", action)
         when (action) {
-            is PadGestureRecognizer.Action.LongPress -> { longClassifications++; return }
+            is PadGestureRecognizer.Action.LongPress -> {
+                longClassifications++
+                // Real sustained input already owns its DOWN and eventual physical release.
+                if (padContact.holding || shellPadContact.holding) {
+                    nativeInputStage("dispatch_result", action, outcome = "sustained-contact")
+                    return
+                }
+                if (action.markerDownTimeMs == null || action.position?.available != true) {
+                    nativeActionsRejected++
+                    nativeInputStage("dispatch_result", action, outcome = "rejected-no-marker-target")
+                    return
+                }
+            }
             is PadGestureRecognizer.Action.Contact -> {
+                if (action.event.phase == PadGestureRecognizer.Phase.DOWN && usable()) {
+                    classifiedPadLongPress.cancel()
+                    shellPadContact.cancel()
+                }
                 val accepted = if (action.event.phase == PadGestureRecognizer.Phase.CANCEL || usable())
                     heldOwner.acceptNative(action.event) else false
                 if (accepted) nativeActionsSubmitted++ else nativeActionsRejected++
+                nativeInputStage("dispatch_result", action, outcome = if (accepted) "submitted-to-held-owner" else "rejected")
                 updateEdgeScroll(); return
             }
-            is PadGestureRecognizer.Action.Back -> { contextualBack(); return }
+            is PadGestureRecognizer.Action.Back -> {
+                contextualBack()
+                nativeInputStage("dispatch_result", action, outcome = "delegated-contextual-back")
+                return
+            }
             else -> Unit
         }
-        if (!usable()) { nativeActionsRejected++; return }
+        if (!usable()) {
+            nativeActionsRejected++
+            nativeInputStage("dispatch_result", action, outcome = "rejected-unusable")
+            return
+        }
         val admittedGeneration = inputGeneration
         val admittedSession = session
         val admittedGeometry = currentGeometry
@@ -383,15 +638,29 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         // Pointer publication and old-target CANCEL may synchronously replace the view/session.
         pointer.inputPosition()
         if (inputGeneration != admittedGeneration || !usable() || session !== admittedSession ||
-            currentGeometry != admittedGeometry || (connectionView.visibility == View.VISIBLE) != admittedLocal) return
+            currentGeometry != admittedGeometry || (connectionView.visibility == View.VISIBLE) != admittedLocal) {
+            nativeInputStage("dispatch_result", action, outcome = "canceled-context-change", local = admittedLocal)
+            return
+        }
         if (::completedInput.isInitialized) completedInput.cancel()
+        classifiedPadLongPress.cancel()
         heldOwner.cancel(action.timeMs)
         if (inputGeneration != admittedGeneration || !usable() || session !== admittedSession ||
-            currentGeometry != admittedGeometry || (connectionView.visibility == View.VISIBLE) != admittedLocal) return
+            currentGeometry != admittedGeometry || (connectionView.visibility == View.VISIBLE) != admittedLocal) {
+            nativeInputStage("dispatch_result", action, outcome = "canceled-context-change", local = admittedLocal)
+            return
+        }
         val submitted = when (action) {
+            is PadGestureRecognizer.Action.LongPress -> classifiedPadLongPress.start(action) {
+                inputGeneration == admittedGeneration && usable() && session === admittedSession &&
+                    currentGeometry == admittedGeometry &&
+                    (connectionView.visibility == View.VISIBLE) == admittedLocal
+            }
             is PadGestureRecognizer.Action.Tap -> {
                 val delay = SystemClock.uptimeMillis() - action.downTimeMs
                 tapDelaySamples++; tapDelayTotalMs += delay; tapDelayMaxMs = maxOf(tapDelayMaxMs, delay)
+                if (tapDelaySamples <= 64) Log.d("EyeProjectorPad",
+                    "tapDispatch ageMs=$delay fallbackMs=${action.timeMs - action.upTimeMs}")
                 val point = action.position
                 if (point?.available != true) false
                 else if (connectionView.visibility == View.VISIBLE) localInput.tap(action)
@@ -409,6 +678,8 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             nativeActionsRejected++
             Log.w("EyeProjectorPad", "Native pointer action was not submitted")
         }
+        nativeInputStage("dispatch_result", action, outcome = if (submitted) "submitted" else "rejected", local = admittedLocal)
+        if (action is PadGestureRecognizer.Action.LongPress) updateEdgeScroll()
     }
 
     private fun updateEdgeScroll() {
@@ -437,12 +708,17 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     }
     private fun schedulePadConfirmation() {
         root.removeCallbacks(confirmTap)
-        gestures.deadline?.let { root.postDelayed(confirmTap, (it - SystemClock.uptimeMillis()).coerceAtLeast(0)) }
+        val deadline = gestures.deadline
+        nativeInputStage("deadline", due = deadline)
+        deadline?.let { root.postDelayed(confirmTap, (it - SystemClock.uptimeMillis()).coerceAtLeast(0)) }
     }
     private fun cancelInput() {
-        inputGeneration++
+        nativeInputStage("cancel")
+        inputGeneration = owner?.advanceInputRevision() ?: (inputGeneration + 1)
         if (::hidInput.isInitialized) hidInput.cancel()
         if (::functionInput.isInitialized) functionInput.cancel()
+        if (::classifiedPadLongPress.isInitialized) classifiedPadLongPress.cancel()
+        if (::shellPadContact.isInitialized) shellPadContact.cancel()
         if (::gestures.isInitialized) gestures.cancel(SystemClock.uptimeMillis())
         if (::heldOwner.isInitialized) heldOwner.cancel(SystemClock.uptimeMillis())
         else if (::heldInput.isInitialized) heldInput.cancel(SystemClock.uptimeMillis())
@@ -455,12 +731,22 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         publishHeadPointer()
     }
 
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        observeNativeInput { it.motion(System.identityHashCode(this), "touch_motion", event,
+            SystemClock.uptimeMillis(), SystemClock.elapsedRealtimeNanos()) }
+        return super.dispatchTouchEvent(event)
+    }
+
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+        observeNativeInput { it.motion(System.identityHashCode(this), "generic_motion", event,
+            SystemClock.uptimeMillis(), SystemClock.elapsedRealtimeNanos()) }
         if (::padContact.isInitialized && padContact.accept(event)) return true
         return super.dispatchGenericMotionEvent(event)
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        observeNativeInput { it.key(System.identityHashCode(this), event,
+            SystemClock.uptimeMillis(), SystemClock.elapsedRealtimeNanos()) }
         val trace = HidDecisionTrace.capture {
             if (::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE && connectionView.visibility == View.VISIBLE)
                 HidDecisionTrace.Event(event.deviceId, event.keyCode, event.scanCode, event.action, event.repeatCount,
@@ -494,6 +780,97 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         return true
     }
 
+    /** Test-only holder: original references stay private and never resolve a successor at teardown. */
+    internal interface FixtureTeardownTarget {
+        val sessionStartedMonoNs: Long
+        fun disconnect(onCompletion: () -> Unit)
+        fun observe(): FixtureTeardownObservation
+    }
+    internal data class FixtureTeardownObservation(
+        val readStartMonoNs: Long,
+        val readEndMonoNs: Long,
+        val originalSessionStartedMonoNs: Long,
+        val ownerState: String,
+        val ownerSessionPresent: Boolean,
+        val ownerSessionMatchesOriginal: Boolean,
+        val currentSessionStartedMonoNs: Long?,
+        val currentActivationMatchesOriginal: Boolean?,
+        val originalTriggerCaptured: Boolean,
+        val originalActivationCaptured: Boolean,
+        val originalTriggerCanceled: Boolean?,
+        val originalTriggerAcknowledged: Boolean?,
+        val originalActivationCancellationRecorded: Boolean?,
+        val originalActivationPendingCancel: Boolean?,
+    )
+
+    /** Main-thread, fixture-local capture; absent/inconsistent provenance is diagnostic UNKNOWN. */
+    internal fun captureFixtureTeardownTarget(expectedSessionStartedMonoNs: Long): FixtureTeardownTarget? {
+        val capturedOwner = owner ?: return null
+        val capturedBinder = serviceBinder ?: return null
+        if (capturedBinder.owner !== capturedOwner || !::launchScope.isInitialized) return null
+        val capturedSession = session ?: return null
+        val memory = capturedOwner.snapshot()
+        if (memory.session !== capturedSession || capturedSession.observationStartedMonoNs != expectedSessionStartedMonoNs) return null
+        val capturedScope = launchScope.copy()
+        val capturedActivation = visibleActivation
+        val capturedFeature = capturedBinder.feature
+        val trigger = capturedScope.trigger.takeIf { it.isNotEmpty() }
+        val capturedTrigger = trigger?.let { capturedFeature.state.triggers[it] }
+        if (trigger != null && capturedTrigger?.scope != capturedScope) return null
+        val mappedActivation = capturedTrigger?.activation
+        if (mappedActivation != null && capturedActivation != null && mappedActivation != capturedActivation) return null
+        if (mappedActivation != null && memory.activationId != null && mappedActivation != memory.activationId) return null
+        if (capturedActivation != null && memory.activationId != capturedActivation) return null
+        if (trigger == null && capturedActivation == null) return null
+        // An empty wake trigger is absence of T, not a trigger awaiting acknowledgment.
+        // Pass null explicitly with captured H; never use the owner's currentScope default.
+        val dispatchScope = capturedScope.takeIf { trigger != null }
+        val capturedStart = capturedSession.observationStartedMonoNs
+        return object : FixtureTeardownTarget {
+            override val sessionStartedMonoNs = capturedStart
+            override fun disconnect(onCompletion: () -> Unit) {
+                capturedOwner.disconnect(notifyPeer = true, complete = {
+                    try { onCompletion() } catch (_: Throwable) { /* Observation cannot break reconciliation. */ }
+                }, scope = dispatchScope, activationId = capturedActivation)
+            }
+            override fun observe(): FixtureTeardownObservation {
+                val begin = System.nanoTime()
+                val current = capturedOwner.snapshot()
+                val state = capturedFeature.state
+                val originalTrigger = trigger?.let { state.triggers[it] }?.takeIf { it.scope == capturedScope }
+                return FixtureTeardownObservation(begin, System.nanoTime(), capturedStart, current.state,
+                    current.session != null, current.session === capturedSession,
+                    current.session?.observationStartedMonoNs,
+                    capturedActivation?.let { current.activationId == it },
+                    trigger != null, capturedActivation != null, originalTrigger?.canceled, originalTrigger?.acknowledged,
+                    capturedActivation?.let { it in state.canceled }, capturedActivation?.let { it in state.pendingCancel })
+            }
+        }
+    }
+
+    /** Main-thread diagnostic reads only; no pairing/config I/O or activation/presentation mutation. */
+    internal fun startupDiagnosticSnapshot(): Map<String, Any?> {
+        val memory = owner?.snapshot()
+        val feature = serviceBinder?.feature
+        val directive = feature?.directive
+        val reported = feature?.presentation
+        val screenReady = ::screen.isInitialized
+        return mapOf(
+            "bound" to bound, "binderAvailable" to (serviceBinder != null), "bindingValid" to bindingValid,
+            "resumed" to resumed, "focused" to hasWindowFocus(), "finishing" to isFinishing, "destroyed" to isDestroyed,
+            "screenInitialized" to screenReady, "surfaceValid" to if (screenReady) screen.holder.surface.isValid else null,
+            "connectRequested" to connectRequested, "connectBeforeBinding" to connectBeforeBinding,
+            "disconnectBeforeBinding" to disconnectBeforeBinding,
+            "ownerState" to memory?.state, "ownerRequested" to memory?.requested,
+            "sessionPresent" to memory?.let { it.session != null }, "peerPhase" to memory?.peer?.phase?.name,
+            "peerDetail" to memory?.peer?.detail, "visibleActivation" to visibleActivation,
+            "currentActivation" to memory?.activationId, "activationDesired" to directive?.desired,
+            "activationGoal" to directive?.goal?.name, "reportedPresentationMode" to reported?.mode?.name,
+            "reportedPresentationDetail" to reported?.detail, "panelSelected" to presentation.panelVisible,
+            "presentationLive" to presentation.live, "pairedAvailable" to null,
+            "pairedAvailabilityScope" to "UNEXPORTED_NO_MEMORY_GETTER")
+    }
+
     internal fun inputSnapshot(): JSONObject = JSONObject()
         .put("sensor", pointer.sourceDescription).put("sourceRegistered", pointer.sourceRegistered)
         .put("acceptedSensorSamples", pointer.acceptedSamples).put("localCursorDraws", pointer.drawCount)
@@ -517,138 +894,99 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
 
     private fun connect() {
         if (!pairingPanel.isPaired()) { showStatus("Pair with the Phone before connecting"); return }
-        if (session != null || connectRequested) return
-        if (!screen.holder.surface.isValid) { showStatus(getString(R.string.display_unavailable)); return }
-        connectRequested = true
-        connectButton.text = getString(R.string.disconnect)
-        showStatus(getString(R.string.connecting))
-        sessionClient?.connect()
-    }
-
-    private fun observePeer(state: SessionState) {
-        if (!pairingPanel.isPaired() || pairingPanel.forgetting) return
-        if (state.phase == SessionPhase.UNKNOWN) {
-            if (session == null) showStatus("Waiting for the Phone to verify its session state")
-            return
-        }
-        peerSession = state
-        if (streaming && attachment.epoch == state.epoch && state.phase != SessionPhase.STREAMING)
-            sessionClient?.command(SessionControl.Operation.RENDERED, state.epoch)
-        if (session != null && (attachment.epoch != state.epoch || !state.phase.active)) disconnect(notifyPeer = false)
-        if (session == null && state.phase.active) {
-            connectRequested = true
-            connectButton.text = getString(R.string.disconnect)
-            showStatus(getString(R.string.connecting))
-        }
-        if (state.phase == SessionPhase.STOPPING) {
-            connectRequested = false; connectButton.text = getString(R.string.connect)
-            showStatus("Stopping projection")
-        }
-        if (state.phase in setOf(SessionPhase.INACTIVE, SessionPhase.FAILED)) {
-            connectRequested = false
-            if (session == null) {
-                connectButton.text = getString(R.string.connect)
-                showStatus(if (state.phase == SessionPhase.FAILED) "Projection failed: ${state.detail}" else getString(R.string.disconnected))
-            }
-        }
-        if (resumed && screen.holder.surface.isValid && attachment.available(state)) {
-            connectRequested = false
-            startProjection(state.epoch)
+        launchScope = ReceiverLaunchScope(UUID.randomUUID().toString(), UUID.randomUUID().toString(), taskId)
+        val source = owner
+        if (source == null) {
+            connectBeforeBinding = true; disconnectBeforeBinding = false; connectRequested = true
+            connectButton.text = getString(R.string.disconnect); showStatus(getString(R.string.connecting))
+        } else {
+            source.launch(launchScope); registerTask(launchScope, null)
         }
     }
 
-    private fun startProjection(epoch: String) {
-        cancelInput()
-        pointer.stop(); if (resumed && hasWindowFocus()) pointer.start()
-        streaming = false; currentGeometry = null; presentation.disconnected(); connectionView.visibility = View.VISIBLE
-        connectButton.text = getString(R.string.disconnect)
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        sessionClient?.command(SessionControl.Operation.CONNECTING, epoch)
-        val next = ProjectionSession(File(filesDir, "session"), screen.holder.surface,
-            { source, state -> runOnUiThread {
-                if (session === source) {
-                    val wasStreaming = streaming
-                    if (state != "STREAMING") cancelInput()
-                    streaming = state == "STREAMING"
-                    if (streaming) {
-                        presentation.streaming()
-                        sessionClient?.command(SessionControl.Operation.RENDERED, epoch)
-                    }
-                    val terminal = state !in listOf("STREAMING", "CONNECTING", "WAITING_FOR_VIDEO")
-                    if (terminal) {
-                        sessionClient?.command(SessionControl.Operation.FAILED, epoch)
-                        attachment.release(); session = null; presentation.disconnected()
-                        connectButton.text = getString(R.string.connect)
-                    }
-                    connectionView.visibility = if (presentation.panelVisible) View.VISIBLE else View.GONE
-                    showStatus(when (state) {
-                        "STREAMING" -> getString(R.string.connected)
-                        "CONNECTING", "WAITING_FOR_VIDEO" -> getString(R.string.connecting)
-                        else -> "Projection stopped: $state"
-                    })
-                    if (!streaming) cancelInput()
-                    if (terminal) window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                    // Repeated state telemetry must not cancel pending input in the same context.
-                    if (wasStreaming != streaming) resize()
-                }
-            } },
-            { source, geometry -> runOnUiThread { if (session === source) {
-                currentGeometry = geometry
-                pointer.stop(); if (resumed && hasWindowFocus()) pointer.start()
-                resize()
-            } } }, applicationContext, onReceiverInput = { source, event -> runOnUiThread {
-                if (session === source && usable()) completedInput.accept(event)
-            } })
-        session = next; next.start()
+    private fun showSnapshot(snapshot: ReceiverSessionOwner.Snapshot) {
+        if (usable() && snapshot.activationId != null) {
+            visibleActivation = snapshot.activationId
+            if (registeredActivations.add(snapshot.activationId)) registerTask(
+                ReceiverLaunchScope(UUID.randomUUID().toString(), "", taskId), snapshot.activationId)
+        }
+        val oldSession = session
+        val oldGeometry = currentGeometry
+        val wasStreaming = streaming
+        if (oldSession !== snapshot.session || snapshot.state != "STREAMING") cancelInput()
+        session = snapshot.session
+        currentGeometry = snapshot.geometry
+        connectRequested = snapshot.requested
+        streaming = snapshot.state == "STREAMING"
+        if (streaming) presentation.streaming()
+        else if (session == null) presentation.disconnected()
+        connectionView.visibility = if (presentation.panelVisible) View.VISIBLE else View.GONE
+        connectButton.text = getString(if (session != null || connectRequested) R.string.disconnect else R.string.connect)
+        showStatus(when (snapshot.state) {
+            "STREAMING" -> getString(R.string.connected)
+            "CONNECTING", "WAITING_FOR_VIDEO", "DISPLAY_DETACHED" -> getString(R.string.connecting)
+            "PHONE_SETUP_REQUIRED" -> "Phone setup required: ${snapshot.peer?.detail}. Open EyeProjector on the Phone."
+            "RETRYING_PEER" -> "Retrying paired Phone; check its setup and network"
+            "CANCEL_PENDING" -> "Saving cancellation; projection is stopping"
+            "ACTIVATION_STORAGE_PENDING" -> "Saving connection request; retrying"
+            "PEER_UNAVAILABLE" -> "Paired Phone unavailable. Open EyeProjector on the Phone and check its setup and network."
+            "DISCONNECTED", "STOPPED" -> getString(R.string.disconnected)
+            else -> "Projection stopped: ${snapshot.state}"
+        })
+        if (oldSession !== session || oldGeometry != currentGeometry || wasStreaming != streaming) {
+            pointer.stop(); if (resumed && hasWindowFocus()) pointer.start()
+            resize()
+        }
     }
 
     internal fun disconnect(notifyPeer: Boolean = true) {
         cancelInput()
-        val epoch = attachment.release() ?: peerSession?.takeIf { it.phase.active }?.epoch
-        if (epoch != null) {
-            attachment.suppress(epoch)
-        }
-        if (notifyPeer) sessionClient?.disconnect(epoch)?.forEach(attachment::suppress)
-        connectRequested = false
-        val old = session; session = null; old?.close()
-        streaming = false; currentGeometry = null; presentation.disconnected(); connectionView.visibility = View.VISIBLE
-        connectButton.text = getString(R.string.connect)
-        showStatus(getString(R.string.disconnected))
-        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        resize()
+        connectBeforeBinding = false
+        val source = owner
+        if (source == null) disconnectBeforeBinding = true
+        else source.disconnect(notifyPeer, scope = launchScope, activationId = visibleActivation)
     }
     override fun onResume() {
         super.onResume(); resumed = true; pointer.start(); longTouch.start(); padContact.start()
         hidDevices.start()
         if (hasWindowFocus()) functionInput.start()
-        val generation = ++clientGeneration
-        sessionClient = PairedSessionClient(File(filesDir, "session"), { state ->
-            if (resumed && generation == clientGeneration) observePeer(state)
-        }, {
-            if (resumed && generation == clientGeneration && session == null) {
-                connectRequested = false; connectButton.text = getString(R.string.connect)
-                showStatus("Paired Phone unavailable. Open EyeProjector on the Phone and check its setup and network.")
-            }
-        }, deliver = { action -> runOnUiThread { action() } }).also { it.start() }
+        attachCameraPermissionHost()
+        attachPresentation()
     }
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (::root.isInitialized) {
             if (!hasFocus) { cancelInput(); pointer.stop(); if (::longTouch.isInitialized) longTouch.stop(); if (::padContact.isInitialized) padContact.stop(); if (::functionInput.isInitialized) functionInput.stop() }
-            else if (resumed) { pointer.start(); longTouch.start(); padContact.start(); functionInput.start() }
+            else if (resumed) { pointer.start(); longTouch.start(); padContact.start(); functionInput.start(); attachPresentation() }
+            owner?.presentation(sessionView, usable(), presentation.panelVisible)
         }
     }
     override fun onPause() {
-        resumed = false; hidDevices.stop(); functionInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
-        val epoch = attachment.epoch ?: peerSession?.takeIf { it.phase.active }?.epoch
-        disconnect(notifyPeer = false)
-        clientGeneration++; sessionClient?.close(epoch); sessionClient = null
+        resumed = false; cancelInput()
+        serviceBinder?.detachCameraPermissionHost(cameraPermissionHost)
+        hidDevices.stop(); functionInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
+        owner?.detach(sessionView)
         super.onPause()
     }
-    override fun onDestroy() { hidDevices.stop(); functionInput.stop(); longTouch.stop(); padContact.stop(); disconnect(); pairingPanel.close(); super.onDestroy() }
-    override fun surfaceCreated(holder: SurfaceHolder) { peerSession?.let(::observePeer) }
+    override fun onDestroy() {
+        shellPadContact.stop()
+        serviceBinder?.detachCameraPermissionHost(cameraPermissionHost)
+        cameraPermissionRequests.clear()
+        hidDevices.stop(); functionInput.stop(); longTouch.stop(); padContact.stop()
+        owner?.detach(sessionView)
+        if (isFinishing && bindingValid) {
+            // Original view/task scope only. A delayed destructor never resolves a newer singleton H.
+            owner?.disconnect(scope = launchScope, activationId = visibleActivation)
+        }
+        if (bound) { unbindService(serviceConnection); bound = false }
+        owner = null; serviceBinder = null; pairingPanel.close(); super.onDestroy()
+    }
+    override fun surfaceCreated(holder: SurfaceHolder) { if (resumed) owner?.attachSurface(sessionView, holder.surface) }
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) { resize() }
-    override fun surfaceDestroyed(holder: SurfaceHolder) { disconnect() }
+    override fun surfaceDestroyed(holder: SurfaceHolder) {
+        streaming = false; cancelInput()
+        owner?.attachSurface(sessionView, null)
+    }
 }
 
 /** Native clicks (including accessibility activation) and drags share the same mapped input path. */

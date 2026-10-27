@@ -2,7 +2,7 @@ package android.os
 
 class Bundle
 class Looper private constructor() {
-    companion object { private val main = Looper(); fun getMainLooper() = main }
+    companion object { private val main = Looper(); private val mainThread = Thread.currentThread(); fun getMainLooper() = main; fun myLooper(): Looper? = if (Thread.currentThread() === mainThread) main else null }
 }
 object SystemClock { var now = 1000L; fun uptimeMillis() = now }
 

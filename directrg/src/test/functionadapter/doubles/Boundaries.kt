@@ -30,17 +30,17 @@ internal class Session {
     fun cancelHeadScroll() { canceled++ }
     fun close() { closed = true }
 }
-internal class Epoch(val active: Boolean = true)
-internal class Peer(val epoch: String = "epoch", val phase: Epoch = Epoch())
-internal class Attachment { val epoch: String? = "epoch"; fun release(): String? = epoch; fun suppress(epoch: String) {} }
-internal class PairedSessionClient(
-    directory: File, val observer: (Peer) -> Unit, val failed: () -> Unit,
-    val deliver: (() -> Unit) -> Unit,
-) {
+internal class ReceiverSessionOwner(private val stopped: () -> Unit) {
+    var session: Session? = null
     var closed = false
-    var closeEpoch: String? = null
-    fun start() {}
-    fun close(epoch: String? = null) { closed = true; closeEpoch = epoch }
-    fun disconnect(epoch: String?): List<String> = listOfNotNull(epoch)
+    var detached = 0
+    var attached = 0
+    private var revision = 0L
+    fun advanceInputRevision() = ++revision
+    fun attach() { attached++ }
+    fun detach(view: Any) { detached++ }
+    fun disconnect(notifyPeer: Boolean = true) { session?.close(); session = null; stopped() }
+    fun close() { closed = true; disconnect() }
 }
+internal class ReceiverSessionService
 internal object R { object string { const val connect = 1; const val disconnected = 2 } }

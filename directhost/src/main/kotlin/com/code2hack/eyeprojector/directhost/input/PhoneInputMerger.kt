@@ -15,7 +15,8 @@ internal class PhoneInputMerger(
     private val receiver: (ReceiverInput) -> Unit,
     private val active: () -> Boolean = { true },
 ) {
-    private class Press(val id: Long, val edge: PhoneHidEdge, val point: HeadPointerState, val contact: Long)
+    private class Press(val id: Long, val edge: PhoneHidEdge, val point: HeadPointerState, val contact: Long,
+        val qualifies: (HeadPointerState, ReceiverUsability?) -> Boolean)
     private class FunctionSequence(val point: HeadPointerState, val key: Triple<Int, Int, Int>) {
         var held: Press? = null
         var latest: Press? = null
@@ -23,6 +24,7 @@ internal class PhoneInputMerger(
         var releasedAt = 0L
     }
     private var point: HeadPointerState? = null
+    private var pointerSource: ReceiverUsability? = null
     private val presses = mutableMapOf<Long, Press>()
     private var held: Press? = null
     private var nativeContact: Long? = null
@@ -85,25 +87,34 @@ internal class PhoneInputMerger(
         failure?.let { throw it }
     }
 
-    fun pointer(next: HeadPointerState) = transaction { out ->
-        if (!active()) return@transaction
+    fun pointer(next: HeadPointerState, source: ReceiverUsability? = null, accepts: () -> Boolean = { true }) = transaction { out ->
+        if (!active() || !accepts()) return@transaction
+        if (pointerSource != null && source != null && pointerSource!!.incarnation != source.incarnation) {
+            retire(out, false) // A new incarnation can restart numeric pointer sequence/revision.
+        }
         val old = point
         if (old != null && next.sequence <= old.sequence) return@transaction
         if (old != null && (old.revision != next.revision || old.projected != next.projected || old.geometry != next.geometry) || !next.available)
             retire(out, false)
+        if (!active() || !accepts()) return@transaction // Retirement may contain an old stock write.
         if (point?.let { it.sequence >= next.sequence } == true) return@transaction
-        point = next
+        point = next; pointerSource = source
         val current = held
         if (current != null) contact(current, Touch.Phase.MOVE, next, now(), out)
     }
 
-    fun edge(routeId: Long, edge: PhoneHidEdge) = transaction { out ->
+    fun edge(routeId: Long, edge: PhoneHidEdge) = stampedEdge(routeId, edge) { _, _ -> true }
+
+    fun stampedEdge(routeId: Long, edge: PhoneHidEdge,
+        qualifies: (HeadPointerState, ReceiverUsability?) -> Boolean) = transaction { out ->
         if (!active()) return@transaction
         val old = presses[routeId]
         if (edge.phase == PhoneHidPhase.DOWN) {
             if (old != null || edge.repeatCount != 0) return@transaction
             val position = point?.takeIf { it.available && (!it.projected || it.geometry == geometry()) } ?: return@transaction
-            val press = Press(routeId, edge, position, ++contactSequence)
+            // This check happens only AFTER acquiring the real control lock, never before its wait.
+            if (!qualifies(position, pointerSource)) return@transaction
+            val press = Press(routeId, edge, position, ++contactSequence, qualifies)
             presses[routeId] = press
             when (edge.action) {
                 PhoneHidAction.TAP -> {
@@ -111,7 +122,9 @@ internal class PhoneInputMerger(
                     nativeContact = null
                     retireContact(out)
                     cancelControl()
-                    if (admitted != generation || presses[routeId] !== press) return@transaction
+                    if (admitted != generation || presses[routeId] !== press || !allowsNew(press, position)) {
+                        presses.remove(routeId); return@transaction
+                    }
                     held = press
                     contact(press, Touch.Phase.DOWN, position, edge.eventTimeMs, out)
                 }
@@ -145,7 +158,7 @@ internal class PhoneInputMerger(
             PhoneHidAction.SCROLL_DOWN, PhoneHidAction.SCROLL_UP -> {
                 val admitted = ++generation
                 nativeContact = null; retireContact(out)
-                if (generation != admitted) return@transaction
+                if (generation != admitted || !allowsNew(old, position)) return@transaction
                 val pixels = if (old.edge.action == PhoneHidAction.SCROLL_DOWN) 160 else -160
                 if (position.projected) position.target()?.let { scroll(Scroll(it, pixels)) }
                 else out.add(ReceiverInput(ReceiverInputKind.SCROLL, position.revision, x = position.x, y = position.y, pixels = pixels))
@@ -156,6 +169,9 @@ internal class PhoneInputMerger(
 
     private fun contact(press: Press, phase: Touch.Phase, position: HeadPointerState, at: Long, out: MutableList<ReceiverInput>) {
         if (held !== press) return
+        if (phase == Touch.Phase.DOWN && !allowsNew(press, position)) {
+            held = null; presses.remove(press.id); return
+        }
         if (phase == Touch.Phase.UP || phase == Touch.Phase.CANCEL) held = null
         if (position.projected) {
             val admitted = generation
@@ -205,7 +221,7 @@ internal class PhoneInputMerger(
         generation++
         val old = held
         held = null; presses.clear(); nativeContact = null
-        if (clearPoint) point = null
+        if (clearPoint) { point = null; pointerSource = null }
         cancelFunction()
         if (old != null && !old.point.projected && emit) out.add(ReceiverInput(ReceiverInputKind.CANCEL, old.point.revision, old.contact))
         cancelControl()
@@ -219,13 +235,15 @@ internal class PhoneInputMerger(
     }
 
     private fun functionDown(press: Press, out: MutableList<ReceiverInput>) {
+        if (!allowsNew(press, press.point)) { presses.remove(press.id); return }
         val key = Triple(press.edge.attachmentId, press.edge.keyCode, press.edge.scanCode)
         var current = function
-        if (current != null && (current.key != key || current.point.revision != press.point.revision)) { cancelFunction(); current = null }
+        if (current != null && (current.key != key || current.point.revision != press.point.revision ||
+                current.latest?.let { allowsNew(it, press.point) } != true)) { cancelFunction(); current = null }
         if (current != null && current.held == null && press.edge.eventTimeMs - current.releasedAt >= 500) {
             val afterCompletion = generation + 1
             finishFunction(current, out); current = null
-            if (generation != afterCompletion || point?.let { it.available && it.revision == press.point.revision } != true) return
+            if (generation != afterCompletion || point?.let { it.available && it.revision == press.point.revision && allowsNew(press, it) } != true) return
             presses[press.id] = press
         }
         val next = current ?: FunctionSequence(press.point, key).also { function = it }
@@ -249,7 +267,8 @@ internal class PhoneInputMerger(
             if (!active()) { cancelFunction(); return@transaction }
             if (function !== current || timerGeneration != functionTimerGeneration) return@transaction
             val position = point
-            if (position?.available != true || position.revision != current.point.revision) { cancelFunction(); return@transaction }
+            if (position?.available != true || position.revision != current.point.revision ||
+                current.latest?.let { allowsNew(it, position) } != true) { cancelFunction(); return@transaction }
             if (now() < deadline) armFunction(current, deadline)
             else if (current.held != null) cancelFunction() else finishFunction(current, out)
         } }
@@ -259,15 +278,19 @@ internal class PhoneInputMerger(
         if (function !== current) return
         cancelFunction()
         val position = point?.takeIf { it.available && it.revision == current.point.revision } ?: return
+        if (current.latest?.let { allowsNew(it, position) } != true) return
         val admitted = generation + 1
         retire(out, true, clearPoint = false)
-        if (generation != admitted || !active()) return
+        if (generation != admitted || !active() || current.latest?.let { allowsNew(it, position) } != true) return
         when (current.presses) {
             1 -> if (position.projected) position.geometry?.let { navigation(Navigation.BACK, it) }
                 else out.add(ReceiverInput(ReceiverInputKind.BACK, position.revision))
-            2 -> if (position.projected) position.geometry?.let { navigation(Navigation.HOME, it) }
-                else out.add(ReceiverInput(ReceiverInputKind.PANEL, position.revision))
-            3 -> out.add(ReceiverInput(if (position.projected) ReceiverInputKind.PANEL else ReceiverInputKind.EXIT, position.revision))
+            2 -> if (position.projected) position.geometry?.let { navigation(Navigation.FUNCTION_DOUBLE, it) }
+                else out.add(ReceiverInput(ReceiverInputKind.FUNCTION_DOUBLE, position.revision))
+            3 -> out.add(ReceiverInput(ReceiverInputKind.SLEEP, position.revision))
         }
     }
+
+    private fun allowsNew(press: Press, position: HeadPointerState): Boolean = active() && position.available &&
+        (!position.projected || position.geometry == geometry()) && press.qualifies(position, pointerSource)
 }

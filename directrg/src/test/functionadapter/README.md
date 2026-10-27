@@ -23,7 +23,10 @@ The scenarios cover API32/33 receiver registration, idempotent release, ordered
 abort/result cancellation, unordered/nonabortable delivery, unrelated AI/pad reports,
 queued delivery after unregister, stale scheduled callbacks, contextual Home/Back,
 panel entry and return, local main-panel navigation, long no-op, explicit launcher
-intent, exit peer-callback retirement, and focus/pause/destroy/disconnect cancellation.
+intent, exit peer-callback retirement, and focus/pause/destroy/disconnect cancellation. Pause and configuration destruction
+retire native input while preserving the service-owned media boundary; explicit
+Disconnect, exit and finishing destruction release it. The actual service owner and
+EGL adapter have separate composed JVM coverage in `RetainedReceiverSessionTest`.
 Host session/decoder/Surface identity checks refer to boundary objects only. The
 updated `ConnectedPanelChecks` instrumentation exercises the real adapter callback
 and real Android session/decoder/Surface identities on a later reserved device run;

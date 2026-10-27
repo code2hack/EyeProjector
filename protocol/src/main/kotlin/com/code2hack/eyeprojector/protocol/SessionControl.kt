@@ -10,10 +10,13 @@ import javax.net.ssl.SSLSocket
 /** Session commands use the existing paired certificate pins; discovery only supplies an address. */
 object SessionControl {
     private const val MAGIC = 0x45505331 // EPS1; separate from pairing and media framing.
-    private const val VERSION = 2 // Typed attempt receipts; independent of the unchanged media Wire version.
+    private const val VERSION = 3 // Typed attempt receipts; independent of media Wire7.
     enum class Operation { STATUS, START, STOP, CONNECTING, RENDERED, FAILED }
     // startEpoch is the admission identity, allocated before STATUS; empty retains legacy owner operations.
-    data class Request(val operation: Operation, val epoch: String = "", val startEpoch: String = "") {
+    data class Request(val operation: Operation, val epoch: String = "", val startEpoch: String = "",
+        val intent: ActivationIntent? = null, val cancelTrigger: CancelTrigger? = null,
+        val cancelActivation: CancelActivation? = null, val incarnation: ReceiverIncarnation? = null,
+        val presentation: PresentationReport? = null) {
         companion object {
             fun observeAttempt(id: String) = Request(Operation.STATUS, startEpoch = id)
             fun cancelStart(baseline: String, proposal: String) = Request(Operation.STOP, baseline, proposal)
@@ -57,7 +60,16 @@ object SessionControl {
     internal fun writeRequest(output: DataOutputStream, request: Request) {
         require(request.epoch.length <= 64 && request.startEpoch.length <= 64)
         output.writeInt(MAGIC); output.writeInt(VERSION)
-        output.writeByte(request.operation.ordinal); output.writeUTF(request.epoch); output.writeUTF(request.startEpoch); output.flush()
+        output.writeByte(request.operation.ordinal); output.writeUTF(request.epoch); output.writeUTF(request.startEpoch)
+        output.optional(request.intent) { id(it.triggerId) }
+        output.optional(request.cancelTrigger) { id(it.triggerId); id(it.admissionId) }
+        output.optional(request.cancelActivation) { id(it.activationId) }
+        output.optional(request.incarnation) { incarnation(it) }
+        output.optional(request.presentation) {
+            id(it.activationId); id(it.ownerEpoch); writeLong(it.wakeRevision); incarnation(it.incarnation)
+            writeLong(it.revision); writeByte(it.mode.ordinal); detail(it.detail)
+        }
+        output.flush()
     }
 
     internal fun readRequest(input: DataInputStream): Request {
@@ -65,7 +77,12 @@ object SessionControl {
         val operation = Operation.entries[input.readUnsignedByte()]
         val epoch = input.readUTF().also { require(it.length <= 64) }
         val startEpoch = input.readUTF().also { require(it.length <= 64) }
-        return Request(operation, epoch, startEpoch)
+        val intent = input.optional { ActivationIntent(id()) }
+        val cancelTrigger = input.optional { CancelTrigger(id(), id()) }
+        val cancelActivation = input.optional { CancelActivation(id()) }
+        val incarnation = input.optional { incarnation() }
+        val presentation = input.optional { PresentationReport(id(), id(), readLong(), incarnation(), readLong(), ReceiverUsabilityMode.entries[readUnsignedByte()], detail()) }
+        return Request(operation, epoch, startEpoch, intent, cancelTrigger, cancelActivation, incarnation, presentation)
     }
 
     internal fun writeState(output: DataOutputStream, state: SessionState) {
@@ -76,6 +93,11 @@ object SessionControl {
         state.receipt?.let {
             require(it.id.length <= 64 && (it.owner?.length ?: 0) <= 64)
             output.writeUTF(it.id); output.writeUTF(it.owner.orEmpty()); output.writeByte(it.disposition.ordinal)
+        }
+        output.optional(state.activation) { reply ->
+            optional(reply.directive) { id(it.activationId); writeBoolean(it.desired); writeLong(it.wakeRevision); id(it.ownerEpoch); writeByte(it.goal.ordinal) }
+            optional(reply.trigger) { id(it.triggerId); id(it.activationId.orEmpty()); writeByte(it.disposition.ordinal) }
+            optional(reply.cancelAcknowledged) { id(it) }
         }
         output.flush()
     }
@@ -90,6 +112,22 @@ object SessionControl {
             val owner = input.readUTF().also { require(it.length <= 64) }.takeIf { it.isNotEmpty() }
             AttemptReceipt(id, owner, AttemptDisposition.entries[input.readUnsignedByte()])
         } else null
-        return SessionState(epoch, phase, detail, receipt)
+        val activation = input.optional {
+            val directive = optional { ActivationDirective(id(), readBoolean(), readLong(), id(), ActivationGoal.entries[readUnsignedByte()]) }
+            val trigger = optional { TriggerReceipt(id(), id().takeIf { it.isNotEmpty() }, TriggerDisposition.entries[readUnsignedByte()]) }
+            ActivationReply(directive, trigger, optional { id() })
+        }
+        return SessionState(epoch, phase, detail, receipt, activation)
     }
+
+    private fun DataOutputStream.id(value: String) { require(value.length <= 64); writeUTF(value) }
+    private fun DataInputStream.id() = readUTF().also { require(it.length <= 64) }
+    private fun DataOutputStream.detail(value: String) { require(value.length <= 128); writeUTF(value) }
+    private fun DataInputStream.detail() = readUTF().also { require(it.length <= 128) }
+    private fun DataOutputStream.incarnation(value: ReceiverIncarnation) { id(value.id); writeLong(value.sequence) }
+    private fun DataInputStream.incarnation() = ReceiverIncarnation(id(), readLong())
+    private fun <T> DataOutputStream.optional(value: T?, write: DataOutputStream.(T) -> Unit) {
+        writeBoolean(value != null); if (value != null) write(value)
+    }
+    private fun <T> DataInputStream.optional(read: DataInputStream.() -> T): T? = if (readBoolean()) read(this) else null
 }

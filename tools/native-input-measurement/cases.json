@@ -1,0 +1,17 @@
+{
+  "scope": "Suggested finite cases for later Manager-reserved genuine Owner observation; no automatic physical pass or device action",
+  "cases": [
+    {"case": "no-input", "seconds": 15, "ownerAction": "Keep the prepared UI/session still; establish observer/background baseline"},
+    {"case": "single-tap", "seconds": 20, "ownerAction": "One native pad tap at the prepared fixture target"},
+    {"case": "double-tap", "seconds": 20, "ownerAction": "One quick two-tap native pad sequence"},
+    {"case": "triple-tap", "seconds": 20, "ownerAction": "One quick three-tap native pad sequence"},
+    {"case": "multiple-taps", "seconds": 30, "ownerAction": "One declared larger tap sequence; record actual count separately"},
+    {"case": "forward-swipe", "seconds": 20, "ownerAction": "One native forward swipe over the prepared nested or main widget"},
+    {"case": "backward-swipe", "seconds": 20, "ownerAction": "One native backward swipe over the same prepared widget"},
+    {"case": "tap-then-swipe", "seconds": 30, "ownerAction": "A native tap followed quickly by one declared-direction swipe"},
+    {"case": "stationary-hold-release", "seconds": 45, "ownerAction": "Touch, hold still, then release; physically record onset/release and visible response"},
+    {"case": "held-head-movement", "seconds": 45, "ownerAction": "Maintain actual contact while moving the head, then release; do not infer hold from a pulse"},
+    {"case": "local-controls", "seconds": 30, "ownerAction": "Use prepared local control UI with declared native taps/swipe"},
+    {"case": "context-cancellation", "seconds": 30, "ownerAction": "Use a declared normal focus/context transition during pending/held native input"}
+  ]
+}

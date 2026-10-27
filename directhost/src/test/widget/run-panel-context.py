@@ -13,8 +13,8 @@ deps=['org.jetbrains.kotlin/kotlin-compiler-embeddable/2.2.21','org.jetbrains.ko
 cp=os.pathsep.join([str(root/'protocol/build/tmp/kotlin-classes/debug')]+[str(j) for d in deps for j in sorted((cache/d).rglob('*.jar'))])
 java=str(Path(os.environ['JAVA_HOME'])/'bin/java')
 sources=[adapter/n for n in ['Context.kt','AtomicFile.kt','Json.kt','Os.kt','Annotation.kt','PackageManager.kt','Service.kt','Shizuku.kt']]
-sources += [actual/n for n in ['HostBootstrap.kt','HostForgetCompletion.kt','BootstrapSessionFiles.kt','PanelPower.kt','ProjectionContext.kt','ProjectionDisplayState.kt']]
-sources += [root/'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'/n for n in ['Wire.kt', 'PhoneInput.kt','LayoutScale.kt','Touch.kt']]
+sources += [actual/n for n in ['HostBootstrap.kt','HostForgetCompletion.kt','BootstrapSessionFiles.kt','PanelPower.kt','ProjectionContext.kt', 'SessionUsability.kt','ProjectionDisplayState.kt']]
+sources += [root/'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'/n for n in ['Wire.kt', 'ActivationControl.kt', 'ReceiverUsability.kt', 'PhoneInput.kt','LayoutScale.kt','Touch.kt']]
 sources += [actual/'input/PhoneHidRoute.kt', suite/'PanelContextScenarios.kt']
 archive=output/'compiled-sources';archive.mkdir(exist_ok=True)
 for i,s in enumerate(sources):(archive/f'{i:02d}-{s.name}').write_bytes(s.read_bytes())

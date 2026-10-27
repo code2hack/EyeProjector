@@ -179,6 +179,7 @@ private fun launchCancellationWaitsOn(fixture: PanelFixture): Boolean {
 }
 
 fun main() {
+    receiverUsabilityScenarios()
     for (operation in listOf("request", "query")) for (action in listOf("Stop", "Forget", "death")) {
         scenario("continuous actual OFF + scalar $operation keeps $action/status and release reachable while OFF held") {
             ComposedFixture().use { f ->
