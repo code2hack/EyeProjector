@@ -32,6 +32,16 @@ internal interface ForwardCameraInputLease {
     fun producerStopped(original: CameraRunIdentity, fact: CameraOutputsSafe)
 }
 
+/** Optional association with one original producer before Camera2 work or either Surface borrow. */
+internal interface ProducerBoundForwardCameraInputLease : ForwardCameraInputLease {
+    /**
+     * Claim the original before invoking external callbacks, and invoke them outside the binding
+     * lock. False rejects this caller; a throw after claim retains the original producer duty
+     * until its actual [producerStopped] fact. Legacy forwarding leases need not implement this.
+     */
+    fun bindProducer(original: CameraRunIdentity, requestStop: () -> Unit): Boolean
+}
+
 internal data class CameraTargets(val local: LocalCameraInput, val forwarding: ForwardCameraInputLease)
 
 internal enum class SessionRetirement { SESSION_ON_CLOSED, CONFIGURATION_FAILED, PARENT_DEVICE_ON_CLOSED }

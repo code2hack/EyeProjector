@@ -63,6 +63,25 @@ internal class GlassesCameraProducer(
 
         fun begin() {
             observeThreadTermination()
+            // Bind capable forwarding FIRST. Even a throwing bind may have claimed this
+            // original; the existing genuine no-open fence still notifies that exact lease.
+            val forwardBound = try {
+                (targets.forwarding as? ProducerBoundForwardCameraInputLease)
+                    ?.bindProducer(identity) { stop("forward-input-retired") } ?: true
+            } catch (error: Throwable) {
+                failure(CameraRunFailure("forward-producer-binding", error as? Exception
+                    ?: RuntimeException("Forward producer registration failed", error)))
+                false
+            }
+            if (!forwardBound) {
+                failure(CameraRunFailure("forward-producer-binding-unavailable",
+                    IllegalStateException("Forward input cannot bind this original producer")))
+                stopSubmitted.set(true)
+                if (!snapshot.outputsSafe && !handler.post { ownership.requestStop() }) ownership.requestStop()
+                return
+            }
+            // Do not skip local binding after an early forward stop: installLocalBinding must
+            // deliver the cached actual no-open fence even if the camera owner already quit.
             // The original run, stop callback and ownership records already exist. No Camera2
             // work is posted and neither Surface is borrowed until this exact lease binds.
             val binding = try {
