@@ -289,7 +289,7 @@ internal class ReceiverSessionOwner(
                     authenticatedControl(source, event) // Background authenticated seam for activation/wake work.
                     if (currentDisplayed && window != null || feature != null && uiUsable && localPanel) listener?.input(source, event)
                 }
-            } }, nextUsabilityRevision = usabilityRevision::incrementAndGet)
+            } }, nextUsabilityRevision = usabilityRevision::incrementAndGet, expectedPhoneOwnerEpoch = epoch)
             feature?.incarnation?.let { next.usability(ReceiverUsability(epoch, it, usabilityRevision.incrementAndGet(), inputRevision, ReceiverUsabilityMode.NONE)) }
             // Publish the immutable original reference before starting any frame-producing session work.
             originalSession?.set(next)

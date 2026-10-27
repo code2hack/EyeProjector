@@ -6,6 +6,7 @@ import android.util.AtomicFile
 import android.util.Log
 import android.view.Surface
 import com.code2hack.eyeprojector.protocol.*
+import com.code2hack.eyeprojector.directrg.localcamera.forwarding.ReceiverCameraRoleClient
 import java.io.Closeable
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -28,8 +29,10 @@ class ProjectionSession(
     private val onScale: (ProjectionSession, ScaleState) -> Unit = { _, _ -> },
     private val onReceiverInput: (ProjectionSession, ReceiverInput) -> Unit = { _, _ -> },
     private val nextUsabilityRevision: () -> Long = { System.nanoTime() },
+    private val expectedPhoneOwnerEpoch: String? = null,
 ) : Closeable {
     private val running = AtomicBoolean(true)
+    val cameraUses = ReceiverCameraRoleClient(directory, expectedPhoneOwnerEpoch, ::send)
     private val timer = Executors.newScheduledThreadPool(2)
     private val controls = OrderedControlDispatcher { error -> failure(error); closeWithState("DISCONNECTED") }
     private val scaleControls = OrderedControlDispatcher { error -> failure(error); closeWithState("DISCONNECTED") }
@@ -297,6 +300,8 @@ class ProjectionSession(
             }
             Wire.END -> closeWithState("DISCONNECTED")
             Wire.RECEIVER_INPUT -> onReceiverInput(this, ReceiverInput.from(frame.payload))
+            Wire.CAMERA_USE -> { require(frame.stamp == 0L); cameraUses.observe(CameraFeed.readUseMessage(frame.payload)) }
+            Wire.CAMERA_PROGRESS -> { require(frame.stamp == 0L); cameraUses.observeProgress(CameraFeed.readProgress(frame.payload)) }
             else -> error("Unnegotiated media")
         }
     }
@@ -408,6 +413,7 @@ class ProjectionSession(
         videoReadiness.close()
         // Cancel construction immediately; wait below for its unpublished codec to be released.
         running.set(false)
+        cameraUses.retireAll(CameraEndReason.PROJECTION_CLOSED)
         // Always join the outer replacement frame: a reentrant close may have marked
         // completion while that frame still owns a detached or unpublished codec.
         synchronized(closeLock) {

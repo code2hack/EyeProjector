@@ -7,6 +7,8 @@ import android.os.Process
 import android.os.SystemClock
 import com.code2hack.eyeprojector.directhost.input.PhoneInputMerger
 import com.code2hack.eyeprojector.directhost.input.FunctionWork
+import com.code2hack.eyeprojector.directhost.camera.CapturedTrustedPeer
+import com.code2hack.eyeprojector.directhost.camera.PhoneCameraMediaRole
 import android.util.AtomicFile
 import com.code2hack.eyeprojector.protocol.*
 import java.io.Closeable
@@ -100,6 +102,7 @@ internal class Bridge(
     private val reportStatus: ((String) -> Unit)? = null,
     private val ownerEpoch: String = UUID.randomUUID().toString(),
 ) : Closeable {
+    private val cameraTasksPrepared = CameraTasks.prepare()
     private val running = AtomicBoolean(true)
     private val release = OwnedRelease()
     private val admission = Any()
@@ -152,6 +155,7 @@ internal class Bridge(
 
     private fun serve(socket: SSLSocket) {
         var session: Session? = null
+        var cameraTransferred = false
         var authenticated = false
         var reason = SessionStopReason.OWNER_CLOSE
         try {
@@ -162,6 +166,18 @@ internal class Bridge(
             authenticated = true
             val input = DataInputStream(socket.inputStream)
             when (Wire.readRequest(input)) {
+                Wire.CAMERA -> {
+                    val trustedPeer = CapturedTrustedPeer.authenticated(socket)
+                    val transfer = synchronized(admission) {
+                        if (!running.get()) null else active.get()?.cameraRoles?.takePendingSocket(socket, input, trustedPeer)
+                    }
+                    if (transfer?.claimed == true) {
+                        // Claim precedes external start. This original Session now owns even failed starts.
+                        cameraTransferred = true
+                        peers.remove(socket)
+                        transfer.pending!!.startOwnedLane()
+                    }
+                }
                 Wire.STOP_HOST -> { status("HOST_STOPPING"); close(SessionStopReason.HOST_STOP) }
                 Wire.STREAM -> {
                     session = synchronized(admission) {
@@ -181,7 +197,7 @@ internal class Bridge(
             var releaseFailed = false
             try { session?.close(reason) }
             catch (_: Exception) { releaseFailed = true }
-            finally { runCatching { socket.close() }; peers.remove(socket) }
+            finally { if (!cameraTransferred) runCatching { socket.close() }; peers.remove(socket) }
             if (session != null && active.get() === session && running.get()) {
                 try {
                     status(if (!releaseFailed && session.stopReason in setOf(SessionStopReason.OWNER_CLOSE, SessionStopReason.CONTROL_END)) "DISCONNECTED" else "SESSION_FAILED")
@@ -207,6 +223,12 @@ internal class Bridge(
     fun captureProjection(expected: ProjectionContext): CapturedProjection? = synchronized(admission) {
         if (!running.get() || !launchOperationsAccepted || !expected.available || ownerEpoch != expected.ownerEpoch) return@synchronized null
         active.get()?.takeIf { it.projectionContext() == expected }
+    }
+
+    /** Future actual Phone membership obtains this exact Session owner, never a tuple-adopted use. */
+    fun captureCameraUses(expected: ProjectionContext): PhoneCameraMediaRole? = synchronized(admission) {
+        if (!running.get() || !launchOperationsAccepted || !expected.available || ownerEpoch != expected.ownerEpoch) null
+        else active.get()?.takeIf { it.projectionContext() == expected }?.cameraRoles
     }
 
     private fun panelTarget(context: PanelContext): Session? = synchronized(admission) {
@@ -278,6 +300,7 @@ private class Session(
     private val controlLock = Any()
     private val projectionToken = UUID.randomUUID().toString()
     private val context = ProjectionContext(ownerEpoch, projectionToken)
+    val cameraRoles = PhoneCameraMediaRole(ownerEpoch, ::send, projectionFailure = { close(SessionStopReason.CONTROL_IO) })
     private val receiverUsability = SessionUsability(context)
     private val preparingHidRegion = AtomicBoolean()
     private val nativeResourcesClosing = AtomicBoolean()
@@ -567,6 +590,7 @@ private class Session(
                 val original = receiverUsability.snapshot().fact
                 phoneInput.pointer(point, original) { receiverUsability.acceptsPointer(original, point) }
             }
+            Wire.CAMERA_PROGRESS -> { require(frame.stamp == 0L); cameraRoles.observeProgress(CameraFeed.readProgress(frame.payload)) }
             Wire.END -> return false
             else -> error("Unsupported control")
         }
@@ -576,6 +600,7 @@ private class Session(
     override fun close() = close(SessionStopReason.OWNER_CLOSE)
 
     fun close(reason: SessionStopReason) {
+        cameraRoles.retireAll(CameraEndReason.PROJECTION_CLOSED)
         retireNativeResources() // Terminal store precedes resource/deadline/stock cleanup; never joins setup.
         release.close {
         if (running.compareAndSet(true, false)) stopReason = reason
@@ -583,6 +608,8 @@ private class Session(
         val stopStartedMs = (System.nanoTime() - begin) / 1_000_000
         val lastStartupStage = startupStage.get()
         val phases = JSONObject()
+        var peerInputShutdownReturned: Boolean? = null
+        var peerCloseReturned: Boolean? = null
         fun phase(name: String, operation: () -> Unit) {
             val start = System.nanoTime()
             try { operation() } finally { phases.put(name, (System.nanoTime() - start) / 1_000_000) }
@@ -591,7 +618,8 @@ private class Session(
         // Stop/reap only this Session's fixed launch/query helper before transport release.
         val launchRelease = runCatching { launches.close() }
         synchronized(resources) {
-            phase("peerCloseMs") { runCatching { peer.close() } }
+            phase("peerInputShutdownMs") { peerInputShutdownReturned = runCatching { peer.shutdownInput() }.isSuccess }
+            phase("peerCloseMs") { peerCloseReturned = runCatching { peer.close() }.isSuccess }
             phase("localListenerCloseMs") { runCatching { localListener?.close() } }
             // Reuse the bounded held-release turn: a stuck writer must not prevent socket/child release.
             phase("inputAndPanelReleaseMs") {
@@ -618,6 +646,8 @@ private class Session(
             .put("stopReason", stopReason.name).put("startupStage", lastStartupStage.name).put("stopStartedMs", stopStartedMs)
             .put("childStartedMs", childStartedMs.get()).put("firstVideoFrameMs", firstVideoFrameMs.get())
             .put("closePhases", phases).put("lastPingMonoNs", lastPingNs.get()).put("lastPongMonoNs", lastPongNs.get())
+            .put("peerInputShutdownReturned", peerInputShutdownReturned ?: JSONObject.NULL)
+            .put("peerCloseReturned", peerCloseReturned ?: JSONObject.NULL)
             .put("panelPower", panelPowerJson(panelPower.state()))
             .put("lastWriteChannel", lastWriteChannel.get()).put("writeStartedMonoNs", writeStarted.get())
             .put("tls", tlsProtocol).put("localAddress", localAddress).put("localPort", localPort)

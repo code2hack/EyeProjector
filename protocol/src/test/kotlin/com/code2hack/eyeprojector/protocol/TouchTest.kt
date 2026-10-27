@@ -29,7 +29,7 @@ class TouchTest {
         }
     }
     @Test fun touchFramesCoexistWithScaleUnderTheMatchedRevisionSixFraming() {
-        assertEquals(6, Wire.VERSION)
+        assertEquals(7, Wire.VERSION)
         val touch = Touch(Touch.Phase.MOVE, 1000, target)
         val output = ByteArrayOutputStream()
         Wire.writeFrame(DataOutputStream(output), Frame(Wire.TOUCH, payload = touch.bytes()))

@@ -12,6 +12,17 @@ class SurfaceTexture(name: Int) {
     val updates = AtomicInteger()
     @Volatile var latest = 0L
     val timestamp: Long get() = latest
+    // Host records the requested defaults only, never actual producer buffer dimensions.
+    var requestedBufferWidth: Int? = null
+        private set
+    var requestedBufferHeight: Int? = null
+        private set
+    fun setDefaultBufferSize(width: Int, height: Int) {
+        requestedBufferWidth = width; requestedBufferHeight = height
+    }
+    fun setOnFrameAvailableListener(listener: OnFrameAvailableListener?) {
+        this.listener = listener
+    }
     fun setOnFrameAvailableListener(listener: OnFrameAvailableListener?, handler: Handler) {
         this.listener = listener; this.handler = handler
     }

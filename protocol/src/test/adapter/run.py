@@ -29,7 +29,7 @@ java=str(Path(os.environ.get('JAVA_HOME','/usr/lib/jvm/java-17-openjdk-amd64'))/
 cp=os.pathsep.join(map(str,jars)); jar=out/'activation.jar'
 commands={'compile':[java,'-Xmx2g','-cp',cp,'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler','-no-stdlib','-no-reflect','-jvm-target','17','-classpath',cp,'-d',str(jar)]+compiled,
           'run':[java,'-cp',str(jar)+os.pathsep+cp,'org.junit.runner.JUnitCore']+['com.code2hack.eyeprojector.protocol.'+n for n in classes]}
-result={'inputs':inputs,'dependencies':[{'path':str(f),'sha256':sha(f)} for f in jars],'commands':commands,'compileExit':None,'runExit':None,'scope':'Actual Control3/Wire6 codecs and remembered-peer authenticated TLS on loopback JDK17, explicit annotation/clock boundary, no Android/physical proof'}
+result={'inputs':inputs,'dependencies':[{'path':str(f),'sha256':sha(f)} for f in jars],'commands':commands,'compileExit':None,'runExit':None,'scope':'Actual Control3/Wire7 codecs and remembered-peer authenticated TLS on loopback JDK17, explicit annotation/clock boundary, no Android/physical proof'}
 try:
     for phase,limit in [('compile',90),('run',90)]:
         with (out/(phase+'.log')).open('w') as log:r=subprocess.run(commands[phase],stdout=log,stderr=subprocess.STDOUT,timeout=limit,cwd=out)
