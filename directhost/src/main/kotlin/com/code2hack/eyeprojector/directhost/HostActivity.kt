@@ -17,6 +17,7 @@ import android.os.Handler
 import android.os.Looper
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Switch
 import com.code2hack.eyeprojector.directhost.hid.PhoneHidPanel
 import com.code2hack.eyeprojector.directhost.hid.PhoneHidRuntime
 
@@ -33,6 +34,9 @@ class HostActivity : Activity() {
     private lateinit var launcherStatus: TextView
     private lateinit var phoneHid: PhoneHidPanel
     private lateinit var phoneControls: LinearLayout
+    private lateinit var cameraSourceStatus: TextView
+    private var switchingCameraSource = false
+    private var cameraSwitchFromEpoch = ""
     private var launchFeedbackIntent = 0L
     private var launchEnabled = false
     private var launchContext = ProjectionContext()
@@ -76,6 +80,17 @@ class HostActivity : Activity() {
             SessionPhase.UNKNOWN -> "Projection state unavailable"
         }
         status.text = getString(R.string.host_status, setupText(state.setup), sessionText + "\n" + backendText(state))
+        if (::cameraSourceStatus.isInitialized) {
+            if (switchingCameraSource && sessions.activationId() == null) switchingCameraSource = false
+            if (switchingCameraSource && state.sessionEpoch.isNotBlank() &&
+                state.sessionEpoch != cameraSwitchFromEpoch && session.phase == SessionPhase.STREAMING &&
+                state.backend == "STREAMING") switchingCameraSource = false
+            cameraSourceStatus.text = if (switchingCameraSource)
+                "Switching camera source: restarting projection. Reopen the camera app after restart."
+            else if (CameraSourceSettings.useGlasses(this))
+                "Glasses camera selected for projection start. Reopen camera apps after switching; routing is not yet confirmed."
+            else "Phone camera selected for projection start. Reopen camera apps after switching."
+        }
         start.isEnabled = pairingPanel.isPaired() && !pairingPanel.forgetting && state.setup == HostBootstrap.Setup.AVAILABLE &&
             sessions.activationId() == null && !session.phase.active && session.phase !in setOf(SessionPhase.STOPPING, SessionPhase.UNKNOWN) &&
             state.backend !in listOf("STARTING", "STOPPING", "READY", "SESSION_STARTING", "STREAMING", "STOP_UNVERIFIED") &&
@@ -104,12 +119,13 @@ class HostActivity : Activity() {
         chosenApps = ChosenAppsPanel(this)
         notificationAccess = com.code2hack.eyeprojector.directhost.notifications.NotificationAccessPanel(this)
         launcherStatus = TextView(this).apply { setTextColor(Color.WHITE) }
-        val stop = button(R.string.host_stop) { sessions.stop() }
+        val stop = button(R.string.host_stop) { switchingCameraSource = false; sessions.stop() }
         pairingPanel = PairingPanel(this, PeerRole.PHONE, { paired ->
             start.visibility = if (paired) View.VISIBLE else View.GONE
             stop.visibility = if (paired) View.VISIBLE else View.GONE
             bootstrap.refresh()
         }, { complete ->
+            switchingCameraSource = false
             start.isEnabled = false; stop.isEnabled = false
             sessions.stopBeforeForget { complete(); stop.isEnabled = true }
         }, sessions.pairing)
@@ -121,6 +137,13 @@ class HostActivity : Activity() {
                 phoneControls = LinearLayout(this@HostActivity).apply {
                     orientation = LinearLayout.VERTICAL
                     addView(pairingPanel); addView(status)
+                    cameraSourceStatus = TextView(this@HostActivity).apply { setTextColor(Color.WHITE) }
+                    addView(Switch(this@HostActivity).apply {
+                        text = "Use Glasses camera"
+                        isChecked = CameraSourceSettings.useGlasses(this@HostActivity)
+                        setOnCheckedChangeListener { _, enabled -> selectCameraSource(enabled) }
+                    })
+                    addView(cameraSourceStatus)
                     addView(authorize)
                     addView(button(R.string.host_open_shizuku) {
                         val intent = packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")
@@ -149,6 +172,22 @@ class HostActivity : Activity() {
             setOnClickListener { showPhoneHid(true) }
         })
         container.addView(phoneHid)
+    }
+
+    private fun selectCameraSource(useGlasses: Boolean) {
+        CameraSourceSettings.setUseGlasses(this, useGlasses)
+        val backend = bootstrap.status()
+        val active = sessions.activationId() != null || sessions.state().phase.active ||
+            backend.backend in setOf("READY", "SESSION_STARTING", "STREAMING", "STARTING")
+        if (active) {
+            cameraSwitchFromEpoch = backend.sessionEpoch
+            switchingCameraSource = true
+            // Existing ordered ownership retires the old H before admitting this fresh H's backend.
+            // It waits for actual original release; an ordinary later Stop cancels this queued H.
+            sessions.stop()
+            sessions.start()
+        }
+        observer(bootstrap.status()) // Presentation only; observers never enqueue a restart.
     }
 
     private fun showPhoneHid(show: Boolean) {

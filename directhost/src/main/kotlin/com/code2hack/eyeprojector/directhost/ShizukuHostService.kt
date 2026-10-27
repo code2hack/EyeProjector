@@ -19,6 +19,8 @@ class ShizukuHostService internal constructor(
         OwnedShellSessions(File("/data/local/tmp", "eyeprojector-${context.packageName}-${context.applicationInfo.uid}")), null)
     private val lifecycle = OwnedHostLifecycle()
     @Volatile private var projectionBridge: Bridge? = null
+    @Volatile private var lastProjectionBridge: Bridge? = null
+    private val retiredManagedBridges = java.util.concurrent.ConcurrentHashMap.newKeySet<Bridge>()
     private val panelRoutes = PanelSessionRoutes<Bridge> { it.invalidatePanelOperations() }
     @Volatile private var revokeFailed = false
     @Volatile private var attribution = JSONObject()
@@ -36,6 +38,13 @@ class ShizukuHostService internal constructor(
             .put("panelPower", panelPowerJson(panel))
             .put("projectionToken", projection.projectionToken.takeIf { projection.ownerEpoch == route?.owner?.epoch }.orEmpty())
             .put("shellUid", Process.myUid()).put("pid", Process.myPid())
+            .put("managedProjection", (route?.target ?: projectionBridge ?: lastProjectionBridge)?.managedProjectionStatus() ?: JSONObject())
+            .put("retiredManagedProjections", org.json.JSONArray().also { values ->
+                retiredManagedBridges.forEach { original ->
+                    if (original.managedProjectionRetired()) retiredManagedBridges.remove(original)
+                    else values.put(original.managedProjectionStatus())
+                }
+            })
             .put("serverSha256", ShellMain.SERVER_SHA256).put("attribution", attribution).toString()
     }
 
@@ -62,8 +71,12 @@ class ShizukuHostService internal constructor(
                 override fun run() = bridge.run()
                 override fun close() {
                     try { bridge.close() } finally {
+                        if (bridge.managedProjectionEnabled && !bridge.managedProjectionRetired()) retiredManagedBridges.add(bridge)
                         panelRoutes.complete(panelOwner, bridge, bridge.panelState())
-                        if (projectionBridge === bridge) projectionBridge = null
+                        if (projectionBridge === bridge) {
+                            lastProjectionBridge = bridge
+                            projectionBridge = null
+                        }
                     }
                 }
             }
@@ -83,7 +96,11 @@ class ShizukuHostService internal constructor(
         val apk = File(context.applicationInfo.sourceDir)
         attribution = JSONObject().put("apkSha256", sha256(apk)).put("apk", apk.path)
             .put("sessionDirectory", session.path).put("sessionOwnerUid", Process.myUid())
-        return Bridge(session, jar, reportStatus = report, ownerEpoch = ownerEpoch)
+        val endpoint = java.util.Properties().apply { files.endpoint.inputStream().use { load(it) } }
+        val managedDisplayFactory: (((String, Int?, Int?) -> Unit) -> ManagedProjectionDisplay)? =
+            if (endpoint.getProperty("camera.source") == "glasses") ({ observe -> ManagedProjectionDisplay.create(observe) }) else null
+        return Bridge(session, jar, reportStatus = report, ownerEpoch = ownerEpoch,
+            managedDisplayFactory = managedDisplayFactory)
     }
 
     @Synchronized override fun stop(): String {

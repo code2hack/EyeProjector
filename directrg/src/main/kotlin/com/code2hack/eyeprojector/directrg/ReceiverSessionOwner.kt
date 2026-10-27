@@ -2,9 +2,17 @@ package com.code2hack.eyeprojector.directrg
 
 import android.content.Context
 import android.view.Surface
+import com.code2hack.eyeprojector.directrg.localcamera.LocalPreviewOutput
+import com.code2hack.eyeprojector.directrg.localcamera.LocalOutputReleaseResult
+import com.code2hack.eyeprojector.directrg.localcamera.LocalReleaseDisposition
+import com.code2hack.eyeprojector.directrg.localcamera.LocalReleaseStep
+import com.code2hack.eyeprojector.directrg.localcamera.LocalProducerFence
+import com.code2hack.eyeprojector.directrg.localcamera.RetainedOutputRetirement
 import com.code2hack.eyeprojector.protocol.*
 import java.io.Closeable
 import java.io.File
+import java.util.IdentityHashMap
+import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
@@ -25,6 +33,7 @@ internal class ReceiverSessionOwner(
     clientFactory: ((SessionState) -> Unit, () -> Unit) -> PairedSessionClient = { state, unavailable ->
         PairedSessionClient(directory, state, unavailable, deliver = deliver, feature = feature)
     },
+    private val cameraOwner: ReceiverCameraOwner? = null,
 ) : Closeable {
     companion object {
         @Volatile internal var windowPresentationObserver: WindowPresentationObserver? = null
@@ -53,7 +62,42 @@ internal class ReceiverSessionOwner(
     private var displayed = false
     private var displayedGeneration = -1L
     private val currentDisplayed get() = displayed && displayedGeneration == windowGeneration.get()
-    private var resourcesHeld = false
+    @Volatile private var resourcesHeld = false
+    private class MediaOriginal(val projection: ProjectionSession?, val video: ReceiverVideoOutput?) {
+        var camera: ReceiverCameraProjection? = null
+    }
+    private class MediaRetirement(val original: MediaOriginal) {
+        @Volatile var cameraDuty = false
+        @Volatile var projectionClosed = false
+        @Volatile var cameraClosed = false
+        @Volatile var outputClosed = false
+        @Volatile var outputClaimed = false
+        @Volatile var legacyOutputWorkerClaimed = false
+        @Volatile var outputResult: LocalOutputReleaseResult? = null
+        val failures = ArrayList<Throwable>()
+    }
+    @Volatile private var mediaOriginal: MediaOriginal? = null
+    private val retirementGate = Any()
+    private val retiringMedia = IdentityHashMap<MediaOriginal, MediaRetirement>()
+    private val resourcesReleased = ArrayList<() -> Unit>()
+    private val directCompletion = Executor { it.run() }
+
+    /** Includes original retirements; a replacement current session cannot erase their duties. */
+    fun hasRetainedResources(): Boolean = resourcesHeld || synchronized(retirementGate) { retiringMedia.isNotEmpty() }
+    fun hasCameraRetirementDuty(): Boolean = mediaOriginal?.camera?.hasPhysicalDuty == true ||
+        synchronized(retirementGate) { retiringMedia.values.any { it.cameraDuty } }
+    fun afterResourcesReleased(completion: () -> Unit) {
+        val ready = synchronized(retirementGate) {
+            if (hasRetainedResources()) { resourcesReleased.add(completion); false } else true
+        }
+        if (ready) completion()
+    }
+    private fun notifyResourcesReleased() {
+        val callbacks = synchronized(retirementGate) {
+            if (hasRetainedResources()) emptyList() else resourcesReleased.toList().also { resourcesReleased.clear() }
+        }
+        callbacks.forEach { runCatching { it() } }
+    }
     private var uiUsable = false
     private var localPanel = true
     private var reportRevision = 0L
@@ -289,11 +333,23 @@ internal class ReceiverSessionOwner(
                     authenticatedControl(source, event) // Background authenticated seam for activation/wake work.
                     if (currentDisplayed && window != null || feature != null && uiUsable && localPanel) listener?.input(source, event)
                 }
-            } }, nextUsabilityRevision = usabilityRevision::incrementAndGet)
+            } }, nextUsabilityRevision = usabilityRevision::incrementAndGet, expectedPhoneOwnerEpoch = epoch)
+            // This source record exists even with the optional window observer disabled.
+            // A synchronous camera callback can retire it before attachProjection returns.
+            val originalMedia = if (cameraOwner != null) MediaOriginal(next, video) else null
+            mediaOriginal = originalMedia
             feature?.incarnation?.let { next.usability(ReceiverUsability(epoch, it, usabilityRevision.incrementAndGet(), inputRevision, ReceiverUsabilityMode.NONE)) }
             // Publish the immutable original reference before starting any frame-producing session work.
             originalSession?.set(next)
-            next.presentation(false); session = next; startSession(next)
+            next.presentation(false); session = next
+            if (cameraOwner != null && video is LocalPreviewOutput) {
+                originalMedia?.camera = cameraOwner.attachProjection(next, video, video)
+                if (closed || mediaOriginal !== originalMedia || session !== next) {
+                    cameraOwner.retireProjection(next, CameraEndReason.PROJECTION_CLOSED)
+                    return
+                }
+            }
+            startSession(next)
         } catch (error: Exception) {
             android.util.Log.e("EyeProjector", "Retained renderer setup failed", error)
             mediaState = "RENDER_SETUP_FAILED"
@@ -309,12 +365,130 @@ internal class ReceiverSessionOwner(
     }
 
     private fun releaseMedia() {
+        if (cameraOwner != null) { releaseCameraMedia(); return }
         attachment.release()
         val old = session; session = null
         val video = output; output = null
+        mediaOriginal = null
         displayed = false
         try { old?.close() }
-        finally { try { video?.close() } finally { if (resourcesHeld) { resourcesHeld = false; resources(false) } } }
+        finally { try { video?.close() } finally {
+            if (resourcesHeld) { resourcesHeld = false; resources(false) }
+            notifyResourcesReleased()
+        } }
+    }
+
+    private fun releaseCameraMedia() {
+        attachment.release()
+        val old = session; session = null
+        val video = output; output = null
+        val original = mediaOriginal ?: MediaOriginal(old, video)
+        mediaOriginal = null; displayed = false
+        val retiring = MediaRetirement(original)
+        // Claim the exact original before any retire/close callback can reenter this owner.
+        synchronized(retirementGate) { retiringMedia[original] = retiring }
+        val camera = try {
+            old?.let { cameraOwner?.retireProjection(it, CameraEndReason.PROJECTION_CLOSED) }
+                ?: original.camera
+        } catch (error: Throwable) {
+            synchronized(retiring) { retiring.failures.add(error) }
+            null
+        }
+        retiring.cameraDuty = camera?.hasPhysicalDuty == true || synchronized(retiring) { retiring.failures.isNotEmpty() }
+        if (camera?.hasPhysicalDuty != true && synchronized(retiring) { retiring.failures.isEmpty() }) {
+            // Ordinary projection still uses its original synchronous close/finally order.
+            try { old?.close(); retiring.projectionClosed = true }
+            finally {
+                try { video?.close(); retiring.outputClosed = true }
+                finally {
+                    retiring.cameraClosed = true
+                    // Preserve the historical no-camera finally semantics, including throws.
+                    synchronized(retirementGate) { retiringMedia.remove(original) }
+                    settleMediaRetirement(retiring)
+                }
+            }
+            return
+        }
+        if (camera != null) try {
+            camera.closeAsync(directCompletion) { observation ->
+                retiring.cameraClosed = !observation.resourcesHeld
+                retirementChanged(retiring)
+            }
+        } catch (error: Throwable) { synchronized(retiring) { retiring.failures.add(error) } }
+        // ProjectionSession.close may join its decoder: keep that work off UI/GL/control lanes.
+        launchRetirement(retiring) {
+            try { old?.close(); retiring.projectionClosed = true }
+            catch (error: Throwable) { synchronized(retiring) { retiring.failures.add(error) } }
+            closeRetiredOutput(retiring)
+            retirementChanged(retiring)
+        }
+    }
+
+    private fun launchRetirement(original: MediaRetirement, action: () -> Unit) {
+        try { Thread({ action() }, "eyeprojector-original-media-close").start() }
+        catch (error: Throwable) { synchronized(original) { original.failures.add(error) } }
+    }
+    private fun closeRetiredOutput(original: MediaRetirement) {
+        if (!original.projectionClosed) return
+        val video = original.original.video
+        val claim = synchronized(original) {
+            if (original.outputClaimed || video !is RetainedOutputRetirement && !original.cameraClosed) false
+            else { original.outputClaimed = true; true }
+        }
+        if (!claim) return
+        if (video is RetainedOutputRetirement) try {
+            video.closeAsync(directCompletion) { result ->
+                original.outputResult = result
+                original.outputClosed = outputClosureKnown(result)
+                val projection = original.original.projection
+                if (projection != null && video is LocalPreviewOutput) try {
+                    cameraOwner?.outputReleased(projection, video, result)
+                } catch (error: Throwable) { synchronized(original) { original.failures.add(error) } }
+                retirementChanged(original)
+            }
+        } catch (error: Throwable) { synchronized(original) { original.failures.add(error) } }
+        else try { video?.close(); original.outputClosed = true }
+        catch (error: Throwable) { synchronized(original) { original.failures.add(error) } }
+    }
+    private fun releaseStepKnown(step: LocalReleaseStep?): Boolean = step != null &&
+        (step.disposition == LocalReleaseDisposition.RETURNED ||
+            step.disposition == LocalReleaseDisposition.NOT_ATTEMPTED && step.error == null)
+
+    private fun outputClosureKnown(result: LocalOutputReleaseResult): Boolean {
+        if (result.workerJoin.disposition != LocalReleaseDisposition.RETURNED || result.workerAlive != false) return false
+        val required = listOf("surfaceRelease", "surfaceTextureRelease", "eglUnbind", "windowDestroy",
+            "bufferDestroy", "contextDestroy", "displayTerminate", "eglReleaseThread", "quitSafely")
+        if (!required.all { releaseStepKnown(result.steps[it]) }) return false
+        val contextGone = releaseStepKnown(result.steps["contextDestroy"])
+        // Failed observations stay recorded. Actual destruction of the owning context can
+        // invalidate GL names even when explicit deletion was unavailable; it is not a delete return.
+        return result.inputs.all { input ->
+            input.producerFence != LocalProducerFence.PENDING &&
+                releaseStepKnown(input.steps["surfaceRelease"]) && releaseStepKnown(input.steps["surfaceTextureRelease"]) &&
+                (contextGone || releaseStepKnown(input.steps["programDelete"]) && releaseStepKnown(input.steps["textureDelete"]))
+        } && (contextGone || releaseStepKnown(result.steps["programDelete"]) && releaseStepKnown(result.steps["textureDelete"]))
+    }
+    private fun retirementChanged(original: MediaRetirement) {
+        // A legacy output cannot close while an original camera borrower is still unresolved.
+        val startLegacy = synchronized(original) {
+            if (original.projectionClosed && original.cameraClosed &&
+                original.original.video !is RetainedOutputRetirement && !original.outputClaimed &&
+                !original.legacyOutputWorkerClaimed) { original.legacyOutputWorkerClaimed = true; true } else false
+        }
+        if (startLegacy)
+            launchRetirement(original) { closeRetiredOutput(original); retirementChanged(original) }
+        try { deliver { settleMediaRetirement(original) } }
+        catch (error: Throwable) { synchronized(original) { original.failures.add(error) } }
+    }
+    private fun settleMediaRetirement(original: MediaRetirement) {
+        val held = synchronized(retirementGate) {
+            if (original.projectionClosed && original.cameraClosed && original.outputClosed &&
+                synchronized(original) { original.failures.isEmpty() }) retiringMedia.remove(original.original)
+            mediaOriginal != null || session != null || output != null || retiringMedia.isNotEmpty()
+        }
+        if (resourcesHeld != held) { resourcesHeld = held; resources(held) }
+        notifyResourcesReleased()
+        changed()
     }
 
     fun disconnect(notifyPeer: Boolean = true, complete: (() -> Unit)? = null,
@@ -347,6 +521,7 @@ internal class ReceiverSessionOwner(
         if (closed) return
         val epoch = attachment.epoch ?: peer?.takeIf { it.phase.active }?.epoch
         closed = true; listener = null; window = null; windowGeneration.incrementAndGet()
-        client.close(epoch); releaseMedia()
+        if (cameraOwner == null) { client.close(epoch); releaseMedia() }
+        else try { client.close(epoch) } finally { releaseMedia() }
     }
 }

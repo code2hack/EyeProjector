@@ -35,12 +35,15 @@ internal class LiveScale(
     @Synchronized fun observe(
         record: ScrcpyRecord.Session,
         publicationLock: Any = this,
+        managedResize: Boolean = false,
         beforePublish: () -> Unit = {},
     ) {
+        // Managed displays resize through VirtualDisplay, so stock reports a display change
+        // rather than its new-display client-resize flag. Keep that raw flag unchanged.
         value = value.copy(observed = record.geometry, clientResize = record.clientResize,
             status = when {
                 value.target == null -> ScaleStatus.READY
-                !record.clientResize && value.status == ScaleStatus.PENDING -> ScaleStatus.INTERRUPTED
+                !record.clientResize && !managedResize && value.status == ScaleStatus.PENDING -> ScaleStatus.INTERRUPTED
                 else -> ScaleStatus.OBSERVED
             })
         synchronized(publicationLock) {

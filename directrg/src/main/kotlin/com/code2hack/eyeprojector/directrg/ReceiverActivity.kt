@@ -2,6 +2,8 @@ package com.code2hack.eyeprojector.directrg
 
 import android.app.ActivityManager
 import android.app.Activity
+import android.Manifest
+import android.content.pm.PackageManager
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
@@ -41,6 +43,7 @@ import com.code2hack.eyeprojector.protocol.ReceiverDemand
 import com.code2hack.eyeprojector.protocol.ReceiverIncarnation
 import java.io.File
 import java.util.UUID
+import com.code2hack.eyeprojector.directrg.localcamera.forwarding.ReceiverCameraPermissionRequest
 import org.json.JSONObject
 
 class ReceiverActivity : Activity(), SurfaceHolder.Callback {
@@ -73,6 +76,10 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     private var owner: ReceiverSessionOwner? = null
     private var bound = false
     private var serviceBinder: ReceiverSessionService.LocalBinder? = null
+    // One opaque identity per actual Activity instance; request codes never reconstruct it.
+    private val cameraPermissionHost = Any()
+    private val cameraPermissionRequests = mutableMapOf<Int,
+        Pair<ReceiverSessionService.LocalBinder, ReceiverCameraPermissionRequest>>()
     private lateinit var launchScope: ReceiverLaunchScope
     private var visibleActivation: String? = null
     private var bindingValid = true
@@ -104,11 +111,12 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             else if (launchScope.trigger.isNotEmpty()) owner?.launch(launchScope)
             val canceledBeforeBinding = forget != null || disconnectBeforeBinding
             disconnectBeforeBinding = false; connectBeforeBinding = false
-            if (resumed && !canceledBeforeBinding) attachPresentation()
+            if (resumed && !canceledBeforeBinding) { attachCameraPermissionHost(); attachPresentation() }
             // A recreated view needs its first attachment even when goal selection was restored.
             if (!canceledBeforeBinding && requestedWake != null) ReceiverWake.readIntent(intent)?.let(::applyReceiverDemand)
         }
         override fun onServiceDisconnected(name: ComponentName) {
+            serviceBinder?.detachCameraPermissionHost(cameraPermissionHost)
             owner = null; serviceBinder = null
             showSnapshot(ReceiverSessionOwner.Snapshot(null, null, null, false, "DISCONNECTED", null))
         }
@@ -123,6 +131,31 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         if (!bindingValid || !resumed || !hasWindowFocus()) return
         owner?.attach(sessionView, screen.holder.surface.takeIf { it.isValid })
         owner?.presentation(sessionView, usable(), presentation.panelVisible)
+    }
+    private fun attachCameraPermissionHost() {
+        val originalBinder = serviceBinder ?: return
+        if (!resumed || !bindingValid) return
+        originalBinder.attachCameraPermissionHost(cameraPermissionHost) { originalRequest ->
+            runOnUiThread {
+                if (serviceBinder !== originalBinder || !resumed ||
+                    originalRequest.hostIdentity !== cameraPermissionHost ||
+                    !originalBinder.isCameraPermissionRequestCurrent(originalRequest)) return@runOnUiThread
+                cameraPermissionRequests[originalRequest.requestCode] = originalBinder to originalRequest
+                try { requestPermissions(arrayOf(Manifest.permission.CAMERA), originalRequest.requestCode) }
+                catch (error: Throwable) {
+                    cameraPermissionRequests.remove(originalRequest.requestCode)
+                    originalBinder.cameraPermissionRequestFailed(originalRequest, error)
+                }
+            }
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        val captured = cameraPermissionRequests.remove(requestCode) ?: return
+        val index = permissions.indexOf(Manifest.permission.CAMERA)
+        val granted = index >= 0 && index < grantResults.size && grantResults[index] == PackageManager.PERMISSION_GRANTED
+        captured.first.cameraPermissionResult(captured.second, granted)
     }
     private fun validWake(local: ReceiverSessionService.LocalBinder, delivered: Intent): Boolean {
         val d = local.feature.directive ?: return false
@@ -568,6 +601,8 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             is PadGestureRecognizer.Action.Tap -> {
                 val delay = SystemClock.uptimeMillis() - action.downTimeMs
                 tapDelaySamples++; tapDelayTotalMs += delay; tapDelayMaxMs = maxOf(tapDelayMaxMs, delay)
+                if (tapDelaySamples <= 64) Log.d("EyeProjectorPad",
+                    "tapDispatch ageMs=$delay fallbackMs=${action.timeMs - action.upTimeMs}")
                 val point = action.position
                 if (point?.available != true) false
                 else if (connectionView.visibility == View.VISIBLE) localInput.tap(action)
@@ -854,6 +889,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         super.onResume(); resumed = true; pointer.start(); longTouch.start(); padContact.start()
         hidDevices.start()
         if (hasWindowFocus()) functionInput.start()
+        attachCameraPermissionHost()
         attachPresentation()
     }
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -866,11 +902,14 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     }
     override fun onPause() {
         resumed = false; cancelInput()
+        serviceBinder?.detachCameraPermissionHost(cameraPermissionHost)
         hidDevices.stop(); functionInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
         owner?.detach(sessionView)
         super.onPause()
     }
     override fun onDestroy() {
+        serviceBinder?.detachCameraPermissionHost(cameraPermissionHost)
+        cameraPermissionRequests.clear()
         hidDevices.stop(); functionInput.stop(); longTouch.stop(); padContact.stop()
         owner?.detach(sessionView)
         if (isFinishing && bindingValid) {

@@ -18,6 +18,7 @@ object GLES20 {
     const val GL_FRAGMENT_SHADER = 12
     const val GL_COMPILE_STATUS = 13
     const val GL_LINK_STATUS = 14
+    const val GL_SCISSOR_TEST = 0x0C11
     @JvmStatic fun glGenTextures(n: Int, names: IntArray, offset: Int) { names[offset] = 1 }
     @JvmStatic fun glBindTexture(target: Int, value: Int) = Unit
     @JvmStatic fun glTexParameteri(target: Int, key: Int, value: Int) = Unit
@@ -30,6 +31,9 @@ object GLES20 {
     @JvmStatic fun glGetAttribLocation(p: Int, name: String) = 0
     @JvmStatic fun glVertexAttribPointer(id: Int, size: Int, type: Int, normalized: Boolean, stride: Int, data: Buffer) = Unit
     @JvmStatic fun glEnableVertexAttribArray(id: Int) = Unit
+    @JvmStatic fun glDisableVertexAttribArray(index: Int) = Unit
+    @JvmStatic fun glEnable(cap: Int) = Unit
+    @JvmStatic fun glScissor(x: Int, y: Int, width: Int, height: Int) = Unit
     @JvmStatic fun glDisable(cap: Int) = Unit
     @JvmStatic fun glDrawArrays(type: Int, first: Int, count: Int) = Unit
     @JvmStatic fun glGetError() = 0
