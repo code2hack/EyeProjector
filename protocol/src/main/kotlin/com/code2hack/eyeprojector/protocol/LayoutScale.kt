@@ -20,9 +20,11 @@ data class ScaleRequest(val scale: Double) {
 object LayoutScale {
     val BASELINE = Geometry(480, 640)
     const val DPI = 160
+    const val MIN_SCALE = 0.5
+    const val MAX_SCALE = 1.5
 
     fun target(scale: Double, landscape: Boolean = false): Geometry? {
-        if (!scale.isFinite() || scale <= 0) return null
+        if (!scale.isFinite() || scale !in MIN_SCALE..MAX_SCALE) return null
         val width = (if (landscape) BASELINE.height else BASELINE.width) / scale
         val height = (if (landscape) BASELINE.width else BASELINE.height) / scale
         if (!width.isFinite() || !height.isFinite()) return null

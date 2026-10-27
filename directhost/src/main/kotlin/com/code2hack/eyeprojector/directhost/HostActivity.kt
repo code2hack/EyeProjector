@@ -53,7 +53,7 @@ class HostActivity : Activity() {
             }, app.label)
         }
     }
-    private fun scaleChosenApp(app: ChosenApp, expected: ProjectionContext) {
+    private fun scaleChosenApp(app: ChosenApp, expected: ProjectionContext): com.code2hack.eyeprojector.directhost.scale.AppScaleTarget {
         val feedbackIntent = ++launchFeedbackIntent
         launcherStatus.text = getString(R.string.projected_home_opening, app.label)
         val target = sessions.launchAppForScale(app.packageName, expected) { result ->
@@ -65,7 +65,7 @@ class HostActivity : Activity() {
                 else -> R.string.projected_home_unavailable
             }, app.label)
         }
-        startActivity(com.code2hack.eyeprojector.directhost.scale.AppScaleActivity.intent(this, target))
+        return target
     }
     private val observer: (HostBootstrap.Status) -> Unit = { state ->
         val session = sessions.state()
@@ -108,7 +108,11 @@ class HostActivity : Activity() {
         }
     }
     private val sessionTick = object : Runnable {
-        override fun run() { observer(bootstrap.status()); main.postDelayed(this, 500) }
+        override fun run() {
+            observer(bootstrap.status())
+            if (::chosenApps.isInitialized) chosenApps.pollScale()
+            main.postDelayed(this, 500)
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -118,7 +122,7 @@ class HostActivity : Activity() {
         status = TextView(this).apply { textSize = 20f; setTextColor(Color.WHITE) }
         start = button(R.string.host_start) { sessions.start() }
         authorize = button(R.string.host_authorize) { bootstrap.requestAuthorization() }
-        chosenApps = ChosenAppsPanel(this)
+        chosenApps = ChosenAppsPanel(this).apply { appScales = sessions.appScales }
         notificationAccess = com.code2hack.eyeprojector.directhost.notifications.NotificationAccessPanel(this)
         launcherStatus = TextView(this).apply { setTextColor(Color.WHITE) }
         val stop = button(R.string.host_stop) { switchingCameraSource = false; sessions.stop() }
