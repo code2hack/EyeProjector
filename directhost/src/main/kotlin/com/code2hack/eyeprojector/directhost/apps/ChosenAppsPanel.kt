@@ -21,7 +21,7 @@ import com.code2hack.eyeprojector.directhost.notifications.AppNotificationPrefer
 import com.code2hack.eyeprojector.directhost.notifications.AppNotificationStore
 import java.io.Closeable
 
-/** Area 2 of the Phone panel. Launch integration supplies [onAppSelected] in EP-06. */
+/** Chosen-app launcher with connected per-app scale and persistent notification options. */
 class ChosenAppsPanel @JvmOverloads constructor(
     context: Context,
     private val store: ChosenAppStore = ChosenApps.open(context),
@@ -107,6 +107,7 @@ class ChosenAppsPanel @JvmOverloads constructor(
     }
 
     private fun appIcon(entry: ChosenAppEntry): View = LinearLayout(context).apply {
+        val scaleAction = onAppScale.takeIf { entry.availability == AppAvailability.AVAILABLE }
         orientation = VERTICAL
         gravity = Gravity.CENTER
         minimumHeight = dp(104)
@@ -132,14 +133,22 @@ class ChosenAppsPanel @JvmOverloads constructor(
             gravity = Gravity.CENTER
             setTextColor(Color.LTGRAY)
         })
+        scaleAction?.let { action ->
+            addView(Button(context).apply {
+                setText(R.string.app_scale_menu)
+                isAllCaps = false
+                tag = "chosen-app-scale:${entry.app.packageName}"
+                contentDescription = "${entry.app.label}: ${context.getString(R.string.app_scale_menu)}"
+                setOnClickListener { scaleApp(entry.app, action) }
+            })
+        }
         isFocusable = true
         if (entry.availability == AppAvailability.AVAILABLE && onAppSelected != null) {
             setOnClickListener { onAppSelected?.invoke(entry.app) }
         }
         setOnLongClickListener {
-            val canScale = entry.availability == AppAvailability.AVAILABLE && onAppScale != null
             val actions = mutableListOf(MenuAction.REMOVE)
-            if (canScale) actions.add(MenuAction.SCALE)
+            if (scaleAction != null) actions.add(MenuAction.SCALE)
             actions.add(MenuAction.NOTIFICATIONS)
             val labels = actions.map { action ->
                 context.getString(when (action) {
@@ -156,10 +165,7 @@ class ChosenAppsPanel @JvmOverloads constructor(
                             store.remove(entry.app.packageName)
                             refresh()
                         }
-                        MenuAction.SCALE -> if (catalog.find(entry.app.packageName)?.launchable == true &&
-                            store.read().any { it.packageName == entry.app.packageName }) {
-                            onAppScale?.invoke(entry.app)
-                        }
+                        MenuAction.SCALE -> scaleAction?.let { scaleApp(entry.app, it) }
                         MenuAction.NOTIFICATIONS -> notifications.setEnabled(
                             entry.app.packageName, !notifications.isEnabled(entry.app.packageName),
                         )
@@ -167,6 +173,11 @@ class ChosenAppsPanel @JvmOverloads constructor(
                 }.show()
             true
         }
+    }
+
+    private fun scaleApp(app: ChosenApp, action: (ChosenApp) -> Unit) {
+        if (catalog.find(app.packageName)?.launchable == true &&
+            store.read().any { it.packageName == app.packageName }) action(app)
     }
 
     private fun showPicker() {

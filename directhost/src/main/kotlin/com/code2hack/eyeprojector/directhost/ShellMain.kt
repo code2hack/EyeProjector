@@ -92,8 +92,9 @@ object ShellMain {
     internal fun videoControlCommand(scid: Int, sourceDisplayId: Int?): List<String> {
         val normal = videoControlCommand(scid)
         if (sourceDisplayId == null) return normal
-        return normal.filterNot { option -> listOf("new_display=", "flex_display=", "vd_destroy_content=", "vd_system_decorations=")
-            .any(option::startsWith) } + "display_id=$sourceDisplayId"
+        return normal.filterNot { option -> listOf("new_display=", "flex_display=", "vd_destroy_content=", "vd_system_decorations=",
+            "video=", "video_codec=", "video_bit_rate=", "max_fps=")
+            .any(option::startsWith) } + listOf("video=false", "display_id=$sourceDisplayId")
     }
 
     @JvmStatic fun main(args: Array<String>) {
@@ -375,7 +376,7 @@ private class Session(
         .put("sourceDisplayId", managedSourceDisplayId ?: JSONObject.NULL)
         .put("scrcpyNewDisplayId", scrcpyNewDisplayId ?: JSONObject.NULL)
         .put("scrcpyMirrorDisplayId", JSONObject.NULL).put("mirrorIdObservation", "UNOBSERVED")
-        .put("displayRole", if (managedSourceDisplayId == null) "UNOBSERVED" else "REAL_APP_SOURCE_WITH_DRAINED_RGBA_SURFACE")
+        .put("displayRole", if (managedSourceDisplayId == null) "UNOBSERVED" else "REAL_APP_SOURCE_WITH_ENCODER_INPUT_SURFACE")
 
     private val managedStatusLock = Any()
     private fun observeManagedProjection(stage: String, sourceId: Int?, deviceId: Int?) {
@@ -383,7 +384,7 @@ private class Session(
             managedPlatformStage = stage
             if (sourceId != null) managedSourceDisplayId = sourceId
             if (deviceId != null) managedDeviceId = deviceId
-            if (stage == "DISPLAY_DRAIN_FAILED") {
+            if (stage == "DISPLAY_ENCODER_STREAM_FAILED") {
                 managedDisplayFailure = stage
                 if (!managedDisplayCloseRequested) managedDisplayState = "FAILED"
             }
@@ -603,8 +604,9 @@ private class Session(
                     check(running.get())
                     phoneInput.invalidate()
                     inputControls.cancel()
-                    original.resize(size.width, size.height)
                 }
+                // Queue only. The stream owner performs native resize/reconfigure off these locks.
+                original.resize(size.width, size.height)
             }
         },
         publish = { value ->
@@ -788,11 +790,15 @@ private class Session(
         }
         childStartedMs.set((System.nanoTime() - begin) / 1_000_000)
         if (!running.get()) { server!!.destroyForcibly(); error("Session stopped during startup") }
-        startupStage.set(StartupStage.ACCEPT_VIDEO)
-        local.accept().also { accepted -> synchronized(resources) {
-            if (!running.get()) { accepted.close(); error("Session stopped") }
-            video = accepted
-        } }
+        if (source == null) {
+            startupStage.set(StartupStage.ACCEPT_VIDEO)
+            local.accept().also { accepted -> synchronized(resources) {
+                if (!running.get()) { accepted.close(); error("Session stopped") }
+                video = accepted
+            } }
+        }
+        // Pinned scrcpy opens video, audio, control in that order, omitting disabled lanes.
+        // Managed mode has exactly one socket: video=false audio=false control=true.
         startupStage.set(StartupStage.ACCEPT_CONTROL)
         local.accept().also { accepted -> synchronized(resources) {
             if (!running.get()) { accepted.close(); error("Session stopped") }
@@ -813,9 +819,9 @@ private class Session(
             launches.initialize(source.sourceDisplayId)
             identifiedDisplay = true
         }
-        val videoInput = DataInputStream(video!!.inputStream)
+        val videoInput = video?.let { DataInputStream(it.inputStream) }
         startupStage.set(StartupStage.READ_CODEC)
-        require(videoInput.readInt() == Wire.H264)
+        if (videoInput != null) require(videoInput.readInt() == Wire.H264)
         inputThread = Thread({
             var reason = SessionStopReason.CONTROL_END
             try {
@@ -830,7 +836,10 @@ private class Session(
         var reason = SessionStopReason.VIDEO_END
         try {
             while (running.get()) {
-                when (val record = Scrcpy.readRecord(videoInput)) {
+                val record = if (source != null) source.readRecord { running.get() }
+                    else Scrcpy.readRecord(videoInput!!)
+                when (record) {
+                    null -> break
                     is ScrcpyRecord.Session -> {
                         startup.cancel(false)
                         scale.observe(record, this, managedResize = source != null) {

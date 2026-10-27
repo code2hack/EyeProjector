@@ -27,8 +27,9 @@ internal class PadGestureRecognizer(
         data class Scroll(val pixels: Int, val position: PointerPosition?, override val timeMs: Long) : Action
         /** Only a source with real sustained DOWN/release may supply these events. */
         data class Contact(val event: Event) : Action { override val timeMs = event.timeMs }
-        /** Classification only: it supplies neither sustained contact nor release. EP-11 owns those. */
-        data class LongPress(val markerDownTimeMs: Long?, override val timeMs: Long) : Action
+        /** Classification and marker target only; neither physical release nor drag duration. */
+        data class LongPress(val markerDownTimeMs: Long?, override val timeMs: Long,
+                             val position: PointerPosition? = null) : Action
         data class Back(override val timeMs: Long) : Action
     }
     private data class Press(val event: Event)
@@ -241,7 +242,7 @@ internal class PadGestureRecognizer(
 
     fun classifyLongPress(receiptUptimeMs: Long) {
         val marker = takeMarker(receiptUptimeMs)
-        emit(Action.LongPress(marker?.origin, receiptUptimeMs))
+        emit(Action.LongPress(marker?.origin, receiptUptimeMs, (marker?.action as? Action.Tap)?.position))
     }
 
     private fun contact(event: Event) {

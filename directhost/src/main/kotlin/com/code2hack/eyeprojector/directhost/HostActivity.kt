@@ -97,7 +97,9 @@ class HostActivity : Activity() {
             state.detail !in listOf("FORGET_PENDING", "RESTORE_SHIZUKU_TO_VERIFY_STOP")
         authorize.isEnabled = state.setup == HostBootstrap.Setup.AUTHORIZATION_REQUIRED
         val expected = state.projectionContext
-        val canLaunch = session.phase == SessionPhase.STREAMING && expected.available
+        // Backend STREAMING carries the actual Session token. The legacy controller
+        // can still report CONNECTING while receiver presentation is reconciled.
+        val canLaunch = state.backend == "STREAMING" && expected.available
         if (::chosenApps.isInitialized && (canLaunch != launchEnabled || expected != launchContext)) {
             launchEnabled = canLaunch
             launchContext = expected

@@ -214,11 +214,13 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var longTouch: NativePadLongTouch
     private lateinit var heldInput: HeldPointerDispatcher
     private lateinit var padContact: NativePadContact
+    private lateinit var shellPadContact: NativePadShellContact
     private lateinit var hidInput: HidKeyInput
     private lateinit var hidDevices: AndroidHidInput
     private lateinit var hidPanel: HidBindingsPanel
     private lateinit var mainControls: LinearLayout
     private lateinit var heldOwner: HeldInputOwner
+    private lateinit var classifiedPadLongPress: ClassifiedPadLongPress
     private lateinit var completedInput: CompletedReceiverInput
     private lateinit var functionInput: NativeFunctionInput
     private var nativeActionsSubmitted = 0L
@@ -320,7 +322,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         // Admission and position notifications already refresh the model; observing must not publish again.
         heldInput = HeldPointerDispatcher({ pointer.position }) {
             if (!usable()) null
-            else if (connectionView.visibility == View.VISIBLE) { event ->
+            else if (connectionView.visibility == View.VISIBLE) classifiedPadLongPress.route { event ->
                 if (event.phase == Touch.Phase.DOWN && ::completedInput.isInitialized) completedInput.cancel()
                 localInput.touch(event)
             }
@@ -328,7 +330,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
                 val source = session
                 val size = currentGeometry
                 if (source == null || size == null || !projectedInput()) null
-                else { event ->
+                else classifiedPadLongPress.route { event ->
                     val fit = Fit.inside(root.width, root.height, size)
                     val point = event.position
                     val target = if (event.phase == Touch.Phase.DOWN) fit.touch(point.x, point.y, size)
@@ -339,6 +341,15 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             }
         }
         heldOwner = HeldInputOwner(heldInput)
+        classifiedPadLongPress = ClassifiedPadLongPress(heldOwner, SystemClock::uptimeMillis,
+            // The Phone's measured timeout is 500 ms; leave time for its long-press callback.
+            maxOf(500L, ViewConfiguration.getLongPressTimeout().toLong()) + 100L,
+            { deadline, action ->
+                val task = Runnable { action(); updateEdgeScroll() }
+                root.postDelayed(task, (deadline - SystemClock.uptimeMillis()).coerceAtLeast(0))
+                val cancel: () -> Unit = { root.removeCallbacks(task) }
+                cancel
+            })
         completedInput = CompletedReceiverInput(SystemClock::uptimeMillis, { inputGeneration },
             { usable() && connectionView.visibility == View.VISIBLE },
             { heldOwner.cancel(SystemClock.uptimeMillis()) }, localInput::touch, localInput::scroll, localInput::cancel,
@@ -348,6 +359,18 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
                 ReceiverInputKind.EXIT -> exitToLauncher()
                 else -> Unit
             } })
+        shellPadContact = NativePadShellContact(heldOwner,
+            { if (usable() && !padContact.holding) Triple(inputGeneration, session,
+                Pair(currentGeometry, connectionView.visibility == View.VISIBLE)) else null },
+            { pointer.inputPosition() },
+            {
+                // The raw long-key source omits short taps: retire this ambiguity without
+                // enabling the recognizer's global continuous-contact report mode.
+                gestures.cancel(SystemClock.uptimeMillis())
+                schedulePadConfirmation()
+                classifiedPadLongPress.cancel()
+                completedInput.cancel()
+            }, ::updateEdgeScroll)
         padContact = NativePadContact(this, { pointer.inputPosition() }, { event ->
             if (usable()) gestures.accept(event, SystemClock.uptimeMillis()) else cancelInput()
             schedulePadConfirmation()
@@ -396,6 +419,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         (connectionView.getChildAt(0) as LinearLayout).addView(hidPanel)
         root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> resize() }
         setContentView(root)
+        shellPadContact.start()
         showStatus(getString(R.string.disconnected))
         val service = Intent(this, ReceiverSessionService::class.java)
         startForegroundService(service)
@@ -557,10 +581,22 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         when (action) {
             is PadGestureRecognizer.Action.LongPress -> {
                 longClassifications++
-                nativeInputStage("dispatch_result", action, outcome = "classified-only")
-                return
+                // Real sustained input already owns its DOWN and eventual physical release.
+                if (padContact.holding || shellPadContact.holding) {
+                    nativeInputStage("dispatch_result", action, outcome = "sustained-contact")
+                    return
+                }
+                if (action.markerDownTimeMs == null || action.position?.available != true) {
+                    nativeActionsRejected++
+                    nativeInputStage("dispatch_result", action, outcome = "rejected-no-marker-target")
+                    return
+                }
             }
             is PadGestureRecognizer.Action.Contact -> {
+                if (action.event.phase == PadGestureRecognizer.Phase.DOWN && usable()) {
+                    classifiedPadLongPress.cancel()
+                    shellPadContact.cancel()
+                }
                 val accepted = if (action.event.phase == PadGestureRecognizer.Phase.CANCEL || usable())
                     heldOwner.acceptNative(action.event) else false
                 if (accepted) nativeActionsSubmitted++ else nativeActionsRejected++
@@ -591,6 +627,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             return
         }
         if (::completedInput.isInitialized) completedInput.cancel()
+        classifiedPadLongPress.cancel()
         heldOwner.cancel(action.timeMs)
         if (inputGeneration != admittedGeneration || !usable() || session !== admittedSession ||
             currentGeometry != admittedGeometry || (connectionView.visibility == View.VISIBLE) != admittedLocal) {
@@ -598,6 +635,11 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             return
         }
         val submitted = when (action) {
+            is PadGestureRecognizer.Action.LongPress -> classifiedPadLongPress.start(action) {
+                inputGeneration == admittedGeneration && usable() && session === admittedSession &&
+                    currentGeometry == admittedGeometry &&
+                    (connectionView.visibility == View.VISIBLE) == admittedLocal
+            }
             is PadGestureRecognizer.Action.Tap -> {
                 val delay = SystemClock.uptimeMillis() - action.downTimeMs
                 tapDelaySamples++; tapDelayTotalMs += delay; tapDelayMaxMs = maxOf(tapDelayMaxMs, delay)
@@ -621,6 +663,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             Log.w("EyeProjectorPad", "Native pointer action was not submitted")
         }
         nativeInputStage("dispatch_result", action, outcome = if (submitted) "submitted" else "rejected", local = admittedLocal)
+        if (action is PadGestureRecognizer.Action.LongPress) updateEdgeScroll()
     }
 
     private fun updateEdgeScroll() {
@@ -658,6 +701,8 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         inputGeneration = owner?.advanceInputRevision() ?: (inputGeneration + 1)
         if (::hidInput.isInitialized) hidInput.cancel()
         if (::functionInput.isInitialized) functionInput.cancel()
+        if (::classifiedPadLongPress.isInitialized) classifiedPadLongPress.cancel()
+        if (::shellPadContact.isInitialized) shellPadContact.cancel()
         if (::gestures.isInitialized) gestures.cancel(SystemClock.uptimeMillis())
         if (::heldOwner.isInitialized) heldOwner.cancel(SystemClock.uptimeMillis())
         else if (::heldInput.isInitialized) heldInput.cancel(SystemClock.uptimeMillis())
@@ -908,6 +953,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         super.onPause()
     }
     override fun onDestroy() {
+        shellPadContact.stop()
         serviceBinder?.detachCameraPermissionHost(cameraPermissionHost)
         cameraPermissionRequests.clear()
         hidDevices.stop(); functionInput.stop(); longTouch.stop(); padContact.stop()

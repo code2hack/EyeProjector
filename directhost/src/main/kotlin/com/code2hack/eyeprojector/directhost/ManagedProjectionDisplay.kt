@@ -4,11 +4,9 @@ import android.companion.AssociationRequest
 import android.companion.CompanionDeviceManager
 import android.content.Context
 import android.content.ContextWrapper
-import android.graphics.PixelFormat
 import android.graphics.Point
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
-import android.media.ImageReader
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
@@ -22,13 +20,15 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executor
 import java.util.concurrent.FutureTask
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import org.json.JSONArray
 import org.json.JSONObject
 import com.code2hack.eyeprojector.protocol.Geometry
+import com.code2hack.eyeprojector.protocol.ScrcpyRecord
 
 /**
- * A shell-owned VDM display. The reader consumes the real display output; it does not produce a
- * camera feed. Creation and close are blocking owner operations and belong off UI/control threads.
+ * A shell-owned VDM display rendering directly into its AVC encoder's input Surface.
+ * Creation, drain/reconfigure and close are blocking owner operations, off control/output locks.
  * No CDM association is created here, and an unavailable custom camera policy never falls back.
  */
 internal class ManagedProjectionDisplay private constructor(
@@ -146,18 +146,25 @@ internal class ManagedProjectionDisplay private constructor(
     private var originalDevice: Any? = null
     private var originalDisplay: VirtualDisplay? = null
     private val displayOperations = Any()
-    private data class InputMapping(val video: Geometry, val width: Int, val height: Int)
+    private val inputOperations = Any()
+    private data class InputMapping(val video: Geometry, val source: Geometry)
     private var inputMapping: InputMapping? = null
-    private var originalReader: ImageReader? = null
-    private var originalSurface: Surface? = null
-    private var originalDrainThread: HandlerThread? = null
+    private var observedSourceGeometry: Geometry? = null
+    private var sourceTransitioning = false
+    private val resizeRequested = AtomicReference<Geometry?>()
+    private val displayChanged = AtomicBoolean()
+    // Every epoch, including a partially configured or failed original, remains owned here.
+    private val originalEncoders = ArrayList<ManagedProjectionEncoder>()
+    private var activeEncoder: ManagedProjectionEncoder? = null
+    private var originalDisplayManager: DisplayManager? = null
+    private var originalDisplayListener: DisplayManager.DisplayListener? = null
+    private var originalEventThread: HandlerThread? = null
     @Volatile private var capturedDisplayId: Int? = null
     @Volatile private var capturedDeviceId: Int? = null
     private val closeRequested = AtomicBoolean()
     private val closeComplete = CountDownLatch(1)
     @Volatile private var closingThread: Thread? = null
     @Volatile private var closeFailure: Failure? = null
-    @Volatile private var drainFailure: Failure? = null
 
     /** IDs are observations of these exact original resources, including after their retirement. */
     val sourceDisplayId: Int get() = capturedDisplayId ?: throw Failure("DISPLAY_NOT_CREATED")
@@ -165,31 +172,83 @@ internal class ManagedProjectionDisplay private constructor(
     val sourceDisplayIdOrNull: Int? get() = capturedDisplayId
     val deviceIdOrNull: Int? get() = capturedDeviceId
 
-    fun resize(width: Int, height: Int) = synchronized(displayOperations) {
+    /** Queue only: LiveScale invokes this from its controller, never run codec/display work there. */
+    fun resize(width: Int, height: Int) = synchronized(inputOperations) {
         if (closeRequested.get()) throw Failure("DISPLAY_CLOSED")
-        val original = originalDisplay ?: throw Failure("DISPLAY_NOT_CREATED")
-        val size = Point().also(original.display::getRealSize)
-        if (size.x != width || size.y != height) inputMapping = null
-        original.resize(width, height, DENSITY_DPI)
+        inputMapping = null
+        resizeRequested.set(Geometry(width, height))
     }
 
-    fun inputGeometry(next: Geometry) = synchronized(displayOperations) {
+    fun inputGeometry(next: Geometry) = synchronized(inputOperations) {
         if (closeRequested.get()) return@synchronized
-        val original = originalDisplay ?: return@synchronized
-        val size = Point().also(original.display::getRealSize)
-        inputMapping = InputMapping(next, size.x, size.y)
+        val source = observedSourceGeometry ?: return@synchronized
+        if (!sourceTransitioning && resizeRequested.get() == null) inputMapping = InputMapping(next, source)
     }
 
     fun withInputMapping(video: Geometry, action: (Int, Int, Int) -> Boolean): Boolean =
-        synchronized(displayOperations) {
+        synchronized(inputOperations) {
             if (closeRequested.get()) return@synchronized false
+            if (sourceTransitioning || resizeRequested.get() != null || displayChanged.get()) return@synchronized false
             val mapping = inputMapping ?: return@synchronized false
             if (mapping.video != video) return@synchronized false
-            val original = originalDisplay ?: return@synchronized false
-            val size = Point().also(original.display::getRealSize)
-            if (size.x != mapping.width || size.y != mapping.height) return@synchronized false
-            action(sourceDisplayId, mapping.width, mapping.height)
+            if (observedSourceGeometry != mapping.source) return@synchronized false
+            action(sourceDisplayId, mapping.source.width, mapping.source.height)
         }
+
+    private fun observeSourceGeometry(): Geometry {
+        val display = originalDisplay ?: throw Failure("DISPLAY_NOT_CREATED")
+        val size = Point().also(display.display::getRealSize)
+        val observed = Geometry(size.x, size.y)
+        synchronized(inputOperations) {
+            if (observedSourceGeometry != observed) inputMapping = null
+            observedSourceGeometry = observed
+        }
+        return observed
+    }
+
+    private fun attachEncoder(geometry: Geometry) {
+        val encoder = ManagedProjectionEncoder()
+        originalEncoders.add(encoder)
+        activeEncoder = encoder
+        encoder.prepare(geometry)
+        originalDisplay!!.surface = encoder.inputSurface
+        report("DISPLAY_ENCODER_ATTACHED")
+    }
+
+    /** Single stream reader. Close takes the same ownership lock after this native turn returns. */
+    fun readRecord(keepRunning: () -> Boolean): ScrcpyRecord? {
+        try {
+            return synchronized(displayOperations) {
+                while (!closeRequested.get() && keepRunning()) {
+                    val original = originalDisplay ?: throw Failure("DISPLAY_NOT_CREATED")
+                    val (requested, changed) = synchronized(inputOperations) {
+                        val next = resizeRequested.getAndSet(null)
+                        val dirty = displayChanged.getAndSet(false)
+                        if (next != null || dirty) sourceTransitioning = true
+                        next to dirty
+                    }
+                    if (requested != null) original.resize(requested.width, requested.height, DENSITY_DPI)
+                    if (requested != null || changed) {
+                        val observed = observeSourceGeometry()
+                        // Even a no-op request needs a fresh observed epoch: each GEOMETRY
+                        // replaces the receiver decoder and must precede new CSD and frame data.
+                        if (requested != null || activeEncoder?.sourceGeometry != observed) {
+                            synchronized(inputOperations) { inputMapping = null }
+                            original.surface = null
+                            activeEncoder?.close()
+                            attachEncoder(observed)
+                        }
+                        synchronized(inputOperations) { sourceTransitioning = false }
+                    }
+                    activeEncoder?.readRecord()?.let { return@synchronized it }
+                }
+                null
+            }
+        } catch (error: Throwable) {
+            report("DISPLAY_ENCODER_STREAM_FAILED")
+            throw if (error is Failure) error else Failure("DISPLAY_ENCODER_STREAM_FAILED", unwrap(error))
+        }
+    }
 
     private fun report(category: String) {
         // The optional observer does not own resource creation or release.
@@ -202,9 +261,9 @@ internal class ManagedProjectionDisplay private constructor(
             if (Process.myUid() != 2000) throw Failure(stage)
             stage = "VDM_API_UNAVAILABLE"
             if (Build.VERSION.SDK_INT < 35) throw Failure(stage)
-            stage = "DISPLAY_DRAIN_THREAD_START_FAILED"
-            val thread = HandlerThread("eyeprojector-managed-display-drain")
-            originalDrainThread = thread
+            stage = "DISPLAY_EVENT_THREAD_START_FAILED"
+            val thread = HandlerThread("eyeprojector-managed-display-events")
+            originalEventThread = thread
             thread.start()
             val handler = Handler(thread.looper)
             stage = "SHELL_CONTEXT_UNAVAILABLE"
@@ -279,25 +338,6 @@ internal class ManagedProjectionDisplay private constructor(
                     .invoke(manager, deviceId, cameraPolicy) != customPolicy) throw Failure(stage)
             report("VIRTUAL_DEVICE_CREATED")
 
-            stage = "DISPLAY_READER_CREATE_FAILED"
-            // acquireLatestImage needs two available slots to discard older queued display frames.
-            val reader = ImageReader.newInstance(WIDTH, HEIGHT, PixelFormat.RGBA_8888, 2)
-            originalReader = reader
-            val surface = reader.surface
-            originalSurface = surface
-            reader.setOnImageAvailableListener({ original ->
-                if (!closeRequested.get()) {
-                    try {
-                        original.acquireLatestImage()?.close()
-                    } catch (error: Throwable) {
-                        if (!closeRequested.get()) {
-                            drainFailure = Failure("DISPLAY_DRAIN_FAILED", unwrap(error))
-                            report("DISPLAY_DRAIN_FAILED")
-                        }
-                    }
-                }
-            }, handler)
-
             stage = "VIRTUAL_DISPLAY_CREATE_FAILED"
             val trusted = DisplayManager::class.java.getField("VIRTUAL_DISPLAY_FLAG_TRUSTED").getInt(null)
             val flags = DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
@@ -305,11 +345,23 @@ internal class ManagedProjectionDisplay private constructor(
             val display = device.javaClass.getMethod("createVirtualDisplay", Int::class.javaPrimitiveType,
                 Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Surface::class.java,
                 Int::class.javaPrimitiveType, Executor::class.java, VirtualDisplay.Callback::class.java)
-                .invoke(device, WIDTH, HEIGHT, DENSITY_DPI, surface, flags, null, null) as? VirtualDisplay
+                .invoke(device, WIDTH, HEIGHT, DENSITY_DPI, null, flags, null, null) as? VirtualDisplay
                 ?: throw Failure(stage)
             originalDisplay = display
             capturedDisplayId = display.display.displayId
-            drainFailure?.let { throw it }
+            stage = "DISPLAY_LISTENER_REGISTER_FAILED"
+            val displayManager = context.getSystemService(DisplayManager::class.java)
+                ?: throw Failure("DISPLAY_MANAGER_UNAVAILABLE")
+            originalDisplayManager = displayManager
+            val listener = object : DisplayManager.DisplayListener {
+                override fun onDisplayAdded(id: Int) = Unit
+                override fun onDisplayRemoved(id: Int) { if (id == capturedDisplayId) displayChanged.set(true) }
+                override fun onDisplayChanged(id: Int) { if (id == capturedDisplayId) displayChanged.set(true) }
+            }
+            originalDisplayListener = listener
+            displayManager.registerDisplayListener(listener, handler)
+            stage = "DISPLAY_ENCODER_CREATE_FAILED"
+            attachEncoder(observeSourceGeometry())
             report("VIRTUAL_DISPLAY_CREATED")
         } catch (error: Throwable) {
             val cause = unwrap(error)
@@ -318,8 +370,7 @@ internal class ManagedProjectionDisplay private constructor(
     }
 
     override fun close() {
-        // A drain callback cannot synchronously join its own original thread.
-        if (Thread.currentThread() === originalDrainThread) throw Failure("DISPLAY_CLOSE_ON_DRAIN_THREAD")
+        if (Thread.currentThread() === originalEventThread) throw Failure("DISPLAY_CLOSE_ON_EVENT_THREAD")
         if (!closeRequested.compareAndSet(false, true)) {
             if (Thread.currentThread() === closingThread) throw Failure("DISPLAY_CLOSE_REENTRANT")
             try { closeComplete.await() } catch (error: InterruptedException) {
@@ -342,18 +393,25 @@ internal class ManagedProjectionDisplay private constructor(
             }
         }
         try {
-            originalDisplay?.let { original -> release("VIRTUAL_DISPLAY_RELEASE_FAILED") {
-                synchronized(displayOperations) { inputMapping = null; original.release() }
-            } }
+            synchronized(inputOperations) { inputMapping = null }
+            synchronized(displayOperations) {
+                var producerStopped = originalDisplay == null
+                originalDisplay?.let { original ->
+                    release("DISPLAY_ENCODER_DETACH_FAILED") { original.surface = null; producerStopped = true }
+                    release("VIRTUAL_DISPLAY_RELEASE_FAILED") { original.release(); producerStopped = true }
+                }
+                // If both detach and display release fail, retain the live codec/surface as-is.
+                if (producerStopped) originalEncoders.forEach { encoder ->
+                    release("DISPLAY_ENCODER_CLOSE_FAILED") { encoder.close() }
+                }
+            }
             originalDevice?.let { original -> release("VIRTUAL_DEVICE_CLOSE_FAILED") {
                 original.javaClass.getMethod("close").invoke(original)
             } }
-            originalReader?.let { original ->
-                release("DISPLAY_READER_LISTENER_REMOVE_FAILED") { original.setOnImageAvailableListener(null, null) }
-                release("DISPLAY_READER_CLOSE_FAILED") { original.close() }
-            }
-            originalSurface?.let { original -> release("DISPLAY_SURFACE_RELEASE_FAILED") { original.release() } }
-            originalDrainThread?.let { original -> release("DISPLAY_DRAIN_THREAD_CLOSE_FAILED") {
+            originalDisplayListener?.let { original -> release("DISPLAY_LISTENER_REMOVE_FAILED") {
+                originalDisplayManager!!.unregisterDisplayListener(original)
+            } }
+            originalEventThread?.let { original -> release("DISPLAY_EVENT_THREAD_CLOSE_FAILED") {
                 if (original.state != Thread.State.NEW) {
                     original.quitSafely()
                     original.join()
