@@ -5,6 +5,7 @@ import java.util.IdentityHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicBoolean
+import org.json.JSONObject
 
 /** Local references, rather than equal wire tuples, own native resources. */
 class CapturedPhoneDemandGroup(val originalSession: Any, val registration: OwnedPhoneRegistration) : OriginalPhoneDemandGroup
@@ -18,6 +19,57 @@ class PhoneDecoderEpoch(
 data class PhoneMediaStartSubmission(val fact: CameraFact, val failure: Throwable? = null)
 data class PhoneMediaStopSubmission(val fact: CameraFact)
 data class PhoneMediaCloseObservation(val snapshot: PhoneCameraMediaSnapshot, val failure: Throwable? = null)
+/** Phone-local consumer receipt/queue-return observations; never subtract remote PTS from this clock. */
+data class PhoneCameraIngressObservation(
+    val original: PhoneDecoderEpoch,
+    val receivedAccessUnits: Long = 0,
+    val acceptedAccessUnits: Long = 0,
+    val waitingSequence: Long? = null,
+    val lastReceivedSequence: Long? = null,
+    val lastReceivedPtsUs: Long? = null,
+    val lastReceiveMonoNs: Long? = null,
+    val lastAcceptedSequence: Long? = null,
+    val lastAcceptedPtsUs: Long? = null,
+    val lastAcceptanceReturnMonoNs: Long? = null,
+    val lastAcceptanceWaitNs: Long? = null,
+    val maxAcceptanceWaitNs: Long = 0,
+    val totalAcceptanceWaitNs: Long = 0,
+    val lastSubmissionFact: CameraFact? = null,
+    val outputObservations: Long = 0,
+    val lastOutputPtsUs: Long? = null,
+    val lastOutputObservationMonoNs: Long? = null,
+) {
+    fun json(): JSONObject = JSONObject().put("localEpoch", System.identityHashCode(original))
+        .put("receivedAccessUnits", receivedAccessUnits).put("acceptedAccessUnits", acceptedAccessUnits)
+        .put("waitingSequence", waitingSequence ?: JSONObject.NULL)
+        .put("lastReceivedSequence", lastReceivedSequence ?: JSONObject.NULL)
+        .put("lastReceivedPtsUs", lastReceivedPtsUs ?: JSONObject.NULL)
+        .put("lastReceiveMonoNs", lastReceiveMonoNs ?: JSONObject.NULL)
+        .put("lastAcceptedSequence", lastAcceptedSequence ?: JSONObject.NULL)
+        .put("lastAcceptedPtsUs", lastAcceptedPtsUs ?: JSONObject.NULL)
+        .put("lastAcceptanceReturnMonoNs", lastAcceptanceReturnMonoNs ?: JSONObject.NULL)
+        .put("lastAcceptanceWaitNs", lastAcceptanceWaitNs ?: JSONObject.NULL)
+        .put("maxAcceptanceWaitNs", maxAcceptanceWaitNs).put("totalAcceptanceWaitNs", totalAcceptanceWaitNs)
+        .put("lastSubmissionFact", lastSubmissionFact?.name ?: JSONObject.NULL)
+        .put("outputObservations", outputObservations).put("lastOutputPtsUs", lastOutputPtsUs ?: JSONObject.NULL)
+        .put("lastOutputObservationMonoNs", lastOutputObservationMonoNs ?: JSONObject.NULL)
+}
+data class PhoneCameraStatusProgress(
+    val requests: Long,
+    val snapshots: Long,
+    val publications: Long,
+    val lastSnapshotDurationNs: Long,
+    val maxSnapshotDurationNs: Long,
+    val lastPublicationDurationNs: Long,
+    val maxPublicationDurationNs: Long,
+    val sealed: Boolean,
+) {
+    fun json(): JSONObject = JSONObject().put("requests", requests).put("snapshots", snapshots)
+        .put("publications", publications).put("lastSnapshotDurationNs", lastSnapshotDurationNs)
+        .put("maxSnapshotDurationNs", maxSnapshotDurationNs)
+        .put("lastPublicationDurationNs", lastPublicationDurationNs)
+        .put("maxPublicationDurationNs", maxPublicationDurationNs).put("sealed", sealed)
+}
 data class PhoneMediaGroupSnapshot(
     val original: CapturedPhoneDemandGroup,
     val use: CameraUseRef?,
@@ -26,6 +78,7 @@ data class PhoneMediaGroupSnapshot(
     val decoders: List<PhoneDecoderObservation>,
     val fanoutEvents: List<PhoneFanoutObservation>,
     val fanout: PhoneFanoutCloseObservation,
+    val ingress: List<PhoneCameraIngressObservation> = emptyList(),
 )
 data class PhoneCameraMediaSnapshot(
     val originalSession: Any,
@@ -42,6 +95,8 @@ data class PhoneCameraMediaSnapshot(
     val statusWorkers: List<PhoneWorkerSnapshot>,
     val callbackQuiescence: String = "UNOBSERVED",
     val fullH: String = "UNKNOWN",
+    val sampleMonoNs: Long = 0,
+    val statusProgress: PhoneCameraStatusProgress? = null,
 )
 
 /**
@@ -72,11 +127,20 @@ class PhoneCameraMediaOwner(
     private val groups = ArrayList<Group>()
     private var active: Group? = null
     private val worker = PhoneCameraWorker("phone-camera-media", ownership, ::recordFailure)
-    private var status = PhoneCameraWorker("phone-camera-status", ownership, ::recordObserverFailure)
-    private val statusOriginals = arrayListOf(status)
-    private var pendingStatus: PhoneCameraMediaSnapshot? = null
+    private val status = PhoneCameraWorker("phone-camera-status", ownership, ::recordObserverFailure)
+    private var statusDirty = false
     private var statusDrainOwned = false
-    private var statusLatestRevision = -1L
+    private var statusSealed = false
+    private var statusCloseClaimed = false
+    private var statusCloseFailure: Throwable? = null
+    private val statusCloseFinished = CountDownLatch(1)
+    private var statusRequests = 0L
+    private var statusSnapshots = 0L
+    private var statusPublications = 0L
+    private var lastSnapshotDurationNs = 0L
+    private var maxSnapshotDurationNs = 0L
+    private var lastPublicationDurationNs = 0L
+    private var maxPublicationDurationNs = 0L
     private val ownerDrained = CountDownLatch(1)
 
     private class EpochRecord(val original: PhoneDecoderEpoch) {
@@ -86,6 +150,7 @@ class PhoneCameraMediaOwner(
         var closed = false
         var failure: Throwable? = null
         var observation: PhoneDecoderObservation? = null
+        var ingress = PhoneCameraIngressObservation(original)
         var formatPublished: PhoneDecodedFormat? = null
         var fencePublished = false
         var joinRequested = false
@@ -338,6 +403,10 @@ class PhoneCameraMediaOwner(
                     val decoder = PhoneCameraDecoder(record.original, description, destination) { observation ->
                         val updates = synchronized(gate) {
                             record.observation = observation
+                            if (observation.stage == "OUTPUT_RENDER_RETURNED") {
+                                record.ingress = record.ingress.copy(outputObservations = observation.renderedOutputs,
+                                    lastOutputPtsUs = observation.rawPtsUs, lastOutputObservationMonoNs = System.nanoTime())
+                            }
                             val format = observation.actualFormat?.takeIf { it !== record.formatPublished }
                             if (format != null) record.formatPublished = format
                             val fence = observation.useStopped?.takeIf { !record.fencePublished }
@@ -367,15 +436,45 @@ class PhoneCameraMediaOwner(
 
     private fun access(group: Group, use: PublishedCameraUse, role: PendingCameraRole,
         stream: CameraStreamRef, value: CameraAccessUnit) {
+        val receivedAt = System.nanoTime()
         val record = synchronized(gate) {
             val current = group.current
             if (closing || group.retired || !matchesUse(group, use) || current == null || current.original.role !== role ||
                 current.original.stream != stream || value.formatGeneration != current.original.description.formatGeneration)
-                null else current
+                null else current.also {
+                    it.ingress = it.ingress.copy(receivedAccessUnits = it.ingress.receivedAccessUnits + 1,
+                        waitingSequence = value.sequence, lastReceivedSequence = value.sequence,
+                        lastReceivedPtsUs = value.ptsUs, lastReceiveMonoNs = receivedAt)
+                    ownership.changedLocked()
+                }
         } ?: return
-        try { record.awaitDecoder()?.queue(record.original, value) }
+        publishStatus() // Queue a dirty signal only, so a pending acceptance wait remains observable.
+        try {
+            val result = record.awaitDecoder()?.queue(record.original, value)
+            val returnedAt = System.nanoTime()
+            synchronized(gate) {
+                var next = record.ingress.copy(lastSubmissionFact = result?.fact)
+                if (result?.fact == CameraFact.OBSERVED_RETURN) {
+                    val waitNs = returnedAt - receivedAt
+                    next = next.copy(acceptedAccessUnits = next.acceptedAccessUnits + 1,
+                        lastAcceptedSequence = value.sequence, lastAcceptedPtsUs = value.ptsUs,
+                        lastAcceptanceReturnMonoNs = returnedAt, lastAcceptanceWaitNs = waitNs,
+                        maxAcceptanceWaitNs = maxOf(next.maxAcceptanceWaitNs, waitNs),
+                        totalAcceptanceWaitNs = next.totalAcceptanceWaitNs + waitNs)
+                }
+                record.ingress = next
+                ownership.changedLocked()
+            }
+        }
         catch (error: InterruptedException) { Thread.currentThread().interrupt(); record.failed(error); stopEpoch(group, record, CameraEndReason.TRANSPORT_EOF) }
         catch (error: Throwable) { record.failed(error); recordFailure(error); stopEpoch(group, record, CameraEndReason.ENCODER_FAILURE) }
+        finally {
+            synchronized(gate) {
+                record.ingress = record.ingress.copy(waitingSequence = null)
+                ownership.changedLocked()
+            }
+            publishStatus()
+        }
     }
 
     private fun endStream(group: Group, use: PublishedCameraUse, role: PendingCameraRole, end: CameraMediaEnd) {
@@ -490,6 +589,18 @@ class PhoneCameraMediaOwner(
                             ownership.changedLocked()
                         }
                     }
+                    // A media sentinel is earlier than the actual owner join. Only this
+                    // resource-complete, off-caller coordinator retires the persistent status lane.
+                    worker.awaitJoined()
+                    val media = snapshot()
+                    val mediaClear = media.groups.all { group ->
+                        group.retired && group.fanout.nativeResourcesClear && group.fanout.joined &&
+                            group.decoders.all { decoder -> decoder.useStopped?.let { stopped ->
+                                decoder.joined || stopped.noConfigureAttempted && !decoder.threadEntered
+                            } == true }
+                    }
+                    if (!mediaClear) throw IllegalStateException("Original media resource retirement remains incomplete")
+                    closeStatusLane()
                     // Preserve the exact fresh original/as-of revision rather than a delayed status cache.
                     PhoneMediaCloseObservation(snapshot().copy(registration = fresh))
                 }
@@ -512,8 +623,12 @@ class PhoneCameraMediaOwner(
             PhoneCameraMediaSnapshot(originalSession, ownership.revision, started, closing, observedRegistration,
                 targets.keys.map { it.snapshot() }, groups.map { group ->
                     PhoneMediaGroupSnapshot(group.original, group.use?.ref, group.members.keys.toList(), group.retired,
-                        group.epochs.mapNotNull { it.observation }, listOfNotNull(group.lastFanout), group.fanout.snapshot())
-                }, primaryFailure, observerFailures.toList(), worker.snapshot(), status.snapshot(), statusOriginals.map { it.snapshot() })
+                        group.epochs.mapNotNull { it.observation }, listOfNotNull(group.lastFanout), group.fanout.snapshot(),
+                        group.epochs.map { it.ingress })
+                }, primaryFailure, observerFailures.toList(), worker.snapshot(), status.snapshot(), listOf(status.snapshot()),
+                sampleMonoNs = System.nanoTime(), statusProgress = PhoneCameraStatusProgress(statusRequests,
+                    statusSnapshots, statusPublications, lastSnapshotDurationNs, maxSnapshotDurationNs,
+                    lastPublicationDurationNs, maxPublicationDurationNs, statusSealed))
         }
         return fields
     }
@@ -525,35 +640,78 @@ class PhoneCameraMediaOwner(
         synchronized(gate) { observerFailures.add(error); ownership.changedLocked() }
     }
     private fun publishStatus() {
-        val asOf = snapshot()
-        val lane = synchronized(gate) {
-            if (asOf.revision < statusLatestRevision) return
-            statusLatestRevision = asOf.revision
-            pendingStatus = asOf
-            if (statusDrainOwned) null else {
-                statusDrainOwned = true
-                // Each batch closes its real loop after draining; no idle status-thread leak.
-                if (status.snapshot().startRequested) {
-                    status = PhoneCameraWorker("phone-camera-status-${statusOriginals.size}", ownership, ::recordObserverFailure)
-                    statusOriginals.add(status)
-                }
-                status
-            }
-        } ?: return
-        if (!lane.post {
-                while (true) {
-                    val next = synchronized(gate) {
-                        val value = pendingStatus
-                        pendingStatus = null
-                        if (value == null) statusDrainOwned = false
-                        value
-                    }
-                    if (next == null) { lane.closeWhenIdle(); break }
-                    try { observations(next) } catch (error: Throwable) { recordObserverFailure(error) }
-                }
-            }) {
-            synchronized(gate) { statusDrainOwned = false }
-            recordObserverFailure(IllegalStateException("As-of status sink no longer admitted"))
+        val enqueue = synchronized(gate) {
+            if (statusSealed) return
+            statusRequests++
+            statusDirty = true
+            if (statusDrainOwned) false else { statusDrainOwned = true; true }
         }
+        if (enqueue && !status.post(::drainStatus)) {
+            val sealed = synchronized(gate) { statusDrainOwned = false; statusSealed }
+            // A publisher claimed just before final sealing can arrive after closeWhenIdle.
+            // The final off-caller snapshot covers it; never restart a retired original lane.
+            if (!sealed) recordObserverFailure(IllegalStateException("As-of status sink no longer admitted"))
+        }
+    }
+
+    private fun drainStatus() {
+        while (true) {
+            val dirty = synchronized(gate) {
+                if (statusDirty) { statusDirty = false; true }
+                else { statusDrainOwned = false; false }
+            }
+            if (!dirty) return // The same original lane sleeps until another publication request.
+            publishStatusSnapshot()
+        }
+    }
+
+    /** All full snapshots and sink I/O run on the status lane or its final off-caller coordinator. */
+    private fun publishStatusSnapshot() {
+        try {
+            val begin = System.nanoTime()
+            val value = snapshot()
+            val snapshotReturned = System.nanoTime()
+            synchronized(gate) {
+                statusSnapshots++
+                lastSnapshotDurationNs = snapshotReturned - begin
+                maxSnapshotDurationNs = maxOf(maxSnapshotDurationNs, lastSnapshotDurationNs)
+            }
+            val publicationBegin = System.nanoTime()
+            try {
+                observations(value)
+                synchronized(gate) { statusPublications++ }
+            } finally {
+                synchronized(gate) {
+                    lastPublicationDurationNs = System.nanoTime() - publicationBegin
+                    maxPublicationDurationNs = maxOf(maxPublicationDurationNs, lastPublicationDurationNs)
+                }
+            }
+        } catch (error: Throwable) { recordObserverFailure(error) }
+    }
+
+    private fun closeStatusLane() {
+        val claimed = synchronized(gate) {
+            if (statusCloseClaimed) false else {
+                statusCloseClaimed = true
+                statusSealed = true
+                ownership.changedLocked()
+                true
+            }
+        }
+        if (!claimed) {
+            statusCloseFinished.await()
+            synchronized(gate) { statusCloseFailure }?.let { throw it }
+            return
+        }
+        try {
+            status.closeWhenIdle()
+            status.awaitJoined()
+            synchronized(gate) { statusDirty = false; statusDrainOwned = false }
+            // This final publication can truthfully include the status worker's own joined fact.
+            publishStatusSnapshot()
+        } catch (error: Throwable) {
+            synchronized(gate) { statusCloseFailure = error }
+            throw error
+        } finally { statusCloseFinished.countDown() }
     }
 }

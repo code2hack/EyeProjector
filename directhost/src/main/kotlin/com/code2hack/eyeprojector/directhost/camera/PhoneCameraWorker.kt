@@ -84,6 +84,20 @@ internal class PhoneCameraWorker(
             joinObserverStarted, joinFailure, observerFailure)
     }
 
+    /** Off-caller finalization only; a sentinel return is not this original thread's actual join. */
+    fun awaitJoined(): PhoneWorkerSnapshot {
+        check(Thread.currentThread() !== original) { "An original worker cannot await its own join" }
+        return synchronized(ownership.lock) {
+            check(startRequested) { "Original worker has not been started" }
+            while (!joined) {
+                joinFailure?.let { throw it }
+                startFailure?.let { throw it }
+                ownership.lock.wait()
+            }
+            snapshot()
+        }
+    }
+
     private fun failure(error: Throwable, start: Boolean = false, join: Boolean = false) {
         synchronized(ownership.lock) {
             if (primaryFailure == null) primaryFailure = error

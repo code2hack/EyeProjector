@@ -178,7 +178,7 @@ internal class Bridge(
         var reason = SessionStopReason.OWNER_CLOSE
         try {
             socket.soTimeout = 3500; socket.tcpNoDelay = true
-            socket.sendBufferSize = 65536; socket.receiveBufferSize = 4096
+            // Leave media socket buffers to Android TCP autotuning.
             socket.startHandshake() // No scrcpy process, display, media or input exists before mTLS.
             Tls.requireTrustedPeer(socket, directory)
             authenticated = true
@@ -446,8 +446,7 @@ private class Session(
     }
 
     private fun retireManagedDisplay() {
-        if (managedDisplayFactory == null) return
-        synchronized(managedDisplayGate) {
+        if (managedDisplayFactory != null) synchronized(managedDisplayGate) {
             managedDisplayCloseRequested = true
             if (managedDisplayState !in setOf("FAILED", "CLOSED", "CLOSED_AFTER_FAILURE", "CLOSED_NOT_CREATED", "RELEASING", "RELEASE_FAILED"))
                 managedDisplayState = "WAITING_CAMERA_RETIREMENT"
@@ -455,6 +454,8 @@ private class Session(
         if (managedMediaCloseStarted.compareAndSet(false, true)) {
             cameraMediaOwner.closeResourcesAsync(java.util.concurrent.Executor { it.run() }) { observation ->
                 if (observation.snapshot.originalSession !== this) return@closeResourcesAsync
+                // Legacy sessions also retire their media-owned status lane.
+                if (managedDisplayFactory == null) return@closeResourcesAsync
                 if (observation.failure != null) {
                     synchronized(managedDisplayGate) {
                         managedMediaCloseObserved = false
@@ -517,6 +518,10 @@ private class Session(
         val registration = value.registration
         val data = JSONObject().put("ownerEpoch", ownerEpoch).put("projectionToken", projectionToken)
             .put("basis", "CAPTURED_ORIGINAL_AS_OF_REVISION").put("revision", value.revision)
+            .put("sampleMonoNs", value.sampleMonoNs)
+            .put("statusWorkerCount", value.statusWorkers.size)
+            .put("statusWorkerJoined", value.statusWorker.joined)
+            .put("statusProgress", value.statusProgress?.json() ?: JSONObject.NULL)
             .put("startSubmitted", value.startSubmitted).put("closeRequested", value.closeRequested)
             .put("callerUid", registration?.caller?.uid ?: JSONObject.NULL)
             .put("callerPid", registration?.caller?.pid ?: JSONObject.NULL)
@@ -577,6 +582,7 @@ private class Session(
             groups.put(JSONObject().put("localGroup", System.identityHashCode(group.original))
                 .put("useGeneration", group.use?.useGeneration ?: JSONObject.NULL)
                 .put("liveInputCount", group.liveInputs.size).put("retired", group.retired)
+                .put("ingress", org.json.JSONArray().also { rows -> group.ingress.forEach { rows.put(it.json()) } })
                 .put("decoders", decoders).put("outputs", outputs).put("textures", textures).put("lastFanoutStage", group.fanoutEvents.lastOrNull()?.stage ?: "UNOBSERVED")
                 .put("eglResourcesClear", group.fanout.nativeResourcesClear)
                 .put("glLoopReturned", group.fanout.loopReturned).put("glJoined", group.fanout.joined))
