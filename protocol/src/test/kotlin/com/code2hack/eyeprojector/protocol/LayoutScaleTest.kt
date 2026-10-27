@@ -13,7 +13,7 @@ class LayoutScaleTest {
         assertEquals(Geometry(960, 1280), LayoutScale.target(0.5))
         assertEquals(Geometry(480, 640), LayoutScale.target(1.0))
         assertEquals(Geometry(384, 512), LayoutScale.target(1.25))
-        assertEquals(Geometry(240, 320), LayoutScale.target(2.0))
+        assertEquals(Geometry(320, 427), LayoutScale.target(1.5))
         assertEquals(1.25, LayoutScale.applied(Geometry(384, 512)), 0.0)
     }
 
@@ -40,13 +40,16 @@ class LayoutScaleTest {
         assertEquals(LayoutScale.applied(portrait), LayoutScale.applied(landscape), 0.0)
     }
 
-    @Test fun mappingUsesOnlyTheExistingGeometryRangeAndRejectsInvalidRequests() {
-        assertEquals(Geometry(3072, 4096), LayoutScale.target(0.15625))
-        assertEquals(Geometry(4096, 3072), LayoutScale.target(0.15625, landscape = true))
-        assertEquals(Geometry(1, 1), LayoutScale.target(960.0))
-        for (scale in listOf(0.1562, 961.0, 0.0, -1.0, Double.MIN_VALUE,
+    @Test fun mappingUsesTheAcceptedScaleRangeAndRejectsInvalidRequests() {
+        assertEquals(0.5, LayoutScale.MIN_SCALE, 0.0)
+        assertEquals(1.5, LayoutScale.MAX_SCALE, 0.0)
+        assertEquals(Geometry(960, 1280), LayoutScale.target(0.5))
+        assertEquals(Geometry(1280, 960), LayoutScale.target(0.5, landscape = true))
+        assertEquals(Geometry(320, 427), LayoutScale.target(1.5))
+        assertEquals(Geometry(427, 320), LayoutScale.target(1.5, landscape = true))
+        for (scale in listOf(0.4999, 1.5001, 0.15625, 2.0, 960.0, 0.0, -1.0, Double.MIN_VALUE,
             Double.MAX_VALUE, Double.NaN, Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY)) {
-            assertNull("Scale $scale must not map outside existing geometry bounds", LayoutScale.target(scale))
+            assertNull("Scale $scale must not map outside the accepted range", LayoutScale.target(scale))
             assertNull(LayoutScale.target(scale, landscape = true))
         }
     }

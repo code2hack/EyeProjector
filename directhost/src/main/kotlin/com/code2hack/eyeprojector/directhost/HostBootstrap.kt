@@ -478,7 +478,8 @@ class HostBootstrap private constructor(private val context: Context) {
                     if (files == null) {
                         localDetail = "SESSION_SETUP_REQUIRED"; publish("STOPPED", localDetail, rejectedEpoch = pendingEpoch); return
                     }
-                    service.start(files.identity, files.password, files.legacyPeer, files.endpoint, files.pairedPeer, pendingEpoch)
+                    val endpoint = CameraSourceSettings.endpointForStart(context, files.endpoint)
+                    service.start(files.identity, files.password, files.legacyPeer, endpoint, files.pairedPeer, pendingEpoch)
                 }
                 Action.STOP -> service.stop()
             }

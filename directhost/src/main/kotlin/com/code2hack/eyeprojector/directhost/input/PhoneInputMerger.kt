@@ -285,9 +285,9 @@ internal class PhoneInputMerger(
         when (current.presses) {
             1 -> if (position.projected) position.geometry?.let { navigation(Navigation.BACK, it) }
                 else out.add(ReceiverInput(ReceiverInputKind.BACK, position.revision))
-            2 -> if (position.projected) position.geometry?.let { navigation(Navigation.HOME, it) }
-                else out.add(ReceiverInput(ReceiverInputKind.PANEL, position.revision))
-            3 -> out.add(ReceiverInput(if (position.projected) ReceiverInputKind.PANEL else ReceiverInputKind.EXIT, position.revision))
+            2 -> if (position.projected) position.geometry?.let { navigation(Navigation.FUNCTION_DOUBLE, it) }
+                else out.add(ReceiverInput(ReceiverInputKind.FUNCTION_DOUBLE, position.revision))
+            3 -> out.add(ReceiverInput(ReceiverInputKind.SLEEP, position.revision))
         }
     }
 

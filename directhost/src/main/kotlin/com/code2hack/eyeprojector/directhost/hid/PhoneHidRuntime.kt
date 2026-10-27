@@ -18,13 +18,15 @@ import com.code2hack.eyeprojector.protocol.PhoneHidEdge
 import java.io.Closeable
 import java.util.concurrent.Executors
 
-/** App-scoped ownership outlives the Phone panel. Only the Accessibility service feeds key edges. */
+/** App-scoped routing accepts Accessibility keys or the independent pinned raw owner. */
 internal class PhoneHidRuntime private constructor(context: Context) {
     private val app = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
     private val writer = Executors.newSingleThreadExecutor()
     private val observers = linkedSetOf<() -> Unit>()
     private var serviceEnabled = false
+    private var accessibilityConnected = false
+    private var nativeConnected = false
     private val sessions = PhoneSessionController.get(app)
     private val snapshot = PhoneHidSnapshotLease()
     private var settingUp = false
@@ -73,7 +75,23 @@ internal class PhoneHidRuntime private constructor(context: Context) {
         },
     )
 
+    val pin = PhoneHidPinRuntime(app, controller, { connected ->
+        nativeConnected = connected
+        updateConnection()
+    }, ::publish)
+
+    fun accessibilityConnection(connected: Boolean) {
+        accessibilityConnected = connected
+        updateConnection()
+    }
+
+    private fun updateConnection() {
+        val available = nativeConnected || (accessibilityConnected && !pin.ownsRoute)
+        if (controller.connected != available) controller.connection(available)
+    }
+
     init {
+        main.post { pin.restore() }
         sessions.onHidInputInvalidated { preserveLearning ->
             if (preserveLearning) controller.presentationLost() else controller.cancelInput()
         }
@@ -161,7 +179,7 @@ internal class PhoneHidRuntime private constructor(context: Context) {
         true
     } catch (_: Exception) { false }
 
-    fun refresh() { serviceEnabled = readEnabled(); publish() }
+    fun refresh() { serviceEnabled = readEnabled(); pin.refresh(); publish() }
     private fun publish() {
         scheduleSnapshot()
         observers.toList().forEach { try { it() } catch (_: Exception) { /* UI observers do not own input. */ } }

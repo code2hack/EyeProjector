@@ -64,7 +64,7 @@ object Tls {
             val peerName = settings.getProperty("peerName") ?: host
             val socket = factory.createSocket(raw, peerName, port, true) as SSLSocket
             try {
-                socket.soTimeout = 4000; socket.tcpNoDelay = true; socket.sendBufferSize = 4096; socket.receiveBufferSize = 65536
+                socket.soTimeout = 4000; socket.tcpNoDelay = true
                 socket.enabledProtocols = socket.supportedProtocols.filter { it in listOf("TLSv1.3", "TLSv1.2") }.toTypedArray()
                 socket.sslParameters = socket.sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
                 socket.startHandshake()

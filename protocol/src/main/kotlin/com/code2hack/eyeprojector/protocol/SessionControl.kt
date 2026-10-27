@@ -10,7 +10,7 @@ import javax.net.ssl.SSLSocket
 /** Session commands use the existing paired certificate pins; discovery only supplies an address. */
 object SessionControl {
     private const val MAGIC = 0x45505331 // EPS1; separate from pairing and media framing.
-    private const val VERSION = 3 // Typed attempt receipts; independent of the unchanged media Wire version.
+    private const val VERSION = 3 // Typed attempt receipts; independent of media Wire7.
     enum class Operation { STATUS, START, STOP, CONNECTING, RENDERED, FAILED }
     // startEpoch is the admission identity, allocated before STATUS; empty retains legacy owner operations.
     data class Request(val operation: Operation, val epoch: String = "", val startEpoch: String = "",

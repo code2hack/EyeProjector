@@ -2,6 +2,8 @@ package com.code2hack.eyeprojector.directrg
 
 import android.app.ActivityManager
 import android.app.Activity
+import android.Manifest
+import android.content.pm.PackageManager
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
@@ -41,6 +43,7 @@ import com.code2hack.eyeprojector.protocol.ReceiverDemand
 import com.code2hack.eyeprojector.protocol.ReceiverIncarnation
 import java.io.File
 import java.util.UUID
+import com.code2hack.eyeprojector.directrg.localcamera.forwarding.ReceiverCameraPermissionRequest
 import org.json.JSONObject
 
 class ReceiverActivity : Activity(), SurfaceHolder.Callback {
@@ -73,6 +76,10 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     private var owner: ReceiverSessionOwner? = null
     private var bound = false
     private var serviceBinder: ReceiverSessionService.LocalBinder? = null
+    // One opaque identity per actual Activity instance; request codes never reconstruct it.
+    private val cameraPermissionHost = Any()
+    private val cameraPermissionRequests = mutableMapOf<Int,
+        Pair<ReceiverSessionService.LocalBinder, ReceiverCameraPermissionRequest>>()
     private lateinit var launchScope: ReceiverLaunchScope
     private var visibleActivation: String? = null
     private var bindingValid = true
@@ -104,11 +111,12 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             else if (launchScope.trigger.isNotEmpty()) owner?.launch(launchScope)
             val canceledBeforeBinding = forget != null || disconnectBeforeBinding
             disconnectBeforeBinding = false; connectBeforeBinding = false
-            if (resumed && !canceledBeforeBinding) attachPresentation()
+            if (resumed && !canceledBeforeBinding) { attachCameraPermissionHost(); attachPresentation() }
             // A recreated view needs its first attachment even when goal selection was restored.
             if (!canceledBeforeBinding && requestedWake != null) ReceiverWake.readIntent(intent)?.let(::applyReceiverDemand)
         }
         override fun onServiceDisconnected(name: ComponentName) {
+            serviceBinder?.detachCameraPermissionHost(cameraPermissionHost)
             owner = null; serviceBinder = null
             showSnapshot(ReceiverSessionOwner.Snapshot(null, null, null, false, "DISCONNECTED", null))
         }
@@ -123,6 +131,31 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         if (!bindingValid || !resumed || !hasWindowFocus()) return
         owner?.attach(sessionView, screen.holder.surface.takeIf { it.isValid })
         owner?.presentation(sessionView, usable(), presentation.panelVisible)
+    }
+    private fun attachCameraPermissionHost() {
+        val originalBinder = serviceBinder ?: return
+        if (!resumed || !bindingValid) return
+        originalBinder.attachCameraPermissionHost(cameraPermissionHost) { originalRequest ->
+            runOnUiThread {
+                if (serviceBinder !== originalBinder || !resumed ||
+                    originalRequest.hostIdentity !== cameraPermissionHost ||
+                    !originalBinder.isCameraPermissionRequestCurrent(originalRequest)) return@runOnUiThread
+                cameraPermissionRequests[originalRequest.requestCode] = originalBinder to originalRequest
+                try { requestPermissions(arrayOf(Manifest.permission.CAMERA), originalRequest.requestCode) }
+                catch (error: Throwable) {
+                    cameraPermissionRequests.remove(originalRequest.requestCode)
+                    originalBinder.cameraPermissionRequestFailed(originalRequest, error)
+                }
+            }
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        val captured = cameraPermissionRequests.remove(requestCode) ?: return
+        val index = permissions.indexOf(Manifest.permission.CAMERA)
+        val granted = index >= 0 && index < grantResults.size && grantResults[index] == PackageManager.PERMISSION_GRANTED
+        captured.first.cameraPermissionResult(captured.second, granted)
     }
     private fun validWake(local: ReceiverSessionService.LocalBinder, delivered: Intent): Boolean {
         val d = local.feature.directive ?: return false
@@ -181,11 +214,13 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var longTouch: NativePadLongTouch
     private lateinit var heldInput: HeldPointerDispatcher
     private lateinit var padContact: NativePadContact
+    private lateinit var shellPadContact: NativePadShellContact
     private lateinit var hidInput: HidKeyInput
     private lateinit var hidDevices: AndroidHidInput
     private lateinit var hidPanel: HidBindingsPanel
     private lateinit var mainControls: LinearLayout
     private lateinit var heldOwner: HeldInputOwner
+    private lateinit var classifiedPadLongPress: ClassifiedPadLongPress
     private lateinit var completedInput: CompletedReceiverInput
     private lateinit var functionInput: NativeFunctionInput
     private var nativeActionsSubmitted = 0L
@@ -287,7 +322,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         // Admission and position notifications already refresh the model; observing must not publish again.
         heldInput = HeldPointerDispatcher({ pointer.position }) {
             if (!usable()) null
-            else if (connectionView.visibility == View.VISIBLE) { event ->
+            else if (connectionView.visibility == View.VISIBLE) classifiedPadLongPress.route { event ->
                 if (event.phase == Touch.Phase.DOWN && ::completedInput.isInitialized) completedInput.cancel()
                 localInput.touch(event)
             }
@@ -295,7 +330,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
                 val source = session
                 val size = currentGeometry
                 if (source == null || size == null || !projectedInput()) null
-                else { event ->
+                else classifiedPadLongPress.route { event ->
                     val fit = Fit.inside(root.width, root.height, size)
                     val point = event.position
                     val target = if (event.phase == Touch.Phase.DOWN) fit.touch(point.x, point.y, size)
@@ -306,6 +341,15 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             }
         }
         heldOwner = HeldInputOwner(heldInput)
+        classifiedPadLongPress = ClassifiedPadLongPress(heldOwner, SystemClock::uptimeMillis,
+            // The Phone's measured timeout is 500 ms; leave time for its long-press callback.
+            maxOf(500L, ViewConfiguration.getLongPressTimeout().toLong()) + 100L,
+            { deadline, action ->
+                val task = Runnable { action(); updateEdgeScroll() }
+                root.postDelayed(task, (deadline - SystemClock.uptimeMillis()).coerceAtLeast(0))
+                val cancel: () -> Unit = { root.removeCallbacks(task) }
+                cancel
+            })
         completedInput = CompletedReceiverInput(SystemClock::uptimeMillis, { inputGeneration },
             { usable() && connectionView.visibility == View.VISIBLE },
             { heldOwner.cancel(SystemClock.uptimeMillis()) }, localInput::touch, localInput::scroll, localInput::cancel,
@@ -313,8 +357,22 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
                 ReceiverInputKind.PANEL -> showControlPanel()
                 ReceiverInputKind.BACK -> contextualBack()
                 ReceiverInputKind.EXIT -> exitToLauncher()
+                ReceiverInputKind.FUNCTION_DOUBLE -> contextualFunctionDouble()
+                ReceiverInputKind.SLEEP -> sleepGlasses()
                 else -> Unit
             } })
+        shellPadContact = NativePadShellContact(heldOwner,
+            { if (usable() && !padContact.holding) Triple(inputGeneration, session,
+                Pair(currentGeometry, connectionView.visibility == View.VISIBLE)) else null },
+            { pointer.inputPosition() },
+            {
+                // The raw long-key source omits short taps: retire this ambiguity without
+                // enabling the recognizer's global continuous-contact report mode.
+                gestures.cancel(SystemClock.uptimeMillis())
+                schedulePadConfirmation()
+                classifiedPadLongPress.cancel()
+                completedInput.cancel()
+            }, ::updateEdgeScroll)
         padContact = NativePadContact(this, { pointer.inputPosition() }, { event ->
             if (usable()) gestures.accept(event, SystemClock.uptimeMillis()) else cancelInput()
             schedulePadConfirmation()
@@ -325,7 +383,8 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             if (usable()) gestures.classifyLongPress(at) else gestures.cancel(at)
             schedulePadConfirmation()
         }
-        val functionNavigation = FunctionNavigation(::projectionHome, ::showControlPanel, ::contextualBack, ::exitToLauncher)
+        val functionNavigation = FunctionNavigation(::projectionFunctionDouble, ::localFunctionDouble,
+            ::contextualBack, ::sleepGlasses)
         functionInput = NativeFunctionInput(this,
             { if (usable()) Pair(session, projectionContext) else null },
             { action -> functionNavigation.dispatch(action, projectionContext) },
@@ -363,6 +422,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         (connectionView.getChildAt(0) as LinearLayout).addView(hidPanel)
         root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> resize() }
         setContentView(root)
+        shellPadContact.start()
         showStatus(getString(R.string.disconnected))
         val service = Intent(this, ReceiverSessionService::class.java)
         startForegroundService(service)
@@ -463,9 +523,22 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         connectionView.scrollTo(0, 0)
         resize()
     }
-    internal fun projectionHome() {
+    internal fun projectionFunctionDouble() {
         if (!usable() || !projectedInput()) return
-        cancelInput(); session?.navigate(Navigation.HOME)
+        cancelInput(); session?.navigate(Navigation.FUNCTION_DOUBLE)
+    }
+    private fun localFunctionDouble() {
+        if (::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE) showControlPanel()
+        else exitToLauncher()
+    }
+    private fun contextualFunctionDouble() {
+        if (projectionContext) projectionFunctionDouble() else localFunctionDouble()
+    }
+    private fun sleepGlasses() {
+        if (!usable()) return
+        cancelInput()
+        // The existing shell reader owns power injection; Activity pause retains the session.
+        if (!shellPadContact.sleep()) Log.w("EyeProjectorPad", "Glasses sleep needs the local shell reader")
     }
     internal fun contextualBack() {
         cancelInput()
@@ -524,10 +597,22 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         when (action) {
             is PadGestureRecognizer.Action.LongPress -> {
                 longClassifications++
-                nativeInputStage("dispatch_result", action, outcome = "classified-only")
-                return
+                // Real sustained input already owns its DOWN and eventual physical release.
+                if (padContact.holding || shellPadContact.holding) {
+                    nativeInputStage("dispatch_result", action, outcome = "sustained-contact")
+                    return
+                }
+                if (action.markerDownTimeMs == null || action.position?.available != true) {
+                    nativeActionsRejected++
+                    nativeInputStage("dispatch_result", action, outcome = "rejected-no-marker-target")
+                    return
+                }
             }
             is PadGestureRecognizer.Action.Contact -> {
+                if (action.event.phase == PadGestureRecognizer.Phase.DOWN && usable()) {
+                    classifiedPadLongPress.cancel()
+                    shellPadContact.cancel()
+                }
                 val accepted = if (action.event.phase == PadGestureRecognizer.Phase.CANCEL || usable())
                     heldOwner.acceptNative(action.event) else false
                 if (accepted) nativeActionsSubmitted++ else nativeActionsRejected++
@@ -558,6 +643,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             return
         }
         if (::completedInput.isInitialized) completedInput.cancel()
+        classifiedPadLongPress.cancel()
         heldOwner.cancel(action.timeMs)
         if (inputGeneration != admittedGeneration || !usable() || session !== admittedSession ||
             currentGeometry != admittedGeometry || (connectionView.visibility == View.VISIBLE) != admittedLocal) {
@@ -565,9 +651,16 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             return
         }
         val submitted = when (action) {
+            is PadGestureRecognizer.Action.LongPress -> classifiedPadLongPress.start(action) {
+                inputGeneration == admittedGeneration && usable() && session === admittedSession &&
+                    currentGeometry == admittedGeometry &&
+                    (connectionView.visibility == View.VISIBLE) == admittedLocal
+            }
             is PadGestureRecognizer.Action.Tap -> {
                 val delay = SystemClock.uptimeMillis() - action.downTimeMs
                 tapDelaySamples++; tapDelayTotalMs += delay; tapDelayMaxMs = maxOf(tapDelayMaxMs, delay)
+                if (tapDelaySamples <= 64) Log.d("EyeProjectorPad",
+                    "tapDispatch ageMs=$delay fallbackMs=${action.timeMs - action.upTimeMs}")
                 val point = action.position
                 if (point?.available != true) false
                 else if (connectionView.visibility == View.VISIBLE) localInput.tap(action)
@@ -586,6 +679,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             Log.w("EyeProjectorPad", "Native pointer action was not submitted")
         }
         nativeInputStage("dispatch_result", action, outcome = if (submitted) "submitted" else "rejected", local = admittedLocal)
+        if (action is PadGestureRecognizer.Action.LongPress) updateEdgeScroll()
     }
 
     private fun updateEdgeScroll() {
@@ -623,6 +717,8 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         inputGeneration = owner?.advanceInputRevision() ?: (inputGeneration + 1)
         if (::hidInput.isInitialized) hidInput.cancel()
         if (::functionInput.isInitialized) functionInput.cancel()
+        if (::classifiedPadLongPress.isInitialized) classifiedPadLongPress.cancel()
+        if (::shellPadContact.isInitialized) shellPadContact.cancel()
         if (::gestures.isInitialized) gestures.cancel(SystemClock.uptimeMillis())
         if (::heldOwner.isInitialized) heldOwner.cancel(SystemClock.uptimeMillis())
         else if (::heldInput.isInitialized) heldInput.cancel(SystemClock.uptimeMillis())
@@ -854,6 +950,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         super.onResume(); resumed = true; pointer.start(); longTouch.start(); padContact.start()
         hidDevices.start()
         if (hasWindowFocus()) functionInput.start()
+        attachCameraPermissionHost()
         attachPresentation()
     }
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -866,11 +963,15 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     }
     override fun onPause() {
         resumed = false; cancelInput()
+        serviceBinder?.detachCameraPermissionHost(cameraPermissionHost)
         hidDevices.stop(); functionInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
         owner?.detach(sessionView)
         super.onPause()
     }
     override fun onDestroy() {
+        shellPadContact.stop()
+        serviceBinder?.detachCameraPermissionHost(cameraPermissionHost)
+        cameraPermissionRequests.clear()
         hidDevices.stop(); functionInput.stop(); longTouch.stop(); padContact.stop()
         owner?.detach(sessionView)
         if (isFinishing && bindingValid) {

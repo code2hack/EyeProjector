@@ -27,13 +27,19 @@ internal class PadGestureRecognizer(
         data class Scroll(val pixels: Int, val position: PointerPosition?, override val timeMs: Long) : Action
         /** Only a source with real sustained DOWN/release may supply these events. */
         data class Contact(val event: Event) : Action { override val timeMs = event.timeMs }
-        /** Classification only: it supplies neither sustained contact nor release. EP-11 owns those. */
-        data class LongPress(val markerDownTimeMs: Long?, override val timeMs: Long) : Action
+        /** Classification and marker target only; neither physical release nor drag duration. */
+        data class LongPress(val markerDownTimeMs: Long?, override val timeMs: Long,
+                             val position: PointerPosition? = null) : Action
         data class Back(override val timeMs: Long) : Action
     }
     private data class Press(val event: Event)
     private data class Pending(val origin: Long, val due: Long, val action: Action)
     private data class SummarySingle(val up: Event, var matched: Boolean = false)
+    private data class MarkerTapConfirmation(val down: Event, val marker: Pending, val epoch: Long)
+    private var markerTapConfirmation: MarkerTapConfirmation? = null
+    // A summary has no original-contact ID. Do not let a recently retired marker's late
+    // summary confirm a newer contact inside the existing classification window.
+    private var markerSummaryBlockedThrough = -1L
     private val presses = mutableMapOf<Key, Press>()
     private val completed = mutableMapOf<Key, Long>()
     private val pending = mutableListOf<Pending>()
@@ -55,7 +61,10 @@ internal class PadGestureRecognizer(
     fun accept(event: Event, receiptUptimeMs: Long) {
         // Related summaries can arrive after a UI transition or with an earlier timestamp.
         if (continuousReports && event.key in listOf(Key.CONTACT, Key.TAP, Key.DOUBLE)) return
-        if (contactReports && event.key in listOf(Key.TAP, Key.DOUBLE)) return
+        if (contactReports && event.key in listOf(Key.TAP, Key.DOUBLE)) {
+            if (event.key == Key.TAP) confirmMarkerTap(event, receiptUptimeMs)
+            return
+        }
         if (event.key != Key.HELD_CONTACT && event.downTimeMs <= (completed[event.key] ?: -1L)) return
         if (event.downTimeMs <= canceledThrough) return
         if (event.timeMs <= 0 || event.timeMs < lastEventMs || event.timeMs > receiptUptimeMs ||
@@ -121,6 +130,53 @@ internal class PadGestureRecognizer(
         confirm(receiptUptimeMs)
     }
 
+    /** A positive single classification may confirm one original marker, never add a tap. */
+    private fun confirmMarkerTap(event: Event, receiptUptimeMs: Long) {
+        if (event.repeat != 0) return
+        if (event.downTimeMs <= (completed[Key.TAP] ?: -1L) || event.downTimeMs <= canceledThrough ||
+            event.timeMs <= 0 || event.timeMs > receiptUptimeMs ||
+            receiptUptimeMs - event.timeMs > MAX_EVENT_AGE_MS ||
+            event.downTimeMs < 0 || event.downTimeMs > event.timeMs) {
+            markerTapConfirmation = null
+            return
+        }
+        if (event.phase == Phase.CANCEL) {
+            markerTapConfirmation = null
+            return
+        }
+        if (event.phase == Phase.DOWN) {
+            if (markerTapConfirmation?.down?.downTimeMs == event.downTimeMs) return
+            markerTapConfirmation = null
+            val marker = pending.singleOrNull() ?: return
+            val tap = marker.action as? Action.Tap ?: return
+            if (tap.timing != Timing.CONTACT_MARKER || marker.origin <= markerSummaryBlockedThrough ||
+                presses[Key.CONTACT] != null || swipeFirst != null || held != null ||
+                event.timeMs < tap.upTimeMs || event.timeMs > marker.due) return
+            // Capture the object now. UP must never look up a later replacement marker.
+            markerTapConfirmation = MarkerTapConfirmation(event, marker, epoch)
+            return
+        }
+        if (event.phase != Phase.UP) return
+        val captured = markerTapConfirmation ?: return
+        markerTapConfirmation = null
+        if (captured.down.downTimeMs != event.downTimeMs || event.timeMs < captured.down.timeMs) return
+        completed[Key.TAP] = event.downTimeMs
+        if (event.timeMs - event.downTimeMs >= longPressMs || captured.epoch != epoch ||
+            pending.singleOrNull() !== captured.marker || presses[Key.CONTACT] != null ||
+            swipeFirst != null || held != null || captured.marker.origin <= markerSummaryBlockedThrough ||
+            event.timeMs > captured.marker.due) return
+        val tap = captured.marker.action as Action.Tap
+        pending.remove(captured.marker) // Retire before callbacks can cancel or replace context.
+        // Preserve the actual marker's position and physical interval. The dispatcher admits
+        // it now; do not retain the fallback's future timestamp and add another pacing delay.
+        emit(tap.copy(timeMs = tap.upTimeMs))
+    }
+
+    private fun blockMarkerSummaries(at: Long) {
+        markerTapConfirmation = null
+        markerSummaryBlockedThrough = maxOf(markerSummaryBlockedThrough, at + CLASSIFICATION_MS)
+    }
+
     private fun summaryPair(down: Event, up: Event) {
         if (up.timeMs - down.timeMs >= longPressMs) return
         summarySingles.removeAll { down.timeMs - it.up.timeMs > CLASSIFICATION_MS }
@@ -172,17 +228,21 @@ internal class PadGestureRecognizer(
         presses[Key.CONTACT]?.event?.let {
             if (it.timeMs > maxOf(after, marker?.origin ?: -1) && at - it.timeMs in 0..CLASSIFICATION_MS) {
                 presses.remove(Key.CONTACT); completed[Key.CONTACT] = it.downTimeMs
+                blockMarkerSummaries(at)
                 return Pending(it.timeMs, at + CLASSIFICATION_MS,
                     Action.Tap(it.timeMs, at, it.position, Timing.CONTACT_MARKER, at + CLASSIFICATION_MS))
             }
         }
-        if (marker != null) pending.remove(marker)
+        if (marker != null) {
+            pending.remove(marker)
+            blockMarkerSummaries(at)
+        }
         return marker
     }
 
     fun classifyLongPress(receiptUptimeMs: Long) {
         val marker = takeMarker(receiptUptimeMs)
-        emit(Action.LongPress(marker?.origin, receiptUptimeMs))
+        emit(Action.LongPress(marker?.origin, receiptUptimeMs, (marker?.action as? Action.Tap)?.position))
     }
 
     private fun contact(event: Event) {
@@ -217,11 +277,17 @@ internal class PadGestureRecognizer(
             val next = pending.minWithOrNull(compareBy<Pending> { it.due }.thenBy { it.origin }) ?: break
             if (next.due > nowUptimeMs) break
             pending.remove(next) // Callbacks may synchronously cancel or change context.
+            if (next.action is Action.Tap && next.action.timing == Timing.CONTACT_MARKER)
+                blockMarkerSummaries(nowUptimeMs)
             emit(next.action)
         }
     }
 
     fun cancel(nowUptimeMs: Long = lastEventMs) {
+        if (presses[Key.CONTACT] != null || pending.any {
+                it.action is Action.Tap && it.action.timing == Timing.CONTACT_MARKER })
+            blockMarkerSummaries(nowUptimeMs)
+        markerTapConfirmation = null
         val old = held
         held = null; continuousReports = false; pending.clear(); presses.clear(); summarySingles.clear(); swipeFirst = null
         // Like completed key identities, retain swipe provenance: a dispatch callback may

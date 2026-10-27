@@ -86,8 +86,8 @@ class PhoneInputMergerTest {
             repeat(count) { i -> f.now = 1000L + i * 100; val d = f.down(PhoneHidAction.FUNCTION)
                 f.merger.edge(i.toLong(), d); f.merger.edge(i.toLong(), d.copy(phase = PhoneHidPhase.UP, eventTimeMs = f.now + 20)) }
             f.advance(2000)
-            if (projected && count < 3) assertEquals(listOf(if (count == 1) Navigation.BACK else Navigation.HOME), f.nav)
-            else assertEquals(listOf(if (count == 2 || projected) ReceiverInputKind.PANEL else if (count == 1) ReceiverInputKind.BACK else ReceiverInputKind.EXIT), f.ui.map { it.kind })
+            if (projected && count < 3) assertEquals(listOf(if (count == 1) Navigation.BACK else Navigation.FUNCTION_DOUBLE), f.nav)
+            else assertEquals(listOf(if (count == 3) ReceiverInputKind.SLEEP else if (count == 1) ReceiverInputKind.BACK else ReceiverInputKind.FUNCTION_DOUBLE), f.ui.map { it.kind })
         }
         val f = Fixture(); val d = f.down(PhoneHidAction.FUNCTION); f.merger.edge(1, d)
         f.advance(1800); f.merger.edge(1, d.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1800)); f.advance(2500)
@@ -140,7 +140,7 @@ class PhoneInputMergerTest {
         f.merger.edge(1, first.copy(phase = PhoneHidPhase.CANCEL, eventTimeMs = 1121))
         val scroll = f.down(PhoneHidAction.SCROLL_DOWN, 90)
         f.merger.edge(3, scroll); f.merger.edge(3, scroll.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1130))
-        f.advance(1620); assertEquals(listOf(Navigation.HOME), f.nav); assertEquals(160, f.scrolls.single().pixels)
+        f.advance(1620); assertEquals(listOf(Navigation.FUNCTION_DOUBLE), f.nav); assertEquals(160, f.scrolls.single().pixels)
     }
 
     @Test fun actualCancellationCallbackCannotResurrectTheOuterNativeDown() {

@@ -16,13 +16,15 @@ data class ScaleRequest(val scale: Double) {
     }
 }
 
-/** Inverse display dimensions change the app's available dp bounds at a fixed density. */
+/** Absolute app-layout dimensions in the 160-dpi reference space, independent of encoded pixels. */
 object LayoutScale {
     val BASELINE = Geometry(480, 640)
     const val DPI = 160
+    const val MIN_SCALE = 0.5
+    const val MAX_SCALE = 1.5
 
     fun target(scale: Double, landscape: Boolean = false): Geometry? {
-        if (!scale.isFinite() || scale <= 0) return null
+        if (!scale.isFinite() || scale !in MIN_SCALE..MAX_SCALE) return null
         val width = (if (landscape) BASELINE.height else BASELINE.width) / scale
         val height = (if (landscape) BASELINE.width else BASELINE.height) / scale
         if (!width.isFinite() || !height.isFinite()) return null
@@ -43,7 +45,11 @@ object LayoutScale {
 
 enum class ScaleStatus { UNAVAILABLE, READY, PENDING, OBSERVED, UNSUPPORTED, REJECTED, INTERRUPTED }
 
-/** Backend geometry and client-resize event cause are observations, distinct from the request. */
+/**
+ * Observed layout geometry in LayoutScale's reference space and the backend resize event cause.
+ * Managed displays normalize their actual logical pixels by actual density; Wire.GEOMETRY
+ * independently carries video pixels. Legacy 160-dpi scrcpy dimensions already use this space.
+ */
 data class ScaleState(
     val requestId: Long,
     val requested: Double,

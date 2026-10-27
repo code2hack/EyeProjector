@@ -11,7 +11,7 @@ import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 import com.code2hack.eyeprojector.protocol.PhoneHidPhase
 
-/** Sole key ingress. No window content, gestures, screenshots or global-action injection. */
+/** Legacy Android key ingress. The raw pin owner bypasses this mapping entirely. */
 class PhoneHidKeyService : AccessibilityService(), InputManager.InputDeviceListener {
     private var runtime: PhoneHidRuntime? = null
     private var manager: InputManager? = null
@@ -27,11 +27,15 @@ class PhoneHidKeyService : AccessibilityService(), InputManager.InputDeviceListe
             }
         }
         source.refresh()
-        source.controller.connection(true)
+        source.accessibilityConnection(true)
     }
 
     override fun onKeyEvent(event: KeyEvent): Boolean {
-        val input = runtime?.controller ?: return false
+        val source = runtime ?: return false
+        // No Android ID/name/vendor guess may impersonate the raw pinned physical group.
+        // Its collections are intercepted below Android; unrelated keys keep their normal route.
+        if (source.pin.ownsRoute) return false
+        val input = source.controller
         val phase = when {
             event.isCanceled -> PhoneHidPhase.CANCEL
             event.action == KeyEvent.ACTION_DOWN -> PhoneHidPhase.DOWN
@@ -56,14 +60,16 @@ class PhoneHidKeyService : AccessibilityService(), InputManager.InputDeviceListe
 
     override fun onInputDeviceAdded(deviceId: Int) {
         val device = manager?.getInputDevice(deviceId) ?: return
-        if (eligible(device)) runtime?.controller?.externalAttached()
+        if (eligible(device) && runtime?.pin?.ownsRoute == false) runtime?.controller?.externalAttached()
     }
     private fun eligible(device: InputDevice) = device.isExternal && !device.isVirtual &&
         device.name != "ROKID,PSOC-TP-R" && device.name != "qpnp_pon"
     override fun onInputDeviceChanged(deviceId: Int) { runtime?.controller?.deviceRemoved(deviceId) }
     override fun onInputDeviceRemoved(deviceId: Int) { runtime?.controller?.deviceRemoved(deviceId) }
     override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
-    override fun onInterrupt() { runtime?.controller?.cancelInput() }
+    override fun onInterrupt() {
+        if (runtime?.pin?.ownsRoute == false) runtime?.controller?.cancelInput()
+    }
     override fun onUnbind(intent: Intent?): Boolean { disconnect(); return super.onUnbind(intent) }
     override fun onDestroy() { disconnect(); super.onDestroy() }
 
@@ -72,7 +78,7 @@ class PhoneHidKeyService : AccessibilityService(), InputManager.InputDeviceListe
         runtime = null // Retire service ownership before cancellation/observation callbacks.
         manager?.unregisterInputDeviceListener(this)
         manager = null
-        source?.controller?.connection(false)
+        source?.accessibilityConnection(false)
         source?.refresh()
     }
 }

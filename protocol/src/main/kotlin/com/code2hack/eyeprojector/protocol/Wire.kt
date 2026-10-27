@@ -36,7 +36,7 @@ data class Scroll(val target: Tap, val pixels: Int) {
     }
 }
 
-enum class Navigation(val keycode: Int) { BACK(4), HOME(3) }
+enum class Navigation(val keycode: Int) { BACK(4), HOME(3), FUNCTION_DOUBLE(-1) }
 
 data class Navigate(val action: Navigation, val geometry: Geometry) {
     fun bytes(): ByteArray = geometry.bytes() + bytes { writeInt(action.keycode) }
@@ -77,7 +77,7 @@ data class Frame(val channel: Int, val stamp: Long = 0, val payload: ByteArray =
 
 object Wire {
     const val MAGIC = 0x50415631
-    const val VERSION = 6
+    const val VERSION = 7
     const val SCRCPY_VERSION = "5.0.1"
     const val H264 = 0x68323634
     const val MAX_PAYLOAD = 1024 * 1024
@@ -97,16 +97,22 @@ object Wire {
     const val HEAD_POINTER = 15 // Receiver -> Phone: source position/context, no HID.
     const val RECEIVER_INPUT = 16 // Phone -> Receiver: completed local UI operation.
     const val RECEIVER_USABILITY = 17 // Receiver-owned explicit mode; no raw HID or local projection token.
+    const val CAMERA_USE = 18 // Phone -> Receiver, projection socket.
+    const val CAMERA_STREAM = 19 // Receiver -> Phone, camera socket.
+    const val CAMERA_MEDIA = 20 // Receiver -> Phone, camera socket.
+    const val CAMERA_PROGRESS = 21 // Either peer's own observations, projection socket.
+    const val CAMERA_END = 22 // Either peer's own observations, camera socket.
     const val STREAM = 1
     const val STOP_HOST = 2
+    const val CAMERA = 3
 
     fun writeRequest(output: DataOutputStream, operation: Int) {
-        require(operation == STREAM || operation == STOP_HOST)
+        require(operation == STREAM || operation == STOP_HOST || operation == CAMERA)
         output.writeInt(MAGIC); output.writeInt(VERSION); output.writeByte(operation); output.flush()
     }
     fun readRequest(input: DataInputStream): Int {
         require(input.readInt() == MAGIC && input.readInt() == VERSION)
-        return input.readUnsignedByte().also { require(it == STREAM || it == STOP_HOST) }
+        return input.readUnsignedByte().also { require(it == STREAM || it == STOP_HOST || it == CAMERA) }
     }
     fun writeWelcome(output: DataOutputStream) {
         output.writeInt(MAGIC); output.writeInt(VERSION); output.writeUTF(SCRCPY_VERSION)
@@ -117,7 +123,7 @@ object Wire {
         require(input.readUTF() == SCRCPY_VERSION && input.readInt() == H264)
     }
     private fun validate(channel: Int, length: Int) {
-        require(channel in GEOMETRY..RECEIVER_USABILITY && length in 0..MAX_PAYLOAD)
+        require(channel in GEOMETRY..CAMERA_END && length in 0..MAX_PAYLOAD)
         when (channel) {
             GEOMETRY -> require(length == 8)
             TAP -> require(length == 16)
@@ -131,18 +137,26 @@ object Wire {
             SCALE_STATE -> require(length == 40)
             VIDEO -> require(length > 0)
             PING, PONG, END -> require(length == 0)
+            CAMERA_USE, CAMERA_STREAM, CAMERA_MEDIA, CAMERA_PROGRESS, CAMERA_END -> Unit
             else -> error("Unsupported channel")
         }
     }
     fun readFrame(input: DataInputStream): Frame {
         val channel = input.readUnsignedByte(); val stamp = input.readLong(); val size = input.readInt()
         validate(channel, size)
-        return Frame(channel, stamp, ByteArray(size).also(input::readFully))
+        return Frame(channel, stamp, ByteArray(size).also(input::readFully)).also {
+            if (channel in CAMERA_USE..CAMERA_END) CameraFeed.validate(it)
+        }
     }
     fun writeFrame(output: DataOutputStream, frame: Frame) {
         validate(frame.channel, frame.payload.size)
-        output.writeByte(frame.channel); output.writeLong(frame.stamp); output.writeInt(frame.payload.size)
-        output.write(frame.payload); output.flush()
+        if (frame.channel in CAMERA_USE..CAMERA_END) CameraFeed.validate(frame)
+        // DataOutputStream otherwise sends each header primitive through SSLSocket
+        // separately, producing tiny TLS records ahead of every input/video payload.
+        val encoded = java.nio.ByteBuffer.allocate(13 + frame.payload.size)
+            .put(frame.channel.toByte()).putLong(frame.stamp).putInt(frame.payload.size)
+            .put(frame.payload).array()
+        output.write(encoded); output.flush()
     }
 }
 

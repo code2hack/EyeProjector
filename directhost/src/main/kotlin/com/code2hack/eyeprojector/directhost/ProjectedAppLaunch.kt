@@ -14,6 +14,7 @@ internal data class ProjectionCommandResult(val exit: Int?, val output: String, 
 internal interface ProjectionLaunchAdapter : Closeable {
     fun launch(displayId: Int, packageName: String, home: Boolean): ProjectionCommandResult
     fun foreground(displayId: Int): String?
+    fun foregroundComponent(displayId: Int): String? = null
 }
 
 internal object ProjectionLaunchCommands {
@@ -59,11 +60,14 @@ internal object ProjectionLaunchCommands {
         .map { it.trim() }.firstOrNull { it.startsWith("Activity: ") }?.removePrefix("Activity: ")
 
     /** Android's activities dump lists each display separately, in top-to-bottom task order. */
-    fun foreground(dump: String, displayId: Int): String? {
+    fun foreground(dump: String, displayId: Int): String? =
+        foregroundComponent(dump, displayId)?.substringBefore('/')
+
+    fun foregroundComponent(dump: String, displayId: Int): String? {
         var currentDisplay: Int? = null
         var resumedSection = false
         val display = Regex("^\\s*Display #([0-9]+) \\(activities from top to bottom\\):.*$")
-        val resumed = Regex("^\\s*Resumed: ActivityRecord\\{[^}]* u[0-9]+ ([^ /]+)/[^ }]+.*$")
+        val resumed = Regex("^\\s*Resumed: ActivityRecord\\{[^}]* u[0-9]+ ([^ /]+/[^ }]+).*$")
         for (line in dump.lineSequence()) {
             display.matchEntire(line)?.let { currentDisplay = it.groupValues[1].toIntOrNull(); resumedSection = false }
             if (line.trim() == "Resumed activities in task display areas (from top to bottom):") resumedSection = true
@@ -96,6 +100,20 @@ internal class ProjectedAppLaunch(
 
     fun home() = synchronized(admission) {
         if (!closed.get()) executor.execute { execute(0, ProjectionLaunchCommands.HOME_PACKAGE, true) }
+    }
+
+    /** Decide against this display's real foreground, serialized with app/Home launches. */
+    fun functionDouble(onHome: () -> Unit) = synchronized(admission) {
+        if (closed.get()) return@synchronized
+        executor.execute {
+            val display = state.get().displayId ?: return@execute
+            if (closed.get()) return@execute
+            val component = runCatching { adapter.foregroundComponent(display) }.getOrNull()
+            if (closed.get()) return@execute
+            val home = component == ProjectionLaunchCommands.HOME_COMPONENT ||
+                component == "${ProjectionLaunchCommands.HOME_PACKAGE}/${ProjectionLaunchCommands.HOME_PACKAGE}.ProjectedHomeActivity"
+            if (home) onHome() else execute(0, ProjectionLaunchCommands.HOME_PACKAGE, true)
+        }
     }
 
     fun launch(requestId: Long, packageName: String): ProjectionDisplayState {

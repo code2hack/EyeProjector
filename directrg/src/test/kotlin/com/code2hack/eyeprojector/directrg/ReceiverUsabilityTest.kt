@@ -97,7 +97,7 @@ class ReceiverUsabilityTest {
             assertFalse(HeadPointerState.from(sent.last().payload).available)
         }
     }
-    @Test fun codecWire6RoundtripAndMalformedFacts() {
+    @Test fun codecWire7RoundtripAndMalformedFacts() {
         for(mode in ReceiverUsabilityMode.entries){val v=fact(17,mode);assertEquals(v,ReceiverUsability.from(v.bytes()))}
         val v=fact(1,ReceiverUsabilityMode.NONE).bytes()
         for(bad in listOf(v.copyOf(v.size-1),v+byteArrayOf(0),v.copyOf().also { it[it.lastIndex]=127 })) {
@@ -105,6 +105,6 @@ class ReceiverUsabilityTest {
         }
         val bytes=ByteArrayOutputStream();Wire.writeFrame(DataOutputStream(bytes),Frame(Wire.RECEIVER_USABILITY,payload=v))
         assertArrayEquals(v,Wire.readFrame(DataInputStream(bytes.toByteArray().inputStream())).payload)
-        assertEquals(6,Wire.VERSION)
+        assertEquals(7,Wire.VERSION)
     }
 }

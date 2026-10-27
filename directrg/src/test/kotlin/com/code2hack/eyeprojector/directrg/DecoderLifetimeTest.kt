@@ -76,17 +76,24 @@ class DecoderLifetimeTest {
         }
     }
 
-    @Test fun lateFramesDropAndDecoderBacklogRemainsBounded() {
+    @Test fun lateCompletedUiFrameRendersAndDecoderBacklogRemainsBounded() {
         val codec = MediaCodec().also { MediaCodec.created = it }
         val available = AtomicBoolean()
-        val dropped = CountDownLatch(1)
+        val rendered = CountDownLatch(1)
+        val dropped = AtomicInteger()
+        val failure = AtomicReference<Exception>()
         codec.queuedInput = { _, _ -> available.set(true) }
         codec.output = { info -> if (available.compareAndSet(true, false)) { info.presentationTimeUs = 1; 0 } else -1 }
-        val decoder = SurfaceDecoder(Surface(), size, {}, {}, {}, {}, dropped = { dropped.countDown() })
+        codec.releasedOutput = { render -> if (render) codec.frameListener!!.onFrameRendered(codec, 1, 0) }
+        val decoder = SurfaceDecoder(Surface(), size, { rendered.countDown() }, {}, {}, { failure.set(it) },
+            dropped = { dropped.incrementAndGet() })
         try {
             decoder.enqueue(ScrcpyRecord.Packet(1, byteArrayOf(1)), System.nanoTime() - 200_000_000)
-            assertTrue(dropped.await(1, TimeUnit.SECONDS))
+            assertTrue("A late final UI redraw must reach the Surface callback", rendered.await(1, TimeUnit.SECONDS))
+            assertEquals(0, dropped.get())
+            assertNull(failure.get())
         } finally { decoder.close() }
+        assertEquals(1, codec.releases.get())
         val blocked = MediaCodec().also { MediaCodec.created = it }
         val next = decoder()
         try {

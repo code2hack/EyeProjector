@@ -89,18 +89,14 @@ class SurfaceDecoder(
                             }
                             val target = videoClock.timeNs(info.presentationTimeUs) ?: error("Missing video timing origin")
                             val now = System.nanoTime()
-                            if (target < now - 100_000_000L) {
-                                synchronized(received) { released.remove(info.presentationTimeUs) }
-                                release(index, false); dropped()
-                            } else {
-                                check(target - now <= 500_000_000L) { "Video clock diverged: videoPtsUs=${info.presentationTimeUs}, aheadMs=${(target - now) / 1_000_000.0}" }
-                                // Wait only on the output worker; Stop remains bounded and cancels presentation.
-                                synchronized(received) { presentationTargetNs = target }
-                                try {
-                                    while (running.get() && target - System.nanoTime() > 2_000_000L) Thread.sleep(2)
-                                    release(index, running.get())
-                                } finally { synchronized(received) { presentationTargetNs = 0 } }
-                            }
+                            check(target - now <= 500_000_000L) { "Video clock diverged: videoPtsUs=${info.presentationTimeUs}, aheadMs=${(target - now) / 1_000_000.0}" }
+                            // A late completed frame may be the final redraw of a static UI.
+                            // Present it now; only future targets wait on this output worker.
+                            synchronized(received) { presentationTargetNs = target }
+                            try {
+                                while (running.get() && target - System.nanoTime() > 2_000_000L) Thread.sleep(2)
+                                release(index, running.get())
+                            } finally { synchronized(received) { presentationTargetNs = 0 } }
                         }
                     }
                 } catch (error: Exception) { if (running.get()) failed(error) }
