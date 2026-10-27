@@ -36,7 +36,7 @@ data class Scroll(val target: Tap, val pixels: Int) {
     }
 }
 
-enum class Navigation(val keycode: Int) { BACK(4), HOME(3) }
+enum class Navigation(val keycode: Int) { BACK(4), HOME(3), FUNCTION_DOUBLE(-1) }
 
 data class Navigate(val action: Navigation, val geometry: Geometry) {
     fun bytes(): ByteArray = geometry.bytes() + bytes { writeInt(action.keycode) }
@@ -151,8 +151,12 @@ object Wire {
     fun writeFrame(output: DataOutputStream, frame: Frame) {
         validate(frame.channel, frame.payload.size)
         if (frame.channel in CAMERA_USE..CAMERA_END) CameraFeed.validate(frame)
-        output.writeByte(frame.channel); output.writeLong(frame.stamp); output.writeInt(frame.payload.size)
-        output.write(frame.payload); output.flush()
+        // DataOutputStream otherwise sends each header primitive through SSLSocket
+        // separately, producing tiny TLS records ahead of every input/video payload.
+        val encoded = java.nio.ByteBuffer.allocate(13 + frame.payload.size)
+            .put(frame.channel.toByte()).putLong(frame.stamp).putInt(frame.payload.size)
+            .put(frame.payload).array()
+        output.write(encoded); output.flush()
     }
 }
 

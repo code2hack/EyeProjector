@@ -15,6 +15,7 @@ import com.code2hack.eyeprojector.directhost.camera.PhoneCameraProfile
 import com.code2hack.eyeprojector.directhost.camera.RequestedPhoneStream
 import com.code2hack.eyeprojector.directhost.camera.Qpr2VirtualCameraOwner
 import android.util.AtomicFile
+import android.util.Log
 import com.code2hack.eyeprojector.protocol.*
 import java.io.Closeable
 import java.io.DataInputStream
@@ -656,6 +657,7 @@ private class Session(
         { running.get() })
     private var server: java.lang.Process? = null
     private var inputThread: Thread? = null
+    @Volatile private var streamThread: Thread? = null
     private var watchdog: java.util.concurrent.ScheduledFuture<*>? = null
     private val frames = AtomicLong()
     private val panelPower = SessionPanelPower(controlLock, { running.get() && frames.get() > 0 }, panelContext) {
@@ -682,7 +684,22 @@ private class Session(
     private var identifiedDisplay = false
     private fun phoneNavigation(action: Navigation, size: Geometry) {
         if (!running.get()) return
-        if (action == Navigation.HOME) launches.home() else inputControls.navigate(Navigate(action, size))
+        when (action) {
+            Navigation.BACK -> inputControls.navigate(Navigate(action, size))
+            Navigation.HOME -> launches.home()
+            Navigation.FUNCTION_DOUBLE -> {
+                val original = receiverUsability.snapshot().fact ?: return
+                launches.functionDouble {
+                    val latest = receiverUsability.snapshot()
+                    val fact = latest.fact
+                    if (running.get() && !latest.retired && fact != null &&
+                        fact.ownerEpoch == original.ownerEpoch && fact.incarnation == original.incarnation &&
+                        fact.inputRevision == original.inputRevision && fact.mode == original.mode) {
+                        send(Frame(Wire.RECEIVER_INPUT, payload = ReceiverInput(ReceiverInputKind.PANEL, original.inputRevision).bytes()))
+                    }
+                }
+            }
+        }
     }
     private val tlsProtocol = peer.session.protocol
     private val localAddress = peer.localAddress.hostAddress
@@ -715,9 +732,19 @@ private class Session(
         return receiverUsability.descriptor()
     }
     override fun phoneHidStampedEdge(routeId: Long, edge: PhoneHidEdge, regionId: String, word: Long) {
+        val timed = edge.action == PhoneHidAction.TAP
+        val arrived = if (timed) SystemClock.uptimeMillis() else 0L
+        if (timed) Log.i("EyeProjectorInput", "hid_tap phase=${edge.phase} route=$routeId stage=arrival uptimeMs=$arrived sourceEventMs=${edge.eventTimeMs} sourceDownMs=${edge.downTimeMs} sourceAgeMs=${arrived - edge.eventTimeMs} tid=${Process.myTid()}")
         try {
-            if (running.get()) phoneInput.stampedEdge(routeId, edge) { point, source ->
-                receiverUsability.accepts(regionId, word, point, source)
+            try {
+                if (running.get()) phoneInput.stampedEdge(routeId, edge) { point, source ->
+                    receiverUsability.accepts(regionId, word, point, source)
+                }
+            } finally {
+                if (timed) {
+                    val returned = SystemClock.uptimeMillis()
+                    Log.i("EyeProjectorInput", "hid_tap phase=${edge.phase} route=$routeId stage=merger_return uptimeMs=$returned elapsedMs=${returned - arrived} tid=${Process.myTid()}")
+                }
             }
         } catch (error: Exception) { close(sessionFailureReason(error, control = true)) }
     }
@@ -783,6 +810,7 @@ private class Session(
 
     fun run() {
         val socketName = "scrcpy_%08x".format(scid)
+        streamThread = Thread.currentThread()
         // Reverse local sockets avoid a retry race. These AF_UNIX sockets are never network listeners.
         val local = synchronized(resources) {
             check(running.get())
@@ -920,9 +948,16 @@ private class Session(
                 requestScale(frame.stamp, ScaleRequest.from(frame.payload).scale, streamRequest = true)
             }
             Wire.TAP -> {
-                val tap = Tap.from(frame.payload)
-                if (tap.geometry == geometry.get()) {
-                    if (phoneInput.nativeAction { inputControls.tap(tap) }) touches.incrementAndGet()
+                val arrived = SystemClock.uptimeMillis()
+                Log.i("EyeProjectorInput", "wire_tap stage=arrival uptimeMs=$arrived tid=${Process.myTid()}")
+                try {
+                    val tap = Tap.from(frame.payload)
+                    if (tap.geometry == geometry.get()) {
+                        if (phoneInput.nativeAction { inputControls.tap(tap) }) touches.incrementAndGet()
+                    }
+                } finally {
+                    val returned = SystemClock.uptimeMillis()
+                    Log.i("EyeProjectorInput", "wire_tap stage=merger_return uptimeMs=$returned elapsedMs=${returned - arrived} tid=${Process.myTid()}")
                 }
             }
             Wire.SCROLL -> {
@@ -932,13 +967,24 @@ private class Session(
             Wire.NAVIGATE -> {
                 val navigate = Navigate.from(frame.payload)
                 if (navigate.geometry == geometry.get()) {
-                    if (navigate.action == Navigation.HOME) launches.home()
-                    else phoneInput.nativeAction { inputControls.navigate(navigate) }
+                    if (navigate.action == Navigation.BACK) phoneInput.nativeAction { inputControls.navigate(navigate) }
+                    else phoneNavigation(navigate.action, navigate.geometry)
                 }
             }
             Wire.TOUCH -> {
-                if (phoneInput.nativeTouch(Touch.from(frame.payload))) heldTouchFrames.incrementAndGet()
-                else rejectedHeldTouchFrames.incrementAndGet()
+                val arrived = SystemClock.uptimeMillis()
+                val touch = Touch.from(frame.payload)
+                val timed = touch.phase != Touch.Phase.MOVE
+                if (timed) Log.i("EyeProjectorInput", "wire_touch phase=${touch.phase} contact=${touch.contactId} stage=arrival uptimeMs=$arrived tid=${Process.myTid()}")
+                try {
+                    if (phoneInput.nativeTouch(touch)) heldTouchFrames.incrementAndGet()
+                    else rejectedHeldTouchFrames.incrementAndGet()
+                } finally {
+                    if (timed) {
+                        val returned = SystemClock.uptimeMillis()
+                        Log.i("EyeProjectorInput", "wire_touch phase=${touch.phase} contact=${touch.contactId} stage=merger_return uptimeMs=$returned elapsedMs=${returned - arrived} tid=${Process.myTid()}")
+                    }
+                }
             }
             Wire.RECEIVER_USABILITY -> {
                 receiverUsability.publish(ReceiverUsability.from(frame.payload))
@@ -964,7 +1010,15 @@ private class Session(
         cameraRoles.retireAll(CameraEndReason.PROJECTION_CLOSED)
         retireNativeResources() // Terminal store precedes resource/deadline/stock cleanup; never joins setup.
         release.close {
-        if (running.compareAndSet(true, false)) stopReason = reason
+        if (running.compareAndSet(true, false)) {
+            stopReason = reason
+            // Fixed scalars survive service-file revocation and keep a later socket
+            // reset from hiding the initiating failure. No payload or user text.
+            runCatching {
+                val since = writeStarted.get()
+                Log.w("EyeProjectorTransport", "first_close reason=$reason uptimeMs=${SystemClock.uptimeMillis()} lastWriteChannel=${lastWriteChannel.get()} writeAgeMs=${if (since == 0L) 0L else (System.nanoTime() - since) / 1_000_000} lastPingMonoNs=${lastPingNs.get()} lastPongMonoNs=${lastPongNs.get()} controlState=${inputThread?.state} streamState=${streamThread?.state}")
+            }
+        }
         functionWork.close()
         val stopStartedMs = (System.nanoTime() - begin) / 1_000_000
         val lastStartupStage = startupStage.get()

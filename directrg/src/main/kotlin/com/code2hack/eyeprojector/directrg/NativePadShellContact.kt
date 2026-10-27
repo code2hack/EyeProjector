@@ -2,6 +2,7 @@ package com.code2hack.eyeprojector.directrg
 
 import android.net.LocalServerSocket
 import android.net.LocalSocket
+import android.net.LocalSocketAddress
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -19,7 +20,7 @@ internal class NativePadShellContact(
     private class Listener(val server: LocalServerSocket) {
         @Volatile var socket: LocalSocket? = null
     }
-    private class Source {
+    private class Source(val socket: LocalSocket) {
         var rawPress: Long? = null
         var press: Press? = null
     }
@@ -47,7 +48,7 @@ internal class NativePadShellContact(
                 val socket = run.server.accept()
                 run.socket = socket
                 if (listener !== run) { socket.close(); break }
-                val original = Source()
+                val original = Source(socket)
                 main.post {
                     if (listener === run) {
                         source?.let(::cancel)
@@ -135,6 +136,23 @@ internal class NativePadShellContact(
         val press = original.press ?: return
         original.press = null
         heldOwner.cancel(press.owner, SystemClock.uptimeMillis())
+    }
+
+    /** Sleep uses the retained shell power owner, independently of this Activity's pad connection. */
+    fun sleep(): Boolean {
+        Thread({
+            try {
+                LocalSocket().use { power ->
+                    power.connect(LocalSocketAddress(NativePadReader.POWER_SOCKET_NAME,
+                        LocalSocketAddress.Namespace.ABSTRACT))
+                    power.outputStream.write("SLEEP\n".toByteArray(Charsets.US_ASCII))
+                    power.outputStream.flush()
+                }
+            } catch (error: IOException) {
+                Log.w("EyeProjectorPad", "Glasses sleep needs the retained local shell power owner", error)
+            }
+        }, "native-pad-sleep").apply { isDaemon = true; start() }
+        return true // Queued locally; real power state is established on the device.
     }
 
     fun stop() {

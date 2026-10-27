@@ -1,5 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <queries>
         <package android:name="moe.shizuku.privileged.api" />
         <intent>
@@ -35,6 +37,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <service android:name=".hid.PhoneHidPinService" android:exported="false"
+            android:stopWithTask="false" android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-pinned physical HID interception and input routing independent of projection" />
+        </service>
         <service android:name=".hid.PhoneHidKeyService" android:exported="true"
             android:label="@string/phone_hid_accessibility_label"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">

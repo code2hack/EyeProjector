@@ -42,7 +42,7 @@ class AppScaleCoordinatorTest {
             call.finish(ProjectionDisplayState(requestedPackage = call.pkg, foregroundPackage = call.pkg,
                 status = ProjectionLaunchStatus.STARTED, context = call.context))
         }
-        fun scaleResult(status: ScaleStatus = ScaleStatus.PENDING, geometry: Geometry? = Geometry(480, 640)): Call {
+        fun scaleResult(status: ScaleStatus = ScaleStatus.READY, geometry: Geometry? = Geometry(480, 640)): Call {
             val call = calls.removeFirst(); assertTrue(call.kind in setOf("request", "read"))
             call.finish(ScaleState(7, call.value ?: 1.0, geometry, null, status, false))
             return call
@@ -53,12 +53,39 @@ class AppScaleCoordinatorTest {
         val storage = Storage(); val store = AppScaleStore(storage)
         assertEquals(1.0, store.read("absent"), 0.0)
         assertTrue(store.write("a", 1.5)); assertTrue(store.write("b", .75))
+        assertTrue(store.write("minimum", .5))
         storage.values["bad"] = Double.NaN
+        storage.values["legacy"] = 1.75
         val reload = AppScaleStore(storage)
         assertEquals(1.5, reload.read("a"), 0.0); assertEquals(.75, reload.read("b"), 0.0)
+        assertEquals(.5, reload.read("minimum"), 0.0)
         assertEquals(1.0, reload.read("bad"), 0.0)
-        for (invalid in listOf(0.0, -1.0, Double.NaN, Double.POSITIVE_INFINITY, .01, 2000.0)) assertFalse(store.write("a", invalid))
+        assertEquals(1.0, reload.read("legacy"), 0.0)
+        assertEquals(1.0, storage.values["bad"]!!, 0.0)
+        assertEquals(1.0, storage.values["legacy"]!!, 0.0)
+        for (invalid in listOf(0.0, -1.0, Double.NaN, Double.POSITIVE_INFINITY, .4999, 1.5001, 2000.0)) assertFalse(store.write("a", invalid))
         assertEquals(1.5, reload.read("a"), 0.0)
+    }
+
+    @Test fun absoluteMenuIntentPersistsAfterDismissalWithoutMultiplyingTheSavedScale() {
+        val storage = Storage().apply { values["a"] = 1.25 }
+        val backend = Backend(); val coordinator = AppScaleCoordinator(AppScaleStore(storage), backend)
+        val target = coordinator.launch("a", context) {}; backend.launchResult()
+        assertEquals("read", backend.calls.single().kind)
+        backend.scaleResult(ScaleStatus.READY, Geometry(384, 512))
+        assertTrue("An already-settled saved layout needs no resize", backend.calls.isEmpty())
+        val owner = Any(); assertTrue(coordinator.attach(target, owner))
+        coordinator.setScale(target, .75, owner)
+        assertEquals(.75, backend.calls.single().value!!, 0.0)
+        coordinator.detach(target, owner)
+        backend.scaleResult(ScaleStatus.PENDING, Geometry(384, 512))
+        assertEquals(.75, storage.values["a"]!!, 0.0)
+        assertEquals(.75, coordinator.state()!!.requested!!, 0.0)
+        assertEquals(1.25, coordinator.state()!!.applied!!, 0.0)
+        assertTrue(coordinator.attach(target, owner)); coordinator.poll(target, owner)
+        backend.scaleResult(ScaleStatus.OBSERVED, Geometry(640, 853))
+        assertEquals(.75, coordinator.state()!!.applied!!, 0.0)
+        assertEquals(.75, storage.values["a"]!!, 0.0)
     }
 
     @Test fun storageReadFailuresAndFailedWritesRemainActionable() {
@@ -80,7 +107,7 @@ class AppScaleCoordinatorTest {
     // EP12-R1: regression for Reviewer12's matching-foreground FAILED/TIMED_OUT finding.
     @Test fun matchingForegroundRestoresSavedProfileAndKeepsOriginalCommandResult() {
         for (status in listOf(ProjectionLaunchStatus.FAILED, ProjectionLaunchStatus.TIMED_OUT)) {
-            val storage = Storage().apply { values["a"] = 1.75 }
+            val storage = Storage().apply { values["a"] = 1.5 }
             val backend = Backend(); val coordinator = AppScaleCoordinator(AppScaleStore(storage), backend)
             val replies = mutableListOf<ProjectionDisplayState?>()
             coordinator.launch("a", context) { replies.add(it) }
@@ -89,11 +116,14 @@ class AppScaleCoordinatorTest {
             val result = ProjectionDisplayState(requestedPackage = "a", foregroundPackage = "a", status = status, context = context)
             launch.finish(result)
             assertEquals(listOf(result), replies)
-            assertEquals(1.75, backend.calls.single().value!!, 0.0)
+            assertEquals("read", backend.calls.single().kind)
+            backend.scaleResult(ScaleStatus.READY, Geometry(480, 640))
+            assertEquals("request", backend.calls.single().kind)
+            assertEquals(1.5, backend.calls.single().value!!, 0.0)
             assertEquals(context, backend.calls.single().context)
             backend.scaleResult(ScaleStatus.PENDING, Geometry(480, 640))
             assertEquals(1.0, coordinator.state()!!.applied!!, 0.0)
-            assertEquals(1.75, storage.values["a"]!!, 0.0)
+            assertEquals(1.5, storage.values["a"]!!, 0.0)
             assertTrue(backend.calls.isEmpty())
         }
     }
@@ -113,7 +143,7 @@ class AppScaleCoordinatorTest {
     }
 
     @Test fun matchingFailedLaunchStillRechecksFreshForegroundBeforeRestoration() {
-        val storage = Storage().apply { values["a"] = 1.75 }
+        val storage = Storage().apply { values["a"] = 1.5 }
         val backend = Backend(); val coordinator = AppScaleCoordinator(AppScaleStore(storage), backend)
         coordinator.launch("a", context) {}
         val launch = backend.calls.removeFirst()
@@ -124,7 +154,7 @@ class AppScaleCoordinatorTest {
         backend.foreground = "b"; backend.pendingDisplay!!()
         assertTrue(backend.calls.isEmpty())
         assertEquals("TARGET_CHANGED", coordinator.state()!!.detail)
-        assertEquals(1.75, storage.values["a"]!!, 0.0)
+        assertEquals(1.5, storage.values["a"]!!, 0.0)
     }
 
     @Test fun oldDispatchedResizeDrainsBeforeNewAppLaunchAndCannotSaveAsTheNewPackage() {
@@ -137,8 +167,9 @@ class AppScaleCoordinatorTest {
         backend.scaleResult()
         assertEquals("b", backend.calls.first().pkg)
         backend.launchResult()
-        assertEquals(1.0, backend.calls.first().value!!, 0.0)
+        assertEquals("read", backend.calls.first().kind)
         backend.scaleResult()
+        assertTrue("Settled baseline restore must not send a no-op resize", backend.calls.isEmpty())
         assertTrue(storage.values.isEmpty()) // Stale A callback cannot write B's profile or A's preference.
         assertEquals("b", coordinator.state()!!.target.packageName)
     }
@@ -160,37 +191,39 @@ class AppScaleCoordinatorTest {
     @Test fun replacementSessionInvalidatesInFlightCallbacksAndQueuedPinches() {
         val storage = Storage(); val backend = Backend(); val coordinator = AppScaleCoordinator(AppScaleStore(storage), backend)
         val old = coordinator.launch("a", context) {}; backend.launchResult(); backend.scaleResult()
-        coordinator.attach(old); coordinator.pinch(old, 1.5); coordinator.pinch(old, 1.1)
+        coordinator.attach(old); coordinator.pinch(old, 1.5); coordinator.pinch(old, .8)
         val replacement = context.copy(projectionToken = "replacement-on-same-binder")
         coordinator.contextChanged(replacement)
         val next = coordinator.launch("b", replacement) {}
         backend.scaleResult()
         assertEquals(replacement, backend.calls.first().context)
         backend.launchResult(); backend.scaleResult()
-        coordinator.pinch(old, 2.0); assertTrue(backend.calls.isEmpty())
+        coordinator.pinch(old, 1.25); assertTrue(backend.calls.isEmpty())
         assertEquals(next, coordinator.state()!!.target); assertTrue(storage.values.isEmpty())
     }
 
     @Test fun pendingAndIntermediateGeometryAreNotExactAcknowledgmentsOrSavedObservations() {
         val storage = Storage(); val backend = Backend(); val coordinator = AppScaleCoordinator(AppScaleStore(storage), backend)
         val target = coordinator.launch("a", context) {}; backend.launchResult(); backend.scaleResult()
-        coordinator.attach(target); coordinator.pinch(target, 2.0)
+        coordinator.attach(target); coordinator.pinch(target, 1.5)
         backend.scaleResult(ScaleStatus.PENDING)
         assertEquals(1.0, coordinator.state()!!.applied!!, 0.0)
-        assertEquals(2.0, storage.values["a"]!!, 0.0)
+        assertEquals(1.5, storage.values["a"]!!, 0.0)
         coordinator.poll(target); backend.scaleResult(ScaleStatus.OBSERVED, Geometry(384, 512))
         assertEquals(1.25, coordinator.state()!!.applied!!, 0.0)
-        assertEquals(2.0, storage.values["a"]!!, 0.0)
+        assertEquals(1.5, storage.values["a"]!!, 0.0)
         coordinator.poll(target); backend.scaleResult(ScaleStatus.INTERRUPTED, Geometry(640, 480))
         assertEquals(1.0, coordinator.state()!!.applied!!, 0.0)
         assertEquals("INTERRUPTED", coordinator.state()!!.detail)
-        assertEquals(2.0, storage.values["a"]!!, 0.0)
+        assertEquals(1.5, storage.values["a"]!!, 0.0)
     }
 
     @Test fun rejectedUnavailableAndInvalidPinchesDoNotOverwriteTheSavedPreference() {
         val storage = Storage(); storage.values["a"] = 1.25
         val backend = Backend(); val coordinator = AppScaleCoordinator(AppScaleStore(storage), backend)
         val target = coordinator.launch("a", context) {}; backend.launchResult(); backend.scaleResult()
+        assertEquals(1.25, backend.calls.single().value!!, 0.0)
+        backend.scaleResult()
         coordinator.attach(target)
         for (factor in listOf(Double.NaN, 0.0, -1.0, Double.POSITIVE_INFINITY, 1e9)) coordinator.pinch(target, factor)
         assertTrue(backend.calls.isEmpty()); assertEquals("INVALID_SCALE", coordinator.state()!!.detail)
@@ -273,7 +306,7 @@ class AppScaleCoordinatorTest {
         val first = Any(); val recreated = Any()
         coordinator.attach(target, first); coordinator.attach(target, recreated)
         coordinator.detach(target, first)
-        coordinator.pinch(target, 2.0, first); assertTrue(backend.calls.isEmpty())
+        coordinator.pinch(target, 1.5, first); assertTrue(backend.calls.isEmpty())
         coordinator.pinch(target, 1.25, recreated)
         assertEquals(1.25, backend.calls.first().value!!, 0.0)
     }
@@ -318,7 +351,7 @@ class AppScaleCoordinatorTest {
             val backend = Backend(); val coordinator = AppScaleCoordinator(AppScaleStore(Storage()), backend)
             val target = coordinator.launch("a", context) {}
             backend.calls.removeFirst().finish(result)
-            coordinator.attach(target); coordinator.poll(target); coordinator.pinch(target, 2.0)
+            coordinator.attach(target); coordinator.poll(target); coordinator.pinch(target, 1.5)
             assertTrue(backend.calls.isEmpty()); assertFalse(coordinator.state()!!.canPinch)
         }
     }

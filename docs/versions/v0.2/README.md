@@ -1,6 +1,6 @@
 # v0.2 implementation plan
 
-Status: Owner-authorized implementation, 2026-10-25 (SGT). Integration branch: `version/v0.2`, based on the completed v0.1 main/tag `aff9ebd62bdb779af0eb02e5e61ea4842e9af371`. [SPEC.md](../../../SPEC.md) defines the approved behavior; current assignments and resources live in the private runtime. The eight canonical issues are published in the [v0.2 milestone](https://github.com/code2hack/EyeProjector/milestone/2).
+Status: Owner-accepted and authorized for publication/merge, 2026-10-28 (SGT). Integration branch: `version/v0.2`, based on the completed v0.1 main/tag `aff9ebd62bdb779af0eb02e5e61ea4842e9af371`. [SPEC.md](../../../SPEC.md) defines the approved behavior; current assignments and resources live in the private runtime. The eight canonical issues are published in the [v0.2 milestone](https://github.com/code2hack/EyeProjector/milestone/2).
 
 ## Scope and decisions
 
@@ -39,3 +39,11 @@ No new retry cap, session expiry, inactivity reset, security safeguard or device
 ## Completion boundary
 
 Integration requires exact changed-head independent review and affected current verification; shared protocol changes cover both consumers. Final v0.2 acceptance requires the assembled goals in V02-08 and an Owner decision, with actual limitations recorded honestly. Feasibility-only camera evidence and host-only sleep/input models do not establish the working device feature. Preserve v0.1 history, data/bindings and app compatibility while improving the new goals.
+
+## Owner closeout, 2026-10-28
+
+The Owner accepted the managed-display experiment and v0.2 and explicitly requested SPEC publication, merge and cleanup. The accepted assembly supersedes the earlier capture-mirror approach and obsolete individual candidates without rewriting their historical failures or review verdicts. The [current SPEC](../../../SPEC.md), [managed setup](managed-display.md) and [run record](../../runs/v0.2.md) describe the resulting release.
+
+The final scope includes direct managed AVC capture/control-only scrcpy, physical-Phone-off/locked operation in the exercised configuration, ordinary-app Glasses camera previews, automatic recording-driven Bluetooth mic routing, native projection-only scale with the inline 0.5–1.5 menu, pin/intercept/assign HID setup, updated Function navigation/sleep, and the late-keyboard-redraw correction. The accepted native hold and manual-helper limitations remain explicit.
+
+Installed applications/pairing and the working device-local helper remain available to the Owner. Development agents/workspaces and obsolete branches are retired after source/evidence preservation. No additional physical test matrix is claimed during closeout.

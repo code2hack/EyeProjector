@@ -225,8 +225,18 @@ async function main() {
   let results = [];
   if (config.managers.length) {
     if (!clientFile) throw Error('Specify the installed Paseo SDK with --client or PASEO_CLIENT');
-    const {connectToDaemon} = await import(pathToFileURL(absolutePath(clientFile)).href);
-    results = await runManagers(config, {connect: connectToDaemon, checkOnly: mode === '--check', loadConfig: () => readConfig(configFile)});
+    const clientUrl = pathToFileURL(absolutePath(clientFile));
+    const sdk = await import(clientUrl.href);
+    let connect = sdk.connectToDaemon;
+    // Paseo 0.13 CLI connections require a selected target. Preserve legacy SDK injection.
+    if (typeof sdk.getDaemonHost === 'function' && sdk.getDaemonHost.length > 0) {
+      const {selectDaemonTarget} = await import(new URL('./daemon-target.js', clientUrl).href);
+      connect = options => sdk.connectToDaemon({
+        ...options,
+        target: selectDaemonTarget(options.host ? {host: options.host} : {}),
+      });
+    }
+    results = await runManagers(config, {connect, checkOnly: mode === '--check', loadConfig: () => readConfig(configFile)});
   }
   console.log(JSON.stringify({at: new Date().toISOString(), checkOnly: mode === '--check', results}));
   if (results.some(result => /error|uncertain|mismatch|unavailable|missing|archived/.test(result.mode))) process.exitCode = 1;

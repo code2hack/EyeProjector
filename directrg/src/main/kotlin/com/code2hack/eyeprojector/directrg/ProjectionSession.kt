@@ -312,8 +312,11 @@ class ProjectionSession(
             }
             Wire.PONG -> synchronized(this) {
                 val delay = (System.nanoTime() - frame.stamp) / 1e6
-                require(delay in 0.0..5000.0)
-                roundTripMs.addLast(delay); if (roundTripMs.size > 256) roundTripMs.removeFirst()
+                // RTT is a diagnostic. Congestion or sleep can delay an otherwise valid
+                // reply; a late sample must not disconnect the projection being measured.
+                if (delay >= 0.0) {
+                    roundTripMs.addLast(delay); if (roundTripMs.size > 256) roundTripMs.removeFirst()
+                }
             }
             Wire.END -> closeWithState("DISCONNECTED")
             Wire.RECEIVER_INPUT -> onReceiverInput(this, ReceiverInput.from(frame.payload))

@@ -357,6 +357,8 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
                 ReceiverInputKind.PANEL -> showControlPanel()
                 ReceiverInputKind.BACK -> contextualBack()
                 ReceiverInputKind.EXIT -> exitToLauncher()
+                ReceiverInputKind.FUNCTION_DOUBLE -> contextualFunctionDouble()
+                ReceiverInputKind.SLEEP -> sleepGlasses()
                 else -> Unit
             } })
         shellPadContact = NativePadShellContact(heldOwner,
@@ -381,7 +383,8 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             if (usable()) gestures.classifyLongPress(at) else gestures.cancel(at)
             schedulePadConfirmation()
         }
-        val functionNavigation = FunctionNavigation(::projectionHome, ::showControlPanel, ::contextualBack, ::exitToLauncher)
+        val functionNavigation = FunctionNavigation(::projectionFunctionDouble, ::localFunctionDouble,
+            ::contextualBack, ::sleepGlasses)
         functionInput = NativeFunctionInput(this,
             { if (usable()) Pair(session, projectionContext) else null },
             { action -> functionNavigation.dispatch(action, projectionContext) },
@@ -520,9 +523,22 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         connectionView.scrollTo(0, 0)
         resize()
     }
-    internal fun projectionHome() {
+    internal fun projectionFunctionDouble() {
         if (!usable() || !projectedInput()) return
-        cancelInput(); session?.navigate(Navigation.HOME)
+        cancelInput(); session?.navigate(Navigation.FUNCTION_DOUBLE)
+    }
+    private fun localFunctionDouble() {
+        if (::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE) showControlPanel()
+        else exitToLauncher()
+    }
+    private fun contextualFunctionDouble() {
+        if (projectionContext) projectionFunctionDouble() else localFunctionDouble()
+    }
+    private fun sleepGlasses() {
+        if (!usable()) return
+        cancelInput()
+        // The existing shell reader owns power injection; Activity pause retains the session.
+        if (!shellPadContact.sleep()) Log.w("EyeProjectorPad", "Glasses sleep needs the local shell reader")
     }
     internal fun contextualBack() {
         cancelInput()

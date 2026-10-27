@@ -68,7 +68,7 @@ data class HeadPointerState(
     }
 }
 
-enum class ReceiverInputKind { DOWN, MOVE, UP, CANCEL, SCROLL, PANEL, BACK, EXIT }
+enum class ReceiverInputKind { DOWN, MOVE, UP, CANCEL, SCROLL, PANEL, BACK, EXIT, FUNCTION_DOUBLE, SLEEP }
 
 /** Completed UI operation. Identity is opaque; elapsed duration is Phone-local, not a remote uptime. */
 data class ReceiverInput(val kind: ReceiverInputKind, val revision: Long, val contactId: Long = 0,

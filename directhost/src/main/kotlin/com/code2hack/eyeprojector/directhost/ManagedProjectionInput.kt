@@ -1,6 +1,8 @@
 package com.code2hack.eyeprojector.directhost
 
 import android.os.SystemClock
+import android.os.Process
+import android.util.Log
 import android.view.InputDevice
 import android.view.InputEvent
 import android.view.MotionEvent
@@ -112,8 +114,32 @@ internal class ManagedProjectionInput(
             0, 0, source, 0)
         return try {
             setDisplayIdMethod.invoke(event, displayId)
-            // ASYNC=0: returned true is framework injection acceptance, not a target/UI effect.
-            injectMethod.invoke(manager, event, 0) as Boolean
+            // Resolve lazy reflection setup before timing the actual framework invocation.
+            val method = injectMethod
+            val targetManager = manager
+            val timed = action != MotionEvent.ACTION_MOVE
+            val phase = when (action) {
+                MotionEvent.ACTION_DOWN -> "DOWN"
+                MotionEvent.ACTION_UP -> "UP"
+                MotionEvent.ACTION_CANCEL -> "CANCEL"
+                MotionEvent.ACTION_SCROLL -> "SCROLL"
+                else -> "OTHER"
+            }
+            if (timed) Log.i("EyeProjectorInput", "managed_motion phase=$phase stage=before_invoke uptimeMs=${SystemClock.uptimeMillis()} tid=${Process.myTid()}")
+            val invoked = if (timed) SystemClock.uptimeMillis() else 0L
+            var returned = false
+            var accepted = false
+            try {
+                // ASYNC=0: true is framework acceptance, not a completed target/UI effect.
+                accepted = method.invoke(targetManager, event, 0) as Boolean
+                returned = true
+                accepted
+            } finally {
+                if (timed) {
+                    val completed = SystemClock.uptimeMillis()
+                    Log.i("EyeProjectorInput", "managed_motion phase=$phase stage=invoke_return uptimeMs=$completed invokeUptimeMs=$invoked elapsedMs=${completed - invoked} returned=$returned accepted=$accepted tid=${Process.myTid()}")
+                }
+            }
         } catch (_: ReflectiveOperationException) {
             false
         } catch (_: SecurityException) {
