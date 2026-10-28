@@ -33,7 +33,12 @@ interface Qpr2CameraPlatform {
 }
 
 /** Explicit QPR2 service adapter. It performs no work until its methods are called. */
-class AndroidQpr2CameraPlatform : Qpr2CameraPlatform {
+class AndroidQpr2CameraPlatform(
+    private val serviceCall: (String, String) -> IBinder? = { method, name ->
+        Class.forName("android.os.ServiceManager").getMethod(method, String::class.java)
+            .invoke(null, name) as IBinder?
+    },
+) : Qpr2CameraPlatform {
     override fun caller(): PhoneCameraCaller {
         val uid = Process.myUid()
         var failure: Throwable? = null
@@ -51,12 +56,11 @@ class AndroidQpr2CameraPlatform : Qpr2CameraPlatform {
     }
 
     override fun lookup(): PhoneCameraServiceLookup {
-        val manager = Class.forName("android.os.ServiceManager")
-        val cached = manager.getMethod("checkService", String::class.java)
-            .invoke(null, "virtual_camera") as IBinder?
-        // A null checkService is not an unsupported verdict: getService requests lazy startup.
-        val binder = manager.getMethod("getService", String::class.java)
-            .invoke(null, "virtual_camera") as IBinder?
+        val cached = serviceCall("checkService", "virtual_camera")
+        // getService may request lazy startup and still return null. Resolve that same
+        // service on the original native lane before the owner decides whether to register.
+        val binder = serviceCall("getService", "virtual_camera")
+            ?: serviceCall("waitForService", "virtual_camera")
         return PhoneCameraServiceLookup(
             binder?.let { IVirtualCameraService.Stub.asInterface(it) },
             binder?.interfaceDescriptor,

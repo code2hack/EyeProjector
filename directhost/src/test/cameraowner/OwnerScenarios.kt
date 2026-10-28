@@ -3,6 +3,7 @@ package com.code2hack.eyeprojector.directhost.camera
 import android.companion.virtualcamera.IVirtualCameraCallback
 import android.companion.virtualcamera.IVirtualCameraService
 import android.companion.virtualcamera.VirtualCameraConfiguration
+import android.os.Binder
 import android.os.IBinder
 import android.view.Surface
 import java.util.concurrent.CopyOnWriteArrayList
@@ -90,8 +91,134 @@ internal fun closeModel(original: OwnedPhoneRegistration) {
     }
 }
 
+/** Actual lookup adapter and owner, with only caller facts and ServiceManager calls modeled. */
+private class ActualLookupPlatform(call: (String, String) -> IBinder?) : Qpr2CameraPlatform {
+    private val adapter = AndroidQpr2CameraPlatform(call)
+    val tokens = CopyOnWriteArrayList<IBinder>()
+    override fun caller() = PhoneCameraCaller(2000, 1234, 36, 0)
+    override fun lookup(): PhoneCameraServiceLookup = adapter.lookup()
+    override fun newToken(): IBinder = Binder().also { tokens.add(it) }
+}
+
+private fun closeNeverRegisteredModel(original: OwnedPhoneRegistration) {
+    original.requestClose()
+    awaitCamera("never-registered original native/event lanes joined") {
+        val state = original.snapshot()
+        state.nativeWorker.joined && state.eventWorker.joined
+    }
+    val state = original.snapshot()
+    check(state.registerCall.state == PhoneNativeCallState.NOT_STARTED)
+    check(state.unregisterCall.state == PhoneNativeCallState.NOT_STARTED && state.cameraIdCalls.isEmpty())
+    check(state.knownResourcesClearAtRevision && !state.tokenAbsenceObserved)
+}
+
 fun runOwnerScenarios(): Int {
     var cases = 0
+    cameraCase("actual-lookup-warm-service-registers-original-without-wait") {
+        val service = ModelCameraService(); val calls = CopyOnWriteArrayList<String>()
+        val platform = ActualLookupPlatform { method, name ->
+            check(name == "virtual_camera"); calls.add(method)
+            when (method) {
+                "checkService", "getService" -> service.asBinder()
+                else -> error("Warm lookup must not wait: $method")
+            }
+        }
+        val owner = Qpr2VirtualCameraOwner(platform)
+        val original = owner.register(modelProfile(), ModelCameraEvents())
+        try {
+            awaitCamera("warm actual adapter registered") { original.snapshot().registerCall.state == PhoneNativeCallState.RETURNED }
+            check(calls == listOf("checkService", "getService"))
+            check(owner.registrations().single() === original && platform.tokens.size == 1)
+            check(service.token === platform.tokens.single() && service.registers.get() == 1)
+            val lookup = checkNotNull(original.snapshot().serviceLookup)
+            check(lookup.service === service && lookup.cachedBinderPresent && lookup.lazyLookupRequested)
+        } finally {
+            closeModel(original)
+            awaitCamera("warm original event lane joined") { original.snapshot().eventWorker.joined }
+        }
+    }; cases++
+    cameraCase("actual-lookup-cold-service-waits-once-and-registers-same-original-token") {
+        val service = ModelCameraService(); val calls = CopyOnWriteArrayList<String>()
+        val platform = ActualLookupPlatform { method, name ->
+            check(name == "virtual_camera"); calls.add(method)
+            when (method) {
+                "checkService", "getService" -> null
+                "waitForService" -> service.asBinder()
+                else -> error("Unexpected lookup: $method")
+            }
+        }
+        val owner = Qpr2VirtualCameraOwner(platform)
+        val original = owner.register(modelProfile(), ModelCameraEvents())
+        try {
+            awaitCamera("cold actual adapter registered after arrival") { original.snapshot().registerCall.state == PhoneNativeCallState.RETURNED }
+            check(calls == listOf("checkService", "getService", "waitForService"))
+            check(owner.registrations().single() === original && platform.tokens.size == 1)
+            check(service.token === platform.tokens.single() && service.registers.get() == 1)
+            val lookup = checkNotNull(original.snapshot().serviceLookup)
+            check(lookup.service === service && !lookup.cachedBinderPresent && lookup.lazyLookupRequested)
+        } finally {
+            closeModel(original)
+            awaitCamera("cold original event lane joined") { original.snapshot().eventWorker.joined }
+        }
+    }; cases++
+    cameraCase("actual-lookup-stop-during-cold-wait-prevents-late-register-and-fabricated-unregister") {
+        val service = ModelCameraService(); val calls = CopyOnWriteArrayList<String>()
+        val waiting = CountDownLatch(1); val arrived = CountDownLatch(1)
+        val platform = ActualLookupPlatform { method, name ->
+            check(name == "virtual_camera"); calls.add(method)
+            when (method) {
+                "checkService", "getService" -> null
+                "waitForService" -> { waiting.countDown(); arrived.await(); service.asBinder() }
+                else -> error("Unexpected lookup: $method")
+            }
+        }
+        val owner = Qpr2VirtualCameraOwner(platform)
+        val original = owner.register(modelProfile(), ModelCameraEvents())
+        try {
+            check(waiting.await(5, TimeUnit.SECONDS))
+            original.requestClose()
+            val pending = original.snapshot()
+            check(pending.closeRequested && !pending.nativeWorker.joined && pending.setupUnresolved)
+            check(pending.registerCall.state == PhoneNativeCallState.NOT_STARTED)
+            check(service.registers.get() == 0 && service.unregisters.get() == 0)
+            check(owner.registrations().single() === original && platform.tokens.size == 1)
+            arrived.countDown()
+            closeNeverRegisteredModel(original)
+            check(calls == listOf("checkService", "getService", "waitForService"))
+            check(original.snapshot().serviceLookup?.service === service)
+            check(service.registers.get() == 0 && service.unregisters.get() == 0 && service.token == null)
+        } finally { arrived.countDown(); closeNeverRegisteredModel(original) }
+    }; cases++
+    cameraCase("actual-lookup-null-wait-remains-unresolved-without-retry") {
+        val calls = CopyOnWriteArrayList<String>()
+        val platform = ActualLookupPlatform { method, name ->
+            check(name == "virtual_camera"); calls.add(method); null
+        }
+        val original = Qpr2VirtualCameraOwner(platform).register(modelProfile(), ModelCameraEvents())
+        try {
+            awaitCamera("actual null wait returned") { original.snapshot().serviceLookup != null }
+            val state = original.snapshot()
+            check(state.setupUnresolved && state.firstPrimaryFailure == null)
+            check(calls == listOf("checkService", "getService", "waitForService"))
+        } finally { closeNeverRegisteredModel(original) }
+    }; cases++
+    cameraCase("actual-lookup-wait-throw-retains-original-failure-without-fallback-or-retry") {
+        val calls = CopyOnWriteArrayList<String>(); val failure = IllegalStateException("modeled service wait failure")
+        val platform = ActualLookupPlatform { method, name ->
+            check(name == "virtual_camera"); calls.add(method)
+            when (method) {
+                "checkService", "getService" -> null
+                "waitForService" -> throw failure
+                else -> error("Unexpected lookup: $method")
+            }
+        }
+        val original = Qpr2VirtualCameraOwner(platform).register(modelProfile(), ModelCameraEvents())
+        try {
+            awaitCamera("actual wait failure observed") { original.snapshot().firstPrimaryFailure === failure }
+            check(original.snapshot().setupUnresolved && original.snapshot().serviceLookup == null)
+            check(calls == listOf("checkService", "getService", "waitForService"))
+        } finally { closeNeverRegisteredModel(original) }
+    }; cases++
     cameraCase("owner-construction-no-service-or-native-work") {
         val platform = ModelCameraPlatform(ModelCameraService())
         val owner = Qpr2VirtualCameraOwner(platform)
