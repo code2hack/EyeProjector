@@ -23,6 +23,28 @@ class ReadinessSessionTest {
     private val original = Geometry(480, 640)
     private val resized = Geometry(384, 512)
 
+    @Test fun blockedStatusPersistenceDoesNotHoldActualRenderCallbackOrTerminalPublication() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        android.util.AtomicFile.beforeFinish = { file ->
+            if (file.name == "status.json" && file.path.startsWith(temporary.root.path)) {
+                entered.countDown(); check(release.await(5, TimeUnit.SECONDS))
+            }
+        }
+        try {
+            Fixture(render = false).use { fixture ->
+                assertTrue(entered.await(2, TimeUnit.SECONDS))
+                frame(fixture.session)
+                await("actual render callback progresses while status persistence is blocked") {
+                    fixture.states.contains("STREAMING")
+                }
+                fixture.session.close()
+                assertTrue("terminal callback must not join blocked disk persistence", fixture.states.contains("STOPPED"))
+                assertFalse(running(fixture.session))
+            }
+        } finally { release.countDown(); android.util.AtomicFile.beforeFinish = null }
+    }
+
     private class Codec {
         val value = MediaCodec()
         init {

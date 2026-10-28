@@ -222,7 +222,7 @@ internal class Bridge(
             finally { if (!cameraTransferred) runCatching { socket.close() }; peers.remove(socket) }
             if (session != null && active.get() === session && running.get()) {
                 try {
-                    status(if (!releaseFailed && session.stopReason in setOf(SessionStopReason.OWNER_CLOSE, SessionStopReason.CONTROL_END)) "DISCONNECTED" else "SESSION_FAILED")
+                    status(session.terminationStatus(releaseFailed))
                 } finally { close(reason) }
             }
         }
@@ -320,10 +320,21 @@ private class Session(
     private val running = AtomicBoolean(true)
     private val release = OwnedRelease()
     private val resources = Any()
-    @Volatile var stopReason = SessionStopReason.OWNER_CLOSE
-        private set
+    val stopReason: SessionStopReason
+        get() = firstCloseRequest.get()?.reason ?: SessionStopReason.OWNER_CLOSE
+
+    fun terminationStatus(releaseFailed: Boolean): String =
+        if (!releaseFailed && stopReason in setOf(SessionStopReason.OWNER_CLOSE, SessionStopReason.CONTROL_END))
+            "DISCONNECTED" else "SESSION_FAILED"
     private val geometry = AtomicReference<Geometry?>()
-    private val writeStarted = AtomicLong()
+    private val writes = ProjectionWrites()
+    private data class CloseRequest(val reason: SessionStopReason, val requestedMonoNs: Long,
+        val uptimeMs: Long, val write: ProjectionWriteAttempt?, val completionAtRequest: ProjectionWriteCompletion?, val primary: Throwable?,
+        val lastChannel: Long, val lastPing: Long, val lastPong: Long,
+        val controlState: Thread.State?, val streamState: Thread.State?)
+    private val firstCloseRequest = AtomicReference<CloseRequest?>()
+    private val primaryFailure = AtomicReference<Throwable?>()
+    private val cleanupFailure = AtomicReference<Throwable?>()
     private val output = DataOutputStream(peer.outputStream)
     private val controlLock = Any()
     private val projectionToken = UUID.randomUUID().toString()
@@ -345,7 +356,10 @@ private class Session(
     @Volatile private var managedSourceDisplayId: Int? = null
     @Volatile private var scrcpyNewDisplayId: Int? = null
     private val managedStatusFileName = "managed-projection-$projectionToken.json"
-    val cameraRoles = PhoneCameraMediaRole(ownerEpoch, ::send, projectionFailure = { close(SessionStopReason.CONTROL_IO) })
+    val cameraRoles = PhoneCameraMediaRole(ownerEpoch, ::send,
+        projectionFailure = { closeSafely(SessionStopReason.CONTROL_IO, it) })
+    private val pongLane = SessionPongLane({ stamp -> send(Frame(Wire.PONG, stamp)) },
+        { closeSafely(SessionStopReason.CONTROL_IO, it) })
     // Construction is inert. This Session, rather than a diagnostic actor, owns the new token.
     private val cameraProfile = PhoneCameraProfile(listOf(RequestedPhoneStream(640, 480,
         android.companion.virtualcamera.Format.RGBA_8888, 30)),
@@ -643,7 +657,7 @@ private class Session(
             val task = timer.schedule({
                 functionWork.submit {
                     try { if (running.get()) action() }
-                    catch (error: Exception) { close(sessionFailureReason(error, control = true)) }
+                    catch (error: Exception) { closeSafely(sessionFailureReason(error, control = true), error) }
                 }
             }, (deadline - SystemClock.uptimeMillis()).coerceAtLeast(0), TimeUnit.MILLISECONDS)
             val cancel: () -> Unit = { task.cancel(false); Unit }
@@ -713,7 +727,7 @@ private class Session(
         if (!running.get()) return LiveScale.unavailable(id, value)
         return try { scale.request(id, value, publishUnavailable = streamRequest) }
         catch (error: Exception) {
-            close(sessionFailureReason(error, control = true))
+            closeSafely(sessionFailureReason(error, control = true), error)
             LiveScale.unavailable(id, value)
         }
     }
@@ -725,7 +739,7 @@ private class Session(
     override fun projectionDisplayState(): ProjectionDisplayState = launches.snapshot(observe = true)
     override fun phoneHidEdge(routeId: Long, edge: PhoneHidEdge) {
         try { if (running.get()) phoneInput.edge(routeId, edge) }
-        catch (error: Exception) { close(sessionFailureReason(error, control = true)) }
+        catch (error: Exception) { closeSafely(sessionFailureReason(error, control = true), error) }
     }
     override fun phoneHidSnapshot(): com.code2hack.eyeprojector.directhost.activation.snapshot.NativeSnapshotDescriptor? {
         if (running.get() && receiverUsability.needsRegion()) prepareHidRegionAsync()
@@ -746,7 +760,7 @@ private class Session(
                     Log.i("EyeProjectorInput", "hid_tap phase=${edge.phase} route=$routeId stage=merger_return uptimeMs=$returned elapsedMs=${returned - arrived} tid=${Process.myTid()}")
                 }
             }
-        } catch (error: Exception) { close(sessionFailureReason(error, control = true)) }
+        } catch (error: Exception) { closeSafely(sessionFailureReason(error, control = true), error) }
     }
     private fun prepareHidRegion() {
         // Normal producer is package-loaded ShizukuHostService(Context) -> inline Bridge -> Session.
@@ -763,13 +777,15 @@ private class Session(
         catch (_: java.util.concurrent.RejectedExecutionException) { preparingHidRegion.set(false) }
     }
     private fun beginStartup(): java.util.concurrent.ScheduledFuture<*> {
-        val deadline = timer.schedule({ close(SessionStopReason.STARTUP_DEADLINE) }, 8, TimeUnit.SECONDS)
+        val deadline = timer.schedule({ closeSafely(SessionStopReason.STARTUP_DEADLINE) }, 8, TimeUnit.SECONDS)
         prepareHidRegionAsync()
         return deadline
     }
     private fun checkWriteDeadline() {
-        val since = writeStarted.get()
-        if (since != 0L && System.nanoTime() - since > 2_000_000_000L) close(SessionStopReason.WRITE_DEADLINE)
+        val attempt = writes.active.get() ?: return
+        val decisionNs = System.nanoTime()
+        if (decisionNs - attempt.startedMonoNs > 2_000_000_000L)
+            closeSafely(SessionStopReason.WRITE_DEADLINE, trigger = attempt, decisionNs = decisionNs)
     }
     private fun retireNativeResources() {
         receiverUsability.retire()
@@ -800,12 +816,71 @@ private class Session(
 
     @Synchronized private fun send(frame: Frame) {
         check(running.get())
-        writeStarted.set(System.nanoTime())
+        val attempt = writes.begin(frame.channel, frame.payload.size)
         lastWriteChannel.set(frame.channel.toLong())
+        var failure: Throwable? = null
         try {
             Wire.writeFrame(output, frame)
             if (frame.channel == Wire.PONG) lastPongNs.set(System.nanoTime())
-        } finally { writeStarted.set(0) }
+        } catch (error: Throwable) {
+            failure = error
+            if (firstCloseRequest.get() == null) primaryFailure.compareAndSet(null, error)
+            throw error
+        } finally {
+            writes.complete(attempt, failure)
+            if (failure != null || firstCloseRequest.get()?.write === attempt) runCatching {
+                Log.w("EyeProjectorTransport", "write_completion ${writeObservation(attempt)}")
+            }
+        }
+    }
+
+    private fun failureCategory(error: Throwable?): String = when (error) {
+        null -> "NONE"
+        is EOFException -> "EOF"
+        is SocketTimeoutException -> "TIMEOUT"
+        is IOException -> "IO"
+        is InterruptedException -> "INTERRUPTED"
+        else -> "INTERNAL"
+    }
+
+    private fun writeObservation(attempt: ProjectionWriteAttempt?): JSONObject {
+        if (attempt == null) return JSONObject().put("observed", false)
+        val completion = attempt.completion.get()
+        return JSONObject().put("observed", true).put("attemptId", attempt.id)
+            .put("channel", attempt.channel).put("payloadBytes", attempt.bytes)
+            .put("startedMonoNs", attempt.startedMonoNs).put("writerId", attempt.writerId)
+            .put("writerName", attempt.writerName).put("completedMonoNs", completion?.endedMonoNs ?: JSONObject.NULL)
+            .put("outcome", if (completion == null) "PENDING" else if (completion.failure == null) "RETURNED" else "FAILED")
+            .put("failureCategory", failureCategory(completion?.failure))
+    }
+
+    private fun closeObservation(request: CloseRequest): JSONObject = JSONObject()
+        .put("reason", request.reason.name).put("requestedMonoNs", request.requestedMonoNs)
+        .put("uptimeMs", request.uptimeMs).put("write", writeObservation(request.write))
+        .put("writeOutcomeAtRequest", request.completionAtRequest?.let { if (it.failure == null) "RETURNED" else "FAILED" } ?: "PENDING")
+        .put("writeCompletedAtRequestMonoNs", request.completionAtRequest?.endedMonoNs ?: JSONObject.NULL)
+        .put("writeAgeMs", request.write?.let { (request.requestedMonoNs - it.startedMonoNs) / 1_000_000 } ?: 0)
+        .put("primaryFailureCategory", failureCategory(request.primary))
+        .put("lastWriteChannel", request.lastChannel).put("lastPingMonoNs", request.lastPing)
+        .put("lastPongMonoNs", request.lastPong).put("controlState", request.controlState?.name ?: JSONObject.NULL)
+        .put("streamState", request.streamState?.name ?: JSONObject.NULL)
+
+    private fun closeWrite(error: Throwable? = null): ProjectionWriteAttempt? {
+        val failed = writes.failed.get()
+        val cause = failed?.completion?.get()?.failure
+        // A different writer can enter send after the failing writer releases its monitor.
+        // Bind error-driven close to the original failed attempt rather than that newer write.
+        if (cause != null && (cause === error || cause === primaryFailure.get())) return failed
+        return writes.active.get() ?: failed
+    }
+
+    private fun closeSafely(reason: SessionStopReason, error: Throwable? = null,
+        trigger: ProjectionWriteAttempt? = closeWrite(error), decisionNs: Long = System.nanoTime()) {
+        try { closeObserved(reason, error, trigger, decisionNs) }
+        catch (cleanup: Throwable) {
+            cleanupFailure.compareAndSet(null, cleanup)
+            runCatching { Log.w("EyeProjectorTransport", "cleanup_failure reason=${firstCloseRequest.get()?.reason} category=${failureCategory(cleanup)} primaryCategory=${failureCategory(primaryFailure.get())}") }
+        }
     }
 
     fun run() {
@@ -871,16 +946,18 @@ private class Session(
         if (videoInput != null) require(videoInput.readInt() == Wire.H264)
         inputThread = Thread({
             var reason = SessionStopReason.CONTROL_END
+            var failure: Exception? = null
             try {
                 while (running.get()) {
                     val frame = Wire.readFrame(input)
                     if (!receiveControl(frame)) break
                 }
-            } catch (error: Exception) { reason = sessionFailureReason(error, control = true) }
-            finally { close(reason) }
+            } catch (error: Exception) { reason = sessionFailureReason(error, control = true); failure = error }
+            finally { closeSafely(reason, failure) }
         }, "eyeprojector-control").apply { start() }
         startupStage.set(StartupStage.VIDEO_STREAM)
         var reason = SessionStopReason.VIDEO_END
+        var failure: Exception? = null
         try {
             while (running.get()) {
                 val record = if (source != null) {
@@ -936,14 +1013,17 @@ private class Session(
             }
         } catch (error: Exception) {
             reason = sessionFailureReason(error, control = false)
+            failure = error
             throw error
-        } finally { close(reason) }
+        } finally {
+            if (failure == null) close(reason) else closeSafely(reason, failure)
+        }
     }
 
     /** Actual authenticated control consumer, shared by the reader and composition checks. */
     private fun receiveControl(frame: Frame): Boolean {
         when (frame.channel) {
-            Wire.PING -> { lastPingNs.set(System.nanoTime()); send(Frame(Wire.PONG, frame.stamp)) }
+            Wire.PING -> { lastPingNs.set(System.nanoTime()); pongLane.submit(frame.stamp) }
             Wire.SCALE_REQUEST -> {
                 requestScale(frame.stamp, ScaleRequest.from(frame.payload).scale, streamRequest = true)
             }
@@ -1004,27 +1084,34 @@ private class Session(
 
     override fun close() = close(SessionStopReason.OWNER_CLOSE)
 
-    fun close(reason: SessionStopReason) {
+    fun close(reason: SessionStopReason) = closeObserved(reason, null, closeWrite(), System.nanoTime())
+
+    private fun closeObserved(reason: SessionStopReason, error: Throwable?, trigger: ProjectionWriteAttempt?, decisionNs: Long) {
+        if (error != null && firstCloseRequest.get() == null) primaryFailure.compareAndSet(null, error)
+        val request = CloseRequest(reason, decisionNs, SystemClock.uptimeMillis(), trigger,
+            trigger?.completion?.get(), primaryFailure.get(), lastWriteChannel.get(), lastPingNs.get(), lastPongNs.get(),
+            inputThread?.state, streamThread?.state)
+        if (firstCloseRequest.compareAndSet(null, request)) {
+            // Capture the request and exact watchdog attempt before retirement can finish a write.
+            runCatching {
+                val ageMs = request.write?.let { (request.requestedMonoNs - it.startedMonoNs) / 1_000_000 } ?: 0
+                Log.w("EyeProjectorTransport", "first_close reason=${request.reason} uptimeMs=${request.uptimeMs} lastWriteChannel=${request.lastChannel} writeAgeMs=$ageMs lastPingMonoNs=${request.lastPing} lastPongMonoNs=${request.lastPong} controlState=${request.controlState} streamState=${request.streamState} observation=${closeObservation(request)}")
+            }
+        }
+        pongLane.retire()
         cameraMediaOwner.requestClose(CameraEndReason.PROJECTION_CLOSED)
         retireManagedDisplay() // Admission closed first; actual VDM destruction is later/off-caller.
         cameraRoles.retireAll(CameraEndReason.PROJECTION_CLOSED)
         retireNativeResources() // Terminal store precedes resource/deadline/stock cleanup; never joins setup.
         release.close {
-        if (running.compareAndSet(true, false)) {
-            stopReason = reason
-            // Fixed scalars survive service-file revocation and keep a later socket
-            // reset from hiding the initiating failure. No payload or user text.
-            runCatching {
-                val since = writeStarted.get()
-                Log.w("EyeProjectorTransport", "first_close reason=$reason uptimeMs=${SystemClock.uptimeMillis()} lastWriteChannel=${lastWriteChannel.get()} writeAgeMs=${if (since == 0L) 0L else (System.nanoTime() - since) / 1_000_000} lastPingMonoNs=${lastPingNs.get()} lastPongMonoNs=${lastPongNs.get()} controlState=${inputThread?.state} streamState=${streamThread?.state}")
-            }
-        }
+        running.set(false)
         functionWork.close()
         val stopStartedMs = (System.nanoTime() - begin) / 1_000_000
         val lastStartupStage = startupStage.get()
         val phases = JSONObject()
         var peerInputShutdownReturned: Boolean? = null
         var peerCloseReturned: Boolean? = null
+        var childRelease: OwnedChildReleaseObservation? = null
         fun phase(name: String, operation: () -> Unit) {
             val start = System.nanoTime()
             try { operation() } finally { phases.put(name, (System.nanoTime() - start) / 1_000_000) }
@@ -1047,12 +1134,7 @@ private class Session(
             phase("videoCloseMs") { runCatching { video?.close() } }
             phase("controlCloseMs") { runCatching { control?.close() } }
             phase("childReleaseMs") { server?.let { process ->
-                runCatching {
-                    if (!process.waitFor(2, TimeUnit.SECONDS)) {
-                        process.destroy()
-                        if (!process.waitFor(2, TimeUnit.SECONDS)) { process.destroyForcibly(); process.waitFor(2, TimeUnit.SECONDS) }
-                    }
-                }
+                childRelease = OwnedChildRelease.release(process)
             } }
         }
         val data = JSONObject().put("audio", "system-bluetooth").put("state", "SESSION_STOPPED").put("frames", frames.get()).put("touches", touches.get())
@@ -1064,7 +1146,18 @@ private class Session(
             .put("peerInputShutdownReturned", peerInputShutdownReturned ?: JSONObject.NULL)
             .put("peerCloseReturned", peerCloseReturned ?: JSONObject.NULL)
             .put("panelPower", panelPowerJson(panelPower.state()))
-            .put("lastWriteChannel", lastWriteChannel.get()).put("writeStartedMonoNs", writeStarted.get())
+            .put("lastWriteChannel", lastWriteChannel.get()).put("writeStartedMonoNs", writes.active.get()?.startedMonoNs ?: 0L)
+            .put("firstClose", firstCloseRequest.get()?.let(::closeObservation) ?: JSONObject.NULL)
+            .put("primaryFailureCategory", failureCategory(primaryFailure.get()))
+            .put("cleanupFailureCategory", failureCategory(cleanupFailure.get()))
+            .put("pongWorkerTerminated", pongLane.terminated)
+            .put("childRelease", childRelease?.let { observation -> JSONObject()
+                .put("initiallyInterrupted", observation.initiallyInterrupted)
+                .put("steps", org.json.JSONArray().also { steps -> observation.steps.forEach { step ->
+                    steps.put(JSONObject().put("stage", step.stage).put("elapsedNanos", step.elapsedNanos)
+                        .put("returned", step.returned).put("interruptions", step.interruptions)
+                        .put("failureCategory", failureCategory(step.failure)))
+                } }) } ?: JSONObject.NULL)
             .put("tls", tlsProtocol).put("localAddress", localAddress).put("localPort", localPort)
             .put("peerAddress", peerAddress).put("peerPort", peerPort).put("scid", "%08x".format(scid))
         // A single sampled report attempt; never wait for the scale transaction during release.

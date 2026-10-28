@@ -8,6 +8,7 @@ import com.code2hack.eyeprojector.protocol.Scroll
 import com.code2hack.eyeprojector.protocol.Tap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -22,6 +23,47 @@ class DecoderLifetimeTest {
     private val size = Geometry(480, 640)
     private fun session() = ProjectionSession(temporary.root.resolve("session"), Surface(), { _, _ -> }, { _, _ -> })
     private fun decoder() = SurfaceDecoder(Surface(), size, {}, {}, {}, {})
+
+    @Test fun delayedRenderCallbacksDoNotKillOutputOrSuppressEvictedFrameReceipts() {
+        val codec = MediaCodec().also { MediaCodec.created = it }
+        val outputs = LinkedBlockingQueue<Long>()
+        val releases = LinkedBlockingQueue<Boolean>()
+        val failures = AtomicReference<Exception>()
+        val callbacks = AtomicInteger()
+        val drained = CountDownLatch(1)
+        val latency = java.util.Collections.synchronizedList(mutableListOf<Double?>())
+        val sampled = mutableListOf<Long>()
+        codec.queuedInput = { pts, flags -> if (flags == 0) outputs.add(pts) }
+        var lastOutput = 0L
+        codec.output = { info -> outputs.poll()?.let {
+            lastOutput = it; info.presentationTimeUs = it; 0
+        } ?: run { if (lastOutput == 40L) drained.countDown(); -1 } }
+        // Model a healthy Surface while MAIN callback delivery is delayed independently.
+        codec.releasedOutput = { releases.add(it) }
+        val decoder = SurfaceDecoder(Surface(), size, { latency.add(it); callbacks.incrementAndGet() }, {}, {},
+            { failures.set(it) }, sample = { pts, _ -> sampled.add(pts) })
+        try {
+            for (pts in 1L..40L) {
+                decoder.enqueue(ScrcpyRecord.Packet(pts, byteArrayOf(1)), System.nanoTime())
+                assertEquals("Every admitted late frame still reaches the Surface", true, releases.poll(2, TimeUnit.SECONDS))
+            }
+            assertTrue("observe the last release return before reading counters", drained.await(2, TimeUnit.SECONDS))
+            assertNull(failures.get())
+            val pending = decoder.snapshot()
+            assertEquals(40L, pending.optLong("outputReleases", -1))
+            assertEquals(40L, pending.optLong("pendingRenderFrames", -1))
+            assertEquals(16L, pending.optLong("renderHistoryEntries", -1))
+            assertEquals(24L, pending.optLong("renderHistoryEvictions", -1))
+            for (pts in 1L..40L) codec.frameListener!!.onFrameRendered(codec, pts, 0)
+            assertEquals(40, callbacks.get())
+            assertEquals((1L..40L).toList(), sampled)
+            assertTrue("Evicted metadata supplies no invented latency", latency.take(24).all { it == null })
+            assertTrue(latency.drop(24).all { it != null })
+            assertEquals(0L, decoder.snapshot().optLong("pendingRenderFrames", -1))
+            assertNull(failures.get())
+        } finally { decoder.close() }
+        assertEquals(1, codec.releases.get())
+    }
 
     @Test fun boundedFutureCodecOutputSchedulesWithoutAnAudioClock() {
         val codec = MediaCodec().also { MediaCodec.created = it }

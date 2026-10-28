@@ -13,6 +13,7 @@ private fun nativeReceive(f:PanelFixture,channel:Int,payload:ByteArray) = native
 private fun nativeFact(f:PanelFixture,rev:Long,mode:ReceiverUsabilityMode,input:Long=4,inc:ReceiverIncarnation=ReceiverIncarnation("native-source",1))=ReceiverUsability(f.ownerEpoch,inc,rev,input,mode)
 private fun nativeAwait(message:String,limit:Long=2000,test:()->Boolean){val end=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(limit);while(!test()&&System.nanoTime()<end)Thread.sleep(2);check(test()){message}}
 internal fun nativeTransportBackendScenarios(){
+ stabilityTransportScenarios()
  PanelFixture("native-publication").use{f->
   nativeCall(f,"prepareHidRegion")
   val captured=f.session as CapturedProjection;val reader=NativeSnapshotReadLane()
@@ -150,7 +151,8 @@ internal fun nativeTransportBackendScenarios(){
     nativeAwait("existing eight-second startup deadline closes while setup is blocked",9500){f.socketClosed.get()}
     check(f.receipt().contains("STARTUP_DEADLINE"))
    } else {
-    (f.field("writeStarted") as AtomicLong).set(System.nanoTime()-TimeUnit.SECONDS.toNanos(3))
+    (f.field("writes") as ProjectionWrites).active.set(ProjectionWriteAttempt(1, Wire.VIDEO, 123,
+        System.nanoTime()-TimeUnit.SECONDS.toNanos(3), Thread.currentThread().id, Thread.currentThread().name))
     val closed=CountDownLatch(1);f.timer.execute{nativeCall(f,"checkWriteDeadline");closed.countDown()}
     check(closed.await(2,TimeUnit.SECONDS)){"Actual write deadline waited for native setup"}
     check(f.receipt().contains("WRITE_DEADLINE"))
@@ -164,4 +166,144 @@ internal fun nativeTransportBackendScenarios(){
   check((f.session as CapturedProjection).receiverUsability().regionId==null)
   println("PASS actual original native setup blocked: Function + ${if(deadline)"startup" else "write"} deadline progress; late retired allocation closes itself without publication")
  }
+}
+
+
+/** Actual Session paths with modeled process/socket edges; no Android or physical claim. */
+private fun stabilityTransportScenarios() {
+ PanelFixture("stability-pong").use { f ->
+  val held = CountDownLatch(1); val unblock = CountDownLatch(1)
+  val writer = thread {
+   synchronized(f.session) { held.countDown(); check(unblock.await(4, TimeUnit.SECONDS)) }
+  }
+  val reader = Executors.newSingleThreadExecutor()
+  try {
+   check(held.await(1, TimeUnit.SECONDS))
+   reader.submit {
+    nativeCall(f, "receiveControl", Frame(Wire.PING, -37L))
+    nativeCall(f, "receiveControl", Frame(Wire.PING, Long.MAX_VALUE))
+    nativeReceive(f, Wire.RECEIVER_USABILITY, nativeFact(f, 1, ReceiverUsabilityMode.NONE).bytes())
+   }.get(1, TimeUnit.SECONDS)
+   check(f.peer.sink.size() == 0)
+   check((f.session as CapturedProjection).receiverUsability().fact?.mode == ReceiverUsabilityMode.NONE)
+   unblock.countDown(); writer.join(1000)
+   nativeAwait("PONG progresses without any encoder output") {
+    (f.field("lastPongNs") as AtomicLong).get() != 0L && f.peer.sink.size() >= 2 * 13
+   }
+   val input = DataInputStream(f.peer.sink.toByteArray().inputStream())
+   val first = Wire.readFrame(input); val second = Wire.readFrame(input)
+   check(first.channel == Wire.PONG && first.stamp == -37L)
+   check(second.channel == Wire.PONG && second.stamp == Long.MAX_VALUE)
+   check(input.available() == 0)
+  } finally { unblock.countDown(); writer.join(2000); reader.shutdownNow() }
+ }
+ println("PASS actual Session admits exact-stamp PONG and later controls while projection writer is blocked; static output progresses")
+
+ PanelFixture("stability-original-failure").use { f ->
+  val child = StabilityChild()
+  val primary = IOException("modeled camera projection failure")
+  fun set(name: String, value: Any) = f.session.javaClass.getDeclaredField(name).apply { isAccessible = true }.set(f.session, value)
+  set("server", child)
+  set("output", DataOutputStream(object : OutputStream() { override fun write(value: Int) { throw primary } }))
+  val camera = f.field("cameraRoles") as com.code2hack.eyeprojector.directhost.camera.PhoneCameraMediaRole
+  camera.publishConfigured(object : com.code2hack.eyeprojector.directhost.camera.OriginalPhoneDemandGroup {},
+   CameraStreamRequest(640, 480, 1, "video/avc", 1_000_000, 30, 1), null)
+  val executor = camera.javaClass.getDeclaredField("controlExecutor").apply { isAccessible = true }.get(camera) as ExecutorService
+  check(executor.awaitTermination(3, TimeUnit.SECONDS))
+  check(camera.projectionSendFailure === primary)
+  check((f.field("primaryFailure") as AtomicReference<*>).get() === primary)
+  check((f.field("cleanupFailure") as AtomicReference<*>).get() is IllegalStateException)
+  check(child.calls.containsAll(listOf("destroy", "force")) && child.isAlive)
+  check(child.budgets.size == 4 && child.budgets.all { it in 1L..TimeUnit.SECONDS.toNanos(2) })
+  check(f.receipt().contains("\"initiallyInterrupted\":false"))
+  check(f.receipt().contains("\"channel\":${Wire.CAMERA_USE}"))
+  check(f.receipt().contains("\"primaryFailureCategory\":\"IO\""))
+  child.canExit = true
+  f.close(SessionStopReason.OWNER_CLOSE)
+  check(!child.isAlive)
+  check(f.receipt().contains("\"stopReason\":\"CONTROL_IO\""))
+ }
+ println("PASS actual camera send -> Session.close contains incomplete child release, preserves primary, escalates interrupted waits and retries")
+
+ PanelFixture("stability-watchdog-snapshot").use { f ->
+  val writes = f.field("writes") as ProjectionWrites
+  val started = System.nanoTime() - TimeUnit.SECONDS.toNanos(3)
+  val attempt = ProjectionWriteAttempt(71, Wire.VIDEO, 987, started, 123, "original-video")
+  writes.active.set(attempt)
+  (f.field("lastWriteChannel") as AtomicLong).set(Wire.VIDEO.toLong())
+  val child = StabilityChild().apply { onWait = {
+   writes.complete(attempt, null)
+   val later = writes.begin(Wire.PONG, 0); writes.complete(later, null)
+   true
+  } }
+  f.session.javaClass.getDeclaredField("server").apply { isAccessible = true }.set(f.session, child)
+  nativeCall(f, "checkWriteDeadline")
+  val receipt = f.receipt()
+  check(receipt.contains("\"reason\":\"WRITE_DEADLINE\""))
+  check(receipt.contains("\"attemptId\":71"))
+  check(receipt.contains("\"payloadBytes\":987"))
+  check(receipt.contains("\"startedMonoNs\":$started"))
+  check(receipt.contains("\"writeOutcomeAtRequest\":\"PENDING\""))
+  check(receipt.contains("\"outcome\":\"RETURNED\""))
+  check(attempt.completion.get() != null && writes.active.get() == null)
+ }
+ println("PASS actual watchdog retains triggering VIDEO attempt and request snapshot through completion and later PONG")
+
+ PanelFixture("stability-close-reason-publication").use { f ->
+  // Arrange the exact schedule after the winner's atomic request election, before
+  // its remaining close work. The loser must finish from this published state alone.
+  val requestType = Class.forName("com.code2hack.eyeprojector.directhost.Session\$CloseRequest")
+  val request = requestType.declaredConstructors.single().apply { isAccessible = true }.newInstance(
+   SessionStopReason.WRITE_DEADLINE, System.nanoTime(), android.os.SystemClock.uptimeMillis(),
+   null, null, null, -1L, 0L, 0L, null, null)
+  @Suppress("UNCHECKED_CAST")
+  val electedRequest = f.field("firstCloseRequest") as AtomicReference<Any?>
+  val elected = CountDownLatch(1); val resumeWinner = CountDownLatch(1)
+  val errors = AtomicReference<Throwable?>()
+  val winner = thread {
+   try {
+    check(electedRequest.compareAndSet(null, request))
+    elected.countDown()
+    check(resumeWinner.await(4, TimeUnit.SECONDS))
+    f.close(SessionStopReason.WRITE_DEADLINE)
+   } catch (error: Throwable) { errors.compareAndSet(null, error) }
+  }
+  val loser = Executors.newSingleThreadExecutor()
+  try {
+   check(elected.await(1, TimeUnit.SECONDS))
+   loser.submit { f.close(SessionStopReason.OWNER_CLOSE) }.get(2, TimeUnit.SECONDS)
+   check(resumeWinner.count == 1L && winner.isAlive)
+   check(electedRequest.get() === request)
+   check(nativeCall(f, "getStopReason") == SessionStopReason.WRITE_DEADLINE)
+   val receipt = f.receipt()
+   check(receipt.contains("\"reason\":\"WRITE_DEADLINE\""))
+   check(receipt.contains("\"stopReason\":\"WRITE_DEADLINE\""))
+   // Bridge consumes this actual Session method, including the successful-release case.
+   check(nativeCall(f, "terminationStatus", false) == "SESSION_FAILED")
+   check(nativeCall(f, "terminationStatus", true) == "SESSION_FAILED")
+   resumeWinner.countDown(); winner.join(2000)
+   check(!winner.isAlive && errors.get() == null)
+   check(nativeCall(f, "getStopReason") == SessionStopReason.WRITE_DEADLINE)
+  } finally { resumeWinner.countDown(); winner.join(2000); loser.shutdownNow() }
+ }
+ println("PASS elected close request immediately owns stopReason, receipt and Bridge classification while winner is paused")
+}
+
+private class StabilityChild : java.lang.Process() {
+ val calls = ArrayList<String>(); val budgets = ArrayList<Long>()
+ var canExit = false; private var alive = true; var onWait: (() -> Boolean)? = null
+ override fun getOutputStream() = ByteArrayOutputStream()
+ override fun getInputStream() = ByteArrayInputStream(byteArrayOf())
+ override fun getErrorStream() = ByteArrayInputStream(byteArrayOf())
+ override fun waitFor(): Int = error("Unbounded wait")
+ override fun waitFor(timeout: Long, unit: TimeUnit): Boolean {
+  calls.add("wait"); budgets.add(unit.toNanos(timeout))
+  if (onWait?.invoke() == true || canExit) { alive = false; return true }
+  if (budgets.size == 1) throw InterruptedException("modeled mid-wait interruption")
+  return false
+ }
+ override fun exitValue(): Int = if (alive) throw IllegalThreadStateException() else 0
+ override fun isAlive() = alive
+ override fun destroy() { calls.add("destroy") }
+ override fun destroyForcibly(): java.lang.Process { calls.add("force"); return this }
 }

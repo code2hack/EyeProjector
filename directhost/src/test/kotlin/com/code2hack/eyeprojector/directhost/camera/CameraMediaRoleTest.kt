@@ -8,6 +8,8 @@ import java.net.InetAddress
 import java.nio.file.Files
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.*
 
 /** Test identities and loopback TLS only; these never publish a production input. */
@@ -148,4 +150,55 @@ class CameraMediaRoleTest {
             assertTrue(failed.await(3, TimeUnit.SECONDS)); assertEquals(1, writes.get()); assertTrue(owner.controlFailure)
         } finally { owner.retireAll(CameraEndReason.PROJECTION_CLOSED) }
     }
+
+    private fun failedWriterRetirement(throwCleanup: Boolean) {
+        val sendFailure = IOException("original partial write")
+        val cleanupFailure = IllegalStateException("release remains incomplete")
+        val sendEntered = CountDownLatch(1); val failSend = CountDownLatch(1)
+        val sentinelReturned = CountDownLatch(1)
+        val interrupted = AtomicBoolean()
+        val uncaught = AtomicReference<Throwable?>()
+        val writer = AtomicReference<Thread?>(); val sentinel = AtomicReference<Thread?>()
+        val callbackCause = AtomicReference<Throwable?>()
+        val executor = Executors.newSingleThreadExecutor { task ->
+            Thread(task, "camera-failure-test").apply {
+                uncaughtExceptionHandler = Thread.UncaughtExceptionHandler { _, error -> uncaught.set(error) }
+            }
+        }
+        lateinit var owner: PhoneCameraMediaRole
+        owner = PhoneCameraMediaRole("owner", {
+            writer.set(Thread.currentThread()); sendEntered.countDown()
+            check(failSend.await(3, TimeUnit.SECONDS))
+            throw sendFailure
+        }, controlExecutor = executor, projectionFailure = { error ->
+            callbackCause.set(error)
+            owner.retireAll(CameraEndReason.PROJECTION_CLOSED)
+            interrupted.set(Thread.currentThread().isInterrupted)
+            if (throwCleanup) throw cleanupFailure
+        })
+        try {
+            owner.publishConfigured(object : OriginalPhoneDemandGroup {}, request, null)
+            assertTrue(sendEntered.await(2, TimeUnit.SECONDS))
+            // Queue before retirement: graceful shutdown must finish this on the original worker.
+            executor.execute { sentinel.set(Thread.currentThread()); sentinelReturned.countDown() }
+            failSend.countDown()
+            assertTrue(sentinelReturned.await(3, TimeUnit.SECONDS))
+            assertTrue(executor.awaitTermination(2, TimeUnit.SECONDS))
+            assertSame(writer.get(), sentinel.get())
+            assertFalse("Retirement interrupted its own cleanup caller", interrupted.get())
+            assertNull(uncaught.get())
+            assertSame(sendFailure, callbackCause.get())
+            assertSame(sendFailure, owner.projectionSendFailure)
+            if (throwCleanup) assertSame(cleanupFailure, owner.projectionCleanupFailure)
+            else assertNull(owner.projectionCleanupFailure)
+        } finally {
+            failSend.countDown()
+            owner.retireAll(CameraEndReason.PROJECTION_CLOSED)
+            executor.shutdownNow()
+        }
+    }
+
+    @Test fun failedWriterCanRetireItsOwnExecutorWithoutSelfInterruption() = failedWriterRetirement(false)
+
+    @Test fun asynchronousCleanupFailureCannotEscapeOrReplaceTheOriginalSendFailure() = failedWriterRetirement(true)
 }

@@ -114,6 +114,8 @@ class PhoneCameraMediaRole(private val ownerEpoch: String, private val sendProje
     private var controlBroken = false
     init { CameraTasks.prepare() }
     @Volatile var controlFailure: Boolean = false; private set
+    @Volatile var projectionSendFailure: Throwable? = null; private set
+    @Volatile var projectionCleanupFailure: Throwable? = null; private set
 
     private fun valid(original: PublishedCameraUse) = original.owner === this && uses[original.ref] === original &&
         groups[original.original] === original && !original.retired && !retiring
@@ -197,9 +199,15 @@ class PhoneCameraMediaRole(private val ownerEpoch: String, private val sendProje
                     if (retiring || controlQueue.isEmpty()) { draining = false; null } else controlQueue.removeFirst()
                 } ?: break
                 try { sendProjection(frame) } catch (error: Throwable) {
-                    synchronized(gate) { controlBroken = true; draining = false }
+                    synchronized(gate) {
+                        controlBroken = true; draining = false; controlQueue.clear()
+                        if (projectionSendFailure == null) projectionSendFailure = error
+                    }
                     controlFailure = true
-                    projectionFailure(error) // Normal projection failure recovery; never replay a partial frame.
+                    // This task is the asynchronous failure boundary. A failed release stays
+                    // retryable in its actual owner without becoming an uncaught backend crash.
+                    try { projectionFailure(error) }
+                    catch (cleanup: Throwable) { projectionCleanupFailure = cleanup }
                     break
                 }
             }
@@ -366,7 +374,9 @@ class PhoneCameraMediaRole(private val ownerEpoch: String, private val sendProje
             roles.toList() to uses.values.toList()
         }
         captured.first.forEach { stop(it, reason) }; captured.second.forEach { retireConsumer(it, reason) }
-        controlExecutor.shutdownNow()
+        // The caller may be this executor's own failed writer. Admission/queue are already
+        // retired; Session socket close cancels an in-flight send without self-interruption.
+        controlExecutor.shutdown()
         return RoleRetirementSubmission(CameraFact.PENDING)
     }
     fun observeProgress(value: CameraProgress): CameraFact = synchronized(gate) {

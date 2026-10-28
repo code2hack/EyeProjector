@@ -11,11 +11,11 @@ import java.io.Closeable
 import java.util.concurrent.atomic.AtomicBoolean
 import org.json.JSONObject
 
-/** No encoded frame queue. Hardware input wait and Surface delivery are bounded and observable. */
+/** No encoded frame queue. Render callback history is diagnostic, never a media admission limit. */
 class SurfaceDecoder(
     surface: Surface,
     geometry: Geometry,
-    private val rendered: (Double) -> Unit,
+    private val rendered: (Double?) -> Unit,
     name: (String) -> Unit,
     private val format: (String) -> Unit,
     private val failed: (Exception) -> Unit,
@@ -35,6 +35,8 @@ class SurfaceDecoder(
     private var outputBuffers = 0L
     private var outputReleases = 0L
     private var renderCallbacks = 0L
+    private var renderHistoryEvictions = 0L
+    private var unmatchedRenderCallbacks = 0L
     private var inputRetries = 0L
     private var maxInputWaitNs = 0L
     private var lastInputPtsUs = -1L
@@ -55,13 +57,15 @@ class SurfaceDecoder(
                 val readAt = synchronized(received) {
                     outputProgress++; renderCallbacks++
                     lastRenderPtsUs = pts; lastRenderNs = System.nanoTime()
-                    released.remove(pts)
+                    released.remove(pts).also { if (it == null) unmatchedRenderCallbacks++ }
                 }
                 // Use one local clock. The vendor render timestamp was incompatible with
                 // System.nanoTime() on the RG; callback receipt is the measured endpoint.
-                if (running.get() && readAt != null) {
+                if (running.get()) {
                     val now = System.nanoTime()
-                    rendered((now - readAt) / 1e6); sample(pts, now)
+                    // A delayed callback remains an actual render observation after its latency
+                    // sample has aged out. Missing history must not suppress readiness or invent delay.
+                    rendered(readAt?.let { (now - it) / 1e6 }); sample(pts, now)
                 }
             }, Handler(Looper.getMainLooper()))
             codec.start()
@@ -85,7 +89,12 @@ class SurfaceDecoder(
                                 outputProgress++; outputBuffers++
                                 lastOutputPtsUs = info.presentationTimeUs; lastOutputNs = System.nanoTime()
                                 received.remove(info.presentationTimeUs)?.let { released[info.presentationTimeUs] = it }
-                                check(released.size <= 16) { "Surface stalled" }
+                                // Retain the existing history size for latency measurement only.
+                                // MAIN callback scheduling can lag healthy output by many frames.
+                                while (released.size > 16) {
+                                    val oldest = released.entries.iterator()
+                                    oldest.next(); oldest.remove(); renderHistoryEvictions++
+                                }
                             }
                             val target = videoClock.timeNs(info.presentationTimeUs) ?: error("Missing video timing origin")
                             val now = System.nanoTime()
@@ -148,7 +157,10 @@ class SurfaceDecoder(
             .put("lastInputPtsUs", lastInputPtsUs).put("lastInputMonoNs", lastInputNs)
             .put("lastOutputPtsUs", lastOutputPtsUs).put("lastOutputMonoNs", lastOutputNs)
             .put("lastRenderPtsUs", lastRenderPtsUs).put("lastRenderMonoNs", lastRenderNs)
-            .put("pendingDecodeFrames", received.size).put("pendingRenderFrames", released.size)
+            .put("pendingDecodeFrames", received.size)
+            .put("pendingRenderFrames", maxOf(0L, outputReleases - renderCallbacks))
+            .put("renderHistoryEntries", released.size).put("renderHistoryEvictions", renderHistoryEvictions)
+            .put("unmatchedRenderCallbacks", unmatchedRenderCallbacks)
             .put("presentationTargetMonoNs", presentationTargetNs)
     }
 

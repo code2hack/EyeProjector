@@ -54,6 +54,7 @@ class CameraAccessActivity : Activity(), TextureView.SurfaceTextureListener {
     private var pendingOpen = false
     private var resumed = false
     private var requestedMode = CameraOutputMode.PREVIEW_JPEG
+    private var microphoneProbe: MicrophoneRouteProbe? = null
     private var shownPreview: OpenRequest? = null
     private var displayFrames = 0L
     // Worker-thread ownership. Never replace current until its original closure completes.
@@ -141,6 +142,8 @@ class CameraAccessActivity : Activity(), TextureView.SurfaceTextureListener {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        microphoneProbe?.close(); microphoneProbe = null
+        if (resumed) startMicrophoneProbe()
         intent.getStringExtra("cameraId")?.let { cameraId.setText(it) }
         readMode(intent)
         when (intent.getStringExtra("operation")) {
@@ -155,7 +158,13 @@ class CameraAccessActivity : Activity(), TextureView.SurfaceTextureListener {
     override fun onResume() {
         super.onResume()
         resumed = true
+        startMicrophoneProbe()
         if (pendingOpen && view.isAvailable) open()
+    }
+
+    private fun startMicrophoneProbe() {
+        if (microphoneProbe == null && intent.getBooleanExtra("microphoneProbe", false))
+            microphoneProbe = MicrophoneRouteProbe(this).also { it.start() }
     }
 
     private fun enumerate() {
@@ -527,11 +536,13 @@ class CameraAccessActivity : Activity(), TextureView.SurfaceTextureListener {
         }
     }
     override fun onPause() {
+        microphoneProbe?.close(); microphoneProbe = null
         resumed = false
         close("pause")
         super.onPause()
     }
     override fun onDestroy() {
+        microphoneProbe?.close(); microphoneProbe = null
         pendingOpen = false
         shownPreview = null
         generation.incrementAndGet()
