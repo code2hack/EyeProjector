@@ -11,6 +11,7 @@ import java.util.IdentityHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
+import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocket
 
 /** Opaque reference to one authenticated projection18 event, including its original local ledger. */
@@ -94,8 +95,9 @@ class OwnedCameraRole internal constructor(internal val owner: ReceiverCameraRol
 /** Owned by one ProjectionSession, with an immutable epoch captured by its production factory. */
 class ReceiverCameraRoleClient(private val directory: File, expectedPhoneOwnerEpoch: String?,
     private val sendProjection: (Frame) -> Unit,
-    private val connector: (File, (Socket) -> Unit) -> SSLSocket = ::connectPinnedCamera,
-    private val launch: (Thread) -> Unit = { it.start() }) {
+    private val connector: ((File, (Socket) -> Unit) -> SSLSocket)? = null,
+    private val launch: (Thread) -> Unit = { it.start() },
+    private val contextProvider: (() -> SSLContext)? = null) {
     private val gate = Any()
     private val ledger = CameraUseLedger(expectedPhoneOwnerEpoch)
     private val handles = IdentityHashMap<CameraUseLedger.Handle, CapturedPhoneCameraUse>()
@@ -242,14 +244,20 @@ class ReceiverCameraRoleClient(private val directory: File, expectedPhoneOwnerEp
         var reason = CameraEndReason.SOURCE_UNAVAILABLE
         try {
             if (!live(role.original) || synchronized(gate) { role.stopping }) return
-            val socket = connector(directory) { captureSocket(role, it) }
+            val custom = connector
+            val socket = if (custom != null) custom(directory) { captureSocket(role, it) }
+                else connectPinnedCamera(directory, { captureSocket(role, it) }, contextProvider) { stage(role, it) }
             // Injected connectors must publish their actual returned socket too; production publishes raw and TLS.
             val known = synchronized(gate) { role.sockets.any { it === socket } }
             if (!known) captureSocket(role, socket)
             synchronized(gate) { role.connected = true }
             val output = DataOutputStream(socket.outputStream); val input = DataInputStream(socket.inputStream)
+            stage(role, "HELLO_START")
             Wire.writeRequest(output, Wire.CAMERA); CameraFeed.writeHello(output, role.original.ref)
+            stage(role, "HELLO_RETURN")
+            stage(role, "WELCOME_START")
             val disposition = CameraFeed.readWelcome(input, role.original.ref)
+            stage(role, "WELCOME_RETURN")
             synchronized(gate) { role.welcome = disposition }
             if (disposition != CameraAttachDisposition.ATTACHED_TO_CAPTURED_USE) { reason = CameraEndReason.CONSUMER_UNAVAILABLE; return }
             socket.soTimeout = 0
@@ -263,6 +271,8 @@ class ReceiverCameraRoleClient(private val directory: File, expectedPhoneOwnerEp
             val formats = HashMap<CameraStreamRef, CameraStreamDescription>()
             val sequences = HashMap<CameraStreamRef, MutableSet<Long>>()
             val ended = HashSet<CameraStreamRef>()
+            var firstFormat = true
+            var firstAccessUnit = true
             while (live(role.original) && !synchronized(gate) { role.stopping }) {
                 val next = role.source.next() ?: break
                 if (!live(role.original) || synchronized(gate) { role.stopping }) break
@@ -271,12 +281,14 @@ class ReceiverCameraRoleClient(private val directory: File, expectedPhoneOwnerEp
                         require(next.ref.use == role.original.ref && next.ref !in ended)
                         require(formats[next.ref]?.formatGeneration != next.value.formatGeneration)
                         CameraFeed.descriptionFrames(next.ref, next.value).forEach { write(role, output, it) }
+                        if (firstFormat) { firstFormat = false; stage(role, "FIRST_FORMAT_WRITE_RETURN") }
                         formats[next.ref] = next.value
                     }
                     is CameraOutboundRecord.AccessUnit -> {
                         require(next.ref.use == role.original.ref && formats[next.ref]?.formatGeneration == next.value.formatGeneration)
                         require(sequences.getOrPut(next.ref) { HashSet() }.add(next.value.sequence))
                         CameraFeed.mediaFrames(next.ref, next.value).forEach { write(role, output, it) }
+                        if (firstAccessUnit) { firstAccessUnit = false; stage(role, "FIRST_AU_WRITE_RETURN") }
                     }
                     is CameraOutboundRecord.End -> {
                         require(next.value.use == role.original.ref)
@@ -290,7 +302,18 @@ class ReceiverCameraRoleClient(private val directory: File, expectedPhoneOwnerEp
             }
         } catch (_: EOFException) { reason = CameraEndReason.TRANSPORT_EOF }
         catch (_: Exception) { reason = CameraEndReason.PROTOCOL_FAILURE }
-        finally { stop(role, reason); synchronized(gate) { role.writerReturned = true }; notify(role) }
+        finally {
+            stop(role, reason)
+            synchronized(gate) { role.writerReturned = true }
+            stage(role, "WRITER_RETURN")
+            notify(role)
+        }
+    }
+    private fun stage(role: OwnedCameraRole, stage: String) {
+        // Scalar first-attempt boundaries only; role IDs have no wire/peer/credential identity.
+        try {
+            CameraRoleStageLog.sink("localRole=${System.identityHashCode(role)} stage=$stage tid=${Thread.currentThread().id} monoNs=${System.nanoTime()}")
+        } catch (_: Throwable) { /* Observation cannot affect the original connection or retirement. */ }
     }
     private fun write(role: OwnedCameraRole, output: DataOutputStream, frame: Frame) {
         check(live(role.original) && !synchronized(gate) { role.stopping })
@@ -321,6 +344,7 @@ class ReceiverCameraRoleClient(private val directory: File, expectedPhoneOwnerEp
             if (role.stopping) return RoleRetirementSubmission(CameraFact.STALE_OR_DUPLICATE)
             role.stopping = true; role.failure = reason; role.sockets.toList()
         }
+        stage(role, "RETIRE_REQUESTED")
         // Each close and the source hook have independent actual workers. None can suppress another.
         sockets.forEach { closeSocket(role, it) }
         val retire = synchronized(gate) {
@@ -406,20 +430,35 @@ class ReceiverCameraRoleClient(private val directory: File, expectedPhoneOwnerEp
 }
 
 /** Same TLS endpoint/pin/PKIX/hostname behavior as projection, with owned sockets captured before blocking work. */
-private fun connectPinnedCamera(directory: File, opened: (Socket) -> Unit): SSLSocket {
+private fun connectPinnedCamera(directory: File, opened: (Socket) -> Unit,
+    contextProvider: (() -> SSLContext)?, stage: (String) -> Unit): SSLSocket {
     val settings = Tls.settings(directory)
     val host = settings.getProperty("host") ?: error("Endpoint missing")
     val port = settings.getProperty("port").toInt().also { require(it in 1024..65535) }
-    val factory = Tls.context(directory).socketFactory
+    stage("CONTEXT_START")
+    val factory = (contextProvider?.invoke() ?: Tls.context(directory)).socketFactory
+    stage("CONTEXT_RETURN")
     val raw = Socket(); opened(raw)
+    stage("TCP_START")
     raw.connect(InetSocketAddress(host, port), 3000)
+    stage("TCP_RETURN")
     val socket = factory.createSocket(raw, settings.getProperty("peerName") ?: host, port, true) as SSLSocket
     opened(socket)
     socket.soTimeout = 4000; socket.tcpNoDelay = true
     // Camera media needs the system TCP window, not a fixed control-sized buffer.
     socket.enabledProtocols = socket.supportedProtocols.filter { it in listOf("TLSv1.3", "TLSv1.2") }.toTypedArray()
     socket.sslParameters = socket.sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
-    socket.startHandshake(); Tls.requireTrustedPeer(socket, directory)
+    stage("HANDSHAKE_START")
+    socket.startHandshake()
+    stage("HANDSHAKE_RETURN")
+    stage("PIN_START")
+    Tls.requireTrustedPeer(socket, directory)
+    stage("PIN_RETURN")
     // Both sockets transferred through opened; the original role's claimed duties own every failure close.
     return socket
+}
+
+/** Internal observation seam; neither endpoint details nor wire owner identities enter these rows. */
+internal object CameraRoleStageLog {
+    @Volatile var sink: (String) -> Unit = { android.util.Log.i("EyeProjectorCamera", it) }
 }

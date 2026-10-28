@@ -53,11 +53,14 @@ object Tls {
         File(directory, "endpoint.properties").inputStream().use(::load)
     }
 
-    fun connect(directory: File): SSLSocket {
+    fun connect(directory: File): SSLSocket = connect(directory, context(directory))
+
+    /** Reuse the caller's local identity setup; each connection still admits the current peer. */
+    fun connect(directory: File, context: SSLContext): SSLSocket {
         val settings = settings(directory)
         val host = settings.getProperty("host") ?: error("Endpoint missing")
         val port = settings.getProperty("port").toInt().also { require(it in 1024..65535) }
-        val factory = context(directory).socketFactory
+        val factory = context.socketFactory
         val raw = Socket()
         try {
             raw.connect(InetSocketAddress(host, port), 3000)
@@ -74,7 +77,7 @@ object Tls {
         } catch (error: Exception) { raw.close(); throw error }
     }
 
-    /** Call after every server handshake, including resumed sessions, before Wire admission. */
+    /** Call after every handshake, including resumed sessions, before Wire admission. */
     fun requireTrustedPeer(socket: SSLSocket, directory: File) {
         val expected = PeerStore(directory).pairedPeer()?.certificate ?: File(directory, "peer.crt").inputStream().use {
             CertificateFactory.getInstance("X.509").generateCertificate(it) as X509Certificate
