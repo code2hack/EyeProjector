@@ -95,6 +95,7 @@ if args.suite == 'owner':
         'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol/Tls.kt',
         'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol/SessionControl.kt',
         'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/ProjectionSession.kt',
+        'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/SessionStatusWriter.kt',
         'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/ReceiverCameraOwner.kt',
         'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/localcamera/forwarding/ReceiverCameraUse.kt',
         'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/localcamera/acquisition/CameraRunOwnership.kt',

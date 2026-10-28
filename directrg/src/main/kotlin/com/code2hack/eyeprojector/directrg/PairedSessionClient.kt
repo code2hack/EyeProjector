@@ -28,6 +28,11 @@ internal class PairedSessionClient(
     private data class Attempt(val id: String = UUID.randomUUID().toString(), var baseline: String = "", var owner: String? = null)
     // Allocate before even the automatic first STATUS can open a transport.
     private var admission: Attempt? = Attempt()
+    private data class OwnerCommand(val request: SessionControl.Request, val attempt: Attempt?, val generation: Long)
+    private data class RenderedKey(val epoch: String, val admissionId: String, val generation: Long)
+    private val pendingRendered = mutableSetOf<RenderedKey>()
+    private val failedOwners = mutableSetOf<String>()
+    private var activeCommand: OwnerCommand? = null
     private val canceling = linkedMapOf<String, Attempt>()
     private val canceledOwners = mutableSetOf<String>()
     private var observedActiveEpoch: String? = null
@@ -141,26 +146,53 @@ internal class PairedSessionClient(
 
     fun command(operation: SessionControl.Operation, epoch: String) {
         synchronized(lock) {
-            if (!closed.get()) executor.execute {
-                val id = synchronized(lock) { admission?.id.orEmpty() }
-                exchange(SessionControl.Request(operation, epoch, id))
+            if (closed.get()) return
+            val original = OwnerCommand(SessionControl.Request(operation, epoch, admission?.id.orEmpty()), admission, commandGeneration)
+            val rendered = if (operation == SessionControl.Operation.RENDERED)
+                RenderedKey(epoch, original.request.startEpoch, original.generation) else null
+            if (rendered != null && (epoch in failedOwners || !pendingRendered.add(rendered))) return
+            if (operation == SessionControl.Operation.FAILED) {
+                failedOwners.add(epoch)
+                // This acknowledgment no longer describes a live original. Let its terminal
+                // notification use the same control lane without waiting for the old reply.
+                if (activeCommand?.request?.let { it.operation == SessionControl.Operation.RENDERED && it.epoch == epoch } == true)
+                    runCatching { active?.close() }
+            }
+            executor.execute {
+                try {
+                    val current = synchronized(lock) { commandCurrent(original) }
+                    if (current) exchange(original.request, original = original)
+                } finally {
+                    if (rendered != null) synchronized(lock) { pendingRendered.remove(rendered) }
+                }
             }
         }
     }
 
-    private fun exchange(request: SessionControl.Request, notify: Boolean = true): SessionState? {
+    /** The request keeps its original admission; queued acknowledgments never borrow a successor. */
+    private fun commandCurrent(original: OwnerCommand): Boolean =
+        !closed.get() && original.generation == commandGeneration &&
+            (original.request.operation == SessionControl.Operation.FAILED ||
+                original.attempt === admission &&
+                    (original.request.operation !in setOf(SessionControl.Operation.CONNECTING, SessionControl.Operation.RENDERED) ||
+                        original.request.epoch !in failedOwners))
+
+    private fun exchange(request: SessionControl.Request, notify: Boolean = true, original: OwnerCommand? = null): SessionState? {
         if (closed.get()) return null
         val actualRequest = if (feature == null) request else request.copy(incarnation = feature.incarnation,
             intent = if (request.operation in setOf(SessionControl.Operation.STATUS, SessionControl.Operation.START) &&
                 request.cancelTrigger == null && request.cancelActivation == null) feature.intent() else null,
             presentation = feature.presentation)
-        val generation = synchronized(lock) { commandGeneration }
+        val generation = original?.generation ?: synchronized(lock) { commandGeneration }
         val observation = controlObservation(request.operation)
         return try {
             val state = observedTransport(transport, actualRequest, { socket ->
                 synchronized(lock) {
-                    if (closed.get()) { socket.close(); error("Receiver stopped") }
+                    if (closed.get() || original != null && !commandCurrent(original)) {
+                        socket.close(); error("Original Receiver command retired")
+                    }
                     active = socket
+                    activeCommand = original
                 }
             }, observation) ?: return null
             val current = synchronized(lock) {
@@ -175,7 +207,8 @@ internal class PairedSessionClient(
                         if (attempt.baseline.isEmpty() && state.phase != SessionPhase.UNKNOWN) attempt.baseline = receipt.owner ?: state.epoch
                     }
                 }
-                if (closed.get() || generation != commandGeneration) false
+                if (closed.get() || generation != commandGeneration || original != null &&
+                    (!commandCurrent(original) || original.attempt !== admission)) false
                 else {
                     if (state.phase != SessionPhase.UNKNOWN) observedActiveEpoch = state.epoch.takeIf { state.phase.active }
                     true
@@ -184,35 +217,40 @@ internal class PairedSessionClient(
             if (current) feature?.accept(state.activation)
             // A STOP reply describes reconciliation; it cannot grant attachment to any owner.
             if (current && (state.receipt?.disposition == AttemptDisposition.RETRYABLE || state.detail in setOf("SESSION_CONTROL_STATE_UNAVAILABLE", "ACTIVATION_STORAGE_PENDING")))
-                dispatch(generation, onUnavailable, observation)
+                dispatch(generation, onUnavailable, observation, original)
             else if (notify && current && request.operation != SessionControl.Operation.STOP) dispatch(generation, {
                 val attachable = synchronized(lock) {
                     val receipt = state.receipt
-                    !state.phase.active || (receipt != null && receipt.id == admission?.id &&
+                    !state.phase.active || (state.epoch !in failedOwners && receipt != null && receipt.id == admission?.id &&
                         receipt.disposition == AttemptDisposition.OBSERVED && receipt.owner == state.epoch &&
                         canceling.values.none { it.owner == null } && state.epoch !in canceledOwners)
                 }
                 if (attachable) onState(state)
-                else observation?.emit("ATTACHMENT_SUPPRESSED", deliveryDisposition(generation))
-            }, observation)
+                else observation?.emit("ATTACHMENT_SUPPRESSED", deliveryDisposition(generation, original))
+            }, observation, original)
             state
         } catch (error: Exception) {
             controlTelemetry { if (observation?.failure !== error) observation?.clientFailure = error }
-            if (notify || feature == null) dispatch(generation, onUnavailable, observation)
+            if (notify || feature == null) dispatch(generation, onUnavailable, observation, original)
             null
         } finally {
-            synchronized(lock) { active = null }
-            observation?.emit("RESULT", deliveryDisposition(generation))
+            synchronized(lock) { active = null; activeCommand = null }
+            observation?.emit("RESULT", deliveryDisposition(generation, original))
         }
     }
 
-    private fun deliveryDisposition(generation: Long): String = synchronized(lock) {
-        when { closed.get() -> "CLOSED"; generation != commandGeneration -> "STALE"; else -> "CURRENT" }
+    private fun deliveryDisposition(generation: Long, original: OwnerCommand? = null): String = synchronized(lock) {
+        when {
+            closed.get() -> "CLOSED"
+            generation != commandGeneration || original != null &&
+                (!commandCurrent(original) || original.attempt !== admission) -> "STALE"
+            else -> "CURRENT"
+        }
     }
 
-    private fun dispatch(generation: Long, action: () -> Unit, observation: ControlObservation?) {
+    private fun dispatch(generation: Long, action: () -> Unit, observation: ControlObservation?, original: OwnerCommand? = null) {
         deliver {
-            val disposition = deliveryDisposition(generation)
+            val disposition = deliveryDisposition(generation, original)
             val current = disposition == "CURRENT"
             // Eligibility at this check is not acknowledgment that the callback or remote input completed.
             observation?.emit("DELIVERY_CHECK", disposition)

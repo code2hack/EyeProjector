@@ -110,7 +110,18 @@ class VideoSessionTest {
                 assertEquals("DECODE_FAILED", states.poll(2, TimeUnit.SECONDS))
                 assertEquals(1, first.releases.get())
                 assertFalse(session.navigate(Navigation.HOME))
-                assertTrue(directory.parentFile!!.resolve("status.json").readText().contains("decoderProgress"))
+                val statusFile = directory.parentFile!!.resolve("status.json")
+                // This suite's JSONObject telemetry double serializes a map, not JSON.
+                // Check the exact state value in that representation, including its boundary.
+                val stateField = Regex("(?:^\\{|, )state=([^,}]+)")
+                fun stateOf(snapshot: String) = stateField.find(snapshot)?.groupValues?.get(1)
+                val persisted = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+                while (System.nanoTime() < persisted &&
+                    runCatching { stateOf(statusFile.readText()) == "DECODE_FAILED" }.getOrDefault(false).not())
+                    java.util.concurrent.locks.LockSupport.parkNanos(1_000_000)
+                val terminal = statusFile.readText()
+                assertEquals("Persisted terminal snapshot: $terminal", "DECODE_FAILED", stateOf(terminal))
+                assertTrue("Persisted terminal snapshot: $terminal", terminal.contains("decoderProgress"))
             } finally { session.close() }
 
             val second = codec()

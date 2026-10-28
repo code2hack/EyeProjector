@@ -2,7 +2,6 @@ package com.code2hack.eyeprojector.directrg
 
 import android.content.Context
 import android.os.SystemClock
-import android.util.AtomicFile
 import android.util.Log
 import android.view.Surface
 import com.code2hack.eyeprojector.protocol.*
@@ -30,6 +29,7 @@ class ProjectionSession(
     private val onReceiverInput: (ProjectionSession, ReceiverInput) -> Unit = { _, _ -> },
     private val nextUsabilityRevision: () -> Long = { System.nanoTime() },
     private val expectedPhoneOwnerEpoch: String? = null,
+    private val connectPeer: (File) -> SSLSocket = Tls::connect,
 ) : Closeable {
     private val running = AtomicBoolean(true)
     val cameraUses = ReceiverCameraRoleClient(directory, expectedPhoneOwnerEpoch, ::sendCameraProjection)
@@ -126,37 +126,35 @@ class ProjectionSession(
     private var lastHash: ByteArray? = null
     private val renderDelayMs = ArrayDeque<Double>()
     private val roundTripMs = ArrayDeque<Double>()
+    private val statusWriter = SessionStatusWriter(File(directory.parentFile, "status.json"))
 
-    @Synchronized private fun record(state: String? = null) {
-        if (state != null) stats.put("state", state)
-        decoder?.let { stats.put("decoderProgress", it.snapshot()) }
-        val seconds = (System.nanoTime() - started) / 1e9
-        fun p95(values: ArrayDeque<Double>): Double = values.sorted().let { if (it.isEmpty()) 0.0 else it[((it.size - 1) * .95).toInt()] }
-        stats.put("startedMonoNs", started).put("elapsedMs", (seconds * 1000).toLong()).put("packets", packets).put("changingPackets", changes)
-            .put("rendered", rendered).put("receivedFps", if (seconds > 0) packets / seconds else 0)
-            .put("renderedFps", if (seconds > 0) rendered / seconds else 0).put("touchesSent", touches)
-            .put("heldTouchFramesWritten", heldTouchFrames).put("scrollsSent", scrolls).put("navigationsSent", navigations)
-            .put("packetReadToCallbackP95Ms", p95(renderDelayMs)).put("networkRoundTripP95Ms", p95(roundTripMs))
-            .put("latencyScope", "Receiver packet-read to decoder Surface callback receipt; network echo RTT; window presentation and optical/input timing are separate")
-            .put("presentationActive", presentationUsable)
-            .put("maxEncodedPacketBytes", Wire.MAX_PAYLOAD).put("maxInflightFrames", 16)
-        stats.put("videoLateDrops", droppedVideo)
-            .put("videoTiming", "Video PTS relative to first frame receipt in each decoder stream; Receiver monotonic clock")
-            .put("avScope", "Native Bluetooth audio is independent; physical AV offset is unmeasured")
-        val input = controls.snapshot()
-        stats.put("controlsAccepted", input.accepted).put("controlsWritten", input.written)
-            .put("controlsCanceled", input.canceled).put("controlsFailed", input.failed)
-            .put("controlsRejected", input.rejected + inputRejected).put("controlsPending", input.pending).put("controlsInFlight", input.inFlight)
-            .put("controlSubmissionToWriteMeanMs", input.meanWriteDelayMs).put("controlSubmissionToWriteMaxMs", input.maxWriteDelayMs)
-            .put("controlDeliveryScope", "written means TLS write returned; no target-injection acknowledgment")
-        val writeBegin = System.nanoTime()
-        val file = AtomicFile(File(directory.parentFile, "status.json"))
-        val out = file.startWrite()
-        try { out.write(stats.toString().toByteArray()); file.finishWrite(out) }
-        catch (error: Exception) { file.failWrite(out); throw error }
-        finally {
-            val ms = (System.nanoTime() - writeBegin) / 1_000_000
-            if (ms > 250) Log.w("EyeProjector", "Status write took ${ms}ms")
+    private fun record(state: String? = null) {
+        synchronized(this) {
+            if (state != null) stats.put("state", state)
+            decoder?.let { stats.put("decoderProgress", it.snapshot()) }
+            val seconds = (System.nanoTime() - started) / 1e9
+            fun p95(values: ArrayDeque<Double>): Double = values.sorted().let { if (it.isEmpty()) 0.0 else it[((it.size - 1) * .95).toInt()] }
+            stats.put("startedMonoNs", started).put("elapsedMs", (seconds * 1000).toLong()).put("packets", packets).put("changingPackets", changes)
+                .put("rendered", rendered).put("receivedFps", if (seconds > 0) packets / seconds else 0)
+                .put("renderedFps", if (seconds > 0) rendered / seconds else 0).put("touchesSent", touches)
+                .put("heldTouchFramesWritten", heldTouchFrames).put("scrollsSent", scrolls).put("navigationsSent", navigations)
+                .put("packetReadToCallbackP95Ms", p95(renderDelayMs)).put("networkRoundTripP95Ms", p95(roundTripMs))
+                .put("latencyScope", "Receiver packet-read to decoder Surface callback receipt; network echo RTT; window presentation and optical/input timing are separate")
+                .put("presentationActive", presentationUsable)
+                .put("maxEncodedPacketBytes", Wire.MAX_PAYLOAD).put("maxInflightFrames", 16)
+            stats.put("videoLateDrops", droppedVideo)
+                .put("videoTiming", "Video PTS relative to first frame receipt in each decoder stream; Receiver monotonic clock")
+                .put("avScope", "Native Bluetooth audio is independent; physical AV offset is unmeasured")
+            val input = controls.snapshot()
+            stats.put("controlsAccepted", input.accepted).put("controlsWritten", input.written)
+                .put("controlsCanceled", input.canceled).put("controlsFailed", input.failed)
+                .put("controlsRejected", input.rejected + inputRejected).put("controlsPending", input.pending).put("controlsInFlight", input.inFlight)
+                .put("controlSubmissionToWriteMeanMs", input.meanWriteDelayMs).put("controlSubmissionToWriteMaxMs", input.maxWriteDelayMs)
+                .put("controlDeliveryScope", "written means TLS write returned; no target-injection acknowledgment")
+            // Enrollment is ordered with snapshots; the writer never acquires this monitor or
+            // performs disk work on the caller. Terminal enrollment seals out late heartbeat samples.
+            statusWriter.submit(stats.toString(), state != null &&
+                state !in setOf("CONNECTING", "WAITING_FOR_VIDEO", "STREAMING"))
         }
     }
 
@@ -240,13 +238,17 @@ class ProjectionSession(
         state("CONNECTING")
         Thread({
             try {
-                val peer = Tls.connect(directory)
+                val peer = connectPeer(directory)
                 socket = peer
                 if (!running.get()) { peer.close(); return@Thread }
                 output = DataOutputStream(peer.outputStream)
                 Wire.writeRequest(output!!, Wire.STREAM)
                 val input = DataInputStream(peer.inputStream)
                 Wire.readWelcome(input)
+                // Tls.connect's finite read deadline belongs to setup. Once this STREAM is
+                // negotiated, static content or network delay is not a framing failure.
+                // Stop still closes this exact socket; existing startup/write lifetimes remain.
+                peer.soTimeout = 0
                 controlReady = true
                 val initialEpoch = videoReadiness.awaitInitialFrame(System.nanoTime())
                 synchronized(this) {
@@ -355,7 +357,7 @@ class ProjectionSession(
                     if (!running.get() || !videoReadiness.awaiting(epoch)) return
                     val next = SurfaceDecoder(surface, size, { delay ->
                         synchronized(this) {
-                            rendered++; renderDelayMs.addLast(delay)
+                            rendered++; delay?.let(renderDelayMs::addLast)
                             if (renderDelayMs.size > 256) renderDelayMs.removeFirst()
                         }
                         if (running.get() && videoReadiness.rendered(epoch)) state("STREAMING", epoch)

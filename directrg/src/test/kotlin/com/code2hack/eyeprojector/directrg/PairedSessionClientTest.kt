@@ -17,6 +17,191 @@ import java.util.concurrent.LinkedBlockingQueue
 
 /** Real client executor/cancellation with modeled network admission; TLS is tested in protocol. */
 class PairedSessionClientTest {
+    @Test fun renderedAcknowledgmentsCoalesceWhileOriginalTransportIsInflight() = controlLogs { logs ->
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val drained = CountDownLatch(1)
+        val writes = java.util.concurrent.atomic.AtomicInteger()
+        val client = PairedSessionClient(File("unused-synthetic-directory"), {}, {}, { request, _ ->
+            when (request.operation) {
+                SessionControl.Operation.RENDERED -> {
+                    writes.incrementAndGet(); entered.countDown()
+                    check(release.await(2, TimeUnit.SECONDS))
+                }
+                SessionControl.Operation.STATUS -> drained.countDown()
+                else -> Unit
+            }
+            SessionState("owner", SessionPhase.INACTIVE)
+        })
+        try {
+            client.command(SessionControl.Operation.RENDERED, "owner")
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            repeat(100) { client.command(SessionControl.Operation.RENDERED, "owner") }
+            client.command(SessionControl.Operation.STATUS, "")
+            release.countDown()
+            assertTrue(drained.await(2, TimeUnit.SECONDS))
+            assertEquals(1, writes.get())
+        } finally { release.countDown(); closeObserved(client, logs) }
+    }
+
+    @Test fun terminalFailureCancelsOneCoalescedOriginalAcknowledgmentAndFreshStatusProgresses() = controlLogs { logs ->
+        val entered = CountDownLatch(1)
+        val socketClosed = CountDownLatch(1)
+        val failed = CountDownLatch(1)
+        val fresh = CountDownLatch(1)
+        val requests = Collections.synchronizedList(mutableListOf<SessionControl.Request>())
+        val states = Collections.synchronizedList(mutableListOf<SessionState>())
+        val unavailable = java.util.concurrent.atomic.AtomicInteger()
+        val client = PairedSessionClient(File("unused-synthetic-directory"), { state ->
+            states.add(state); if (state.epoch == "fresh-owner") fresh.countDown()
+        }, { unavailable.incrementAndGet() }, { request, opened ->
+            if (request.operation != SessionControl.Operation.STOP) requests.add(request)
+            when (request.operation) {
+                SessionControl.Operation.RENDERED -> {
+                    opened(object : Socket() { override fun close() { socketClosed.countDown() } })
+                    entered.countDown()
+                    check(socketClosed.await(2, TimeUnit.SECONDS))
+                    // A transport can still return after cancellation. Its original reply is stale.
+                    SessionState("old-owner", SessionPhase.AVAILABLE,
+                        receipt = AttemptReceipt(request.startEpoch, "old-owner", AttemptDisposition.OBSERVED))
+                }
+                SessionControl.Operation.FAILED -> {
+                    failed.countDown()
+                    SessionState("released-owner", SessionPhase.INACTIVE)
+                }
+                SessionControl.Operation.STATUS -> SessionState("fresh-owner", SessionPhase.AVAILABLE,
+                    receipt = AttemptReceipt(request.startEpoch, "fresh-owner", AttemptDisposition.OBSERVED))
+                else -> SessionState("released-owner", SessionPhase.INACTIVE)
+            }
+        })
+        try {
+            client.command(SessionControl.Operation.RENDERED, "old-owner")
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            repeat(100) { client.command(SessionControl.Operation.RENDERED, "old-owner") }
+            client.command(SessionControl.Operation.FAILED, "old-owner")
+            client.command(SessionControl.Operation.RENDERED, "old-owner")
+            assertTrue(failed.await(2, TimeUnit.SECONDS))
+            client.command(SessionControl.Operation.STATUS, "")
+            assertTrue(fresh.await(2, TimeUnit.SECONDS))
+            val sent = requests.toList()
+            assertEquals(listOf(SessionControl.Operation.RENDERED, SessionControl.Operation.FAILED, SessionControl.Operation.STATUS), sent.map { it.operation })
+            assertTrue(sent.first().startEpoch.isNotEmpty())
+            assertEquals(sent.first().startEpoch, sent[1].startEpoch)
+            assertFalse(states.any { it.epoch == "old-owner" })
+            assertEquals(0, unavailable.get())
+        } finally { socketClosed.countDown(); closeObserved(client, logs) }
+    }
+
+    @Test fun originalRenderedAndStatusDeliveriesCannotReviveAnOwnerAfterFailedWasEnqueued() = controlLogs { logs ->
+        val delivery = LinkedBlockingQueue<() -> Unit>()
+        val states = Collections.synchronizedList(mutableListOf<SessionState>())
+        val failed = CountDownLatch(1)
+        val client = PairedSessionClient(File("unused-synthetic-directory"), states::add, { fail("Unexpected unavailable callback") },
+            { request, _ ->
+                if (request.operation == SessionControl.Operation.FAILED) {
+                    failed.countDown(); SessionState("released-owner", SessionPhase.INACTIVE)
+                } else SessionState("old-owner", SessionPhase.AVAILABLE,
+                    receipt = AttemptReceipt(request.startEpoch, "old-owner", AttemptDisposition.OBSERVED))
+            }, { delivery.put(it) })
+        try {
+            client.command(SessionControl.Operation.RENDERED, "old-owner")
+            val rendered = delivery.poll(2, TimeUnit.SECONDS) ?: error("Rendered delivery missing")
+            client.command(SessionControl.Operation.STATUS, "")
+            val status = delivery.poll(2, TimeUnit.SECONDS) ?: error("Status delivery missing")
+            client.command(SessionControl.Operation.FAILED, "old-owner")
+            assertTrue(failed.await(2, TimeUnit.SECONDS))
+            rendered(); status()
+            assertTrue(states.isEmpty())
+            assertTrue(logs.any { it.contains("event=DELIVERY_CHECK") && it.contains("op=RENDERED") && it.contains("eligibility=STALE") })
+            assertTrue(logs.any { it.contains("event=ATTACHMENT_SUPPRESSED") && it.contains("op=STATUS") })
+        } finally { closeObserved(client, logs) }
+    }
+
+    @Test fun failedOwnerRetirementLetsExistingPollingObtainAFreshAdmission() = controlLogs { logs ->
+        val attached = CountDownLatch(1)
+        val fresh = CountDownLatch(1)
+        val failed = java.util.concurrent.atomic.AtomicBoolean()
+        val oldAdmission = java.util.concurrent.atomic.AtomicReference<String>()
+        val newAdmission = java.util.concurrent.atomic.AtomicReference<String>()
+        val client = PairedSessionClient(File("unused-synthetic-directory"), { state ->
+            when (state.epoch) { "old-owner" -> attached.countDown(); "fresh-owner" -> fresh.countDown() }
+        }, {}, { request, _ ->
+            if (request.operation == SessionControl.Operation.FAILED) failed.set(true)
+            if (request.operation == SessionControl.Operation.STOP) SessionState("released", SessionPhase.INACTIVE)
+            else if (!failed.get()) {
+                oldAdmission.compareAndSet(null, request.startEpoch)
+                SessionState("old-owner", SessionPhase.AVAILABLE,
+                    receipt = AttemptReceipt(request.startEpoch, "old-owner", AttemptDisposition.OBSERVED))
+            } else if (request.startEpoch == oldAdmission.get())
+                SessionState("released", SessionPhase.INACTIVE,
+                    receipt = AttemptReceipt(request.startEpoch, "old-owner", AttemptDisposition.RETIRED))
+            else {
+                newAdmission.set(request.startEpoch)
+                SessionState("fresh-owner", SessionPhase.AVAILABLE,
+                    receipt = AttemptReceipt(request.startEpoch, "fresh-owner", AttemptDisposition.OBSERVED))
+            }
+        })
+        try {
+            client.start()
+            assertTrue(attached.await(2, TimeUnit.SECONDS))
+            client.command(SessionControl.Operation.FAILED, "old-owner")
+            assertTrue(fresh.await(4, TimeUnit.SECONDS))
+            assertTrue(newAdmission.get().isNotEmpty())
+            assertNotEquals(oldAdmission.get(), newAdmission.get())
+        } finally { closeObserved(client, logs) }
+    }
+
+    @Test fun queuedAcknowledgmentDoesNotBorrowAdmissionFromAReconnect() = controlLogs { logs ->
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val fresh = CountDownLatch(1)
+        val rendered = CountDownLatch(1)
+        val oldAdmission = java.util.concurrent.atomic.AtomicReference<String>()
+        val freshAdmission = java.util.concurrent.atomic.AtomicReference<String>()
+        val acknowledgments = Collections.synchronizedList(mutableListOf<SessionControl.Request>())
+        val first = java.util.concurrent.atomic.AtomicBoolean(true)
+        val client = PairedSessionClient(File("unused-synthetic-directory"), { state ->
+            if (state.epoch == "fresh-owner") fresh.countDown()
+        }, {}, { request, _ ->
+            when (request.operation) {
+                SessionControl.Operation.STATUS -> if (first.compareAndSet(true, false)) {
+                    oldAdmission.set(request.startEpoch); entered.countDown()
+                    check(release.await(2, TimeUnit.SECONDS))
+                    SessionState("old-owner", SessionPhase.AVAILABLE,
+                        receipt = AttemptReceipt(request.startEpoch, "old-owner", AttemptDisposition.OBSERVED))
+                } else {
+                    freshAdmission.set(request.startEpoch)
+                    SessionState("fresh-owner", SessionPhase.AVAILABLE,
+                        receipt = AttemptReceipt(request.startEpoch, "fresh-owner", AttemptDisposition.OBSERVED))
+                }
+                SessionControl.Operation.RENDERED -> {
+                    acknowledgments.add(request); rendered.countDown()
+                    SessionState(request.epoch, SessionPhase.STREAMING,
+                        receipt = AttemptReceipt(request.startEpoch, request.epoch, AttemptDisposition.OBSERVED))
+                }
+                SessionControl.Operation.START -> SessionState("fresh-owner", SessionPhase.AVAILABLE,
+                    receipt = AttemptReceipt(request.startEpoch, "fresh-owner", AttemptDisposition.OBSERVED))
+                else -> SessionState("released-owner", SessionPhase.INACTIVE,
+                    receipt = AttemptReceipt(request.startEpoch, null, AttemptDisposition.CANCELED))
+            }
+        })
+        try {
+            client.command(SessionControl.Operation.STATUS, "")
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            client.command(SessionControl.Operation.RENDERED, "old-owner")
+            client.disconnect("old-owner")
+            client.connect()
+            release.countDown()
+            assertTrue(fresh.await(2, TimeUnit.SECONDS))
+            client.command(SessionControl.Operation.RENDERED, "fresh-owner")
+            assertTrue(rendered.await(2, TimeUnit.SECONDS))
+            assertNotEquals(oldAdmission.get(), freshAdmission.get())
+            assertEquals(1, acknowledgments.size)
+            assertEquals("fresh-owner", acknowledgments.single().epoch)
+            assertEquals(freshAdmission.get(), acknowledgments.single().startEpoch)
+        } finally { release.countDown(); closeObserved(client, logs) }
+    }
+
     @Test fun currentTransportExceptionKeepsUnavailableCallbackAndItsOwnClassification() = controlLogs { logs ->
         val unavailable = CountDownLatch(1)
         val client = PairedSessionClient(File("unused-synthetic-directory"), { fail("Unexpected state") }, { unavailable.countDown() }, { request, _ ->
