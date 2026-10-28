@@ -60,6 +60,12 @@ internal fun sessionFailureReason(error: Exception, control: Boolean): SessionSt
     else -> if (control) SessionStopReason.CONTROL_ERROR else SessionStopReason.VIDEO_ERROR
 }
 
+/** The admitted stream keeps its finite setup bound until its welcome has flushed successfully. */
+internal fun writeStreamWelcome(socket: java.net.Socket, output: DataOutputStream) {
+    Wire.writeWelcome(output)
+    socket.soTimeout = 0
+}
+
 internal fun panelPowerJson(state: PanelPowerState): JSONObject = JSONObject()
     .put("requestId", state.requestId).put("offSubmission", state.off.name)
     .put("restorationSubmission", state.restoration.name).put("physicalObservation", state.observation.name)
@@ -928,7 +934,7 @@ private class Session(
         local.close()
         synchronized(resources) { localListener = null }
         watchdog = timer.scheduleWithFixedDelay(::checkWriteDeadline, 250, 250, TimeUnit.MILLISECONDS)
-        Wire.writeWelcome(output)
+        writeStreamWelcome(peer, output)
         // The override copies this Session's existing stream/orientation configuration. The device
         // belongs to the real VDM source display; frames still arrive from the captured Glasses feed.
         if (source == null) cameraMediaOwner.startRegistration()
