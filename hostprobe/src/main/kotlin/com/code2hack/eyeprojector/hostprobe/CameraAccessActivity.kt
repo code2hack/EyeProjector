@@ -68,11 +68,14 @@ class CameraAccessActivity : Activity(), TextureView.SurfaceTextureListener {
 
     private data class OpenRequest(
         val epoch: Long, val id: String, val mode: CameraOutputMode, val texture: SurfaceTexture,
+        val requestCreatedElapsedNanos: Long,
     )
 
     @Synchronized private fun record(event: String, vararg fields: Pair<String, Any?>) {
         val json = JSONObject().put("event", event).put("instance", instance)
-            .put("elapsedNanos", SystemClock.elapsedRealtimeNanos())
+        val recordElapsedNanos = SystemClock.elapsedRealtimeNanos()
+        json.put("elapsedNanos", recordElapsedNanos)
+        if (event == "preview_presented") json.put("recordElapsedNanos", recordElapsedNanos)
         fields.forEach { (key, value) -> json.put(key, value ?: JSONObject.NULL) }
         File(filesDir, "camera-access-events.jsonl").appendText("$json\n")
         android.util.Log.i("EyeCameraConsumer", json.toString())
@@ -200,7 +203,8 @@ class CameraAccessActivity : Activity(), TextureView.SurfaceTextureListener {
         val id = cameraId.text.toString()
         if (id.isEmpty()) { record("open_needs_camera_id"); return }
         val texture = view.surfaceTexture ?: return
-        val request = OpenRequest(generation.incrementAndGet(), id, requestedMode, texture)
+        val request = OpenRequest(generation.incrementAndGet(), id, requestedMode, texture,
+            SystemClock.elapsedRealtimeNanos())
         shownPreview = null
         worker.post {
             if (request.epoch != generation.get() || destroyed || finishRequested) return@post
@@ -327,7 +331,8 @@ class CameraAccessActivity : Activity(), TextureView.SurfaceTextureListener {
                         reader.setOnImageAvailableListener({ available -> saveJpeg(available) }, worker)
                     }
                 } else null
-                event("open_requested", "previewSize" to previewSize.toString(), "jpegSize" to jpegSize?.toString())
+                event("open_requested", "previewSize" to previewSize.toString(), "jpegSize" to jpegSize?.toString(),
+                    "requestCreatedElapsedNanos" to request.requestCreatedElapsedNanos)
             } catch (error: Exception) {
                 event("open_setup_failed", "error" to error.toString())
                 close("setup_failed")
@@ -515,15 +520,23 @@ class CameraAccessActivity : Activity(), TextureView.SurfaceTextureListener {
         return false
     }
     override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {
+        val callbackEntryElapsedNanos = SystemClock.elapsedRealtimeNanos()
         val request = shownPreview ?: return
-        if (generation.get() != request.epoch || request.texture !== surface) return
+        val callbackGeneration = generation.get()
+        if (callbackGeneration != request.epoch || request.texture !== surface) return
         displayFrames++
         if (displayFrames == 1L || displayFrames % 30 == 0L) {
+            val bitmapReadbackStartedElapsedNanos = SystemClock.elapsedRealtimeNanos()
             val bitmap = view.getBitmap(16, 12)
+            val bitmapReadbackFinishedElapsedNanos = SystemClock.elapsedRealtimeNanos()
             val sample = bitmap?.let { sampleHash(it) }
             bitmap?.recycle()
             record("preview_presented", "cameraId" to request.id, "generation" to request.epoch,
                 "outputMode" to request.mode.wire, "updates" to displayFrames, "decodedSampleSha256" to sample,
+                "requestCreatedElapsedNanos" to request.requestCreatedElapsedNanos,
+                "callbackEntryElapsedNanos" to callbackEntryElapsedNanos, "callbackGeneration" to callbackGeneration,
+                "bitmapReadbackStartedElapsedNanos" to bitmapReadbackStartedElapsedNanos,
+                "bitmapReadbackFinishedElapsedNanos" to bitmapReadbackFinishedElapsedNanos,
                 "displayId" to display?.displayId, "viewWidth" to view.width, "viewHeight" to view.height)
         }
     }

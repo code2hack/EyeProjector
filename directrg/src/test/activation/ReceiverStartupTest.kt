@@ -24,7 +24,8 @@ class ReceiverStartupTest {
     @Test fun actualStartWritesRequestBeforeWelcomeAndFlushesLatestModeAfterWelcome() {
         val peer=StartupPeer();Tls.connector={peer}
         val revisions=AtomicLong()
-        val session=ProjectionSession(temporary.root,Surface(),{_,_->},{_,_->},nextUsabilityRevision=revisions::incrementAndGet)
+        val session=ProjectionSession(temporary.root,Surface(),{_,_->},{_,_->},nextUsabilityRevision=revisions::incrementAndGet,
+            connectPeer={peer},tlsContextFactory={error("Explicit startup peer must bypass local TLS initialization")})
         try {
             session.usability(fact(revisions.incrementAndGet(),ReceiverUsabilityMode.NONE));await(session)
             session.start()

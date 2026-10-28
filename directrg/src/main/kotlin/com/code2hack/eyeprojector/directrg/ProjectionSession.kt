@@ -15,6 +15,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocket
 import org.json.JSONArray
 import org.json.JSONObject
@@ -29,10 +30,16 @@ class ProjectionSession(
     private val onReceiverInput: (ProjectionSession, ReceiverInput) -> Unit = { _, _ -> },
     private val nextUsabilityRevision: () -> Long = { System.nanoTime() },
     private val expectedPhoneOwnerEpoch: String? = null,
-    private val connectPeer: (File) -> SSLSocket = Tls::connect,
+    private val connectPeer: ((File) -> SSLSocket)? = null,
+    private val tlsContextFactory: (File) -> SSLContext = Tls::context,
 ) : Closeable {
     private val running = AtomicBoolean(true)
-    val cameraUses = ReceiverCameraRoleClient(directory, expectedPhoneOwnerEpoch, ::sendCameraProjection)
+    // TLS initialization stays on the connection worker. Camera roles retain this projection's
+    // context without loading local identity material again for each connection.
+    private val ownedTlsContext by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { tlsContextFactory(directory) }
+    private fun projectionTlsContext(): SSLContext = ownedTlsContext
+    val cameraUses = ReceiverCameraRoleClient(directory, expectedPhoneOwnerEpoch, ::sendCameraProjection,
+        contextProvider = ::projectionTlsContext)
     private val timer = Executors.newScheduledThreadPool(2)
     private val controls = OrderedControlDispatcher { error -> failure(error); closeWithState("DISCONNECTED") }
     private val scaleControls = OrderedControlDispatcher { error -> failure(error); closeWithState("DISCONNECTED") }
@@ -238,7 +245,7 @@ class ProjectionSession(
         state("CONNECTING")
         Thread({
             try {
-                val peer = connectPeer(directory)
+                val peer = connectPeer?.invoke(directory) ?: Tls.connect(directory, projectionTlsContext())
                 socket = peer
                 if (!running.get()) { peer.close(); return@Thread }
                 output = DataOutputStream(peer.outputStream)

@@ -129,7 +129,8 @@ class VideoStreamTimeoutTest {
             states.add(state)
             if (state == "STREAMING") streaming.countDown()
             if (state !in setOf("CONNECTING", "WAITING_FOR_VIDEO", "STREAMING")) terminal.countDown()
-        }, { _, _ -> }, connectPeer = { peer })
+        }, { _, _ -> }, connectPeer = { peer },
+            tlsContextFactory = { error("Injected mainstream connection must not initialize local TLS") })
         try {
             session.start()
             // Establish rendered readiness before idle; this does not bypass the initial-frame limit.
@@ -168,7 +169,8 @@ class VideoStreamTimeoutTest {
         val session = ProjectionSession(temporary.root.resolve("rejected-session"), Surface(), { _, state ->
             states.add(state)
             if (state == "CONNECTION_OR_VIDEO_FAILED") failed.countDown()
-        }, { _, _ -> }, connectPeer = { peer })
+        }, { _, _ -> }, connectPeer = { peer },
+            tlsContextFactory = { error("Injected mainstream connection must not initialize local TLS") })
         try {
             session.start()
             assertTrue("Setup failure was not reported: $states", failed.await(2, TimeUnit.SECONDS))

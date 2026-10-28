@@ -113,6 +113,92 @@ class TlsTest {
         })
     }
 
+    private fun isolatedReceiver(): File = File(root, "shared-${System.nanoTime()}").apply {
+        mkdirs()
+        for (name in listOf("password", "identity.p12", "peer.crt"))
+            File(root, "receiver/$name").copyTo(File(this, name))
+    }
+
+    private data class Exchanges(val admitted: Int, val sessionIds: List<ByteArray>)
+
+    /** TLS 1.2 gives this fixture an observable session ID for actual session resumption. */
+    private fun repeatedExchange(connections: Int, client: (Int) -> Unit): Exchanges {
+        val host = File(root, "host")
+        val listener = Tls.context(host).serverSocketFactory
+            .createServerSocket(0, connections, InetAddress.getLoopbackAddress()) as SSLServerSocket
+        listener.needClientAuth = true; listener.soTimeout = 5000
+        listener.enabledProtocols = arrayOf("TLSv1.2")
+        val accepted = AtomicInteger()
+        val sessions = mutableListOf<ByteArray>()
+        val executor = Executors.newSingleThreadExecutor()
+        val future = executor.submit(Callable {
+            repeat(connections) {
+                try {
+                    (listener.accept() as SSLSocket).use { socket ->
+                        socket.soTimeout = 3000; socket.startHandshake()
+                        sessions.add(socket.session.id.clone())
+                        Tls.requireTrustedPeer(socket, host)
+                        if (Wire.readRequest(DataInputStream(socket.inputStream)) == Wire.STREAM) {
+                            accepted.incrementAndGet()
+                            Wire.writeWelcome(DataOutputStream(socket.outputStream))
+                        }
+                    }
+                } catch (_: Exception) { /* Rejected or revoked peers do not reach Wire admission. */ }
+            }
+        })
+        try { client(listener.localPort); future.get(8, TimeUnit.SECONDS) }
+        finally { listener.close(); executor.shutdownNow() }
+        return Exchanges(accepted.get(), sessions.toList())
+    }
+
+    private fun welcome(directory: File, port: Int, context: SSLContext) {
+        Tls.connect(endpoint(directory.name, port), context).use { socket ->
+            Wire.writeRequest(DataOutputStream(socket.outputStream), Wire.STREAM)
+            Wire.readWelcome(DataInputStream(socket.inputStream))
+        }
+    }
+
+    @Test fun sharedContextConnectsRetainLocalIdentityWithoutReloadingPkcs12() {
+        val directory = isolatedReceiver()
+        val context = Tls.context(directory)
+        // The passed context already owns local identity setup. Peer trust remains on disk.
+        assertTrue(File(directory, "identity.p12").delete())
+        assertTrue(File(directory, "password").delete())
+        val result = repeatedExchange(2) { port -> repeat(2) { welcome(directory, port, context) } }
+        assertEquals(2, result.admitted)
+        assertEquals(2, result.sessionIds.size)
+        assertTrue(result.sessionIds.first().isNotEmpty())
+        assertArrayEquals("Fixture must actually resume the shared TLS context", result.sessionIds[0], result.sessionIds[1])
+    }
+
+    @Test fun sharedContextRechecksReplacedAndForgottenPinAfterTls12Resumption() {
+        for (forget in listOf(false, true)) {
+            val directory = isolatedReceiver()
+            val context = Tls.context(directory)
+            val result = repeatedExchange(3) { port ->
+                repeat(2) { welcome(directory, port, context) }
+                if (forget) assertTrue(File(directory, "peer.crt").delete())
+                else File(root, "rogue/public.crt").copyTo(File(directory, "peer.crt"), overwrite = true)
+                assertThrows(Exception::class.java) { Tls.connect(directory, context).close() }
+            }
+            assertEquals("Revoked connection must not reach Wire admission", 2, result.admitted)
+            assertEquals("Expected three completed TLS handshakes, including revoked resumed connection", 3, result.sessionIds.size)
+            assertTrue(result.sessionIds.first().isNotEmpty())
+            assertArrayEquals(result.sessionIds[0], result.sessionIds[1])
+            assertArrayEquals("Post-handshake pin check must reject an actually resumed session", result.sessionIds[0], result.sessionIds[2])
+        }
+    }
+
+    @Test fun sharedContextStillRejectsWrongServerHostname() {
+        val directory = isolatedReceiver()
+        val context = Tls.context(directory)
+        assertEquals(0, exchange { port ->
+            assertThrows(Exception::class.java) {
+                Tls.connect(endpoint(directory.name, port, "127.0.0.1"), context).close()
+            }
+        })
+    }
+
     @Test fun localContextInitializationCompletesBeforeTcpConnect() {
         // Construct the real server before installing the client-only delegating provider.
         val listener = Tls.context(File(root, "host")).serverSocketFactory

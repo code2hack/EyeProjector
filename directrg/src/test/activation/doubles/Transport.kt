@@ -8,6 +8,7 @@ class PeerStore(val directory: File) { fun pairedPeer(): RememberedPeer? = null 
 object Tls {
     var connector: (() -> SSLSocket)? = null
     fun connect(directory: File): SSLSocket = connector?.invoke() ?: error("TLS connection is an explicit Receiver fixture boundary")
+    fun connect(directory: File, context: SSLContext): SSLSocket = connect(directory)
     fun context(directory: File): SSLContext = error("TLS boundary is not exercised by this source fixture")
     fun requireTrustedPeer(socket: SSLSocket, directory: File) = Unit
 }
