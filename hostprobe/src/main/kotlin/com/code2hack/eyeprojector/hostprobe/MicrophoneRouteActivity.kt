@@ -1,6 +1,7 @@
 package com.code2hack.eyeprojector.hostprobe
 
 import android.app.Activity
+import android.content.Context
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
@@ -15,24 +16,38 @@ import org.json.JSONObject
 
 /** Explicit foreground test capture. No audio samples are read, saved or forwarded. */
 class MicrophoneRouteActivity : Activity() {
+    private var probe: MicrophoneRouteProbe? = null
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val label = TextView(this).apply { text = "Microphone route probe: no audio is stored" }
+        setContentView(label)
+        probe = MicrophoneRouteProbe(this) { phase, input ->
+            label.text = "Microphone route probe: $phase\nInput type: ${input ?: "unobserved"}\nNo audio is stored"
+        }.also { it.start() }
+    }
+    override fun onPause() { probe?.close(); super.onPause() }
+    override fun onDestroy() { probe?.close(); super.onDestroy() }
+}
+
+/** Used only by the explicit owned fixture; it creates a real capture but never calls read(). */
+internal class MicrophoneRouteProbe(
+    private val context: Context,
+    private val observed: (String, Int?) -> Unit = { _, _ -> },
+) {
     private val handler = Handler(Looper.getMainLooper())
     private var recorder: AudioRecord? = null
-    private lateinit var label: TextView
     private var startedMs = 0L
     private var terminal = false
     private var startFailure: String? = null
     private val poll = object : Runnable {
         override fun run() {
             if (terminal) return
-            if (SystemClock.uptimeMillis() - startedMs >= 10_000) closeProbe()
+            if (SystemClock.uptimeMillis() - startedMs >= 10_000) close()
             else { report("RECORDING"); handler.postDelayed(this, 250) }
         }
     }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        label = TextView(this).apply { text = "Microphone route probe: no audio is stored" }
-        setContentView(label)
+    fun start() {
         try {
             val format = AudioFormat.Builder().setSampleRate(16_000)
                 .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
@@ -48,7 +63,7 @@ class MicrophoneRouteActivity : Activity() {
         } catch (error: Exception) {
             startFailure = error.javaClass.simpleName
             report("START_FAILED", startFailure)
-            closeProbe()
+            close()
         }
     }
 
@@ -60,13 +75,13 @@ class MicrophoneRouteActivity : Activity() {
             .put("recordingState", original?.recordingState ?: JSONObject.NULL)
             .put("inputId", device?.id ?: JSONObject.NULL).put("inputType", device?.type ?: JSONObject.NULL)
             .put("inputIsSource", device?.isSource ?: JSONObject.NULL)
-            .put("mode", getSystemService(AudioManager::class.java).mode)
+            .put("mode", context.getSystemService(AudioManager::class.java).mode)
             .put("failureClass", failure ?: JSONObject.NULL).put("audioSamplesRead", 0)
-        File(filesDir, "microphone-route.json").writeText(value.toString())
-        label.text = "Microphone route probe: $phase\nInput type: ${device?.type ?: "unobserved"}\nNo audio is stored"
+        File(context.filesDir, "microphone-route.json").writeText(value.toString())
+        observed(phase, device?.type)
     }
 
-    private fun closeProbe() {
+    fun close() {
         if (terminal) return
         terminal = true
         handler.removeCallbacks(poll)
@@ -86,6 +101,4 @@ class MicrophoneRouteActivity : Activity() {
         }, failure ?: startFailure)
     }
 
-    override fun onPause() { closeProbe(); super.onPause() }
-    override fun onDestroy() { closeProbe(); super.onDestroy() }
 }

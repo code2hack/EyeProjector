@@ -248,6 +248,45 @@ private fun stabilityTransportScenarios() {
   check(attempt.completion.get() != null && writes.active.get() == null)
  }
  println("PASS actual watchdog retains triggering VIDEO attempt and request snapshot through completion and later PONG")
+
+ PanelFixture("stability-close-reason-publication").use { f ->
+  // Arrange the exact schedule after the winner's atomic request election, before
+  // its remaining close work. The loser must finish from this published state alone.
+  val requestType = Class.forName("com.code2hack.eyeprojector.directhost.Session\$CloseRequest")
+  val request = requestType.declaredConstructors.single().apply { isAccessible = true }.newInstance(
+   SessionStopReason.WRITE_DEADLINE, System.nanoTime(), android.os.SystemClock.uptimeMillis(),
+   null, null, null, -1L, 0L, 0L, null, null)
+  @Suppress("UNCHECKED_CAST")
+  val electedRequest = f.field("firstCloseRequest") as AtomicReference<Any?>
+  val elected = CountDownLatch(1); val resumeWinner = CountDownLatch(1)
+  val errors = AtomicReference<Throwable?>()
+  val winner = thread {
+   try {
+    check(electedRequest.compareAndSet(null, request))
+    elected.countDown()
+    check(resumeWinner.await(4, TimeUnit.SECONDS))
+    f.close(SessionStopReason.WRITE_DEADLINE)
+   } catch (error: Throwable) { errors.compareAndSet(null, error) }
+  }
+  val loser = Executors.newSingleThreadExecutor()
+  try {
+   check(elected.await(1, TimeUnit.SECONDS))
+   loser.submit { f.close(SessionStopReason.OWNER_CLOSE) }.get(2, TimeUnit.SECONDS)
+   check(resumeWinner.count == 1L && winner.isAlive)
+   check(electedRequest.get() === request)
+   check(nativeCall(f, "getStopReason") == SessionStopReason.WRITE_DEADLINE)
+   val receipt = f.receipt()
+   check(receipt.contains("\"reason\":\"WRITE_DEADLINE\""))
+   check(receipt.contains("\"stopReason\":\"WRITE_DEADLINE\""))
+   // Bridge consumes this actual Session method, including the successful-release case.
+   check(nativeCall(f, "terminationStatus", false) == "SESSION_FAILED")
+   check(nativeCall(f, "terminationStatus", true) == "SESSION_FAILED")
+   resumeWinner.countDown(); winner.join(2000)
+   check(!winner.isAlive && errors.get() == null)
+   check(nativeCall(f, "getStopReason") == SessionStopReason.WRITE_DEADLINE)
+  } finally { resumeWinner.countDown(); winner.join(2000); loser.shutdownNow() }
+ }
+ println("PASS elected close request immediately owns stopReason, receipt and Bridge classification while winner is paused")
 }
 
 private class StabilityChild : java.lang.Process() {

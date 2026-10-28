@@ -222,7 +222,7 @@ internal class Bridge(
             finally { if (!cameraTransferred) runCatching { socket.close() }; peers.remove(socket) }
             if (session != null && active.get() === session && running.get()) {
                 try {
-                    status(if (!releaseFailed && session.stopReason in setOf(SessionStopReason.OWNER_CLOSE, SessionStopReason.CONTROL_END)) "DISCONNECTED" else "SESSION_FAILED")
+                    status(session.terminationStatus(releaseFailed))
                 } finally { close(reason) }
             }
         }
@@ -320,8 +320,12 @@ private class Session(
     private val running = AtomicBoolean(true)
     private val release = OwnedRelease()
     private val resources = Any()
-    @Volatile var stopReason = SessionStopReason.OWNER_CLOSE
-        private set
+    val stopReason: SessionStopReason
+        get() = firstCloseRequest.get()?.reason ?: SessionStopReason.OWNER_CLOSE
+
+    fun terminationStatus(releaseFailed: Boolean): String =
+        if (!releaseFailed && stopReason in setOf(SessionStopReason.OWNER_CLOSE, SessionStopReason.CONTROL_END))
+            "DISCONNECTED" else "SESSION_FAILED"
     private val geometry = AtomicReference<Geometry?>()
     private val writes = ProjectionWrites()
     private data class CloseRequest(val reason: SessionStopReason, val requestedMonoNs: Long,
@@ -1088,7 +1092,6 @@ private class Session(
             trigger?.completion?.get(), primaryFailure.get(), lastWriteChannel.get(), lastPingNs.get(), lastPongNs.get(),
             inputThread?.state, streamThread?.state)
         if (firstCloseRequest.compareAndSet(null, request)) {
-            stopReason = reason
             // Capture the request and exact watchdog attempt before retirement can finish a write.
             runCatching {
                 val ageMs = request.write?.let { (request.requestedMonoNs - it.startedMonoNs) / 1_000_000 } ?: 0
