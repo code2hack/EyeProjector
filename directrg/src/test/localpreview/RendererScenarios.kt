@@ -278,6 +278,63 @@ private fun asymmetricSamplingAndMatrices() = withFixture { f ->
     check(f.primaryFailures.isEmpty())
 }
 
+private fun unboundLocalFramesConsumeWithoutWindowPresentation() = withFixture { f ->
+    val observer = Observer()
+    observer.onPresented = { assertRestoredPhoneState(f) }
+    f.output.attach(f.target, 1)
+    val phoneLatch = f.phoneFrame(100)
+    val input = f.output.openLocalCamera(configuration(), observer)
+    val texture = checkNotNull(input.surface.surfaceTexture)
+    val initialDraws = GlProbe.draws.size
+    val initialSwaps = GlProbe.swaps.size
+    val initialLegacy = f.legacy.size
+
+    val transforms = listOf(0.11f, 0.22f, 0.33f).map { offset ->
+        cameraMatrix.copyOf().also { it[12] = offset }
+    }
+    transforms.forEachIndexed { index, transform -> f.localFrame(input, 201L + index, transform) }
+    equal(3, texture.updateCount, "every unbound local frame is consumed")
+    equal(initialDraws, GlProbe.draws.size, "unbound local frames do not redraw Phone")
+    equal(initialSwaps, GlProbe.swaps.size, "unbound local frames do not swap the window")
+    equal(initialLegacy, f.legacy.size, "unbound local frames do not report Phone presentation")
+    equal(0, observer.receipts.size, "unbound local frames have no local presentation receipt")
+    equal(1, f.phone.updateCount, "local consumption does not relatch Phone")
+    check(f.barrier() === phoneLatch && !input.retired)
+
+    check(f.bind(layout(), phoneLatch))
+    equal(initialSwaps + 1, GlProbe.swaps.size, "exact fixture binding still presents")
+    val bound = observer.receipts.single()
+    equal(LocalDrawCause.FIXTURE_LAYOUT, bound.cause, "explicit fixture binding cause")
+    check(bound.input === input && bound.fixtureBinding.latch === phoneLatch)
+    equal(3L, bound.localLatch.sequence, "fixture uses the latest of all consumed local latches")
+    equal(203L, bound.localLatch.surfaceTimestampNanos, "fixture uses the latest consumed local texture")
+    val boundDraws = cameraDraws(input)
+    check(boundDraws.isNotEmpty())
+    for (draw in boundDraws) equal(transforms.last().toList(), draw.transform, "fixture uses latest consumed local matrix")
+
+    f.localFrame(input, 204)
+    equal(initialSwaps + 2, GlProbe.swaps.size, "bound local frame still presents")
+    equal(2, observer.receipts.size, "bound local frame keeps its presentation receipt")
+    equal(LocalDrawCause.CAMERA_LATCH, observer.receipts.last().cause, "bound camera latch cause")
+    equal(4L, observer.receipts.last().localLatch.sequence, "bound frame advances original local latch")
+    equal(initialLegacy, f.legacy.size, "fixture/local presentations stay separate from Phone receipt")
+
+    val nextPhone = f.phoneFrame(101)
+    check(nextPhone !== phoneLatch && f.barrier() === nextPhone)
+    equal(initialSwaps + 3, GlProbe.swaps.size, "next Phone frame presents normally")
+    equal(initialLegacy + 1, f.legacy.size, "next Phone frame keeps its legacy receipt")
+    equal(1, GlProbe.swaps.last().draws.size, "next Phone frame clears the previous fixture binding")
+    assertPhoneDraw(GlProbe.swaps.last().draws.single(), f)
+    val afterPhoneDraws = GlProbe.draws.size
+    for (timestamp in 205L..206L) f.localFrame(input, timestamp)
+    equal(6, texture.updateCount, "local frames keep consuming after Phone clears the binding")
+    equal(afterPhoneDraws, GlProbe.draws.size, "local frames cannot redraw with the cleared binding")
+    equal(initialSwaps + 3, GlProbe.swaps.size, "local frames cannot swap with the cleared binding")
+    equal(initialLegacy + 1, f.legacy.size, "cleared local binding cannot report Phone presentation")
+    equal(2, observer.receipts.size, "cleared binding cannot report another local presentation")
+    check(observer.failures.isEmpty() && f.primaryFailures.isEmpty() && !input.retired)
+}
+
 private fun localWorkDoesNotReportLegacyPhone() = withFixture { f ->
     val observer = Observer()
     f.output.attach(f.target, 1)
@@ -600,6 +657,7 @@ fun main() {
         "overlap pixel coverage and continuous full-preview UV" to ::coverageAndContinuousUv,
         "asymmetric crop rotation mirror and separate matrices" to ::asymmetricSamplingAndMatrices,
         "empty and ineligible masks and restored callback GL state" to ::emptyAndIneligibleMasksAndRestoredCallback,
+        "unbound local frames consume without window presentation" to ::unboundLocalFramesConsumeWithoutWindowPresentation,
         "local work preserves legacy callback semantics" to ::localWorkDoesNotReportLegacyPhone,
         "actual Phone latch identity sequence and invalidation" to ::latchIdentityAndInvalidation,
         "retained no-target latches detach and new window generation" to ::retainWithoutWindowAndReattach,

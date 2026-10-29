@@ -46,7 +46,7 @@ root = next(p for p in runner.parents if (p / 'SPEC.md').is_file())
 feature = root / 'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/localcamera'
 protocol = root / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
 files = [root / 'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/RetainedVideoOutput.kt'] + sorted(feature.glob('*.kt')) + sorted((runner.parent / 'doubles').glob('*.kt')) + [runner.parent / 'RendererScenarios.kt'] + [
-    protocol / name for name in ['Wire.kt', 'Touch.kt', 'PhoneInput.kt',
+    protocol / name for name in ['Wire.kt', 'CameraFeed.kt', 'Touch.kt', 'PhoneInput.kt',
                                 'ReceiverUsability.kt', 'ActivationControl.kt']]
 cache = Path.home() / '.gradle/caches/modules-2/files-2.1'
 coords = [('org.jetbrains.kotlin', 'kotlin-compiler-embeddable', '2.2.21'),

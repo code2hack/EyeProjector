@@ -590,7 +590,8 @@ internal class RetainedVideoOutput(
                 finally { original.report("latch", error) }
                 return
             }
-            draw(LocalDrawCause.CAMERA_LATCH)
+            // Without a fixture binding this latch cannot change the window image.
+            if (fixtureBinding != null) draw(LocalDrawCause.CAMERA_LATCH)
         } catch (error: Exception) { if (!closed) rendererFailed(error) }
     }
 
