@@ -54,6 +54,7 @@ source_names = [
     'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/localcamera/acquisition/CameraRunOwnership.kt',
     'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/localcamera/acquisition/GlassesCameraProducer.kt',
     'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol/Wire.kt',
+    'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol/CameraFeed.kt',
     'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol/Touch.kt',
     'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol/PhoneInput.kt',
     'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol/ReceiverUsability.kt',
