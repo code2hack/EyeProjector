@@ -124,23 +124,19 @@ class SurfaceDecoder(
 
     private fun inputBuffer(): Int {
         val begin = System.nanoTime()
-        var progress = synchronized(received) { outputProgress }
         try {
             while (true) {
                 check(running.get()) { "Decoder closed" }
                 val index = codec.dequeueInputBuffer(50_000)
                 check(running.get()) { "Decoder closed" }
                 if (index >= 0) return index
-                val retry = synchronized(received) {
+                check(index == MediaCodec.INFO_TRY_AGAIN_LATER) { "Unexpected decoder input index: $index" }
+                synchronized(received) {
                     inputRetries++
                     maxInputWaitNs = maxOf(maxInputWaitNs, System.nanoTime() - begin)
-                    // INFO_TRY_AGAIN_LATER is availability, not a codec error. The output
-                    // worker can itself hold codec capacity for an admitted future PTS.
-                    val active = outputProgress != progress || presentationTargetNs > System.nanoTime()
-                    progress = outputProgress
-                    index == MediaCodec.INFO_TRY_AGAIN_LATER && active
                 }
-                check(retry) { "Decoder input stalled: ${snapshot()}" }
+                // An unavailable input buffer is backpressure, including output-quiet polls.
+                // Keep this packet on its caller until availability, Stop or a codec exception.
             }
         } finally {
             synchronized(received) { maxInputWaitNs = maxOf(maxInputWaitNs, System.nanoTime() - begin) }

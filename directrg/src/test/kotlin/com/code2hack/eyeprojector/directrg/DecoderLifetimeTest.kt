@@ -205,6 +205,73 @@ class DecoderLifetimeTest {
         }
     }
 
+    @Test fun actualInputErrorsAfterUnavailablePollsKeepTheirOriginalIdentity() {
+        for (stage in listOf("dequeue", "queue")) {
+            val original = IllegalStateException("native input failure at $stage")
+            val codec = MediaCodec().also { MediaCodec.created = it }
+            var polls = 0
+            var submissions = 0
+            codec.input = { timeout ->
+                assertEquals(50_000L, timeout)
+                if (++polls <= 3) MediaCodec.INFO_TRY_AGAIN_LATER
+                else if (stage == "dequeue") throw original else 0
+            }
+            codec.queuedInput = { _, _ -> submissions++; throw original }
+            val decoder = decoder()
+            try {
+                val caught = assertThrows(IllegalStateException::class.java) {
+                    decoder.enqueue(ScrcpyRecord.Packet(123, byteArrayOf(1)), System.nanoTime())
+                }
+                assertSame(original, caught)
+                assertEquals(4, polls)
+                assertEquals(if (stage == "queue") 1 else 0, submissions)
+                assertEquals(3L, decoder.snapshot().optLong("inputRetries", -1))
+                assertEquals(0L, decoder.snapshot().optLong("queuedInputs", -1))
+            } finally { decoder.close() }
+            assertEquals(1, codec.releases.get())
+        }
+    }
+
+    @Test fun unexpectedNegativeInputIndexIsNotRetried() {
+        val codec = MediaCodec().also { MediaCodec.created = it }
+        var polls = 0
+        var submissions = 0
+        codec.input = { polls++; MediaCodec.INFO_OUTPUT_FORMAT_CHANGED }
+        codec.queuedInput = { _, _ -> submissions++ }
+        val decoder = decoder()
+        try {
+            val error = assertThrows(IllegalStateException::class.java) {
+                decoder.enqueue(ScrcpyRecord.Packet(123, byteArrayOf(1)), System.nanoTime())
+            }
+            assertEquals("Unexpected decoder input index: -2", error.message)
+            assertEquals(1, polls)
+            assertEquals(0, submissions)
+            assertEquals(0L, decoder.snapshot().optLong("inputRetries", -1))
+            assertEquals(0L, decoder.snapshot().optLong("queuedInputs", -1))
+        } finally { decoder.close() }
+        assertEquals(1, codec.releases.get())
+    }
+
+    @Test fun oversizedPacketAfterUnavailableInputStillFailsBeforeQueue() {
+        val codec = MediaCodec().also { MediaCodec.created = it }
+        var polls = 0
+        var submissions = 0
+        codec.input = { if (++polls <= 3) MediaCodec.INFO_TRY_AGAIN_LATER else 0 }
+        codec.queuedInput = { _, _ -> submissions++ }
+        val decoder = decoder()
+        try {
+            // The existing platform double exposes a 1024-byte input buffer.
+            assertThrows(IllegalArgumentException::class.java) {
+                decoder.enqueue(ScrcpyRecord.Packet(123, ByteArray(1025)), System.nanoTime())
+            }
+            assertEquals(4, polls)
+            assertEquals(0, submissions)
+            assertEquals(3L, decoder.snapshot().optLong("inputRetries", -1))
+            assertEquals(0L, decoder.snapshot().optLong("queuedInputs", -1))
+        } finally { decoder.close() }
+        assertEquals(1, codec.releases.get())
+    }
+
     @Test fun interruptedCloseReleasesCodecAndPreservesInterrupt() {
         val entered = CountDownLatch(1)
         val resume = CountDownLatch(1)
