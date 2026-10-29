@@ -3,6 +3,7 @@ package com.code2hack.eyeprojector.directrg
 import android.media.MediaCodec
 import android.view.Surface
 import com.code2hack.eyeprojector.protocol.Geometry
+import com.code2hack.eyeprojector.protocol.Scrcpy
 import com.code2hack.eyeprojector.protocol.ScrcpyRecord
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -59,20 +60,38 @@ class DecoderBackpressureTest {
         assertEquals(1, codec.releases.get())
     }
 
-    @Test fun unavailableInputWithoutOutputProgressStillFails() {
-        val codec = MediaCodec().also { MediaCodec.created = it }
-        codec.input = { timeout -> TimeUnit.MICROSECONDS.sleep(timeout); -1 }
-        val decoder = SurfaceDecoder(Surface(), Geometry(480, 640), {}, {}, {}, {})
-        try {
-            val error = assertThrows(IllegalStateException::class.java) {
-                decoder.enqueue(ScrcpyRecord.Packet(0, byteArrayOf(1)), System.nanoTime())
+    @Test fun repeatedUnavailableInputWithoutOutputProgressAdmitsTheSamePacketOnce() {
+        for (stamp in listOf(Scrcpy.CONFIG or 123L, Scrcpy.KEY_FRAME or 456L)) {
+            val codec = MediaCodec().also { MediaCodec.created = it }
+            val polls = mutableListOf<Long>()
+            val queued = mutableListOf<Pair<Long, Int>>()
+            val failure = AtomicReference<Exception>()
+            codec.input = { timeout ->
+                polls.add(timeout)
+                if (polls.size <= 4) MediaCodec.INFO_TRY_AGAIN_LATER else 0
             }
-            assertTrue(error.message!!.contains("Decoder input stalled"))
-            assertEquals(0L, decoder.snapshot().optLong("queuedInputs", -1))
-            assertEquals(0L, decoder.snapshot().optLong("outputBuffers", -1))
-            assertEquals(1L, decoder.snapshot().optLong("inputRetries", -1))
-        } finally { decoder.close() }
-        assertEquals(1, codec.releases.get())
+            codec.queuedInput = { pts, flags -> queued.add(pts to flags) }
+            val data = byteArrayOf(0, 0, 1, 42)
+            val packet = ScrcpyRecord.Packet(stamp, data)
+            val decoder = SurfaceDecoder(Surface(), Geometry(480, 640), {}, {}, {}, { failure.set(it) })
+            try {
+                decoder.enqueue(packet, System.nanoTime())
+                assertEquals(List(5) { 50_000L }, polls)
+                assertEquals(listOf(packet.ptsUs to if (packet.config) MediaCodec.BUFFER_FLAG_CODEC_CONFIG else 0), queued)
+                assertArrayEquals(byteArrayOf(0, 0, 1, 42), data)
+                val progress = decoder.snapshot()
+                assertEquals(4L, progress.optLong("inputRetries", -1))
+                assertEquals(1L, progress.optLong("queuedInputs", -1))
+                assertEquals(if (packet.config) 1L else 0L, progress.optLong("configInputs", -1))
+                assertEquals(packet.ptsUs, progress.optLong("lastInputPtsUs", -1))
+                assertEquals(0L, progress.optLong("outputBuffers", -1))
+                assertEquals(0L, progress.optLong("outputReleases", -1))
+                assertEquals(0L, progress.optLong("renderCallbacks", -1))
+                assertEquals(0L, progress.optLong("presentationTargetMonoNs", -1))
+                assertNull(failure.get())
+            } finally { decoder.close() }
+            assertEquals(1, codec.releases.get())
+        }
     }
 
     @Test fun stopDuringInputBackpressureDoesNotQueueAnotherPacket() {
