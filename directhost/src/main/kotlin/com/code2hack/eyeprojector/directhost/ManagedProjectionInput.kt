@@ -6,7 +6,7 @@ import android.util.Log
 import android.view.InputDevice
 import android.view.InputEvent
 import android.view.MotionEvent
-import android.view.Surface
+import com.code2hack.eyeprojector.directhost.uiaccess.UiPoint
 import com.code2hack.eyeprojector.protocol.Geometry
 import com.code2hack.eyeprojector.protocol.Scroll
 import com.code2hack.eyeprojector.protocol.Tap
@@ -151,33 +151,6 @@ internal class ManagedProjectionInput(
 
     /** Invert LogicalDisplay's centered aspect-fit projection into the source's logical space. */
     private fun sourceCoordinates(target: Tap, mapping: ManagedProjectionDisplay.InputMapping): Pair<Float, Float> {
-        val source = mapping.source
-        val physical = source.physical
-        val px = target.x.toDouble() * physical.width / mapping.video.width
-        val py = target.y.toDouble() * physical.height / mapping.video.height
-        val rotated = source.rotation == Surface.ROTATION_90 || source.rotation == Surface.ROTATION_270
-        val orientedWidth = if (rotated) physical.height else physical.width
-        val orientedHeight = if (rotated) physical.width else physical.height
-        val (orientedX, orientedY) = when (source.rotation) {
-            Surface.ROTATION_0 -> px to py
-            Surface.ROTATION_90 -> py to (physical.width - px)
-            Surface.ROTATION_180 -> (physical.width - px) to (physical.height - py)
-            Surface.ROTATION_270 -> (physical.height - py) to px
-            else -> error("Unexpected display rotation")
-        }
-        val logical = source.logical
-        val widthConstrained = orientedWidth.toLong() * logical.height <
-            orientedHeight.toLong() * logical.width
-        val frameWidth = if (source.scalingDisabled) logical.width else if (widthConstrained) orientedWidth else
-            (logical.width.toLong() * orientedHeight / logical.height).toInt()
-        val frameHeight = if (source.scalingDisabled) logical.height else if (widthConstrained)
-            (logical.height.toLong() * orientedWidth / logical.width).toInt() else orientedHeight
-        val left = (orientedWidth - frameWidth) / 2
-        val top = (orientedHeight - frameHeight) / 2
-        val x = ((orientedX - left) * logical.width / frameWidth).toFloat()
-            .coerceIn(0f, (logical.width - 1).toFloat())
-        val y = ((orientedY - top) * logical.height / frameHeight).toFloat()
-            .coerceIn(0f, (logical.height - 1).toFloat())
-        return x to y
+        return mapping.coordinates.videoToInput(UiPoint(target.x.toDouble(), target.y.toDouble()))
     }
 }

@@ -15,5 +15,6 @@ interface IHostBootstrap {
     oneway void phoneHidEdge(long routeId, in byte[] typedEdge, String expectedOwnerEpoch, String expectedProjectionToken) = 9;
     @nullable NativeSnapshotDescriptor phoneHidSnapshot(String expectedOwnerEpoch, String expectedProjectionToken) = 10;
     oneway void phoneHidStampedEdge(long routeId, in byte[] typedEdge, String expectedOwnerEpoch, String expectedProjectionToken, String regionId, long word) = 11;
+    @nullable byte[] uiTargetContext(String expectedOwnerEpoch, String expectedProjectionToken) = 12;
     void destroy() = 16777114;
 }

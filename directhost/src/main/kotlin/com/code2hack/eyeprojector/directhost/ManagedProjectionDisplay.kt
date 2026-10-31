@@ -29,6 +29,8 @@ import org.json.JSONObject
 import com.code2hack.eyeprojector.protocol.Geometry
 import com.code2hack.eyeprojector.protocol.LayoutScale
 import com.code2hack.eyeprojector.protocol.ScrcpyRecord
+import com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiMapping
+import com.code2hack.eyeprojector.directhost.uiaccess.UiSourceGeometry
 
 /**
  * A shell-owned VDM display rendering directly into its AVC encoder's input Surface.
@@ -55,7 +57,10 @@ internal class ManagedProjectionDisplay private constructor(
         data class Video(val record: ScrcpyRecord) : Read
     }
 
-    internal data class InputMapping(val video: Geometry, val source: SourceObservation)
+    internal data class InputMapping(val video: Geometry, val source: SourceObservation) {
+        val coordinates = UiSourceGeometry(source.logical, source.physical, source.densityDpi,
+            source.rotation, source.scalingDisabled, video)
+    }
 
     class Failure(val category: String, cause: Throwable? = null) : Exception(category, cause) {
         // Keep an incomplete original cleanup reachable through its reported failure.
@@ -228,6 +233,15 @@ internal class ManagedProjectionDisplay private constructor(
 
     fun layoutGeometry(): Geometry = synchronized(inputOperations) {
         observedSource?.layout ?: throw Failure("DISPLAY_GEOMETRY_UNAVAILABLE")
+    }
+
+    /** Same lifetime/transition admission as input; release this lock before any accessibility read. */
+    fun uiInputSnapshot(): ManagedUiMapping? = synchronized(inputOperations) {
+        if (closeRequested.get() || sourceTransitioning || resizeRequested.get() != null || displayChanged.get()) return@synchronized null
+        val mapping = inputMapping ?: return@synchronized null
+        if (observedSource != mapping.source) return@synchronized null
+        val displayId = capturedDisplayId ?: return@synchronized null
+        ManagedUiMapping(displayId, originalDisplayUniqueId, mapping.coordinates)
     }
 
     fun geometryStatus(): JSONObject = synchronized(inputOperations) {
