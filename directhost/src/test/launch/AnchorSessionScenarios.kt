@@ -12,7 +12,7 @@ import java.nio.file.Files
 import java.util.concurrent.*
 
 private val anchorGeometry = Geometry(480, 640)
-private fun Fixture.anchorManaged(publishPointer: Boolean = true): ManagedProjectionDisplay {
+internal fun Fixture.anchorManaged(publishPointer: Boolean = true): ManagedProjectionDisplay {
     val value = ManagedProjectionDisplay::class.java.declaredConstructors.single { it.parameterCount == 1 }
         .apply { isAccessible = true }.newInstance({ _: String, _: Int?, _: Int? -> Unit }) as ManagedProjectionDisplay
     fun put(name: String, v: Any?) { value.javaClass.getDeclaredField(name).apply { isAccessible = true }.set(value, v) }
@@ -28,10 +28,10 @@ private fun Fixture.anchorManaged(publishPointer: Boolean = true): ManagedProjec
     fusionGeometry(); if (publishPointer) pointer()
     return value
 }
-private fun Fixture.install(client: IAnchorAppBridge) {
+internal fun Fixture.install(client: IAnchorAppBridge) {
     type.getDeclaredMethod("installAnchorBridge", IAnchorAppBridge::class.java).apply { isAccessible = true }.invoke(session, client)
 }
-private fun Fixture.functions() {
+internal fun Fixture.functions() {
     val done = CountDownLatch(1); (get("functionWork") as FunctionWork).submit { done.countDown() }; check(done.await(3, TimeUnit.SECONDS))
 }
 private fun AnchorAppRuntime.drain() { val done = CountDownLatch(1); onLane { done.countDown() }; check(done.await(3, TimeUnit.SECONDS)) }
