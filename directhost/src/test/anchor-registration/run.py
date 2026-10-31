@@ -10,6 +10,7 @@ import subprocess
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--output-dir', type=Path, required=True)
+parser.add_argument('--provider-api-checks', action='store_true', help='Compile actual provider against the explicitly modeled #122 ABI')
 args = parser.parse_args()
 suite = Path(__file__).resolve().parent
 root = suite.parents[3]
@@ -29,7 +30,7 @@ for dependency in deps:
 classpath = os.pathsep.join(jars)
 java = str(Path(os.environ['JAVA_HOME']) / 'bin/java') if os.environ.get('JAVA_HOME') else shutil.which('java')
 sources = sorted((actual / 'anchor/target').glob('*.kt'))
-sources += sorted((actual / 'anchor/registration').glob('*.kt'))
+sources += [p for p in sorted((actual / 'anchor/registration').glob('*.kt')) if p.name != 'AnchorRegistrationProvider.kt']
 sources += [actual / 'anchor/preferences' / (name + '.kt') for name in ['AppAnchor', 'AppAnchorStore']]
 sources += [actual / 'uiaccess' / (name + '.kt') for name in
             ['UiTargetSnapshot', 'UiSourceGeometry', 'UiTargetReader', 'UiTargetSnapshotProvider']]
@@ -41,6 +42,9 @@ sources += [suite.parent / 'uiaccess/doubles/ProjectionDependencies.kt', suite.p
 sources += [suite.parent / 'kotlin/com/code2hack/eyeprojector/directhost/anchor/registration/AnchorRegistrationTest.kt']
 sources += [root / 'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/AnchorRegistrationController.kt',
             root / 'directrg/src/test/kotlin/com/code2hack/eyeprojector/directrg/AnchorRegistrationControllerTest.kt']
+if args.provider_api_checks:
+    sources += [actual / 'anchor/registration/AnchorRegistrationProvider.kt', suite / 'AnchorRuntimeApi.kt',
+                root / 'directrg/src/test/navigation/AnchorMessageApi.kt', suite / 'AnchorRegistrationProviderTest.kt']
 out = args.output_dir.resolve()
 out.mkdir(parents=True, exist_ok=True)
 jar = out / 'anchor-registration-checks.jar'
@@ -52,10 +56,13 @@ ran = None
 run_command = [java, '-cp', str(jar) + os.pathsep + classpath, 'org.junit.runner.JUnitCore',
                'com.code2hack.eyeprojector.directhost.anchor.registration.AnchorRegistrationTest',
                'com.code2hack.eyeprojector.directrg.AnchorRegistrationControllerTest']
+if args.provider_api_checks:
+    run_command += ['com.code2hack.eyeprojector.directhost.anchor.registration.AnchorRegistrationProviderTest']
 if compiled.returncode == 0:
     with (out / 'junit.log').open('w') as log:
         ran = subprocess.run(run_command, stdout=log, stderr=subprocess.STDOUT, timeout=60)
 result = {'compileExit': compiled.returncode, 'junitExit': ran.returncode if ran else None,
+          'modeledProviderApi': args.provider_api_checks,
           'scope': 'Actual production registration capture/coordinator, target resolver, atomic store and snapshot/geometry models; host values only, no device proof',
           'compilerCommand': command, 'testCommand': run_command,
           'sources': [{'path': str(p), 'sha256': hashlib.sha256(p.read_bytes()).hexdigest()} for p in sources],

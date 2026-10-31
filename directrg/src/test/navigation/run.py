@@ -11,6 +11,7 @@ import subprocess
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--output-dir', type=Path, required=True)
+p.add_argument('--modeled-shared-api', action='store_true', help='Use the recorded #122 ABI double before reviewed source handoff')
 a = p.parse_args()
 suite = Path(__file__).resolve().parent
 root = suite.parents[3]
@@ -24,18 +25,25 @@ spec.loader.exec_module(parser)
 source = (actual / 'ReceiverActivity.kt').read_text()
 names = ['dispatchNavigation', 'completedNavigation', 'contextualHome', 'contextualBack', 'remoteBack',
          'sleepGlasses', 'showControlPanel', 'cancelInput', 'exitToLauncher', 'cancelOriginalOnExit',
-         'finishProjection']
+         'finishProjection', 'cancelInputState', 'chooseAnchorRegistration', 'cancelAnchorRegistration',
+         'updatePointerBounds', 'remoteTap', 'remoteScroll', 'anchorMessage', 'currentRegistrationIntent', 'applyReceiverDemand']
 blocks = [parser.block(source, rf'^    (?:private|internal) fun {name}\(') for name in names]
+predicates = '\n'.join(re.search(rf'^    private fun {name}\(.*$', source, re.M).group()
+                       for name in ['registrationActive', 'localInputVisible', 'projectedInput', 'functionContext'])
 getter = re.search(r'^    internal val projectionContext:.*$', source, re.M).group()
 initializer = re.search(r'^        completedInput = CompletedReceiverInput\(.*?::completedNavigation\)', source, re.M | re.S).group()
+anchor_initializer = parser.block(source, r'^        anchorRegistration = AnchorRegistrationController ')
 fixture = (suite / 'ActivityBoundary.kt').read_text().replace('// ACTUAL_METHODS', '\n'.join(blocks))
 fixture = fixture.replace('// ACTUAL_CONTEXT_GETTER', getter).replace('// ACTUAL_COMPLETED_INITIALIZER', initializer)
+fixture = fixture.replace('// ACTUAL_PREDICATES', predicates)
+fixture = fixture.replace('// ACTUAL_ANCHOR_INITIALIZER', anchor_initializer)
 generated = out / 'ActivityNavigationWiring.kt'
 generated.write_text(fixture)
 protocol = root / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
 files = [generated, suite / 'Boundaries.kt', suite / 'Scenarios.kt']
-files += [actual / (n + '.kt') for n in ['ContextualNavigation', 'CompletedReceiverInput', 'SessionPresentation']]
+files += [actual / (n + '.kt') for n in ['ContextualNavigation', 'CompletedReceiverInput', 'SessionPresentation', 'AnchorRegistrationController']]
 files += [protocol / n for n in ['Wire.kt', 'PhoneInput.kt', 'Touch.kt', 'LayoutScale.kt', 'ReceiverUsability.kt', 'ActivationControl.kt', 'CameraFeed.kt', 'FunctionIntent.kt']]
+files += [suite / 'AnchorMessageApi.kt' if a.modeled_shared_api else protocol / 'AnchorMessage.kt']
 cache = Path(os.environ.get('GRADLE_USER_HOME', Path.home() / '.gradle')) / 'caches/modules-2/files-2.1'
 dependencies = ['org.jetbrains.kotlin/kotlin-compiler-embeddable/2.2.21', 'org.jetbrains.kotlin/kotlin-stdlib/2.2.21',
                 'org.jetbrains.kotlin/kotlin-script-runtime/2.2.21', 'org.jetbrains.kotlin/kotlin-reflect/1.6.10',
@@ -59,7 +67,8 @@ commands = {
                 '-no-reflect', '-jvm-target', '17', '-classpath', cp, '-d', str(jar)] + snapshots,
     'run': [java, '-cp', str(jar) + os.pathsep + cp, 'com.code2hack.eyeprojector.directrg.ScenariosKt']}
 record = {'source': str(actual / 'ReceiverActivity.kt'), 'sourceSha256': sha(actual / 'ReceiverActivity.kt'),
-          'extractedMethods': dict(zip(names, blocks)), 'completedInitializer': initializer, 'contextGetter': getter,
+          'extractedMethods': dict(zip(names, blocks)), 'completedInitializer': initializer, 'anchorInitializer': anchor_initializer,
+          'contextGetter': getter, 'registrationPredicates': predicates, 'modeledSharedApi': a.modeled_shared_api,
           'inputs': entries, 'commands': commands,
           'scope': 'Actual Activity method bodies and completed-input initializer/consumer; modeled UI, Android clock, sleep submission and session APIs. No device/native/secure-keyguard proof.'}
 try:

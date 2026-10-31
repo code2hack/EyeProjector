@@ -20,3 +20,9 @@ transition, original Session/incarnation/fit binding and late/duplicate UI messa
 These are host behavior checks. The Android overlay, shared Binder/transport integration,
 production accessibility grant and physical target/gesture behavior require their allocated
 build and device verification windows.
+
+To include the actual registration provider before the reviewed #122 handoff, add
+`--provider-api-checks`. This explicitly compiles the provider against the recorded runtime
+and message ABI doubles, while retaining actual reader/provider/resolver/store behavior.
+It does not compile or execute the shared Binder, FIFO runtime or wire codec. Its result
+records `modeledProviderApi: true`; the matched production build verifies the real join.
