@@ -17,6 +17,7 @@ if a.navigation_only:
 java=str(pathlib.Path(os.environ['JAVA_HOME'])/'bin/java') if os.environ.get('JAVA_HOME') else shutil.which('java')
 actual=a.source_dir.resolve() if a.source_dir else root/'directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost'
 sources=list((suite/'doubles').glob('*.kt'))+[root/'directhost/src/test/adapter/doubles/AtomicFile.kt',suite/'Scenarios.kt',suite/'ServiceContextScenarios.kt',suite/'FusionScenarios.kt',suite/'StopRaceScenarios.kt',suite/'FunctionFailureScenarios.kt',suite/'NavigationScenarios.kt']
+if a.navigation_only:sources += [root/'directrg/src/test/kotlin/android/util/Log.kt']
 sources += [actual/(n+'.kt') for n in ['ShellMain','PanelPower','LiveScale','PhoneTouchDispatcher','HeldInputRelease','OwnedRelease','ProjectedAppLaunch','PlatformProjectionLaunch','ProjectionDisplayState','ProjectionContext','ShizukuHostService','OwnedProjectionRoutes','OwnedHostLifecycle','OwnedShellSessions','BootstrapSessionFiles']]
 sources += [actual/'SessionUsability.kt']
 sources += [actual/'activation/snapshot'/n for n in ['NativeSnapshotRegion.kt','SnapshotWord.kt']]
