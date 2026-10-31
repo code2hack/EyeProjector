@@ -1,8 +1,8 @@
 # v0.3 specification: explicit navigation and Anchor
 
-Status: **Owner-directed requirements, authorized for publication on 2026-10-31. Implementation has not started.** The Owner's controls, Anchor behavior, always-explicit Click/Hold choice and contextual Home sequence are specified here. This specification is based on main `2085600efce27344f9849bf33b07a41f2da005b6`; the accepted [v0.2 baseline](../../../SPEC.md) continues to describe the implemented release.
+Status: **Owner-directed requirements, authorized for publication and implementation on 2026-10-31.** The Owner's controls, Anchor behavior, always-explicit Click/Hold choice and contextual Home sequence are specified here. This specification is based on main `2085600efce27344f9849bf33b07a41f2da005b6`; the accepted [v0.2 baseline](../../../SPEC.md) continues to describe the implemented release.
 
-Sections marked **Proposed completion rules** and proposed validation choices remain recommendations for the draft implementation plan. Publication does not silently approve those additions or authorize implementation. The [small-issue plan](README.md) records the proposed delivery breakdown.
+The Owner subsequently requested that all 16 issues be published and this plan start. The completion rules below are the documented implementation direction. The [small-issue plan](README.md) records the authorized delivery breakdown; actual device capability and final version acceptance remain to be established.
 
 ## Purpose
 
@@ -38,7 +38,7 @@ The Owner-defined Home sequence is:
 
 Native two-finger long press and a double press of the HID Back/Home binding invoke this same contextual Home action. Function does not perform any step in this sequence.
 
-**Proposed completion rules:** app-to-grid and grid-to-control-panel retain projection. Control-panel-to-Rokid-Home reuses the existing explicit app-exit path, including cancellation of its original activation/input. Home from a settings subpage returns to the main control panel. These lifetime/subpage details preserve the current baseline and remain visible draft proposals.
+**Completion rules:** app-to-grid and grid-to-control-panel retain projection. Control-panel-to-Rokid-Home reuses the existing explicit app-exit path, including cancellation of its original activation/input. Home from a settings subpage returns to the main control panel. These lifetime/subpage details preserve the current baseline.
 
 Lock refers to the Glasses' existing screen sleep/lock operation, replacing the old triple-Function request. It retains the projection connection and Phone workspace as in the accepted sleep behavior. It is distinct from Stop, Disconnect and app exit. This draft does not claim a new PIN/keyguard security mechanism; the actual lock/sleep effect is the native Rokid behavior.
 
@@ -57,7 +57,7 @@ The live accessibility node, window, display and touch contact are not the saved
 3. **Always let the user choose Click or Hold.** This choice is presented even if Android advertises click or press-and-hold capabilities. There is no automatic mode selection.
 4. Completing the choice saves the target and mode as that app's sole Anchor.
 
-**Proposed completion rules:** registration selects/configures the target without activating the app control; release of that long Function press does not also activate an Anchor. Show a Glasses-local selection highlight and a simple Click / Hold chooser with Cancel. The existing Tap route selects a choice; Back cancels registration. The chooser consumes its own input rather than passing it through to the app. Cancel leaves the previous saved Anchor unchanged. Successful registration confirms the selected target and mode.
+**Completion rules:** registration selects/configures the target without activating the app control; release of that long Function press does not also activate an Anchor. Show a Glasses-local selection highlight and a simple Click / Hold chooser with Cancel. The existing Tap route selects a choice; Back cancels registration. The chooser consumes its own input rather than passing it through to the app. Cancel leaves the previous saved Anchor unchanged. Successful registration confirms the selected target and mode.
 
 Target discovery must use the actual projected app/window on the current source display. Availability of the physical Phone's default-display UI is not sufficient. Visibility, actionable bounds and any required Android UI-access setup must be established on the managed display.
 
@@ -77,13 +77,13 @@ The held contact stays at the selected target's touch position. Head movement do
 
 The app still determines the effect of a held touch and its release. The feature does not convert an arbitrary control into a hold-capable control. No new automatic hold-duration timeout is proposed.
 
-**Proposed completion rules:** show a persistent local held-state indicator between DOWN and UP, and clear it when that original contact is released or canceled. Ordinary input and lifecycle cancellation remain separate from a successful Anchor UP; a canceled hold must not be reported as a completed app action.
+**Completion rules:** show a persistent local held-state indicator between DOWN and UP, and clear it when that original contact is released or canceled. Ordinary input and lifecycle cancellation remain separate from a successful Anchor UP; a canceled hold must not be reported as a completed app action.
 
-## Proposed completion rules: target availability and contact retirement
+## Completion rules: target availability and contact retirement
 
-These proposals define the remaining ordinary interaction cases. They need Owner review with the rest of this draft.
+These completion rules were included in the published plan that the Owner authorized to start.
 
-| Situation | Proposed behavior | Reason and visible effect |
+| Situation | Behavior | Reason and visible effect |
 | --- | --- | --- |
 | No Anchor has been saved for the current app | Show a brief instruction to hover a target and long-press Function; send no app input. | There is no registered app action to invoke. |
 | The saved target is absent or cannot be matched uniquely in the current screen | Keep the preference and show Anchor unavailable; send no click or new DOWN to a different control. | A saved Anchor must not silently become another button. The user can navigate normally or register a replacement. |
@@ -96,11 +96,11 @@ The hold toggle persists across two Function presses, not across the retirement 
 
 The exact native Home/Lock route must account for these contact-retirement semantics. If firmware performs an action before EyeProjector receives a report, its observable ordering and cleanup limits must be recorded rather than assuming app-level interception succeeded.
 
-## Proposed completion rules: settings and migration
+## Completion rules: settings and migration
 
 The app's existing configuration menu gains an Anchor entry showing whether an Anchor is saved and its Click/Hold mode. It provides Clear Anchor. Clearing or replacing an Anchor retires any original active Anchor contact before subsequent use.
 
-Removing an app from the chosen-app list is proposed to preserve its Anchor, matching the current retention of scale and notification preferences. Clear Anchor is the explicit operation for deleting it.
+Removing an app from the chosen-app list preserves its Anchor, matching the current retention of scale and notification preferences. Clear Anchor is the explicit operation for deleting it.
 
 Saved Tap/Scroll assignments and pinned-device state are preserved. The existing Function assignment remains assigned to Function with its new Anchor meaning. New Back/Home and Lock bindings start unassigned and are explicitly learned; the migration does not guess physical buttons or silently turn an old Function binding into a navigation binding.
 
@@ -120,26 +120,26 @@ References: [Android multi-display accessibility windows](https://developer.andr
 
 ## Required behavior and proposed verification
 
-The Owner-defined behavior is the implementation goal. Rows explicitly marked proposed remain verification/completion recommendations until the implementation plan is accepted; they are not additional accepted product gates.
+The Owner-defined behavior and the selected completion rules are the implementation goal. Concrete test apps/screens and physical observations are chosen for each verification window; test submission is not a product pass.
 
 | Area | Required result |
 | --- | --- |
 | Native navigation | Actual two-finger single tap, double tap and long press produce the accepted Back/Lock/Home behavior without ordinary one-finger taps being reclassified or duplicate native operations. Firmware-handled limits are explicit. |
 | HID navigation | Learned Back/Home single/double and dedicated Lock work through Phone and Glasses HID routes; saved unrelated bindings/pin state survive migration. |
-| Contextual Home | Both native and HID Home follow projected app → EyeProjector app grid → Glasses control panel → Rokid Home. Lifetime/settings-subpage behavior remains as proposed above. |
-| Function reassignment | Short Function operates Anchor; long Function registers. Old Back/Home/triple-Lock actions no longer execute from Function. Proposed verification also checks registration release and duplicate reports do not add an activation. |
-| UI discovery | The actual projected window and its target bounds are identified on the managed source. Default-display-only evidence is insufficient. Proposed regression includes physical-Phone-off/locked operation supported by v0.2. |
-| Registration and persistence | Every registration offers Click/Hold and stores one target/mode per app across restart. Atomic replacement and Cancel retaining the previous preference are proposed completion rules. |
+| Contextual Home | Both native and HID Home follow projected app → EyeProjector app grid → Glasses control panel → Rokid Home. Lifetime/settings-subpage behavior is specified above. |
+| Function reassignment | Short Function operates Anchor; long Function registers. Old Back/Home/triple-Lock actions no longer execute from Function. Verification also checks registration release and duplicate reports do not add an activation. |
+| UI discovery | The actual projected window and its target bounds are identified on the managed source. Default-display-only evidence is insufficient. Regression includes physical-Phone-off/locked operation supported by v0.2. |
+| Registration and persistence | Every registration offers Click/Hold and stores one target/mode per app across restart. Atomic replacement and Cancel retaining the previous preference are completion rules. |
 | Click Anchor | After moving the head pointer away, each short Function press activates the registered control once in the current matching screen. |
 | Hold Anchor | First short Function starts DOWN, physical Function release leaves it held, head movement does not drag it, and the next short Function releases the same contact with UP. |
-| Proposed changed/missing-target checks | Exercise updated bounds after layout/scale/scroll changes and the proposed absent/ambiguous-target feedback without activating another control. |
-| Proposed retirement checks | Exercise the proposed Back/Home/Lock and context/input/session retirement of original held state, with no inheritance/replay into a successor. Host submission and app-observed results are distinguished. |
-| Proposed app verification | ChatGPT is the initial candidate for UI discovery and Click mode, not an already accepted mandatory compatibility claim. Select a real hold-capable control for Hold mode. A controllable fixture verifies exact edges without substituting for the selected real app result. |
-| Proposed walking verification | Ask the Owner to assess activation while head movement makes precise aiming difficult. Host tests or synthetic pointer motion alone do not establish ergonomic success. |
-| Proposed regression selection | Check ordinary Tap/hold/drag/scroll, EyeProjector Home, settings, scale, notifications, projection sleep/wake, camera and existing audio behavior against the accepted baseline. |
+| Planned changed/missing-target checks | Exercise updated bounds after layout/scale/scroll changes and the specified absent/ambiguous-target feedback without activating another control. |
+| Planned retirement checks | Exercise the specified Back/Home/Lock and context/input/session retirement of original held state, with no inheritance/replay into a successor. Host submission and app-observed results are distinguished. |
+| Planned app verification | ChatGPT is the initial candidate for UI discovery and Click mode, not an already accepted mandatory compatibility claim. Select a real hold-capable control for Hold mode. A controllable fixture verifies exact edges without substituting for the selected real app result. |
+| Planned walking verification | Ask the Owner to assess activation while head movement makes precise aiming difficult. Host tests or synthetic pointer motion alone do not establish ergonomic success. |
+| Planned regression selection | Check ordinary Tap/hold/drag/scroll, EyeProjector Home, settings, scale, notifications, projection sleep/wake, camera and existing audio behavior against the accepted baseline. |
 
-## Implementation details still for review
+## Implementation and acceptance boundary
 
-The Home destinations and always-explicit Click/Hold choice are Owner-defined and published. The proposed completion rules remain for implementation-plan review: Home transition lifetimes/settings subpages, registration chooser/cancel, unavailable-target feedback, held-contact cancellation, Clear Anchor and preference retention on app removal. These are concrete recommendations so they can be accepted or corrected together.
+The Owner has authorized the published specification and small-issue plan to be implemented. This does not establish actual native gesture delivery, managed-display UI visibility, target-app compatibility or final release acceptance. New policy outside the described behavior requires its own decision; demonstrated platform limits are reported with evidence.
 
 The native event-delivery and managed-display UI-tree checks are engineering validation work, not additional product-choice questions. A demonstrated platform limitation is reported with evidence rather than silently changing the requested behavior.

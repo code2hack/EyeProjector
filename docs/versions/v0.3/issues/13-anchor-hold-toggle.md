@@ -1,22 +1,22 @@
 # V03-13: Extend the same owner with stationary Hold and complete retirement
 
-Status: **Draft issue outline; not a canonical GitHub issue or implementation assignment.**
+Status: **Published; implementation authorized.** Canonical issue: [#123](https://github.com/code2hack/EyeProjector/issues/123). Actual dispatch and review status live in that issue and the private runtime.
 
 Blocked by: [V03-04](04-contextual-navigation.md), [V03-12](12-anchor-click-owner.md)
 
-Decision references: [v0.3 specification](../SPEC.md), [draft plan](../README.md). Owner-defined behavior and marked completion/validation proposals retain their different status; this outline does not approve a proposal.
+Decision references: [v0.3 specification](../SPEC.md), [draft plan](../README.md). The Owner authorized the published plan to start on2026-10-31; its documented completion behavior is the implementation direction. Unrelated new restrictions retain the AGENTS approval procedure.
 
 ## Objective
 
 Keep one selected target contact down across physical Function release and release it on the next activation.
 
-## Proposed scope
+## Scope
 
 - Extend the V03-12 owner; no parallel or competing contact latch.
 - First activation -> DOWN; next -> original UP without a fresh target match; head motion does not MOVE it.
 - Include original-context/window/input handoff, navigation, resize/scale, settings changes and session close retirement in this first Hold candidate.
 
-## Proposed acceptance and evidence
+## Acceptance and evidence
 
 - Physical Function release leaves the logical contact held; next activation releases the same contact exactly once.
 - UP of an existing held contact does not require a fresh resolver/storage lookup or a new node identity.
@@ -25,4 +25,4 @@ Keep one selected target contact down across physical Function release and relea
 
 ## Dispatch boundary
 
-After the Owner authorizes the plan, the Manager allocates exact files/interfaces, a version-branch base, one Worker, an independent Reviewer, a dedicated worktree and evidence/resources. Shared writers and device windows are coordinated. This outline authorizes no source, device or public issue operation by itself.
+The Manager allocates exact files/interfaces, a version-branch base, one Worker, an independent Reviewer, a dedicated worktree and evidence/resources. Shared writers and device windows are coordinated. Source/device/public operations remain bound to that recorded assignment and its resources.
