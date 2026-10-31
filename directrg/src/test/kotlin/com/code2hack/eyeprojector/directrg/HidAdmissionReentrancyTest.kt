@@ -1,6 +1,6 @@
 package com.code2hack.eyeprojector.directrg
 
-import com.code2hack.eyeprojector.directrg.FunctionGestureRecognizer.Action
+import com.code2hack.eyeprojector.protocol.FunctionIntentKind
 import com.code2hack.eyeprojector.directrg.HidKeyInput.Phase
 import com.code2hack.eyeprojector.protocol.Touch
 import org.junit.Assert.*
@@ -19,7 +19,7 @@ class HidAdmissionReentrancyTest {
         val output = mutableListOf<HeldPointerDispatcher.Event>()
         val offeredOwners = mutableListOf<Any>()
         val timers = mutableListOf<Timer>()
-        val actions = mutableListOf<Action>()
+        val actions = mutableListOf<FunctionIntentKind>()
         val bindings = HidBindings({ null }, { true })
         val tap = HidBinding(HidButton(HidDeviceIdentity("actual descriptor", 17, 29), 30, 40), "Actual peripheral", "Tap")
         val function = tap.copy(button = tap.button.copy(keyCode = 31, scanCode = 41), keyLabel = "Function")
@@ -44,7 +44,7 @@ class HidAdmissionReentrancyTest {
             onContact(token, event)
             // The Activity also admits a DOWN only while this exact HID owner remains current.
             if (event.phase != PadGestureRecognizer.Phase.DOWN || inputOwns(token)) owner.accept(token, event)
-        }, { token, at -> owner.cancel(token, at) }, { _, _, _ -> error("unexpected scroll") }, { actions.add(it) })
+        }, { token, at -> owner.cancel(token, at) }, { _, _, _ -> error("unexpected scroll") }, { actions.add(it.kind) })
 
         init {
             assertTrue(bindings.assign(HidAction.TAP, tap))
@@ -255,10 +255,7 @@ class HidAdmissionReentrancyTest {
         r.assertEdges(Touch.Phase.DOWN to 1_000L, Touch.Phase.CANCEL to 1_000L,
             Touch.Phase.DOWN to 1_100L, Touch.Phase.UP to 1_100L)
         assertFalse(r.dispatcher.holding)
-        r.advance(1_659)
-        assertTrue(r.actions.isEmpty())
-        r.advance(1_660)
-        assertEquals(listOf(Action.SINGLE), r.actions)
+        assertEquals(listOf(FunctionIntentKind.ACTIVATE), r.actions)
     }
 
     @Test fun otherAttachmentCancelCallbackAdmissionOwnsSharedContactAndItsActualUp() {
@@ -421,10 +418,7 @@ class HidAdmissionReentrancyTest {
         assertTrue(r.edge(Phase.UP, 1_120, 1_160, binding = r.function, attachment = 8))
         r.assertEdges(Touch.Phase.DOWN to 1_000L, Touch.Phase.CANCEL to 1_000L,
             Touch.Phase.DOWN to 1_100L, Touch.Phase.UP to 1_100L)
-        r.advance(1_659)
-        assertTrue(r.actions.isEmpty())
-        r.advance(1_660)
-        assertEquals(listOf(Action.SINGLE), r.actions)
+        assertEquals(listOf(FunctionIntentKind.ACTIVATE), r.actions)
         assertFalse(r.dispatcher.holding)
     }
 

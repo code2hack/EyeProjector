@@ -3,7 +3,7 @@ package com.code2hack.eyeprojector.directrg
 import java.util.PriorityQueue
 import org.junit.Assert.*
 import org.junit.Test
-import com.code2hack.eyeprojector.directrg.FunctionGestureRecognizer.Action
+import com.code2hack.eyeprojector.protocol.FunctionIntentKind
 import com.code2hack.eyeprojector.directrg.HidKeyInput.Phase
 
 class HidKeyInputTest {
@@ -31,7 +31,7 @@ class HidKeyInputTest {
         val contacts = mutableListOf<Contact>()
         val cancellations = mutableListOf<Cancellation>()
         val scrolls = mutableListOf<Scroll>()
-        val actions = mutableListOf<Action>()
+        val actions = mutableListOf<FunctionIntentKind>()
         val timers = mutableListOf<Timer>()
         private val queue = PriorityQueue<Timer>(compareBy<Timer> { it.at }.thenBy { it.order })
         val input = HidKeyInput(bindings, { now }, { context }, { at, run ->
@@ -42,7 +42,7 @@ class HidKeyInputTest {
             cancel
         }, { positionReads++; onPosition(); point }, { owner, event -> contacts.add(Contact(owner, event)) },
             { owner, at -> cancellations.add(Cancellation(owner, at)); onCancelContact() },
-            { amount, position, at -> scrolls.add(Scroll(amount, position, at)) }, { actions.add(it) }, { changes++ },
+            { amount, position, at -> scrolls.add(Scroll(amount, position, at)) }, { actions.add(it.kind) }, { changes++ },
             { captureReads++; val found = target; onCaptureTarget(); found })
 
         init { buttons.forEach { (action, binding) -> assertTrue(bindings.assign(action, binding)) } }
@@ -383,10 +383,7 @@ class HidKeyInputTest {
             r.contacts.map { it.event.phase })
         assertSame(r.contacts[0].owner, r.contacts[1].owner)
         assertTrue(r.cancellations.isEmpty())
-        r.advance(489)
-        assertTrue(r.actions.isEmpty())
-        r.advance(1)
-        assertEquals(listOf(Action.SINGLE), r.actions)
+        assertEquals(listOf(FunctionIntentKind.ACTIVATE), r.actions)
         assertNull(r.input.selected)
     }
 
@@ -448,7 +445,7 @@ class HidKeyInputTest {
     @Test fun freshCaptureRetiresHeldAndPendingFunctionWorkWithoutProducingConstituentActions() {
         val r = Rig()
         assertTrue(r.edge(HidAction.TAP, Phase.DOWN))
-        r.clickFunction()
+        assertTrue(r.edge(HidAction.FUNCTION, Phase.DOWN))
         val stale = r.timers.toList()
         val captured = r.unbound()
         r.target = HidAction.SCROLL_UP
@@ -532,10 +529,7 @@ class HidKeyInputTest {
         assertTrue(r.edge(HidAction.FUNCTION, Phase.UP, at = 1130, down = 1110))
         assertTrue(r.edge(captured, Phase.UP, at = 1140, down = 1100))
         assertTrue(r.edge(HidAction.FUNCTION, Phase.UP, at = 1150, down = 1010))
-        r.advance(479)
-        assertTrue(r.actions.isEmpty())
-        r.advance(1)
-        assertEquals(listOf(Action.SINGLE), r.actions)
+        assertEquals(listOf(FunctionIntentKind.ACTIVATE), r.actions)
         assertEquals(captured, r.bindings.binding(HidAction.SCROLL_UP))
         assertNull(r.input.selected)
         assertEquals(1, r.contacts.size)
@@ -604,24 +598,30 @@ class HidKeyInputTest {
         assertEquals(listOf(PadGestureRecognizer.Phase.DOWN, PadGestureRecognizer.Phase.DOWN, PadGestureRecognizer.Phase.UP), r.contacts.map { it.event.phase })
     }
 
-    @Test fun functionClassifiesOnlyTheCompletedSingleDoubleOrTripleAfterItsQuietDeadline() {
-        val expected = listOf(Action.SINGLE, Action.DOUBLE, Action.TRIPLE)
+    @Test fun functionCompletesEveryShortIndividuallyWithoutNavigationClassification() {
         for (count in 1..3) {
             val r = Rig()
             repeat(count) { index ->
                 if (index != 0) r.advance(100)
                 r.clickFunction()
-                assertTrue(r.actions.isEmpty())
+                assertEquals(List(index + 1) { FunctionIntentKind.ACTIVATE }, r.actions)
             }
-            r.advance(499)
-            assertTrue(r.actions.isEmpty())
-            r.advance(1)
-            assertEquals(listOf(expected[count - 1]), r.actions)
             r.advance(1000)
-            assertEquals(1, r.actions.size)
+            assertEquals(List(count) { FunctionIntentKind.ACTIVATE }, r.actions)
             assertTrue(r.contacts.isEmpty())
             assertTrue(r.scrolls.isEmpty())
         }
+    }
+
+    @Test fun functionDurationUsesOriginalEdgeTimesWhenReceiptIsDelayed() {
+        val r = Rig()
+        r.now = 3000
+        val binding = r.buttons.getValue(HidAction.FUNCTION)
+        assertTrue(r.input.accept(HidKeyInput.Event(7, binding, Phase.DOWN, 1000, 1000)))
+        assertTrue(r.input.accept(HidKeyInput.Event(7, binding, Phase.UP, 1000, 1800)))
+        assertEquals(listOf(FunctionIntentKind.REGISTER), r.actions)
+        r.advance(1000)
+        assertEquals(listOf(FunctionIntentKind.REGISTER), r.actions)
     }
 
     @Test fun functionHeldLongUsesTheAbsoluteDeadlineAndReleaseCannotBecomeASingle() {
@@ -632,20 +632,20 @@ class HidKeyInputTest {
         r.advance(549)
         assertTrue(r.actions.isEmpty())
         r.advance(1)
-        assertEquals(listOf(Action.LONG), r.actions)
+        assertEquals(listOf(FunctionIntentKind.REGISTER), r.actions)
         assertTrue(r.edge(HidAction.FUNCTION, Phase.UP, at = 1900, down = 1000))
         assertTrue(r.edge(HidAction.FUNCTION, Phase.UP, at = 1910, down = 1000))
         r.advance(1000)
-        assertEquals(listOf(Action.LONG), r.actions)
+        assertEquals(listOf(FunctionIntentKind.REGISTER), r.actions)
         r.clickFunction()
         r.advance(500)
-        assertEquals(listOf(Action.LONG, Action.SINGLE), r.actions)
+        assertEquals(listOf(FunctionIntentKind.REGISTER, FunctionIntentKind.ACTIVATE), r.actions)
     }
 
     @Test fun canceledDeviceOrFocusCannotDispatchEvenWhenCanceledSchedulerCallbacksArriveLate() {
         for (deviceLoss in listOf(false, true)) {
             val r = Rig()
-            r.clickFunction()
+            assertTrue(r.edge(HidAction.FUNCTION, Phase.DOWN))
             val stale = r.timers.toList()
             if (deviceLoss) r.input.cancelDevice(7) else r.input.cancel()
             stale.forEach { it.run() }
@@ -654,20 +654,20 @@ class HidKeyInputTest {
             assertTrue(r.edge(HidAction.FUNCTION, Phase.UP, down = 1000))
             r.clickFunction()
             r.advance(500)
-            assertEquals(listOf(Action.SINGLE), r.actions)
+            assertEquals(listOf(FunctionIntentKind.ACTIVATE), r.actions)
         }
     }
 
     @Test fun newRuntimeAttachmentCannotCompleteThePreviousAttachmentsPendingFunctionSequence() {
         val r = Rig()
-        r.clickFunction(attachment = 7)
+        assertTrue(r.edge(HidAction.FUNCTION, Phase.DOWN, attachment = 7))
         val stale = r.timers.toList()
         assertTrue(r.edge(HidAction.FUNCTION, Phase.DOWN, attachment = 8))
         stale.forEach { it.run() }
         assertTrue(r.edge(HidAction.FUNCTION, Phase.UP, at = 1040, down = 1000, attachment = 7))
-        assertTrue(r.edge(HidAction.FUNCTION, Phase.UP, at = 1040, down = 1020, attachment = 8))
+        assertTrue(r.edge(HidAction.FUNCTION, Phase.UP, at = 1040, down = 1000, attachment = 8))
         r.advance(500)
-        assertEquals(listOf(Action.SINGLE), r.actions)
+        assertEquals(listOf(FunctionIntentKind.ACTIVATE), r.actions)
     }
 
     @Test fun canceledOldAttachmentCannotCancelTheNewAttachmentsHeldFunctionSequence() {
@@ -676,18 +676,15 @@ class HidKeyInputTest {
         assertTrue(r.edge(HidAction.FUNCTION, Phase.DOWN, at = 1010, attachment = 8))
         assertTrue(r.edge(HidAction.FUNCTION, Phase.CANCEL, at = 1020, down = 1000, attachment = 7))
         assertTrue(r.edge(HidAction.FUNCTION, Phase.UP, at = 1030, down = 1010, attachment = 8))
-        r.advance(499)
-        assertTrue(r.actions.isEmpty())
-        r.advance(1)
-        assertEquals(listOf(Action.SINGLE), r.actions)
+        assertEquals(listOf(FunctionIntentKind.ACTIVATE), r.actions)
         r.advance(1000)
-        assertEquals(listOf(Action.SINGLE), r.actions)
+        assertEquals(listOf(FunctionIntentKind.ACTIVATE), r.actions)
     }
 
     @Test fun contextChangesCancelPendingFunctionAndHeldTapInsteadOfReleasingIntoTheNewContext() {
         for (nextContext in listOf("projection-2", "settings", null)) {
             val r = Rig()
-            r.clickFunction()
+            assertTrue(r.edge(HidAction.FUNCTION, Phase.DOWN))
             r.context = nextContext
             r.advance(500)
             assertTrue(r.actions.isEmpty())
