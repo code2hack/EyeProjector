@@ -15,6 +15,13 @@
         <activity android:name=".ToneActivity" android:exported="true" />
         <activity android:name=".MicrophoneRouteActivity" android:exported="true" />
         <activity
+            android:name=".UiTargetFixtureActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:taskAffinity="com.code2hack.eyeprojector.hostprobe.uitargetfixture"
+            android:resizeableActivity="true" />
+        <activity
             android:name=".FixtureActivity"
             android:excludeFromRecents="true"
             android:exported="true"
