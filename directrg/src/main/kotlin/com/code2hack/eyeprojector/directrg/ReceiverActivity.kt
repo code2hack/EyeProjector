@@ -30,6 +30,10 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import com.code2hack.eyeprojector.protocol.Touch
+import com.code2hack.eyeprojector.protocol.CapturedFunctionIntent
+import com.code2hack.eyeprojector.protocol.FunctionIntent
+import com.code2hack.eyeprojector.protocol.FunctionIntentContext
+import com.code2hack.eyeprojector.protocol.FunctionSource
 import com.code2hack.eyeprojector.protocol.HeadPointerState
 import com.code2hack.eyeprojector.protocol.ReceiverInputKind
 import com.code2hack.eyeprojector.protocol.Fit
@@ -376,14 +380,13 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             if (usable()) gestures.classifyLongPress(at) else gestures.cancel(at)
             schedulePadConfirmation()
         }
-        val functionNavigation = FunctionNavigation(::projectionFunctionDouble, ::localFunctionDouble,
-            ::contextualBack, ::sleepGlasses)
         functionInput = NativeFunctionInput(this,
-            { if (usable()) Pair(session, projectionContext) else null },
-            { action -> functionNavigation.dispatch(action, projectionContext) },
+            ::functionContext,
+            { gesture -> dispatchFunction(FunctionSource.GLASSES_NATIVE, gesture) },
+            capture = ::captureFunction,
         )
         hidInput = HidKeyInput(hidBindings, SystemClock::uptimeMillis,
-            { if (usable()) Pair(session, projectionContext) else null },
+            ::functionContext,
             { deadline, action ->
                 val task = Runnable(action)
                 val handler = android.os.Handler(android.os.Looper.getMainLooper())
@@ -402,9 +405,10 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             },
             { owner, at -> heldOwner.cancel(owner, at); updateEdgeScroll() },
             { pixels, point, at -> dispatchPadAction(PadGestureRecognizer.Action.Scroll(pixels, point, at)) },
-            { action -> functionNavigation.dispatch(action, projectionContext) },
+            { gesture -> dispatchFunction(FunctionSource.GLASSES_HID, gesture) },
             { if (::hidPanel.isInitialized) hidPanel.refresh() },
             ::hoveredHidAction,
+            functionCapture = ::captureFunction,
         )
         hidDevices = AndroidHidInput(this, hidInput) { event ->
             if (::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE && connectionView.visibility == View.VISIBLE)
@@ -472,6 +476,34 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             position.x, position.y, fit, size), pointer.expiresAtNs)
     }
 
+    private data class FunctionCapture(val source: ProjectionSession, val context: FunctionIntentContext)
+
+    private fun functionContext(): Any? = if (usable()) Triple(inputGeneration, session, projectionContext) else null
+
+    /** Read the original hover once. Pointer callbacks may retire ownership, so recheck that capture. */
+    private fun captureFunction(expected: Any): FunctionCapture? {
+        val source = session ?: return null
+        val original = functionContext() ?: return null
+        if (original != expected) return null
+        val position = pointer.inputPosition()
+        publishHeadPointer()
+        val size = currentGeometry
+        val fit = size?.takeIf { root.width > 0 && root.height > 0 }?.let { Fit.inside(root.width, root.height, it) }
+        val projected = connectionView.visibility != View.VISIBLE
+        val point = HeadPointerState(inputGeneration, 0, usable() && position.available && (!projected || fit != null && projectedInput()),
+            projected, position.x, position.y, fit, if (fit != null) size else null)
+        if (functionContext() != original || session !== source) return null
+        val captured = source.captureFunctionContext(point) ?: return null
+        return FunctionCapture(source, captured)
+    }
+
+    private fun dispatchFunction(source: FunctionSource, gesture: FunctionGestureRecognizer.Gesture) {
+        val captured = gesture.original as FunctionCapture
+        if (!usable() || session !== captured.source || inputGeneration != captured.context.pointer.revision) return
+        val intent = FunctionIntent(gesture.kind, source, gesture.gestureId, gesture.sequence, captured.context)
+        captured.source.functionIntent(CapturedFunctionIntent(intent, captured.source))
+    }
+
     private fun usable() = resumed && hasWindowFocus()
     private fun projectedInput() = streaming && presentation.projectedInput
 
@@ -491,8 +523,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             ReceiverInputKind.HOME -> dispatchNavigation(ContextualNavigationAction.HOME)
             ReceiverInputKind.LOCK -> dispatchNavigation(ContextualNavigationAction.LOCK)
             ReceiverInputKind.EXIT -> exitToLauncher()
-            ReceiverInputKind.FUNCTION_DOUBLE -> contextualFunctionDouble()
-            ReceiverInputKind.SLEEP -> sleepGlasses()
+            ReceiverInputKind.FUNCTION_DOUBLE, ReceiverInputKind.SLEEP -> Unit // Reserved legacy IDs.
             else -> Unit
         }
     }
@@ -536,17 +567,6 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         hidPanel.refresh()
         connectionView.scrollTo(0, 0)
         resize()
-    }
-    internal fun projectionFunctionDouble() {
-        if (!usable() || !projectedInput()) return
-        cancelInput(); session?.navigate(Navigation.FUNCTION_DOUBLE)
-    }
-    private fun localFunctionDouble() {
-        if (::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE) showControlPanel()
-        else exitToLauncher()
-    }
-    private fun contextualFunctionDouble() {
-        if (projectionContext) projectionFunctionDouble() else localFunctionDouble()
     }
     internal fun contextualHome() {
         if (!usable()) return

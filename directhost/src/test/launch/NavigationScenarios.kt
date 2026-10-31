@@ -16,7 +16,7 @@ private fun Fixture.receiverEvents(): List<ReceiverInput> {
     return events
 }
 
-fun main() {
+fun navigationScenarios() {
     val size = Geometry(480, 640)
     Fixture().use { f ->
         f.fusionGeometry(); f.pointer()
@@ -79,3 +79,5 @@ fun main() {
     }
     println("PASS 5 actual Session navigation scenarios; host API doubles, no device proof")
 }
+
+fun main() = navigationScenarios()

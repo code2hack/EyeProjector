@@ -33,14 +33,9 @@ fun functionFailureScenarios() {
             val restoreEntered = CountDownLatch(1)
             val allowRestore = CountDownLatch(1)
             val caller = AtomicReference<Thread>()
-            val back = Scrcpy.navigate(Navigate(Navigation.BACK, Geometry(480, 640)))
             f.control.sink = object : OutputStream() {
                 override fun write(value: Int) = error("Expected whole stock messages")
                 override fun write(data: ByteArray) {
-                    if (data.contentEquals(back) && stockBack) {
-                        caller.set(Thread.currentThread()); failed.countDown()
-                        throw IOException("modeled Function stock Back failure")
-                    }
                     if (data.contentEquals(byteArrayOf(10, 1))) {
                         events.add("restore-enter"); restoreEntered.countDown()
                         check(allowRestore.await(4, TimeUnit.SECONDS))
@@ -50,12 +45,10 @@ fun functionFailureScenarios() {
                 }
                 override fun close() { events.add("control-close") }
             }
-            if (!stockBack) f.set("output", DataOutputStream(object : OutputStream() {
-                override fun write(value: Int) {
-                    caller.set(Thread.currentThread()); failed.countDown()
-                    throw IOException("modeled Function completed UI TLS failure")
-                }
-            }))
+            (f.session as com.code2hack.eyeprojector.directhost.input.FunctionIntentRoute).functionIntents.activate = {
+                caller.set(Thread.currentThread()); failed.countDown()
+                throw IOException("modeled typed Function consumer failure")
+            }
             val off = f.type.getDeclaredMethod("requestPanelOff", Long::class.javaPrimitiveType)
                 .apply { isAccessible = true }.invoke(f.session, 81L) as PanelPowerState
             check(off.off == PanelSubmission.SUBMITTED)
@@ -86,8 +79,8 @@ fun functionFailureScenarios() {
                 val ordered = events.indexOf("restore-submitted") in 0 until events.indexOf("control-close")
                 val cleaned = f.peer.released && f.video.released && f.control.released && !child.alive
                 val passed = joinedRelease && !premature && ordered && cleaned && !events.contains("child-interrupted")
-                if (!passed) failures.add("${if (stockBack) "Back" else "TLS"}: join=$joinedRelease, premature=$premature, events=$events, childAlive=${child.alive}")
-                println("${if (passed) "PASS" else "FAIL"} actual Session Function ${if (stockBack) "Back" else "TLS"} failure self-close: join=$joinedRelease, ordered=$ordered, cleaned=$cleaned, events=$events")
+                if (!passed) failures.add("${if (stockBack) "projected hook" else "local hook"}: join=$joinedRelease, premature=$premature, events=$events, childAlive=${child.alive}")
+                println("${if (passed) "PASS" else "FAIL"} actual Session Function ${if (stockBack) "projected hook" else "local hook"} failure self-close: join=$joinedRelease, ordered=$ordered, cleaned=$cleaned, events=$events")
             } finally { allowRestore.countDown() }
         }
     }

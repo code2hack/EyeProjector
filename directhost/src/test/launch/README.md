@@ -20,3 +20,20 @@ R1 correction binds user intent before any executor hop. Fixed Home intents carr
 The ten Session/service cases compile actual `ShizukuHostService`, `OwnedHostLifecycle`, route metadata, `Bridge`, `Session` and launch/cleanup components. The original public Shizuku constructor retains Android provisioning; an internal constructor supplies temporary sessions and a real Bridge factory for host tests, with a modeled listener instead of provisioning/network. Tests cover late creation after Stop, old-owner and same-owner/new-Session requests, fresh positives, exact captured-target behavior and conditional retirement with repeated epoch text, retaining all four earlier cleanup cases. External Android APIs are doubled. These runs do not establish Android Binder/device execution.
 
 In a Manager-granted device window, the existing host instrumentation runner accepts `operation=projected-home` and an explicit `projectionDisplayId` from that exact backend. It checks Activity placement, isolated fixture preference updates, saved order/availability and icon callback routing without editing the real selection. Assembled-device launch/Home/switch cycles, absence of a system taskbar, physical Phone isolation and native app rendering still need evidence on the supported devices and four target apps.
+
+The Function intention composition uses a binary artifact emitted by the actual Glasses
+ProjectionSession test. After running `FunctionIntentTransportTest` with
+`EYEPROJECTOR_FUNCTION_PRODUCER_EVIDENCE` set to a private evidence directory, run:
+
+```sh
+EYEPROJECTOR_FUNCTION_PRODUCER_EVIDENCE=/absolute/evidence \
+  python3 directhost/src/test/launch/run.py --function-intents-only --output-dir /absolute/new/consumer-evidence
+```
+
+It decodes those exact producer bytes through the actual Phone Session, observes typed
+registration/activation hooks bound to that same Session, exercises actual Phone HID production,
+and verifies queued work cannot inherit a replacement context. The hook has no target,
+preference or output-contact implementation. This is a host transport composition, not a
+physical LAN, firmware or target-app result. The runner also supports `--navigation-only`,
+`--stop-race-only` and `--function-failure-only` to exercise retained navigation and retirement.
+All modes use the recorded compiled class closure from the focused Gradle build.

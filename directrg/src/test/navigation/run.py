@@ -24,7 +24,7 @@ spec.loader.exec_module(parser)
 source = (actual / 'ReceiverActivity.kt').read_text()
 names = ['dispatchNavigation', 'completedNavigation', 'contextualHome', 'contextualBack', 'remoteBack',
          'sleepGlasses', 'showControlPanel', 'cancelInput', 'exitToLauncher', 'cancelOriginalOnExit',
-         'finishProjection', 'contextualFunctionDouble', 'projectionFunctionDouble', 'localFunctionDouble']
+         'finishProjection']
 blocks = [parser.block(source, rf'^    (?:private|internal) fun {name}\(') for name in names]
 getter = re.search(r'^    internal val projectionContext:.*$', source, re.M).group()
 initializer = re.search(r'^        completedInput = CompletedReceiverInput\(.*?::completedNavigation\)', source, re.M | re.S).group()
@@ -35,7 +35,7 @@ generated.write_text(fixture)
 protocol = root / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
 files = [generated, suite / 'Boundaries.kt', suite / 'Scenarios.kt']
 files += [actual / (n + '.kt') for n in ['ContextualNavigation', 'CompletedReceiverInput', 'SessionPresentation']]
-files += [protocol / n for n in ['Wire.kt', 'PhoneInput.kt', 'Touch.kt', 'LayoutScale.kt', 'ReceiverUsability.kt', 'ActivationControl.kt', 'CameraFeed.kt']]
+files += [protocol / n for n in ['Wire.kt', 'PhoneInput.kt', 'Touch.kt', 'LayoutScale.kt', 'ReceiverUsability.kt', 'ActivationControl.kt', 'CameraFeed.kt', 'FunctionIntent.kt']]
 cache = Path(os.environ.get('GRADLE_USER_HOME', Path.home() / '.gradle')) / 'caches/modules-2/files-2.1'
 dependencies = ['org.jetbrains.kotlin/kotlin-compiler-embeddable/2.2.21', 'org.jetbrains.kotlin/kotlin-stdlib/2.2.21',
                 'org.jetbrains.kotlin/kotlin-script-runtime/2.2.21', 'org.jetbrains.kotlin/kotlin-reflect/1.6.10',

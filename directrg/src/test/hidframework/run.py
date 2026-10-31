@@ -136,6 +136,9 @@ def main():
         'FunctionGestureRecognizer.kt', 'PadGestureRecognizer.kt', 'HeadPointerModel.kt', 'HeadOrientation.kt',
         'LocalInputSettings.kt', 'LocalInputSettingsPanel.kt',
     )]
+    protocol = root / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
+    production_paths += [protocol / n for n in ('Wire.kt', 'Touch.kt', 'PhoneInput.kt', 'ReceiverUsability.kt',
+        'ActivationControl.kt', 'CameraFeed.kt', 'FunctionIntent.kt')]
     suite_paths = sorted((suite / 'doubles').glob('*.kt')) + [suite / 'Scenarios.kt']
     extraction_paths = [production / 'ReceiverActivity.kt', production / 'NativePadInput.kt']
     metadata_paths = [suite / 'run.py', suite / 'README.md']

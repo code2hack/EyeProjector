@@ -15,13 +15,14 @@ import android.os.SystemClock
 internal class NativeFunctionInput(
     private val context: Context,
     currentContext: () -> Any?,
-    dispatch: (FunctionGestureRecognizer.Action) -> Unit,
+    dispatch: (FunctionGestureRecognizer.Gesture) -> Unit,
     now: () -> Long = SystemClock::uptimeMillis,
     schedule: (Long, () -> Unit) -> (() -> Unit) = handlerSchedule(),
     timing: FunctionGestureRecognizer.Timing = FunctionGestureRecognizer.Timing(),
+    capture: (Any) -> Any? = { it },
 ) {
     private var registered = false
-    private val recognizer = FunctionGestureRecognizer(now, { if (registered) currentContext() else null }, schedule, dispatch, timing)
+    private val recognizer = FunctionGestureRecognizer(now, { if (registered) currentContext() else null }, schedule, dispatch, timing, capture = capture, identity = identities)
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (!registered) return
@@ -56,6 +57,7 @@ internal class NativeFunctionInput(
     }
 
     companion object {
+        private val identities = FunctionGestureRecognizer.Identity()
         private val REPORTS = mapOf(
             "com.android.action.ACTION_SPRITE_BUTTON_DOWN" to FunctionGestureRecognizer.Report.DOWN,
             "com.android.action.ACTION_SPRITE_BUTTON_UP" to FunctionGestureRecognizer.Report.UP,

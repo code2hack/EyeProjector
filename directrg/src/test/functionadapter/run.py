@@ -1,171 +1,39 @@
 #!/usr/bin/env python3
-"""Production Function adapter plus exact Activity blocks on host API boundaries."""
-import argparse
-import hashlib
-import importlib.util
-import json
-import os
+"""Compile exact Activity Function callbacks and actual native/HID adapters on host boundaries."""
+import argparse, hashlib, importlib.util, json, os, subprocess
 from pathlib import Path
-import re
-import subprocess
-import sys
-
-
-def digest(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--source-dir', type=Path, required=True)
-    parser.add_argument('--output-dir', type=Path, required=True)
-    args = parser.parse_args()
-    root, out = args.source_dir.resolve(), args.output_dir.resolve()
-    out.mkdir(parents=True, exist_ok=True)
-    suite = root / 'directrg/src/test/functionadapter'
-    helper = root / 'directrg/src/test/widgetdiagnostics/run.py'
-    spec = importlib.util.spec_from_file_location('source_blocks', helper)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    actual = root / 'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg'
-    activity = actual / 'ReceiverActivity.kt'
-    source = activity.read_text()
-    init = re.search(r'        val functionNavigation = FunctionNavigation\(.*?\n        \)\n', source, re.S)
-    if not init:
-        parser.error('Missing unique Function initialization in actual Activity')
-    names = ['remoteBack', 'showHidBindings', 'showControlPanel', 'projectionHome', 'contextualBack', 'exitToLauncher',
-             'cancelInput', 'disconnect', 'onResume', 'onWindowFocusChanged', 'onPause', 'onDestroy']
-    blocks = {name: module.block(source, rf'\bfun {name}\(') for name in names}
-    signatures = {}
-    for name in names:
-        m = re.search(rf'^\s*((?:(?:private|internal|override) )?fun {name}\([^\n]*?\))\s*\{{', source, re.M)
-        if not m:
-            parser.error(f'Missing exact method signature: {name}')
-        signatures[name] = m[1]
-    projection = re.search(r'internal val projectionContext: Boolean get\(\) = ([^\n]+)', source)[1]
-    generated = out / 'ActivityFunctionWiring.kt'
-    generated.write_text('''package com.code2hack.eyeprojector.directrg
-import android.app.Activity
-import android.content.Intent
-import android.os.SystemClock
-import android.view.View
-import android.view.WindowManager
-import java.io.File
-
-// Methods and initialization below are extracted verbatim from the supplied Activity.
-// Boundary types do not model Android navigation, decoder operation or framework dispatch.
-internal class ActivityFunctionWiring : Activity() {
-    lateinit var functionInput: NativeFunctionInput
-    lateinit var hidInput: Boundary
-    val hidDevices = Boundary()
-    lateinit var heldOwner: Boundary
-    lateinit var hidPanel: Boundary
-    val mainControls = Boundary()
-    lateinit var gestures: Boundary
-    lateinit var heldInput: Boundary
-    lateinit var padContact: Boundary
-    lateinit var screen: Boundary
-    lateinit var completedInput: Boundary
-    lateinit var localInput: Boundary
-    val pointer = Boundary()
-    lateinit var longTouch: Boundary
-    val pairingPanel = Boundary()
-    lateinit var root: Boundary
-    val edgeMotion = Boundary()
-    val window = Boundary()
-    val connectionView = Boundary()
-    val connectButton = Boundary()
-    val presentation = SessionPresentation()
-    var owner: ReceiverSessionOwner? = ReceiverSessionOwner { session = null; streaming = false; presentation.disconnected() }
-    var session: Session? = null
-        set(value) { field = value; owner?.session = value }
-    var bound = false
-    val serviceConnection = Any()
-    val sessionView = Any()
-    var disconnectBeforeBinding = false
-    var connectBeforeBinding = false
-    var resumed = true
-    var streaming = false
-    var currentGeometry: Any? = null
-    var connectRequested = false
-    var edgeScheduled = false
-    var inputGeneration = 0L
-    val confirmTap = Runnable {}
-    val edgeTick = Runnable {}
-    var resizes = 0
-    var observed = 0
-    init {
-        root = Boundary(); longTouch = Boundary()
-        gestures = Boundary(); heldInput = Boundary(); padContact = Boundary()
-        screen = Boundary(); localInput = Boundary(); completedInput = Boundary()
-        hidPanel = Boundary().apply { visibility = View.GONE }
-        hidInput = Boundary()
-''' + init[0] + '''
-    }
-    private fun usable() = resumed && hasWindowFocus()
-    private fun projectedInput() = streaming && presentation.projectedInput
-    private fun publishHeadPointer() {}
-    private fun resize() { cancelInput(); resizes++ }
-    private fun attachPresentation() { owner?.attach() }
-    private fun stopService(intent: Intent): Boolean { owner?.close(); return true }
-    private fun unbindService(connection: Any) {}
-    private fun showStatus(text: String) {}
-    private fun getString(id: Int) = "resource-$id"
-    fun invalidate() = cancelInput()
-    fun openBindings() = showHidBindings()
-    internal val projectionContext: Boolean get() = ''' + projection + '\n' +
-        '\n'.join(signatures[n] + ' {' + blocks[n] + '}\n' for n in names) + '\n}\n')
-    production = [actual / n for n in ('FunctionGestureRecognizer.kt', 'NativeFunctionInput.kt', 'SessionPresentation.kt')]
-    sources = production + sorted((suite / 'doubles').glob('*.kt')) + [suite / 'Scenarios.kt', generated]
-    cache = Path(os.environ.get('GRADLE_USER_HOME', Path.home() / '.gradle')) / 'caches/modules-2/files-2.1'
-    deps = [('org.jetbrains.kotlin', 'kotlin-compiler-embeddable', '2.2.21'),
-            ('org.jetbrains.kotlin', 'kotlin-stdlib', '2.2.21'),
-            ('org.jetbrains.kotlin', 'kotlin-script-runtime', '2.2.21'),
-            ('org.jetbrains.kotlin', 'kotlin-reflect', '1.6.10'),
-            ('org.jetbrains.intellij.deps', 'trove4j', '1.0.20200330'),
-            ('org.jetbrains.kotlinx', 'kotlinx-coroutines-core-jvm', '1.8.0'),
-            ('org.jetbrains', 'annotations', '13.0')]
-    jars = []
-    for group, artifact, version in deps:
-        found = list((cache / group / artifact / version).glob(f'*/{artifact}-{version}.jar'))
-        if len(found) != 1:
-            parser.error(f'Missing pinned compiler dependency {artifact}:{version}')
-        jars.extend(found)
-    java = str(Path(os.environ['JAVA_HOME']) / 'bin/java')
-    cp = os.pathsep.join(map(str, jars))
-    artifact = out / 'function-adapter.jar'
-    compile_cmd = [java, '-cp', cp, 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', '-no-stdlib', '-no-reflect',
-                   '-jvm-target', '17', '-classpath', cp, '-d', str(artifact)] + list(map(str, sources))
-    run_cmd = [java, '-cp', str(artifact) + os.pathsep + cp, 'com.code2hack.eyeprojector.directrg.ScenariosKt']
-    manifest = {'sourceRoot': str(root), 'gitHead': subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip(),
-                'gitStatus': subprocess.check_output(['git', '-C', str(root), 'status', '--short'], text=True),
-                'sources': [{'path': str(p), 'sha256': digest(p)} for p in sources + [activity, helper, suite / 'run.py']],
-                'activityBlocks': blocks, 'initialization': init[0], 'compiler': [{'path': str(p), 'sha256': digest(p)} for p in jars]}
-    snapshots = []
-    for index, source_file in enumerate(sources):
-        snapshot = out / 'inputs' / str(index) / source_file.name
-        snapshot.parent.mkdir(parents=True, exist_ok=True)
-        snapshot.write_bytes(source_file.read_bytes())
-        snapshots.append(snapshot)
-    compile_cmd[-len(sources):] = list(map(str, snapshots))
-    manifest['compiledSnapshots'] = [{'path': str(p), 'sha256': digest(p)} for p in snapshots]
-    (out / 'source-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
-    result = {'scope': 'Actual Function adapter/recognizer/router and extracted Activity methods on host boundaries; no Android/firmware/device destination proof',
-              'compileExit': None, 'scenariosExit': None, 'commands': [compile_cmd, run_cmd]}
-    try:
-        for key, cmd, limit, logfile in [('compileExit', compile_cmd, 60, 'compile.log'), ('scenariosExit', run_cmd, 15, 'scenarios.log')]:
-            with (out / logfile).open('w') as log:
-                proc = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, timeout=limit)
-            result[key] = proc.returncode
-            print((out / logfile).read_text())
-            if proc.returncode:
-                break
-    except subprocess.TimeoutExpired as error:
-        result['timeoutSeconds'] = error.timeout
-    result['artifacts'] = [{'path': p.name, 'sha256': digest(p)} for p in sorted(out.iterdir()) if p.is_file() and p.name != 'result.json']
-    (out / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
-    return 0 if result['scenariosExit'] == 0 else 1
-
-
-if __name__ == '__main__':
-    sys.exit(main())
+p=argparse.ArgumentParser(description=__doc__)
+p.add_argument('--source-dir',type=Path,required=True);p.add_argument('--output-dir',type=Path,required=True)
+a=p.parse_args();root=a.source_dir.resolve();out=a.output_dir.resolve();out.mkdir(parents=True,exist_ok=False)
+suite=root/'directrg/src/test/functionadapter';actual=root/'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg'
+helper=root/'directrg/src/test/hidadapter/run-held-local.py'
+spec=importlib.util.spec_from_file_location('extract',helper);extract=importlib.util.module_from_spec(spec);spec.loader.exec_module(extract)
+source=(actual/'ReceiverActivity.kt').read_text()
+initializers=[extract.initializer(source,'functionInput','NativeFunctionInput'),extract.initializer(source,'hidInput','HidKeyInput')]
+methods=[next(line for line in source.splitlines() if line.startswith('    private fun functionContext('))]
+methods += [extract.method(source,n) for n in ['captureFunction','dispatchFunction']]
+start=source.index('    private data class FunctionCapture(');end=source.index('\n',start)
+capture_type=source[start:end]
+fixture=(suite/'ActivityBoundary.kt').read_text().replace('// ACTUAL_CAPTURE_TYPE',capture_type)
+fixture=fixture.replace('// ACTUAL_INITIALIZERS','\n'.join(initializers)).replace('// ACTUAL_METHODS','\n'.join(methods))
+generated=out/'ActivityFunctionWiring.kt';generated.write_text(fixture)
+files=[generated,suite/'Scenarios.kt']+sorted((suite/'doubles').glob('*.kt'))
+files += [actual/n for n in ['FunctionGestureRecognizer.kt','NativeFunctionInput.kt','HidKeyInput.kt','HidBindings.kt','HidDecisionTrace.kt','PadGestureRecognizer.kt','HeadPointerModel.kt','HeadOrientation.kt']]
+files += [root/'directrg/src/test/hidframework/doubles'/n for n in ['Point.kt','Rect.kt','Log.kt']]
+protocol=root/'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
+files += [protocol/n for n in ['FunctionIntent.kt','Wire.kt','PhoneInput.kt','ReceiverUsability.kt','ActivationControl.kt','CameraFeed.kt','Touch.kt']]
+cache=Path.home()/'.gradle/caches/modules-2/files-2.1'
+deps=['org.jetbrains.kotlin/kotlin-compiler-embeddable/2.2.21','org.jetbrains.kotlin/kotlin-stdlib/2.2.21','org.jetbrains.kotlin/kotlin-script-runtime/2.2.21','org.jetbrains.kotlin/kotlin-reflect','org.jetbrains/annotations/13.0','org.jetbrains.kotlinx/kotlinx-coroutines-core-jvm']
+cp=os.pathsep.join(str(j) for d in deps for j in sorted((cache/d).rglob('*.jar')))
+inputs=[];snapshots=[]
+for n,f in enumerate(files):
+ snapshot=out/'source'/str(n)/f.name;snapshot.parent.mkdir(parents=True,exist_ok=True);snapshot.write_bytes(f.read_bytes());snapshots.append(str(snapshot));inputs.append({'path':str(f),'snapshot':str(snapshot),'sha256':hashlib.sha256(snapshot.read_bytes()).hexdigest()})
+java=str(Path(os.environ.get('JAVA_HOME','/usr/lib/jvm/java-17-openjdk-amd64'))/'bin/java');jar=out/'function-adapter.jar'
+commands={'compile':[java,'-cp',cp,'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler','-no-stdlib','-no-reflect','-jvm-target','17','-classpath',cp,'-d',str(jar)]+snapshots,'run':[java,'-cp',str(jar)+os.pathsep+cp,'com.code2hack.eyeprojector.directrg.ScenariosKt']}
+record={'sourceActivitySha256':hashlib.sha256((actual/'ReceiverActivity.kt').read_bytes()).hexdigest(),'initializers':initializers,'methods':methods,'captureType':capture_type,'inputs':inputs,'commands':commands,'scope':'Exact Activity Function initialization/capture/dispatch plus actual native/HID grammar; modeled surrounding Android/UI/Session APIs, no firmware/device proof'}
+for phase,limit in [('compile',90),('run',30)]:
+ with (out/(phase+'.log')).open('w') as log:r=subprocess.run(commands[phase],stdout=log,stderr=subprocess.STDOUT,timeout=limit)
+ record[phase+'Exit']=r.returncode;print((out/(phase+'.log')).read_text(),end='')
+ if r.returncode:break
+(out/'result.json').write_text(json.dumps(record,indent=2)+'\n')
+raise SystemExit(0 if record.get('compileExit')==record.get('runExit')==0 else 1)
