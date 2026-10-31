@@ -7,6 +7,7 @@ import android.hardware.input.InputManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.PowerManager
 import android.os.SystemClock
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -16,6 +17,7 @@ import java.io.FileOutputStream
 import java.lang.ref.WeakReference
 import java.util.IdentityHashMap
 import java.util.concurrent.atomic.AtomicReference
+import org.json.JSONArray
 import org.json.JSONObject
 
 private val controlFields = listOf("state", "startedMonoNs", "elapsedMs", "width", "height",
@@ -87,6 +89,9 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
     val context = instrumentation.targetContext
     val application = context.applicationContext as Application
     val recorder = NativeInputRecorder()
+    val navigation = if (args.getString("navigationMetadata") == "true")
+        NativeNavigationObservation(context, recorder.queue) else null
+    val guide = NativeGestureBatchGuide.create(args.getString("gestureGuide"), recorder.queue)
     val trace = File(context.filesDir, "probe-$id-native-events.jsonl")
     check(trace.createNewFile()) { "Existing measurement trace" }
     val detail = JSONObject().put("schema", 1).put("case", case).put("traceFile", trace.name)
@@ -94,6 +99,12 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
         .put("syntheticInputInjected", false).put("activityLaunchedOrFinished", false)
         .put("scope", "App-delivered event observation; no raw-kernel/physical origin or target injection acknowledgment")
     report.put("nativeObservation", detail).put("passedScope", "recorder completion only; no physical feature acceptance")
+    detail.put("navigationMetadataEnabled", navigation != null)
+    detail.put("gestureGuideEnabled", guide != null)
+        .put("gestureGuideScope", "Authored test UI instruction timing only; no physical gesture acknowledgment")
+    if (navigation != null) detail.put("broadcastActions", JSONArray(NativeNavigationObservation.ACTIONS))
+        .put("broadcastScope", "Subscribed source actions only; missing receipt is inconclusive; earlier abort may shadow ordered channels; unordered receipt does not establish interception")
+        .put("firmwareActionOwnership", "UNKNOWN; correlate actual UI/power observations separately")
     val manager = context.getSystemService(InputManager::class.java)
     val inventoryThread = HandlerThread("native-input-inventory")
     var inventoryStartAttempted = false
@@ -118,6 +129,10 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
             if (state == "resumed") currentActivity = WeakReference(activity)
             recorder.queue.capture("lifecycle", System.identityHashCode(activity), SystemClock.uptimeMillis(), SystemClock.elapsedRealtimeNanos()) {
                 mapOf("state" to state)
+            }
+            when (state) {
+                "resumed" -> guide?.onResumed(activity)
+                "paused", "stopped", "destroyed" -> guide?.onUnavailable(activity, state)
             }
         }
         override fun onActivityCreated(a: Activity, b: Bundle?) = observe(a, "created")
@@ -171,6 +186,7 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
         inventoryThread.start()
         listenerRegistrationAttempted = true
         manager.registerInputDeviceListener(listener, Handler(inventoryThread.looper))
+        navigation?.start() // Register before normal foreground resume, without launching an Activity.
         onMain {
             check(ReceiverActivity.nativeInputObserver == null) { "Another observation owns the sink" }
             lifecycleRegistrationAttempted = true
@@ -186,9 +202,16 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
         File(context.filesDir, "probe-$id-native-ready.json").writeText(JSONObject()
             .put("case", case).put("seconds", seconds).put("startElapsedMs", started).toString())
         var nextSample = 0L
+        var guideInteractive = false
+        var guidePowerReadElapsedNs: Long? = null
         while (SystemClock.elapsedRealtime() - started < seconds * 1000L) {
             val elapsed = SystemClock.elapsedRealtime()
             if (elapsed >= nextSample) {
+                navigation?.sample()
+                if (guide != null) {
+                    guideInteractive = context.getSystemService(PowerManager::class.java).isInteractive
+                    guidePowerReadElapsedNs = SystemClock.elapsedRealtimeNanos()
+                }
                 val sample = mutableMapOf<String, Any?>()
                 onMain {
                     val activity = currentActivity?.get()
@@ -209,6 +232,10 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
                 recorder.queue.capture("sample", null, SystemClock.uptimeMillis(), SystemClock.elapsedRealtimeNanos()) { sample }
                 nextSample = elapsed + 1000
             }
+            if (guide != null) onMain {
+                guide.tick(ReceiverActivity.nativeInputObserver === recorder, guideInteractive, guidePowerReadElapsedNs)
+                guide.throwIfFailed()
+            }
             drain()
             Thread.sleep(50)
         }
@@ -222,6 +249,12 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
         var queueClosed = false
         var writerClosed = false
         var streamClosed = false
+        var navigationReleased = navigation == null
+        var guideReleased = guide == null
+        state.attempt("gestureGuideStop") { if (guide != null) onMain {
+            try { guide.stop() } finally { guideReleased = guide.released }
+        } }
+        state.attempt("navigationUnregister") { navigation?.stop(); navigationReleased = true }
         state.attempt("observerDetach") { onMain {
             if (ReceiverActivity.nativeInputObserver === recorder) {
                 ReceiverActivity.nativeInputObserver = null; detached = true
@@ -255,7 +288,7 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
         state.observerFailures = recorder.queue.failureCount
         state.rowsRecorded = recorder.queue.recorded
         state.cleanupComplete = sinkReleased && lifecycleReleased && listenerReleased &&
-            !inventoryThread.isAlive && queueClosed && writerClosed && streamClosed
+            navigationReleased && guideReleased && !inventoryThread.isAlive && queueClosed && writerClosed && streamClosed
         state.exportComplete = writerOpened && state.exportFailures == 0L &&
             state.outcomes["traceDrain"] == "SUCCESS" && state.outcomes["traceFlush"] == "SUCCESS" &&
             state.outcomes["traceClose"] == "SUCCESS" && state.outcomes["traceStreamClose"] == "SUCCESS" &&
@@ -270,6 +303,12 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
             .put("lifecycleRegistrationAttempted", lifecycleRegistrationAttempted)
             .put("inputListenerRegistrationAttempted", listenerRegistrationAttempted)
             .put("inventoryThreadStopped", !inventoryThread.isAlive)
+            .put("navigationObserverReleased", navigationReleased)
+            .put("gestureGuideReleased", guideReleased).put("gestureGuideUiShown", guide?.uiShown ?: false)
+            .put("gestureGuideInstructionPlanCompleted", guide?.completed ?: false)
+            .put("gestureGuideFinalPromptId", guide?.promptId ?: JSONObject.NULL)
+            .put("gestureGuideFailures", guide?.failureCount ?: 0)
+            .put("gestureGuideVisibilityScope", "Own label draw with resumed/focused window and sampled interactivity; no optical/user acknowledgment")
             .put("cleanupComplete", state.cleanupComplete).put("exportComplete", state.exportComplete)
             .put("cleanupOutcomes", JSONObject(state.outcomes as Map<*, *>))
             .put("primaryFailureType", state.primary?.javaClass?.simpleName ?: JSONObject.NULL)
