@@ -24,6 +24,9 @@ import android.widget.SeekBar
 import android.widget.Switch
 import android.widget.TextView
 import com.code2hack.eyeprojector.directhost.R
+import com.code2hack.eyeprojector.directhost.anchor.preferences.AnchorMode
+import com.code2hack.eyeprojector.directhost.anchor.preferences.AppAnchorPreferences
+import com.code2hack.eyeprojector.directhost.anchor.preferences.AppAnchorStore
 import com.code2hack.eyeprojector.directhost.notifications.AppNotificationPreferences
 import com.code2hack.eyeprojector.directhost.notifications.AppNotificationStore
 import com.code2hack.eyeprojector.directhost.scale.AppScaleCoordinator
@@ -31,6 +34,7 @@ import com.code2hack.eyeprojector.directhost.scale.AppScalePanelState
 import com.code2hack.eyeprojector.directhost.scale.AppScaleStore
 import com.code2hack.eyeprojector.directhost.scale.AppScaleTarget
 import java.io.Closeable
+import java.io.IOException
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -40,6 +44,7 @@ class ChosenAppsPanel @JvmOverloads constructor(
     private val store: ChosenAppStore = ChosenApps.open(context),
     private val catalog: AppCatalog = InstalledAppCatalog(context.packageManager),
     private val notifications: AppNotificationStore = AppNotificationPreferences.open(context),
+    private val anchors: AppAnchorStore = AppAnchorPreferences.open(context),
 ) : LinearLayout(context) {
     private val icons = InstalledAppCatalog(context.packageManager)
     private val grid = GridLayout(context).apply { columnCount = 3 }
@@ -191,6 +196,33 @@ class ChosenAppsPanel @JvmOverloads constructor(
             isEnabled = connected
         }
         val feedback = TextView(context).apply { tag = "app-scale-feedback" }
+        val anchorStatus = TextView(context).apply { tag = "app-anchor-status" }
+        val clearAnchor = Button(context).apply {
+            tag = "app-anchor-clear"
+            setText(R.string.app_anchor_clear)
+        }
+        fun renderAnchor() {
+            try {
+                val saved = anchors.read(app.packageName)
+                anchorStatus.setText(when (saved?.mode) {
+                    AnchorMode.CLICK -> R.string.app_anchor_saved_click
+                    AnchorMode.HOLD -> R.string.app_anchor_saved_hold
+                    null -> R.string.app_anchor_not_saved
+                })
+                clearAnchor.isEnabled = saved != null
+            } catch (_: IOException) {
+                anchorStatus.setText(R.string.app_anchor_read_failed)
+                clearAnchor.isEnabled = false
+            }
+        }
+        clearAnchor.setOnClickListener {
+            try {
+                anchors.clear(app.packageName)
+                renderAnchor()
+            } catch (_: IOException) {
+                anchorStatus.setText(R.string.app_anchor_clear_failed)
+            }
+        }
         val body = LinearLayout(context).apply {
             orientation = VERTICAL
             setPadding(dp(20), dp(8), dp(20), 0)
@@ -215,6 +247,8 @@ class ChosenAppsPanel @JvmOverloads constructor(
                 }
             })
             addView(feedback)
+            addView(anchorStatus)
+            addView(clearAnchor)
         }
         val menu = AlertDialog.Builder(context).setTitle(app.label).setView(body)
             .setNegativeButton(R.string.chosen_apps_remove) { _, _ -> store.remove(app.packageName); refresh() }
@@ -324,12 +358,18 @@ class ChosenAppsPanel @JvmOverloads constructor(
                 apply(AppScaleStore.MIN_SCALE + seekBar.progress / 100.0)
             }
         })
+        // Subscribe only for this menu's lifetime; changes from registration refresh the status.
+        val anchorSubscription = anchors.observe(app.packageName) { anchorStatus.post {
+            if (dialog === menu) renderAnchor()
+        } }
         menu.setOnDismissListener {
+            anchorSubscription.close()
             scaleSubscription?.close()
             target?.let { coordinator?.detach(it, owner) }
             if (dialog === menu) { dialog = null; pollMenuScale = null }
         }
         dialog = menu
+        renderAnchor()
         menu.show()
         // Observing an already selected app does not launch it or alter notification choice.
         val existing = coordinator?.state()?.takeIf {
