@@ -7,6 +7,7 @@ import android.os.Process
 import android.os.SystemClock
 import com.code2hack.eyeprojector.directhost.input.PhoneInputMerger
 import com.code2hack.eyeprojector.directhost.input.FunctionWork
+import com.code2hack.eyeprojector.directhost.input.FunctionIntentRoute
 import com.code2hack.eyeprojector.directhost.camera.CapturedTrustedPeer
 import com.code2hack.eyeprojector.directhost.camera.PhoneCameraMediaRole
 import com.code2hack.eyeprojector.directhost.camera.PhoneCameraMediaOwner
@@ -322,7 +323,7 @@ private class Session(
     private val timer: java.util.concurrent.ScheduledExecutorService,
     private val ownerEpoch: String,
     private val firstFrame: () -> Unit,
-) : Closeable, CapturedProjection {
+) : Closeable, CapturedProjection, FunctionIntentRoute {
     private val running = AtomicBoolean(true)
     private val release = OwnedRelease()
     private val resources = Any()
@@ -658,6 +659,23 @@ private class Session(
     private var control: LocalSocket? = null
     private val inputControls = PhoneTouchDispatcher(controlLock) { control!!.outputStream.write(it) }
     private val functionWork = FunctionWork()
+    /** #121/#122 install typed consumers on the actual Session; grammar owns no Anchor contact. */
+    override val functionIntents = FunctionIntentConsumers<CapturedProjection>()
+
+    private fun acceptFunction(intent: FunctionIntent) {
+        val captured = CapturedFunctionIntent<CapturedProjection>(intent, this)
+        functionWork.submit {
+            try {
+                val context = captured.intent.context
+                if (captured.original === this && running.get() &&
+                    receiverUsability.acceptsPointer(context.usability, context.pointer) &&
+                    (!context.pointer.projected || context.pointer.geometry == geometry.get())) {
+                    // False means no feature consumer is installed, not a completed Anchor action.
+                    functionIntents.dispatch(captured)
+                }
+            } catch (error: Exception) { closeSafely(sessionFailureReason(error, control = true), error) }
+        }
+    }
     private val phoneInput: PhoneInputMerger = PhoneInputMerger(controlLock, SystemClock::uptimeMillis,
         { deadline, action ->
             val task = timer.schedule({
@@ -674,7 +692,7 @@ private class Session(
         ::phoneNavigation,
         { inputControls.cancel() },
         { event -> if (running.get()) send(Frame(Wire.RECEIVER_INPUT, payload = event.bytes())) },
-        { running.get() })
+        { running.get() }, functionIntent = ::acceptFunction)
     private var server: java.lang.Process? = null
     private var inputThread: Thread? = null
     @Volatile private var streamThread: Thread? = null
@@ -707,7 +725,8 @@ private class Session(
         when (action) {
             Navigation.BACK -> inputControls.navigate(Navigate(action, size))
             Navigation.HOME -> launches.home()
-            Navigation.FUNCTION_DOUBLE, Navigation.CONTEXTUAL_HOME -> {
+            Navigation.FUNCTION_DOUBLE -> Unit // Reserved legacy key; Function is never navigation.
+            Navigation.CONTEXTUAL_HOME -> {
                 val original = receiverUsability.snapshot().fact ?: return
                 launches.contextualHome {
                     val latest = receiverUsability.snapshot()
@@ -1080,6 +1099,10 @@ private class Session(
                 val point = HeadPointerState.from(frame.payload)
                 val original = receiverUsability.snapshot().fact
                 phoneInput.pointer(point, original) { receiverUsability.acceptsPointer(original, point) }
+            }
+            Wire.FUNCTION_INTENT -> {
+                require(frame.stamp == 0L)
+                acceptFunction(FunctionIntent.from(frame.payload))
             }
             Wire.CAMERA_PROGRESS -> { require(frame.stamp == 0L); cameraRoles.observeProgress(CameraFeed.readProgress(frame.payload)) }
             Wire.END -> return false

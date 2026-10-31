@@ -1,45 +1,56 @@
 package com.code2hack.eyeprojector.directrg
 
+import com.code2hack.eyeprojector.protocol.FunctionIntentKind
+
 /**
- * One Function sequence, shared by the native reports and future HID press/release input.
+ * Function owns original gestures, never navigation or an Anchor output contact.
  *
- * Edges count presses; firmware summaries describe that same sequence and only raise its
- * classification. In particular, CLICK and UP are never two presses. Summary-only input
- * needs DOUBLE/TRIPLE reports: identical CLICK reports have no physical identity.
- *
- * The quiet interval is a modeled arbitration interval, not measured Rokid firmware timing.
- * Reports without IDs arriving after that interval cannot be distinguished from fresh input.
+ * Native summaries have no physical IDs. The existing 500 ms quiet interval arbitrates those
+ * reports: CLICK/DOUBLE/TRIPLE describe at least that many original shorts, rather than adding
+ * clicks to the observed edges. Edge-only HID input completes each short on its matching UP.
+ * The native interval is a modeled duplicate boundary, not measured firmware timing.
  */
 internal class FunctionGestureRecognizer(
     private val now: () -> Long,
     private val context: () -> Any?,
     private val schedule: (Long, () -> Unit) -> (() -> Unit),
-    private val dispatch: (Action) -> Unit,
+    private val dispatch: (Gesture) -> Unit,
     val timing: Timing = Timing(),
+    private val edgeOnly: Boolean = false,
+    private val capture: (Any) -> Any? = { it },
+    private val identity: Identity = Identity(),
 ) {
+    /** Source adapters retain this across Activity recreation within the Receiver incarnation. */
+    class Identity {
+        private val gesture = java.util.concurrent.atomic.AtomicLong()
+        private val delivery = java.util.concurrent.atomic.AtomicLong()
+        fun gesture() = gesture.getAndIncrement()
+        fun delivery() = delivery.getAndIncrement()
+    }
     enum class Report { DOWN, UP, CLICK, DOUBLE, TRIPLE, LONG }
-    enum class Action { SINGLE, DOUBLE, TRIPLE, LONG }
     data class Timing(val quietMs: Long = 500, val longMs: Long = 800)
-    private class Sequence(val context: Any) {
-        var held = false
+    data class Gesture(val kind: FunctionIntentKind, val gestureId: Long, val sequence: Long, val original: Any)
+    private class Original(val id: Long, val captured: Any) {
+        var kind = FunctionIntentKind.ACTIVATE
+        var hasEdge = false
+    }
+    private class Sequence(val owner: Any) {
+        val originals = mutableListOf<Original>()
+        var held: Original? = null
         var downAt = 0L
         var releasedAt = 0L
-        var presses = 0
-        var summary = 0
     }
-
     private var sequence: Sequence? = null
     private var cancelTimer: (() -> Unit)? = null
     private var timerGeneration = 0L
+    private var ownershipGeneration = 0L
     private var retiredUntil = Long.MIN_VALUE
     private var retiredHeld = false
 
-    fun accept(report: Report) {
-        val at = now()
-        val current = context()
-        if (current == null) { cancel(); return }
-        if (sequence?.context?.let { it != current } == true) cancel()
-        // A held long press must release before another DOWN can start a sequence.
+    fun accept(report: Report, at: Long = now()) {
+        val owner = context()
+        if (owner == null) { cancel(); return }
+        if (sequence?.owner?.let { it != owner } == true) cancel()
         if (retiredHeld) {
             if (report == Report.UP) retiredHeld = false
             retiredUntil = at + timing.quietMs
@@ -49,36 +60,50 @@ internal class FunctionGestureRecognizer(
             retiredUntil = at + timing.quietMs
             return
         }
-        val s = sequence ?: Sequence(current).also { sequence = it }
+        if (edgeOnly && report != Report.DOWN && sequence == null) return
+        val s = sequence ?: Sequence(owner).also { sequence = it }
         when (report) {
-            Report.DOWN -> if (!s.held) { s.held = true; s.downAt = at }
+            Report.DOWN -> if (s.held == null) {
+                val original = s.originals.firstOrNull { !it.hasEdge } ?: original(s) ?: return
+                original.hasEdge = true
+                s.held = original; s.downAt = at
+            }
             Report.UP -> {
-                if (s.held) {
-                    s.held = false
-                    if (at - s.downAt >= timing.longMs) { finish(s, Action.LONG); return }
-                    s.presses = (s.presses + 1).coerceAtMost(3)
-                } else s.summary = maxOf(s.summary, 1)
+                val held = s.held
+                if (held != null) {
+                    s.held = null
+                    if (at - s.downAt >= timing.longMs) {
+                        held.kind = FunctionIntentKind.REGISTER
+                        finish(s); return
+                    }
+                } else if (s.originals.isEmpty() && original(s) == null) return
                 s.releasedAt = at
+                if (edgeOnly) { finish(s); return }
             }
             Report.CLICK, Report.DOUBLE, Report.TRIPLE -> {
-                // A completed-click summary also closes a missing/reordered UP.
-                if (s.held) { s.held = false; s.presses = (s.presses + 1).coerceAtMost(3) }
-                s.summary = maxOf(s.summary, when (report) {
-                    Report.TRIPLE -> 3
-                    Report.DOUBLE -> 2
-                    else -> 1
-                })
+                // A completed summary closes a missing/reordered UP for the same original.
+                s.held = null
+                val count = when (report) { Report.TRIPLE -> 3; Report.DOUBLE -> 2; else -> 1 }
+                while (s.originals.size < count) if (original(s) == null) return
                 s.releasedAt = at
             }
-            Report.LONG -> { finish(s, Action.LONG); return }
+            Report.LONG -> {
+                val original = s.held ?: s.originals.lastOrNull() ?: original(s) ?: return
+                original.kind = FunctionIntentKind.REGISTER
+                finish(s); return
+            }
         }
         arm(s)
     }
 
-    /** Retain quiet ownership across panel/session/focus changes and callback-driven cancel. */
+    private fun original(s: Sequence): Original? {
+        val captured = capture(s.owner) ?: run { cancel(); return null }
+        return Original(identity.gesture(), captured).also { s.originals.add(it) }
+    }
+
+    /** A fresh DOWN can acquire ownership after cancellation, even if the old UP never arrives. */
     fun cancel() {
-        // Cancellation ends edge ownership too; a fresh DOWN after focus/reconnect
-        // must be usable even when the retired source never delivered its release.
+        ownershipGeneration++
         retiredHeld = false
         if (sequence != null) retiredUntil = now() + timing.quietMs
         sequence = null
@@ -87,52 +112,35 @@ internal class FunctionGestureRecognizer(
 
     private fun cancelScheduled() {
         timerGeneration++
-        cancelTimer?.invoke()
-        cancelTimer = null
+        cancelTimer?.invoke(); cancelTimer = null
     }
 
     private fun arm(s: Sequence) {
         cancelScheduled()
         val generation = timerGeneration
-        val deadline = if (s.held) s.downAt + timing.longMs else s.releasedAt + timing.quietMs
+        val deadline = if (s.held != null) s.downAt + timing.longMs else s.releasedAt + timing.quietMs
         cancelTimer = schedule(deadline) {
             if (generation == timerGeneration && sequence === s) {
-                if (context() != s.context) cancel()
+                if (context() != s.owner) cancel()
                 else if (now() < deadline) arm(s)
-                else if (s.held) finish(s, Action.LONG)
-                else finish(s, when (maxOf(s.presses, s.summary)) {
-                    3 -> Action.TRIPLE
-                    2 -> Action.DOUBLE
-                    else -> Action.SINGLE
-                })
+                else {
+                    s.held?.kind = FunctionIntentKind.REGISTER
+                    finish(s)
+                }
             }
         }
     }
 
-    private fun finish(s: Sequence, action: Action) {
-        // Navigation may synchronously cancel input or replace the current view.
-        // Retire before calling it so a duplicate cannot acquire the next context.
-        retiredHeld = s.held
+    private fun finish(s: Sequence) {
+        retiredHeld = s.held != null
         retiredUntil = now() + timing.quietMs
         sequence = null
         cancelScheduled()
-        if (context() == s.context) dispatch(action)
-    }
-}
-
-/** Operation ownership stays in ReceiverActivity's existing contextual methods. */
-internal class FunctionNavigation(
-    private val projectedDouble: () -> Unit,
-    private val localDouble: () -> Unit,
-    private val back: () -> Unit,
-    private val sleep: () -> Unit,
-) {
-    fun dispatch(action: FunctionGestureRecognizer.Action, projection: Boolean) {
-        when (action) {
-            FunctionGestureRecognizer.Action.SINGLE -> back()
-            FunctionGestureRecognizer.Action.DOUBLE -> if (projection) projectedDouble() else localDouble()
-            FunctionGestureRecognizer.Action.TRIPLE -> sleep()
-            FunctionGestureRecognizer.Action.LONG -> Unit
+        val generation = ownershipGeneration
+        // Retire before callbacks. They can synchronously cancel or replace this input context.
+        for (original in s.originals) {
+            if (generation != ownershipGeneration || context() != s.owner) return
+            dispatch(Gesture(original.kind, original.id, identity.delivery(), original.captured))
         }
     }
 }

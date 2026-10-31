@@ -1,146 +1,80 @@
 package com.code2hack.eyeprojector.directrg
 
-import android.app.Activity
-import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.os.Handler
 import android.os.SystemClock
+import com.code2hack.eyeprojector.protocol.*
 
 private fun reset() { SystemClock.time = 1000; Handler.tasks.clear() }
-private fun action(name: String) = when (name) {
-    "TRIPLE" -> "com.android.action.ACTION_BOLON_PAIRING"
-    "DOUBLE" -> "com.android.action.ACTION_SPRITE_BUTTON_DOUBLE_CLICK"
-    "LONG" -> "com.android.action.ACTION_SPRITE_BUTTON_LONG_PRESS"
-    else -> "com.android.action.ACTION_SPRITE_BUTTON_$name"
+private fun send(a: ActivityFunctionWiring, name: String) {
+    val action = if (name == "TRIPLE") "com.android.action.ACTION_BOLON_PAIRING" else "com.android.action.ACTION_SPRITE_BUTTON_$name"
+    a.receiver!!.apply { isOrderedBroadcast = true; onReceive(a, Intent(action)) }
 }
-private fun send(context: Context, name: String, ordered: Boolean = true, flags: Int = 0, retired: Boolean = false) {
-    val receiver = (if (retired) context.lastReceiver else context.receiver)!!
-    receiver.isOrderedBroadcast = ordered; receiver.resultCode = 99; receiver.aborted = false
-    receiver.onReceive(context, Intent(action(name)).addFlags(flags))
-}
-private fun press(context: Context) { send(context, "DOWN"); SystemClock.time += 25; send(context, "UP") }
-private fun activity(projecting: Boolean): ActivityFunctionWiring {
-    reset()
-    val a = ActivityFunctionWiring()
-    a.onResume(); a.onWindowFocusChanged(true)
-    if (projecting) { a.session = Session(); a.streaming = true; a.presentation.streaming(); a.connectionView.visibility = 8 }
-    return a
-}
-
+private fun press(a: ActivityFunctionWiring) { send(a, "DOWN"); SystemClock.time += 20; send(a, "UP") }
 fun main() {
     var checks = 0
     fun scenario(name: String, run: () -> Unit) { reset(); run(); checks++; println("PASS $name") }
-    scenario("real receiver registration and ordered suppression API32/API33") {
-        for (api in listOf(32, 33, 35)) {
-            Build.VERSION.SDK_INT = api
-            val c = Context(); val got = mutableListOf<FunctionGestureRecognizer.Action>()
-            val input = NativeFunctionInput(c, { "context" }, got::add)
-            input.start(); input.start()
-            check(c.registrations == 1 && c.filter!!.priority == Int.MAX_VALUE && c.filter!!.actions.size == 6)
-            check(c.registerFlags == if (api >= 33) Context.RECEIVER_EXPORTED else null)
-            send(c, "CLICK"); check(c.receiver!!.aborted && c.receiver!!.resultCode == Activity.RESULT_CANCELED)
-            Handler.advance(500); check(got == listOf(FunctionGestureRecognizer.Action.SINGLE))
-            input.stop(); input.stop(); check(c.unregistrations == 1)
+    scenario("actual Activity native initializer and callbacks retain two originals and first hover") {
+        val a = ActivityFunctionWiring(); val source = a.session!!
+        send(a, "DOWN"); a.pointer.position = PointerPosition(300f, 400f, true); send(a, "UP")
+        press(a); send(a, "DOUBLE_CLICK"); send(a, "CLICK"); Handler.advance(500)
+        check(source.received.map { it.intent.kind } == listOf(FunctionIntentKind.ACTIVATE, FunctionIntentKind.ACTIVATE))
+        check(source.received.all { it.original === source && it.intent.source == FunctionSource.GLASSES_NATIVE })
+        check(source.received.map { it.intent.context.pointer.x } == listOf(120f, 300f))
+        check(a.ordinaryActions == 0 && a.heldOwner.calls == 0)
+    }
+    scenario("actual Activity long registration callback consumes physical release") {
+        val a = ActivityFunctionWiring(); val source = a.session!!
+        send(a, "DOWN"); Handler.advance(800); send(a, "LONG_PRESS"); send(a, "UP"); send(a, "CLICK"); Handler.advance(500)
+        check(source.received.map { it.intent.kind } == listOf(FunctionIntentKind.REGISTER))
+        check(a.ordinaryActions == 0 && a.heldOwner.calls == 0)
+    }
+    scenario("actual Activity Glasses HID initializer emits each matching short UP through typed callback") {
+        val a = ActivityFunctionWiring(); val source = a.session!!
+        val binding = HidBinding(HidButton(HidDeviceIdentity("fixture", 1, 2), 30, 40), "Fixture", "Function")
+        check(a.hidBindings.assign(HidAction.FUNCTION, binding))
+        repeat(3) { n ->
+            val at = 1000L + n * 100
+            SystemClock.time = at
+            check(a.hidInput.accept(HidKeyInput.Event(7, binding, HidKeyInput.Phase.DOWN, at, at)))
+            SystemClock.time += 20
+            check(a.hidInput.accept(HidKeyInput.Event(7, binding, HidKeyInput.Phase.UP, at, at + 20)))
         }
+        Handler.advance(1000)
+        check(source.received.map { it.intent.kind } == List(3) { FunctionIntentKind.ACTIVATE })
+        check(source.received.all { it.original === source && it.intent.source == FunctionSource.GLASSES_HID })
+        check(a.ordinaryActions == 0 && a.heldOwner.calls == 0)
     }
-    scenario("unordered and NO_ABORT do not claim suppression") {
-        for ((ordered, flags) in listOf(false to 0, true to Intent.FLAG_RECEIVER_NO_ABORT)) {
-            val c = Context(); val got = mutableListOf<FunctionGestureRecognizer.Action>()
-            val input = NativeFunctionInput(c, { "context" }, got::add); input.start()
-            send(c, "DOUBLE", ordered, flags)
-            check(!c.receiver!!.aborted && c.receiver!!.resultCode == 99)
-            Handler.advance(500); check(got == listOf(FunctionGestureRecognizer.Action.DOUBLE)); input.stop()
-        }
-    }
-    scenario("ordinary AI/pad/unrelated broadcasts are untouched") {
-        val c = Context(); val got = mutableListOf<FunctionGestureRecognizer.Action>()
-        NativeFunctionInput(c, { "context" }, got::add).start()
-        for (name in listOf("com.android.action.ACTION_AI_START", "ordinary")) {
-            c.receiver!!.isOrderedBroadcast = true
-            c.receiver!!.onReceive(c, Intent(name))
-            check(!c.receiver!!.aborted && c.receiver!!.resultCode == 99)
-        }
-        Handler.advance(2000); check(got.isEmpty())
-    }
-    scenario("stop retires callbacks and queued delivery then restart admits a fresh edge") {
-        val c = Context(); val got = mutableListOf<FunctionGestureRecognizer.Action>()
-        val input = NativeFunctionInput(c, { "context" }, got::add); input.start(); send(c, "DOWN")
-        val stale = Handler.tasks.toList(); input.stop()
-        send(c, "TRIPLE", retired = true); stale.forEach { it.run.run() }; check(got.isEmpty())
-        input.start(); press(c); Handler.advance(500); check(got == listOf(FunctionGestureRecognizer.Action.SINGLE))
-    }
-    scenario("actual Activity callback projects Home/Back with no pad fallback") {
-        val a = activity(true); val s = a.session!!
-        send(a, "CLICK"); Handler.advance(499); check(s.navigations.isEmpty())
-        send(a, "DOUBLE"); Handler.advance(500); check(s.navigations == listOf(Navigation.HOME))
-        send(a, "CLICK"); Handler.advance(500); check(s.navigations.size == 1)
-        press(a); Handler.advance(500); check(s.navigations == listOf(Navigation.HOME, Navigation.BACK))
-    }
-    scenario("actual triple panel and local Back retain boundary session decoder Surface") {
-        val a = activity(true); val s = a.session!!; val decoder = s.decoder; val surface = a.screen.surface
-        send(a, "CLICK"); send(a, "DOUBLE"); send(a, "TRIPLE"); Handler.advance(500)
-        check(!a.projectionContext && a.session === s && s.decoder === decoder && a.screen.surface === surface && !s.closed)
-        check(s.navigations.isEmpty() && a.heldInput.calls > 0 && a.localInput.calls > 0)
-        send(a, "TRIPLE"); send(a, "UP"); Handler.advance(500); check(!a.finished && !s.closed)
+    scenario("actual Activity local Function remains an intention without Back Home or sleep") {
+        val a = ActivityFunctionWiring(); val source = a.session!!
+        a.connectionView.visibility = android.view.View.VISIBLE
         press(a); Handler.advance(500)
-        check(a.projectionContext && a.session === s && s.decoder === decoder && a.screen.surface === surface)
+        check(source.received.single().intent.context.usability.mode == ReceiverUsabilityMode.LOCAL_PANEL)
+        check(!source.received.single().intent.context.pointer.projected && a.ordinaryActions == 0)
     }
-    scenario("actual local double restores main panel and long consumes") {
-        val a = activity(false)
-        send(a, "DOUBLE"); Handler.advance(500); check(a.connectionView.scrollY == 0 && !a.finished)
-        press(a); send(a, "LONG"); Handler.advance(1000); check(!a.finished && a.launch == null)
+    scenario("actual Activity source replacement retires pending native original instead of refreshing it") {
+        val a = ActivityFunctionWiring(); val old = a.session!!
+        press(a); a.session = ProjectionSession(); Handler.advance(500)
+        check(old.received.isEmpty() && a.session!!.received.isEmpty())
     }
-    scenario("actual binding view single and Back restore main before the retained projection") {
-        val a = activity(true); val s = a.session!!; val decoder = s.decoder; val surface = a.screen.surface
-        a.showControlPanel(); a.openBindings()
-        check(a.hidPanel.visibility == 0 && a.mainControls.visibility == 8)
-        val canceled = a.hidInput.calls
+    scenario("actual capture rechecks ownership changed by pointer callback") {
+        val a = ActivityFunctionWiring(); val source = a.session!!
+        a.pointer.onPosition = { a.inputGeneration++ }
         press(a); Handler.advance(500)
-        check(a.hidPanel.visibility == 8 && a.mainControls.visibility == 0 && a.hidInput.calls > canceled)
-        check(a.session === s && !s.closed && s.decoder === decoder && a.screen.surface === surface)
-        a.openBindings(); a.contextualBack()
-        check(a.hidPanel.visibility == 8 && !a.projectionContext && a.session === s)
-        a.contextualBack()
-        check(a.projectionContext && a.session === s && !s.closed)
+        check(source.received.isEmpty())
     }
-    scenario("actual local triple releases and explicitly requests Home before late peer callback") {
-        val a = activity(true); val s = a.session!!; a.showControlPanel()
-        val lifetime = a.owner!!
-        // A fresh physical sequence bypasses the previous sequence's duplicate retirement.
-        repeat(3) { press(a) }; Handler.advance(500)
-        check(a.finished && !a.resumed && a.session == null && s.closed && lifetime.closed)
-        check(a.receiver == null && a.unregistrations == 1)
-        check(a.launch!!.action == Intent.ACTION_MAIN && Intent.CATEGORY_HOME in a.launch!!.categories)
-        check(a.launch!!.flags and Intent.FLAG_ACTIVITY_NEW_TASK != 0)
-        send(a, "CLICK", retired = true); Handler.advance(2000); check(a.session == null)
+    scenario("unsized projected root produces no invalid fitted context") {
+        val a = ActivityFunctionWiring(); val source = a.session!!
+        a.root.width = 0; press(a); Handler.advance(500)
+        check(source.received.isEmpty())
     }
-    scenario("actual focus loss cancellation and fast fresh input after focus return") {
-        val a = activity(true); val s = a.session!!
-        send(a, "DOWN"); val stale = Handler.tasks.toList()
-        a.onWindowFocusChanged(false); check(a.receiver == null)
-        stale.forEach { it.run.run() }; check(s.navigations.isEmpty())
-        a.onWindowFocusChanged(true); press(a); Handler.advance(500)
-        check(s.navigations == listOf(Navigation.BACK))
-    }
-    scenario("actual pause and configuration destroy retire native input while preserving media") {
-        for (end in listOf("pause", "destroy")) {
-            val a = activity(true); val s = a.session!!; val lifetime = a.owner!!
-            send(a, "DOUBLE"); val stale = Handler.tasks.toList()
-            when (end) { "pause" -> a.onPause(); else -> a.onDestroy() }
-            stale.forEach { it.run.run() }
-            check(!s.closed && s.navigations.isEmpty() && a.session === s && !lifetime.closed)
-            check(a.receiver == null && lifetime.detached > 0)
+    scenario("unavailable original hover or absent Session never falls back to navigation") {
+        for (missing in listOf(false, true)) {
+            val a = ActivityFunctionWiring(); val old = a.session!!
+            if (missing) a.session = null else a.pointer.position = PointerPosition(0f, 0f, false)
+            press(a); Handler.advance(500)
+            check(old.received.isEmpty() && a.ordinaryActions == 0 && a.heldOwner.calls == 0)
         }
     }
-    scenario("actual explicit disconnect and finishing destroy release media") {
-        for (end in listOf("disconnect", "finish")) {
-            val a = activity(true); val s = a.session!!
-            send(a, "DOUBLE"); val stale = Handler.tasks.toList()
-            if (end == "finish") { a.finish(); a.onDestroy() } else a.disconnect()
-            stale.forEach { it.run.run() }
-            check(s.closed && s.navigations.isEmpty() && a.session == null)
-        }
-    }
-    println("PASS $checks Function adapter/Activity source scenarios; host boundaries only")
+    println("PASS $checks actual Activity Function initializer/capture/dispatch scenarios; Session/UI/Android boundaries only")
 }

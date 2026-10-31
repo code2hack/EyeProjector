@@ -43,6 +43,8 @@ class ProjectionSession(
     private val timer = Executors.newScheduledThreadPool(2)
     private val controls = OrderedControlDispatcher { error -> failure(error); closeWithState("DISCONNECTED") }
     private val scaleControls = OrderedControlDispatcher { error -> failure(error); closeWithState("DISCONNECTED") }
+    /** Feature consumers attach to this actual Session, never a latest-peer singleton. */
+    val functionIntents = FunctionIntentConsumers<ProjectionSession>()
     private val inputLock = Any()
     private val heldTouch = HeldTouchTransport(controls,
         { running.get() && readyForTouch && it.target.geometry == geometry },
@@ -329,6 +331,12 @@ class ProjectionSession(
             }
             Wire.END -> closeWithState("DISCONNECTED")
             Wire.RECEIVER_INPUT -> onReceiverInput(this, ReceiverInput.from(frame.payload))
+            Wire.FUNCTION_INTENT -> {
+                require(frame.stamp == 0L)
+                val captured = CapturedFunctionIntent(FunctionIntent.from(frame.payload), this)
+                controls.submit(SystemClock.uptimeMillis(), { currentFunction(captured.intent.context) },
+                    "function", preserveTiming = false) { functionIntents.dispatch(captured) }
+            }
             Wire.CAMERA_USE -> { require(frame.stamp == 0L); cameraUses.observe(CameraFeed.readUseMessage(frame.payload)) }
             Wire.CAMERA_PROGRESS -> { require(frame.stamp == 0L); cameraUses.observeProgress(CameraFeed.readProgress(frame.payload)) }
             else -> error("Unnegotiated media")
@@ -390,6 +398,38 @@ class ProjectionSession(
         if (!running.get() || geometry == null) return false
         return scaleControls.submit(System.nanoTime() / 1_000_000, { running.get() && geometry != null }, "scale") {
             send(Frame(Wire.SCALE_REQUEST, requestId, ScaleRequest(value).bytes()))
+        }
+    }
+
+    /** Capture, without republishing a stale positive mode or substituting the latest hover later. */
+    fun captureFunctionContext(point: HeadPointerState): FunctionIntentContext? = synchronized(inputLock) {
+        val fact = sourceUsability ?: return null
+        FunctionIntentContext(fact, point).takeIf(::currentFunction)
+    }
+
+    private fun currentFunction(captured: FunctionIntentContext): Boolean {
+        val current = sourceUsability ?: return false
+        val original = captured.usability
+        val point = captured.pointer
+        return running.get() && current.ownerEpoch == original.ownerEpoch && current.incarnation == original.incarnation &&
+            current.inputRevision == original.inputRevision && current.mode == original.mode &&
+            point.available && point.revision == original.inputRevision && when (original.mode) {
+                ReceiverUsabilityMode.PROJECTED -> point.projected && readyForTouch && point.geometry == geometry
+                ReceiverUsabilityMode.LOCAL_PANEL -> !point.projected
+                ReceiverUsabilityMode.NONE -> false
+            }
+    }
+
+    /** Every accepted intention retains its original Session/context on the ordered writer. */
+    fun functionIntent(captured: CapturedFunctionIntent<ProjectionSession>): Boolean = synchronized(inputLock) {
+        if (captured.original !== this || !currentFunction(captured.intent.context)) return false
+        controls.submit(SystemClock.uptimeMillis(), { currentFunction(captured.intent.context) },
+            "function", preserveTiming = false) {
+            synchronized(outputLock) {
+                // Source mode may change while the queued writer waits for this exact output lock.
+                if (currentFunction(captured.intent.context))
+                    send(Frame(Wire.FUNCTION_INTENT, payload = captured.intent.bytes()))
+            }
         }
     }
 

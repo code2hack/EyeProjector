@@ -19,7 +19,7 @@ private fun Thread.waitingOnMerger() = state == Thread.State.BLOCKED &&
 /** Actual Session precheck -> actual merger monitor -> Stop, with teardown held behind resources. */
 fun stopRaceScenarios() {
     val failures = mutableListOf<String>()
-    for (kind in listOf("TAP DOWN", "SCROLL UP", "Function BACK")) {
+    for (kind in listOf("TAP DOWN", "SCROLL UP", "Function REGISTER")) {
         Fixture().use { old -> Fixture().use { fresh ->
             old.fusionGeometry(); old.pointer()
             fresh.fusionGeometry(); fresh.pointer()
@@ -37,14 +37,13 @@ fun stopRaceScenarios() {
             try {
                 synchronized(old.get("resources")!!) {
                     synchronized(old.get("controlLock")!!) {
-                        if (kind == "Function BACK") {
+                        if (kind == "Function REGISTER") {
                             // Real Session timer and FunctionWork must pass their precheck, then wait here.
                             repeat(1) { n ->
                                 val down = PhoneHidEdge(PhoneHidAction.FUNCTION, PhoneHidPhase.DOWN,
                                     1, 67, 90, at + n * 30, at + n * 30)
                                 old.hid(n.toLong(), down)
-                                old.hid(n.toLong(), down.copy(phase = PhoneHidPhase.UP,
-                                    eventTimeMs = down.eventTimeMs + 1))
+
                             }
                             awaitStopRace("actual Function worker at merger monitor") {
                                 input = Thread.getAllStackTraces().keys.singleOrNull {

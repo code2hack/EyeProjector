@@ -13,10 +13,13 @@ internal class HidKeyInput(
     private val contact: (Any, PadGestureRecognizer.Event) -> Unit,
     private val cancelContact: (Any, Long) -> Unit,
     private val scroll: (Int, PointerPosition, Long) -> Unit,
-    function: (FunctionGestureRecognizer.Action) -> Unit,
+    function: (FunctionGestureRecognizer.Gesture) -> Unit,
     private val changed: () -> Unit = {},
     private val captureTarget: (HidDecisionTrace.Event?) -> HidAction? = { null },
+    functionCapture: (Any) -> Any? = { it },
 ) {
+    companion object { private val functionIdentities = FunctionGestureRecognizer.Identity() }
+
     enum class Phase { DOWN, UP, CANCEL }
     data class Event(
         val attachmentId: Int, val binding: HidBinding, val phase: Phase,
@@ -39,7 +42,8 @@ internal class HidKeyInput(
     private var functionAttachment: Int? = null
     private var generation = 0L
     private val recognizer = FunctionGestureRecognizer(now,
-        { context()?.let { Pair(it, functionAttachment) } }, schedule, function)
+        { context()?.let { Pair(it, functionAttachment) } }, schedule, function, edgeOnly = true,
+        capture = { functionCapture((it as Pair<*, *>).first!!) }, identity = functionIdentities)
 
     fun owns(owner: Any): Boolean = presses.values.any {
         it.owner === owner && it.context == context() &&
@@ -160,7 +164,7 @@ internal class HidKeyInput(
                 HidAction.FUNCTION -> {
                     if (functionAttachment != event.attachmentId) recognizer.cancel()
                     functionAttachment = event.attachmentId
-                    recognizer.accept(FunctionGestureRecognizer.Report.DOWN)
+                    recognizer.accept(FunctionGestureRecognizer.Report.DOWN, event.downTimeMs)
                 }
                 else -> Unit
             }
@@ -188,7 +192,7 @@ internal class HidKeyInput(
             HidAction.SCROLL_DOWN -> if (point?.available == true) scroll(160, point, event.timeMs)
             HidAction.SCROLL_UP -> if (point?.available == true) scroll(-160, point, event.timeMs)
             HidAction.FUNCTION -> if (functionAttachment == event.attachmentId)
-                recognizer.accept(FunctionGestureRecognizer.Report.UP)
+                recognizer.accept(FunctionGestureRecognizer.Report.UP, event.timeMs)
             HidAction.BACK_HOME, HidAction.LOCK -> Unit // Dispatch belongs to V03-04/06.
         }
         return true

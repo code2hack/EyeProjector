@@ -69,6 +69,7 @@ data class HeadPointerState(
     }
 }
 
+/** FUNCTION_DOUBLE and SLEEP retain their old numeric slots; v9 no longer dispatches them. */
 enum class ReceiverInputKind { DOWN, MOVE, UP, CANCEL, SCROLL, PANEL, BACK, EXIT, FUNCTION_DOUBLE, SLEEP, HOME, LOCK }
 
 /** Completed UI operation. Identity is opaque; elapsed duration is Phone-local, not a remote uptime. */
