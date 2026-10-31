@@ -23,7 +23,8 @@ internal class CompletedReceiverInput(
         if (event.revision != revision()) return
         when (event.kind) {
             ReceiverInputKind.PANEL, ReceiverInputKind.BACK, ReceiverInputKind.EXIT,
-            ReceiverInputKind.FUNCTION_DOUBLE, ReceiverInputKind.SLEEP -> {
+            ReceiverInputKind.FUNCTION_DOUBLE, ReceiverInputKind.SLEEP,
+            ReceiverInputKind.HOME, ReceiverInputKind.LOCK -> {
                 cancel(); if (event.revision == revision()) presentation(event.kind)
             }
             ReceiverInputKind.SCROLL -> {

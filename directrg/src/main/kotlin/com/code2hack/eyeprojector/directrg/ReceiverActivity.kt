@@ -353,14 +353,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         completedInput = CompletedReceiverInput(SystemClock::uptimeMillis, { inputGeneration },
             { usable() && connectionView.visibility == View.VISIBLE },
             { heldOwner.cancel(SystemClock.uptimeMillis()) }, localInput::touch, localInput::scroll, localInput::cancel,
-            { kind -> when (kind) {
-                ReceiverInputKind.PANEL -> showControlPanel()
-                ReceiverInputKind.BACK -> contextualBack()
-                ReceiverInputKind.EXIT -> exitToLauncher()
-                ReceiverInputKind.FUNCTION_DOUBLE -> contextualFunctionDouble()
-                ReceiverInputKind.SLEEP -> sleepGlasses()
-                else -> Unit
-            } })
+            ::completedNavigation)
         shellPadContact = NativePadShellContact(heldOwner,
             { if (usable() && !padContact.holding) Triple(inputGeneration, session,
                 Pair(currentGeometry, connectionView.visibility == View.VISIBLE)) else null },
@@ -482,7 +475,28 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     private fun usable() = resumed && hasWindowFocus()
     private fun projectedInput() = streaming && presentation.projectedInput
 
-    /** Shared contextual actions for native function and HID classification. */
+    /** Dedicated destinations shared by native and HID source adapters. */
+    internal fun dispatchNavigation(action: ContextualNavigationAction) {
+        when (action) {
+            ContextualNavigationAction.BACK -> contextualBack()
+            ContextualNavigationAction.HOME -> contextualHome()
+            ContextualNavigationAction.LOCK -> sleepGlasses()
+        }
+    }
+
+    private fun completedNavigation(kind: ReceiverInputKind) {
+        when (kind) {
+            ReceiverInputKind.PANEL -> showControlPanel()
+            ReceiverInputKind.BACK -> dispatchNavigation(ContextualNavigationAction.BACK)
+            ReceiverInputKind.HOME -> dispatchNavigation(ContextualNavigationAction.HOME)
+            ReceiverInputKind.LOCK -> dispatchNavigation(ContextualNavigationAction.LOCK)
+            ReceiverInputKind.EXIT -> exitToLauncher()
+            ReceiverInputKind.FUNCTION_DOUBLE -> contextualFunctionDouble()
+            ReceiverInputKind.SLEEP -> sleepGlasses()
+            else -> Unit
+        }
+    }
+
     internal val projectionContext: Boolean get() = session != null && !presentation.panelVisible
     internal fun showControlPanel() {
         cancelInput()
@@ -534,6 +548,16 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     private fun contextualFunctionDouble() {
         if (projectionContext) projectionFunctionDouble() else localFunctionDouble()
     }
+    internal fun contextualHome() {
+        if (!usable()) return
+        if (projectionContext) {
+            if (!projectedInput()) return
+            cancelInput()
+            session?.navigate(Navigation.CONTEXTUAL_HOME)
+        } else if (::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE) {
+            showControlPanel()
+        } else exitToLauncher()
+    }
     private fun sleepGlasses() {
         if (!usable()) return
         cancelInput()
@@ -558,6 +582,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     internal fun exitToLauncher() {
         // End local interception and invalidate peer callbacks before leaving this Activity.
         resumed = false
+        cancelInput()
         hidDevices.stop(); functionInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
         val original = visibleActivation
         val scope = launchScope

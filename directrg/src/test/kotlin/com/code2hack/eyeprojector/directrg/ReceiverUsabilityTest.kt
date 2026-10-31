@@ -105,6 +105,6 @@ class ReceiverUsabilityTest {
         }
         val bytes=ByteArrayOutputStream();Wire.writeFrame(DataOutputStream(bytes),Frame(Wire.RECEIVER_USABILITY,payload=v))
         assertArrayEquals(v,Wire.readFrame(DataInputStream(bytes.toByteArray().inputStream())).payload)
-        assertEquals(7,Wire.VERSION)
+        assertEquals(8,Wire.VERSION)
     }
 }

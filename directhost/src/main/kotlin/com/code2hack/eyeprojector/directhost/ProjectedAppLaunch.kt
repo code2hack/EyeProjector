@@ -103,7 +103,7 @@ internal class ProjectedAppLaunch(
     }
 
     /** Decide against this display's real foreground, serialized with app/Home launches. */
-    fun functionDouble(onHome: () -> Unit) = synchronized(admission) {
+    fun contextualHome(onGrid: () -> Unit) = synchronized(admission) {
         if (closed.get()) return@synchronized
         executor.execute {
             val display = state.get().displayId ?: return@execute
@@ -112,9 +112,15 @@ internal class ProjectedAppLaunch(
             if (closed.get()) return@execute
             val home = component == ProjectionLaunchCommands.HOME_COMPONENT ||
                 component == "${ProjectionLaunchCommands.HOME_PACKAGE}/${ProjectionLaunchCommands.HOME_PACKAGE}.ProjectedHomeActivity"
-            if (home) onHome() else execute(0, ProjectionLaunchCommands.HOME_PACKAGE, true)
+            if (home) {
+                beforeLaunch()
+                if (!closed.get() && !Thread.currentThread().isInterrupted) onGrid()
+            } else execute(0, ProjectionLaunchCommands.HOME_PACKAGE, true)
         }
     }
+
+    /** Compatibility until the Function source migration replaces its old navigation. */
+    fun functionDouble(onHome: () -> Unit) = contextualHome(onHome)
 
     fun launch(requestId: Long, packageName: String): ProjectionDisplayState {
         val future = synchronized(admission) {
