@@ -11,6 +11,11 @@ import com.code2hack.eyeprojector.protocol.PhoneHidPhase
 import com.code2hack.eyeprojector.directhost.input.PhoneHidRoute
 import com.code2hack.eyeprojector.directhost.activation.snapshot.PhoneHidSnapshotSource
 import com.code2hack.eyeprojector.directhost.activation.snapshot.NativeSnapshotReadLane
+import com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiSource
+import com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiSourceProvider
+import com.code2hack.eyeprojector.directhost.uiaccess.UiTargetAccess
+import com.code2hack.eyeprojector.directhost.uiaccess.UiTargetSnapshot
+import com.code2hack.eyeprojector.directhost.uiaccess.UiTargetSnapshotProvider
 import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Context
@@ -40,6 +45,7 @@ class HostBootstrap private constructor(private val context: Context) {
     private val forget = HostForgetCompletion { main.post(it) }
     private val executor = Executors.newSingleThreadScheduledExecutor()
     private val displayExecutor = Executors.newSingleThreadExecutor()
+    private val uiTargetExecutor = Executors.newSingleThreadExecutor()
     private val inputRoutes = java.util.concurrent.atomic.AtomicLong(System.nanoTime())
     private val scaleExecutor = Executors.newSingleThreadExecutor()
     private val panelExecutor = Executors.newSingleThreadExecutor()
@@ -313,6 +319,46 @@ class HostBootstrap private constructor(private val context: Context) {
     fun projectionDisplayState(expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit) =
         displayOperation(expected, LaunchOperationDiagnostics.Kind.DISPLAY_QUERY, null,
             { service, _ -> service.projectionDisplayState(expected.ownerEpoch, expected.projectionToken) }, complete)
+
+    /** Captures one app->shell binding; neither queued work nor the second sample adopts a successor. */
+    internal fun captureUiTargetSource(expected: ProjectionContext): ManagedUiSourceProvider? {
+        if (!expected.available) return null
+        val service = remote ?: return null
+        val binding = bindingGeneration
+        val original = current
+        fun matches(): Boolean {
+            val observed = current
+            return remote === service && bindingGeneration == binding && (observed.projectionContext == expected ||
+                (original.projectionToken.isEmpty() && observed === original && observed.sessionEpoch == expected.ownerEpoch))
+        }
+        if (!matches()) return null
+        return ManagedUiSourceProvider { query ->
+            if (query != expected || !matches()) null
+            else service.uiTargetContext(expected.ownerEpoch, expected.projectionToken)?.let { payload ->
+                ManagedUiSource.from(payload).takeIf { matches() && it.context == expected }
+            }
+        }
+    }
+
+    fun uiTargetContext(expected: ProjectionContext, complete: (ManagedUiSource?) -> Unit) {
+        val original = captureUiTargetSource(expected)
+        uiTargetExecutor.execute {
+            val result = runCatching { original?.current(expected) }.getOrNull()
+            main.post { complete(result) }
+        }
+    }
+
+    /** Accessibility traversal runs in this app process, outside projection/input and lifecycle locks. */
+    fun uiTargets(expected: ProjectionContext, selectedPackage: String, windowId: Int? = null,
+        complete: (UiTargetSnapshot) -> Unit) {
+        val original = captureUiTargetSource(expected)
+        uiTargetExecutor.execute {
+            val provider = UiTargetSnapshotProvider(original ?: ManagedUiSourceProvider { null },
+                UiTargetAccess::reader, android.os.SystemClock::uptimeMillis)
+            val result = provider.read(expected, selectedPackage, windowId)
+            main.post { complete(result) }
+        }
+    }
 
     private fun displayOperation(expected: ProjectionContext, kind: LaunchOperationDiagnostics.Kind, selectedPackage: String?,
         operation: (IHostBootstrap, Long) -> ByteArray, complete: (ProjectionDisplayState?) -> Unit,

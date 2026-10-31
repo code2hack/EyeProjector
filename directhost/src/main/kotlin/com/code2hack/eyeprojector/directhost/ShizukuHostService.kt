@@ -140,6 +140,12 @@ class ShizukuHostService internal constructor(
         return (captureLaunchTarget(expected)?.projectionDisplayState() ?: ProjectionDisplayState(context = expected)).bytes()
     }
 
+    override fun uiTargetContext(expectedOwnerEpoch: String, expectedProjectionToken: String): ByteArray? {
+        val expected = ProjectionContext(expectedOwnerEpoch, expectedProjectionToken)
+        val original = captureLaunchTarget(expected) ?: return null
+        return original.uiTargetContext()?.takeIf { it.context == expected }?.bytes()
+    }
+
     override fun phoneHidEdge(routeId: Long, typedEdge: ByteArray, expectedOwnerEpoch: String, expectedProjectionToken: String) {
         val expected = ProjectionContext(expectedOwnerEpoch, expectedProjectionToken)
         val target = captureLaunchTarget(expected) ?: return

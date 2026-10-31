@@ -10,7 +10,7 @@ import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.SSLServerSocket
 
 /** External listener is modeled; service, route registry, Bridge and Session selection are production. */
-private class Listener:SSLServerSocket() {
+internal class Listener:SSLServerSocket() {
     val entered=CountDownLatch(1);val ended=CountDownLatch(1)
     override fun bind(a:SocketAddress,b:Int){}
     override fun getLocalPort()=44378
