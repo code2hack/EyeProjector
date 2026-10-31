@@ -37,3 +37,27 @@ preference or output-contact implementation. This is a host transport compositio
 physical LAN, firmware or target-app result. The runner also supports `--navigation-only`,
 `--stop-race-only` and `--function-failure-only` to exercise retained navigation and retirement.
 All modes use the recorded compiled class closure from the focused Gradle build.
+
+The #117 reader/context join adds `--ui-targets-only` for actual Session/Bridge capture, valid
+immutable managed mapping, current foreground metadata, released locks and reader/provider
+composition. `--nav-context-only` checks the delegated #116 Session usability predicate with
+unavailable pointer positions while retaining all original context/native-word checks. These use
+modeled platform observations and the existing native-publication doubles; they establish no user
+permission, encoded/physical mapping or device behavior. The separately owned #116 merger supplies
+the nonspatial stamped navigation admission before the Session predicate is called.
+
+The precise delegated #116 composition has separate baseline and paired invocations:
+
+```sh
+python3 -B directhost/src/test/launch/run.py --stamped-nav-only --output-dir /private/evidence/baseline
+python3 -B directhost/src/test/launch/run.py --stamped-nav-only \
+  --paired116-manifest /private/evidence/copied-immutable116-manifest.json \
+  --output-dir /private/evidence/paired
+```
+
+The paired manifest comes from the Manager-assigned immutable #116 source slice. Its hashes are
+verified before compiling its Merger and Back/Home recognizer as test inputs. The resulting test
+jar precedes the SDK-compiled #117 baseline classes; the runner records the manifest, origins,
+hashes, archived compiler inputs and classpath precedence. Positive cases are labeled
+`PAIRED117+116 SOURCE JOIN`. The ordinary #117 production merger is unchanged, and its standalone
+test retains the inherited unavailable-pointer rejection. Final #116 must recheck the merged pair.

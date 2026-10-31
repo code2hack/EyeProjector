@@ -80,16 +80,24 @@ internal class SessionUsability(private val context: ProjectionContext) {
     }
     /** Merger control lock -> this short gate. No publisher ever acquires the control lock. */
     fun accepts(regionId: String, word: Long, point: HeadPointerState, pointerSource: ReceiverUsability?): Boolean = synchronized(gate) {
-        val now = current.get(); val fact = now.fact ?: return@synchronized false
-        !now.retired && now.regionId == regionId && now.word == word && SnapshotWord.stamp(word) != 0L &&
+        point.available && acceptsContextLocked(regionId, word, point, pointerSource)
+    }
+    /** Nonspatial navigation retains the original input context even when no pointer position exists. */
+    fun acceptsContext(regionId: String, word: Long, point: HeadPointerState, pointerSource: ReceiverUsability?): Boolean = synchronized(gate) {
+        acceptsContextLocked(regionId, word, point, pointerSource)
+    }
+    private fun acceptsContextLocked(regionId: String, word: Long, point: HeadPointerState, pointerSource: ReceiverUsability?): Boolean {
+        val now = current.get(); val fact = now.fact ?: return false
+        return !now.retired && now.regionId == regionId && now.word == word && SnapshotWord.stamp(word) != 0L &&
             mode(fact) == SnapshotWord.mode(word) && mode(fact) in SnapshotWord.LOCAL_PANEL..SnapshotWord.PROJECTED &&
-            pointerSource != null && sameInput(fact, pointerSource) && compatible(fact, point)
+            pointerSource != null && sameInput(fact, pointerSource) && compatibleContext(fact, point)
     }
     fun acceptsPointer(original: ReceiverUsability?, point: HeadPointerState): Boolean = synchronized(gate) {
         val now = current.get(); val fact = now.fact ?: return@synchronized false
         !now.retired && original != null && sameInput(fact, original) && (!point.available || compatible(fact, point))
     }
-    private fun compatible(fact: ReceiverUsability, point: HeadPointerState) = point.available &&
+    private fun compatible(fact: ReceiverUsability, point: HeadPointerState) = point.available && compatibleContext(fact, point)
+    private fun compatibleContext(fact: ReceiverUsability, point: HeadPointerState) =
         point.revision == fact.inputRevision && when (fact.mode) {
             ReceiverUsabilityMode.LOCAL_PANEL -> !point.projected
             ReceiverUsabilityMode.PROJECTED -> point.projected

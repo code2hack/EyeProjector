@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compile actual Session and launch adapters against host-only external API doubles."""
 import os,json,hashlib,subprocess,argparse,pathlib,shutil
-p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output-dir',type=pathlib.Path,required=True);p.add_argument('--protocol-classpath',type=pathlib.Path);p.add_argument('--source-dir',type=pathlib.Path,help='Exact production host source snapshot for matched before/after checks');p.add_argument('--stop-race-only',action='store_true');p.add_argument('--function-failure-only',action='store_true');p.add_argument('--navigation-only',action='store_true');p.add_argument('--function-intents-only',action='store_true');p.add_argument('--function-review-only',action='store_true');a=p.parse_args()
+p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output-dir',type=pathlib.Path,required=True);p.add_argument('--protocol-classpath',type=pathlib.Path);p.add_argument('--source-dir',type=pathlib.Path,help='Exact production host source snapshot for matched before/after checks');p.add_argument('--stop-race-only',action='store_true');p.add_argument('--function-failure-only',action='store_true');p.add_argument('--navigation-only',action='store_true');p.add_argument('--function-intents-only',action='store_true');p.add_argument('--function-review-only',action='store_true');p.add_argument('--ui-targets-only',action='store_true');p.add_argument('--nav-context-only',action='store_true');p.add_argument('--stamped-nav-only',action='store_true');p.add_argument('--paired116-manifest',type=pathlib.Path);a=p.parse_args()
 suite=pathlib.Path(__file__).resolve().parent;root=suite.parents[3];out=a.output_dir.resolve();out.mkdir(parents=True,exist_ok=True)
 cache=pathlib.Path(os.environ.get('GRADLE_USER_HOME',pathlib.Path.home()/'.gradle'))/'caches/modules-2/files-2.1'
 deps=['org.jetbrains.kotlin/kotlin-compiler-embeddable/2.2.21','org.jetbrains.kotlin/kotlin-stdlib/2.2.21','org.jetbrains.kotlin/kotlin-script-runtime/2.2.21','org.jetbrains.kotlin/kotlin-reflect','org.jetbrains/annotations/13.0','org.jetbrains.kotlinx/kotlinx-coroutines-core-jvm']
@@ -15,23 +15,36 @@ cp+=os.pathsep+os.pathsep.join(map(str,[host_classes,
     root/'directhost/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes',sdk/'platforms/android-35/android.jar']))
 java=str(pathlib.Path(os.environ['JAVA_HOME'])/'bin/java') if os.environ.get('JAVA_HOME') else shutil.which('java')
 actual=a.source_dir.resolve() if a.source_dir else root/'directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost'
-sources=list((suite/'doubles').glob('*.kt'))+[root/'directhost/src/test/adapter/doubles/AtomicFile.kt',suite/'Scenarios.kt',suite/'ServiceContextScenarios.kt',suite/'FusionScenarios.kt',suite/'StopRaceScenarios.kt',suite/'FunctionFailureScenarios.kt',suite/'NavigationScenarios.kt',suite/'FunctionIntentSessionScenarios.kt',suite/'FunctionReviewScenarios.kt']
+sources=list((suite/'doubles').glob('*.kt'))+[root/'directhost/src/test/adapter/doubles/AtomicFile.kt',suite/'Scenarios.kt',suite/'ServiceContextScenarios.kt',suite/'FusionScenarios.kt',suite/'StopRaceScenarios.kt',suite/'FunctionFailureScenarios.kt',suite/'NavigationScenarios.kt',suite/'FunctionIntentSessionScenarios.kt',suite/'FunctionReviewScenarios.kt',suite/'UiTargetSessionScenarios.kt',suite/'NonspatialContextScenarios.kt',suite/'StampedNavigationContextScenarios.kt']
 sources += [root/'directrg/src/test/kotlin/android/util/Log.kt']
 sources += [actual/(n+'.kt') for n in ['ShellMain','PanelPower','LiveScale','PhoneTouchDispatcher','HeldInputRelease','OwnedRelease','ProjectedAppLaunch','PlatformProjectionLaunch','ProjectionDisplayState','ProjectionContext','ShizukuHostService','OwnedProjectionRoutes','OwnedHostLifecycle','OwnedShellSessions','BootstrapSessionFiles']]
 sources += [actual/'SessionUsability.kt']
+sources += [actual/'uiaccess'/n for n in ['UiTargetSnapshot.kt','UiSourceGeometry.kt','UiTargetReader.kt','UiTargetSnapshotProvider.kt']]
 sources += [actual/'activation/snapshot'/n for n in ['NativeSnapshotRegion.kt','SnapshotWord.kt']]
 sources += sorted((suite.parent/'snapshot/transport/doubles').glob('*.kt'))
 sources += [actual/'input/PhoneInputMerger.kt',actual/'input/FunctionWork.kt',actual/'input/FunctionIntentRoute.kt']
 sources += [root/'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'/n for n in ['Wire.kt', 'ActivationControl.kt', 'ReceiverUsability.kt','PhoneInput.kt','Touch.kt','LayoutScale.kt','FunctionIntent.kt']]
+paired=None
+if a.paired116_manifest:
+    if not a.stamped_nav_only:p.error('Paired116 inputs are allocated only for --stamped-nav-only')
+    paired=json.loads(a.paired116_manifest.read_text())
+    for item in paired['inputs']:
+        copied=pathlib.Path(item['snapshot']);data=copied.read_bytes()
+        if len(data)!=item['bytes'] or hashlib.sha256(data).hexdigest()!=item['sha256']:p.error('Paired immutable input hash mismatch')
+        if item['path'].endswith('/input/PhoneInputMerger.kt'):
+            sources=[copied if source==actual/'input/PhoneInputMerger.kt' else source for source in sources]
+        else:sources.append(copied)
 jar=out/'session-launch-composition.jar'
-cmd=[java,'-cp',cp,'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler','-no-stdlib','-no-reflect','-classpath',cp,'-d',str(jar)]+list(map(str,sources))
+cmd=[java,'-cp',cp,'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler','-jvm-target','17','-no-stdlib','-no-reflect','-classpath',cp,'-d',str(jar)]+list(map(str,sources))
 cmd.insert(4,'-Xfriend-paths='+str(host_classes))
 snapshots=[]
 for index,source in enumerate(sources):
     snapshot=out/'compiled-sources'/str(index)/source.name;snapshot.parent.mkdir(parents=True,exist_ok=True);snapshot.write_bytes(source.read_bytes());snapshots.append(snapshot)
 cmd[-len(sources):]=list(map(str,snapshots))
-run=[java,'-cp',str(jar)+os.pathsep+cp,'com.code2hack.eyeprojector.directhost.'+('FunctionReviewScenariosKt' if a.function_review_only else 'FunctionIntentSessionScenariosKt' if a.function_intents_only else 'NavigationScenariosKt' if a.navigation_only else 'StopRaceScenariosKt' if a.stop_race_only else 'FunctionFailureScenariosKt' if a.function_failure_only else 'ScenariosKt')]
+run=[java,'-cp',str(jar)+os.pathsep+cp,'com.code2hack.eyeprojector.directhost.'+('StampedNavigationContextScenariosKt' if a.stamped_nav_only else 'NonspatialContextScenariosKt' if a.nav_context_only else 'UiTargetSessionScenariosKt' if a.ui_targets_only else 'FunctionReviewScenariosKt' if a.function_review_only else 'FunctionIntentSessionScenariosKt' if a.function_intents_only else 'NavigationScenariosKt' if a.navigation_only else 'StopRaceScenariosKt' if a.stop_race_only else 'FunctionFailureScenariosKt' if a.function_failure_only else 'ScenariosKt')]
+if a.stamped_nav_only:run.append('paired' if paired else 'baseline')
 record={'compileArgv':cmd,'runArgv':run,'sources':[{'path':str(s),'snapshot':str(copy),'sha256':hashlib.sha256(copy.read_bytes()).hexdigest()}for s,copy in zip(sources,snapshots)],'scope':'Actual Shizuku service/routes/Bridge/Session/launch/release with external API doubles; no device or Binder proof'}
+record['paired116']=None if paired is None else {'label':'PAIRED117+116 SOURCE JOIN','manifestPath':str(a.paired116_manifest),'manifestSha256':hashlib.sha256(a.paired116_manifest.read_bytes()).hexdigest(),'origin':paired,'productionImport':False,'classpathPrecedence':'New composition jar (117 actual Session/authority plus exact116 source overrides) precedes SDK-compiled117 baseline class directories and protocol classes','standalone117Limitation':'Production Merger remains accepted120 baseline; positive no-point dispatch is this paired test join only; final116 merged-pair recheck required'}
 record['dependencyTrees']=[]
 for directory in [root/'protocol/build/tmp/kotlin-classes/debug',host_classes,
     root/'directhost/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes']:

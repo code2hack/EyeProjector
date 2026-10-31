@@ -25,7 +25,7 @@ if not jars:
 classpath = os.pathsep.join(jars)
 java = str(Path(os.environ['JAVA_HOME']) / 'bin/java') if os.environ.get('JAVA_HOME') else shutil.which('java')
 sources = sorted((actual / 'uiaccess').glob('*.kt')) + [actual / 'ProjectionContext.kt', actual / 'hid/PhoneHidKeyService.kt']
-sources += [protocol / (name + '.kt') for name in ['Wire', 'Touch', 'PhoneInput', 'ReceiverUsability', 'CameraFeed', 'ActivationControl']]
+sources += [protocol / (name + '.kt') for name in ['Wire', 'Touch', 'PhoneInput', 'ReceiverUsability', 'CameraFeed', 'ActivationControl', 'FunctionIntent']]
 sources += sorted((suite / 'doubles').glob('*.kt')) + [suite / 'Scenarios.kt']
 out = args.output_dir.resolve()
 out.mkdir(parents=True, exist_ok=True)
