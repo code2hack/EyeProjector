@@ -16,6 +16,7 @@ import java.io.FileOutputStream
 import java.lang.ref.WeakReference
 import java.util.IdentityHashMap
 import java.util.concurrent.atomic.AtomicReference
+import org.json.JSONArray
 import org.json.JSONObject
 
 private val controlFields = listOf("state", "startedMonoNs", "elapsedMs", "width", "height",
@@ -87,6 +88,8 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
     val context = instrumentation.targetContext
     val application = context.applicationContext as Application
     val recorder = NativeInputRecorder()
+    val navigation = if (args.getString("navigationMetadata") == "true")
+        NativeNavigationObservation(context, recorder.queue) else null
     val trace = File(context.filesDir, "probe-$id-native-events.jsonl")
     check(trace.createNewFile()) { "Existing measurement trace" }
     val detail = JSONObject().put("schema", 1).put("case", case).put("traceFile", trace.name)
@@ -94,6 +97,10 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
         .put("syntheticInputInjected", false).put("activityLaunchedOrFinished", false)
         .put("scope", "App-delivered event observation; no raw-kernel/physical origin or target injection acknowledgment")
     report.put("nativeObservation", detail).put("passedScope", "recorder completion only; no physical feature acceptance")
+    detail.put("navigationMetadataEnabled", navigation != null)
+    if (navigation != null) detail.put("broadcastActions", JSONArray(NativeNavigationObservation.ACTIONS))
+        .put("broadcastScope", "Passive known-action receipt only; existing production abort can shadow delivery")
+        .put("firmwareActionOwnership", "UNKNOWN; correlate actual UI/power observations separately")
     val manager = context.getSystemService(InputManager::class.java)
     val inventoryThread = HandlerThread("native-input-inventory")
     var inventoryStartAttempted = false
@@ -171,6 +178,7 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
         inventoryThread.start()
         listenerRegistrationAttempted = true
         manager.registerInputDeviceListener(listener, Handler(inventoryThread.looper))
+        navigation?.start() // Register before normal foreground resume, without launching an Activity.
         onMain {
             check(ReceiverActivity.nativeInputObserver == null) { "Another observation owns the sink" }
             lifecycleRegistrationAttempted = true
@@ -189,6 +197,7 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
         while (SystemClock.elapsedRealtime() - started < seconds * 1000L) {
             val elapsed = SystemClock.elapsedRealtime()
             if (elapsed >= nextSample) {
+                navigation?.sample()
                 val sample = mutableMapOf<String, Any?>()
                 onMain {
                     val activity = currentActivity?.get()
@@ -222,6 +231,8 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
         var queueClosed = false
         var writerClosed = false
         var streamClosed = false
+        var navigationReleased = navigation == null
+        state.attempt("navigationUnregister") { navigation?.stop(); navigationReleased = true }
         state.attempt("observerDetach") { onMain {
             if (ReceiverActivity.nativeInputObserver === recorder) {
                 ReceiverActivity.nativeInputObserver = null; detached = true
@@ -255,7 +266,7 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
         state.observerFailures = recorder.queue.failureCount
         state.rowsRecorded = recorder.queue.recorded
         state.cleanupComplete = sinkReleased && lifecycleReleased && listenerReleased &&
-            !inventoryThread.isAlive && queueClosed && writerClosed && streamClosed
+            navigationReleased && !inventoryThread.isAlive && queueClosed && writerClosed && streamClosed
         state.exportComplete = writerOpened && state.exportFailures == 0L &&
             state.outcomes["traceDrain"] == "SUCCESS" && state.outcomes["traceFlush"] == "SUCCESS" &&
             state.outcomes["traceClose"] == "SUCCESS" && state.outcomes["traceStreamClose"] == "SUCCESS" &&
@@ -270,6 +281,7 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
             .put("lifecycleRegistrationAttempted", lifecycleRegistrationAttempted)
             .put("inputListenerRegistrationAttempted", listenerRegistrationAttempted)
             .put("inventoryThreadStopped", !inventoryThread.isAlive)
+            .put("navigationObserverReleased", navigationReleased)
             .put("cleanupComplete", state.cleanupComplete).put("exportComplete", state.exportComplete)
             .put("cleanupOutcomes", JSONObject(state.outcomes as Map<*, *>))
             .put("primaryFailureType", state.primary?.javaClass?.simpleName ?: JSONObject.NULL)
