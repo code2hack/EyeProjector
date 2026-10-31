@@ -265,6 +265,15 @@ internal class ReceiverSessionOwner(
         publish()
     }
 
+    /** Failure feedback belongs to its captured input context, just like the Function itself. */
+    private fun currentAnchorFeedback(source: ProjectionSession, message: AnchorMessage.Feedback): Boolean {
+        val original = message.intent.context.usability
+        val current = source.captureFunctionContext(message.intent.context.pointer)?.usability ?: return false
+        return inputRevision == original.inputRevision && current.ownerEpoch == original.ownerEpoch &&
+            current.incarnation == original.incarnation && current.inputRevision == original.inputRevision &&
+            current.mode == original.mode
+    }
+
     private fun startProjection(epoch: String) {
         requested = false; mediaState = "CONNECTING"; displayed = false
         client.command(SessionControl.Operation.CONNECTING, epoch)
@@ -346,7 +355,8 @@ internal class ReceiverSessionOwner(
                 }
             } }, nextUsabilityRevision = usabilityRevision::incrementAndGet, expectedPhoneOwnerEpoch = epoch,
                 onAnchor = { source, message -> deliver {
-                    if (!closed && session === source && uiUsable) {
+                    if (!closed && session === source && uiUsable &&
+                        (message !is AnchorMessage.Feedback || currentAnchorFeedback(source, message))) {
                         if (message is AnchorMessage.HeldState) listener?.anchorHeld(source, message)
                         val consumed = message is AnchorMessage.HeldState || listener?.anchor(source, message) == true
                         if (!consumed && message is AnchorMessage.Feedback) AnchorFeedbackUi.show(context, message.status)
