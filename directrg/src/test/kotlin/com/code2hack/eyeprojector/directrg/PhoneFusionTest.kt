@@ -51,4 +51,21 @@ class PhoneFusionTest {
         input.accept(ReceiverInput(ReceiverInputKind.DOWN, 4, 1))
         assertEquals(0, sent)
     }
+
+    @Test fun dedicatedHomeAndLockRetireOriginalCompletedContactBeforeDispatchAndRejectStaleAction() {
+        for (kind in listOf(ReceiverInputKind.HOME, ReceiverInputKind.LOCK)) {
+            var revision = 4L
+            val events = mutableListOf<String>()
+            val input = CompletedReceiverInput({ 1000 }, { revision }, { true }, {},
+                { events.add(it.phase.name); true }, { _, _ -> true }, { events.add("release-original") },
+                { events.add(it.name) })
+            input.accept(ReceiverInput(ReceiverInputKind.DOWN, 4, 17))
+            input.accept(ReceiverInput(kind, 4))
+            assertEquals(listOf("DOWN", "release-original", kind.name), events)
+            revision = 5
+            input.accept(ReceiverInput(kind, 4))
+            input.accept(ReceiverInput(ReceiverInputKind.UP, 4, 17))
+            assertEquals(3, events.size)
+        }
+    }
 }

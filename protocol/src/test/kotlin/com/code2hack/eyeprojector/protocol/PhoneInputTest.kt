@@ -7,6 +7,24 @@ import java.io.DataOutputStream
 import java.io.ByteArrayOutputStream
 
 class PhoneInputTest {
+    @Test fun dedicatedNavigationUsesNewIdsAndRoundTripsInVersionEight() {
+        assertEquals((0..9).toList(), listOf(ReceiverInputKind.DOWN, ReceiverInputKind.MOVE, ReceiverInputKind.UP,
+            ReceiverInputKind.CANCEL, ReceiverInputKind.SCROLL, ReceiverInputKind.PANEL, ReceiverInputKind.BACK,
+            ReceiverInputKind.EXIT, ReceiverInputKind.FUNCTION_DOUBLE, ReceiverInputKind.SLEEP).map { it.ordinal })
+        for ((kind, id) in listOf(ReceiverInputKind.HOME to 10, ReceiverInputKind.LOCK to 11)) {
+            val event = ReceiverInput(kind, 19)
+            assertEquals(id, event.bytes()[0].toInt())
+            val b = ByteArrayOutputStream()
+            Wire.writeFrame(DataOutputStream(b), Frame(Wire.RECEIVER_INPUT, payload = event.bytes()))
+            val frame = Wire.readFrame(DataInputStream(b.toByteArray().inputStream()))
+            assertEquals(event, ReceiverInput.from(frame.payload))
+        }
+        val home = Navigate(Navigation.CONTEXTUAL_HOME, Geometry(480, 640))
+        assertEquals(-2, Navigation.CONTEXTUAL_HOME.keycode)
+        assertEquals(home, Navigate.from(home.bytes()))
+        assertEquals(listOf(4, 3, -1), Navigation.entries.take(3).map { it.keycode })
+    }
+
     @Test fun appendedNavigationRolesPreserveExistingPhoneEdgeIdsAndPayloadSize() {
         val roles = listOf("TAP", "SCROLL_DOWN", "SCROLL_UP", "FUNCTION", "BACK_HOME", "LOCK")
         assertEquals(roles, PhoneHidAction.entries.map { it.name })
@@ -49,8 +67,8 @@ class PhoneInputTest {
 
     private fun stateBytesWithTrailingData() = HeadPointerState(0, 0, false, false, 0f, 0f, null, null).bytes() + 0.toByte()
 
-    @Test fun wireSevenMatchesBothNewDirectionsAndRejectsThePriorHandshakes() {
-        assertEquals(7, Wire.VERSION); assertEquals(15, Wire.HEAD_POINTER); assertEquals(16, Wire.RECEIVER_INPUT)
+    @Test fun wireEightMatchesBothNewDirectionsAndRejectsThePriorHandshakes() {
+        assertEquals(8, Wire.VERSION); assertEquals(15, Wire.HEAD_POINTER); assertEquals(16, Wire.RECEIVER_INPUT)
         assertEquals(14, Wire.TOUCH); assertEquals(3, Wire.TAP); assertEquals(8, Wire.SCROLL)
         val frames = listOf(Frame(Wire.HEAD_POINTER, payload = HeadPointerState(1, 2, false, false, 0f, 0f, null, null).bytes()),
             Frame(Wire.RECEIVER_INPUT, payload = ReceiverInput(ReceiverInputKind.PANEL, 1).bytes()))
@@ -59,7 +77,7 @@ class PhoneInputTest {
             val decoded = Wire.readFrame(DataInputStream(b.toByteArray().inputStream()))
             assertEquals(frame.channel, decoded.channel); assertArrayEquals(frame.payload, decoded.payload)
         }
-        for (revision in listOf(5, 6)) {
+        for (revision in listOf(5, 6, 7)) {
             val old = bytes { writeInt(Wire.MAGIC); writeInt(revision); writeByte(Wire.STREAM) }
             assertThrows(IllegalArgumentException::class.java) { Wire.readRequest(DataInputStream(old.inputStream())) }
             val oldWelcome=bytes { writeInt(Wire.MAGIC);writeInt(revision);writeUTF(Wire.SCRCPY_VERSION);writeInt(Wire.H264) }
