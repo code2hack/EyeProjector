@@ -14,7 +14,8 @@ import java.util.concurrent.atomic.AtomicLong
 internal fun interface AnchorRegistrationInstaller { fun install(runtime: AnchorAppRuntime) }
 
 /** One app FIFO and app-private store, installed on the actual HostBootstrap binding. */
-internal class AnchorAppRuntime(context: Context) {
+internal class AnchorAppRuntime(context: Context, registrationProviderName: String =
+    "com.code2hack.eyeprojector.directhost.anchor.registration.AnchorRegistrationProvider") {
     enum class ProviderState { MISSING, INSTALLED, FAILED }
     var registrationProviderState = ProviderState.MISSING
         private set
@@ -44,18 +45,16 @@ internal class AnchorAppRuntime(context: Context) {
     }
 
     init {
-        try {
-            val feature = Class.forName("com.code2hack.eyeprojector.directhost.anchor.registration.AnchorRegistrationProvider")
-                .getDeclaredConstructor().newInstance() as AnchorRegistrationInstaller
-            feature.install(this)
-            registrationProviderState = ProviderState.INSTALLED
-        } catch (_: ClassNotFoundException) { /* Optional121 is not installed in the122 candidate. */ }
-        catch (error: Exception) {
-            registrationProviderState = ProviderState.FAILED
-            val cause = error.cause ?: error
-            registrationInstallationFailure = cause
-            onLane { coordinator.registration = null; coordinator.registrationMessage = null }
-            android.util.Log.e("AnchorAppRuntime", "Registration provider initialization failed", cause)
+        when (val result = AnchorRegistrationLoader.install(registrationProviderName,
+            AnchorRegistrationInstaller::class.java) { it.install(this) }) {
+            AnchorProviderInstallation.Missing -> Unit
+            AnchorProviderInstallation.Installed -> registrationProviderState = ProviderState.INSTALLED
+            is AnchorProviderInstallation.Failed -> {
+                registrationProviderState = ProviderState.FAILED
+                registrationInstallationFailure = result.cause
+                onLane { coordinator.registration = null; coordinator.registrationMessage = null }
+                android.util.Log.e("AnchorAppRuntime", "Registration provider initialization failed", result.cause)
+            }
         }
     }
     fun invalidateBinding() { bindingGeneration.incrementAndGet(); coordinator.contextRetired() }
