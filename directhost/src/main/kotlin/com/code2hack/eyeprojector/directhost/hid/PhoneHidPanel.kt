@@ -45,7 +45,8 @@ internal class PhoneHidPanel(context: Context, private val runtime: PhoneHidRunt
         addView(pin, LayoutParams(-1, -2))
         addView(message)
         addView(received, LayoutParams(-1, (32 * resources.displayMetrics.density).toInt()))
-        for (action in PhoneHidAction.entries) rows[action] = button("") { input.select(action) }.also {
+        // Navigation/Lock assignment rows are introduced with their dispatch in V03-06.
+        for (action in listOf(PhoneHidAction.TAP, PhoneHidAction.SCROLL_DOWN, PhoneHidAction.SCROLL_UP, PhoneHidAction.FUNCTION)) rows[action] = button("") { input.select(action) }.also {
             addView(it, LayoutParams(-1, -2))
         }
         addView(button("Unpin and reset Phone bindings") { runtime.pin.unpinAndReset() }, LayoutParams(-1, -2))
@@ -139,5 +140,7 @@ internal class PhoneHidPanel(context: Context, private val runtime: PhoneHidRunt
         PhoneHidAction.SCROLL_DOWN -> "Scroll down"
         PhoneHidAction.SCROLL_UP -> "Scroll up"
         PhoneHidAction.FUNCTION -> "Function button"
+        PhoneHidAction.BACK_HOME -> "Back/Home"
+        PhoneHidAction.LOCK -> "Lock"
     }
 }

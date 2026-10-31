@@ -38,7 +38,8 @@ internal class HidBindingsPanel(
         addView(TextView(context).apply { text = "HID key bindings"; textSize = 22f; setTextColor(Color.WHITE) })
         addView(message)
         addView(receivedLine, LayoutParams(-1, (32 * resources.displayMetrics.density).toInt()))
-        for (action in HidAction.entries) {
+        // Navigation/Lock assignment rows are introduced with their dispatch in V03-06.
+        for (action in listOf(HidAction.TAP, HidAction.SCROLL_DOWN, HidAction.SCROLL_UP, HidAction.FUNCTION)) {
             entries[action] = button()
         }
         for (assignmentButton in entries.values) {
@@ -115,5 +116,7 @@ internal class HidBindingsPanel(
         HidAction.SCROLL_DOWN -> "Scroll down"
         HidAction.SCROLL_UP -> "Scroll up"
         HidAction.FUNCTION -> "Function button"
+        HidAction.BACK_HOME -> "Back/Home"
+        HidAction.LOCK -> "Lock"
     }
 }

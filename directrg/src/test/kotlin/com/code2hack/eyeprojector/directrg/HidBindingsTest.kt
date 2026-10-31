@@ -1,5 +1,6 @@
 package com.code2hack.eyeprojector.directrg
 
+import com.code2hack.eyeprojector.protocol.PhoneHidAction
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.util.Base64
@@ -29,6 +30,28 @@ class HidBindingsTest {
         assertEquals(0, storage.writes)
     }
 
+    @Test fun legacyFourRoleRecordKeepsFunctionAndMatchesPhoneRolesWithoutWriting() {
+        assertEquals(listOf("TAP", "SCROLL_DOWN", "SCROLL_UP", "FUNCTION", "BACK_HOME", "LOCK"), HidAction.entries.map { it.name })
+        assertEquals(PhoneHidAction.entries.map { it.name }, HidAction.entries.map { it.name })
+        val legacy = listOf("TAP", "SCROLL_DOWN", "SCROLL_UP", "FUNCTION").mapIndexed { id, name ->
+            name to binding(20 + id, 80 + id)
+        }
+        val record = wireRecord(legacy)
+        val storage = Storage(record)
+        val loaded = storage.open()
+        legacy.forEachIndexed { id, (name, value) ->
+            val action = HidAction.valueOf(name)
+            assertEquals(id, action.ordinal)
+            assertEquals(value, loaded.binding(action))
+            assertEquals(action, loaded.action(value.button))
+        }
+        assertNull(loaded.binding(HidAction.BACK_HOME))
+        assertNull(loaded.binding(HidAction.LOCK))
+        assertEquals(0, storage.writes)
+        assertEquals(record, storage.record)
+        assertNull(loaded.error)
+    }
+
     @Test fun everyActionAndActualMetadataSurviveRestartInOneRecord() {
         val storage = Storage()
         val first = storage.open()
@@ -45,7 +68,7 @@ class HidBindingsTest {
             assertEquals(action, loaded.action(value.button))
         }
         assertNull(loaded.error)
-        assertEquals(4, storage.writes)
+        assertEquals(expected.size, storage.writes)
     }
 
     @Test fun assigningAnAlreadyBoundPhysicalButtonMovesItAndReplacesTheTarget() {

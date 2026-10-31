@@ -164,6 +164,7 @@ internal class PhoneInputMerger(
                 else out.add(ReceiverInput(ReceiverInputKind.SCROLL, position.revision, x = position.x, y = position.y, pixels = pixels))
             }
             PhoneHidAction.FUNCTION -> functionUp(old, edge.eventTimeMs, out)
+            PhoneHidAction.BACK_HOME, PhoneHidAction.LOCK -> Unit // Dispatch belongs to V03-04/06.
         }
     }
 

@@ -102,16 +102,16 @@ class PhoneHidFunctionCompositionTest {
         h.advance(100)
         h.press()
         h.advance(600)
-        assertEquals(listOf(Navigation.HOME), h.navigation)
+        assertEquals(listOf(Navigation.FUNCTION_DOUBLE), h.navigation)
         assertTrue(h.receiver.isEmpty())
     }
 
-    @Test fun retainingReleasedRouteDoesNotCancelTriplePanelResult() {
+    @Test fun retainingReleasedRouteDoesNotCancelTripleSleepResult() {
         val h = Harness()
         repeat(3) { h.press(); h.advance(100) }
         h.advance(600)
         assertTrue(h.navigation.isEmpty())
-        assertEquals(listOf(ReceiverInputKind.PANEL), h.receiver.map { it.kind })
+        assertEquals(listOf(ReceiverInputKind.SLEEP), h.receiver.map { it.kind })
     }
 
     @Test fun cancelingAnOlderCompletedRouteCannotCancelANewerPendingSequence() {

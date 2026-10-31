@@ -21,6 +21,8 @@ private fun equal(expected: Any?, actual: Any?, reason: String) {
     check(expected == actual) { "$reason: expected <$expected>, actual <$actual>" }
 }
 
+private val visibleHidRoles = listOf(HidAction.TAP, HidAction.SCROLL_DOWN, HidAction.SCROLL_UP, HidAction.FUNCTION)
+
 private class Rig(initialRecord: String? = null, save: Boolean = true) {
     data class Timer(val deadline: Long, val order: Int, val callback: () -> Unit, var canceled: Boolean = false)
     data class Contact(val owner: Any, val event: PadGestureRecognizer.Event)
@@ -174,7 +176,7 @@ private fun assertJoyCon379Preserved(r: Rig) {
 private fun capturesActualFactsAndConsumesWholeGesture() {
     val r = Rig()
     val panel = r.showPanel()
-    check(r.hover(HidAction.entries[0]))
+    check(r.hover(visibleHidRoles[0]))
     equal(null, r.input.selected, "hover alone does not start capture")
     check(!panel.buttons[0].performClick()) { "assignment row has no sticky click selection" }
     check(r.edge(KeyEvent.ACTION_DOWN, key = 194, scan = 813))
@@ -332,6 +334,11 @@ private fun panelShowsFourAssignmentsWithExistingBlackLightControls() {
     equal(listOf("Tap: Unassigned", "Scroll down: Unassigned", "Scroll up: Unassigned", "Function button: Unassigned",
         "Reset all HID bindings", "Back"), panel.buttons.map { it.text.toString() }, "visible assignment and reset labels")
     equal(6, panel.buttons.size, "four assignments, one reset and Back registered")
+    for (deferred in listOf(HidAction.BACK_HOME, HidAction.LOCK)) {
+        r.hover(deferred)
+        equal(null, panel.actionAt(r.point, r.root), "$deferred has no assignment row before V03-06")
+    }
+    check(panel.buttons.none { it.text.toString().startsWith("Back/Home:") || it.text.toString().startsWith("Lock:") })
     equal(panel.buttons, panel.children.drop(3), "all six controls follow title, instructions and reserved received status")
     val received = panel.children[2] as TextView
     equal("", received.text.toString(), "received status starts empty")
@@ -356,7 +363,7 @@ private fun panelShowsFourAssignmentsWithExistingBlackLightControls() {
         equal(Color.WHITE, background.strokeColor, "light control border")
         equal(96, button.minimumHeight, "48dp minimum at host density two")
     }
-    for (action in HidAction.entries) {
+    for (action in visibleHidRoles) {
         check(!panel.buttons[action.ordinal].performClick()) { "assignment row does not latch capture on click" }
         check(r.hover(action))
         equal(null, r.input.selected, "hover alone remains unselected")
@@ -375,10 +382,10 @@ private fun panelShowsFourAssignmentsWithExistingBlackLightControls() {
 private fun panelSavedMoveAndErrorsRefreshFromActualStore() {
     val r = Rig()
     val panel = r.showPanel()
-    r.hover(HidAction.entries[0])
+    r.hover(visibleHidRoles[0])
     check(r.edge(KeyEvent.ACTION_DOWN))
     check(r.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000))
-    r.hover(HidAction.entries[1])
+    r.hover(visibleHidRoles[1])
     check(r.edge(KeyEvent.ACTION_DOWN, at = 1100))
     check(r.edge(KeyEvent.ACTION_UP, at = 1120, down = 1100))
     equal(null, r.bindings.binding(HidAction.TAP), "one button moves out of former assignment")
@@ -396,7 +403,7 @@ private fun panelSavedMoveAndErrorsRefreshFromActualStore() {
     equal("Saved HID bindings could not be read. Assign a button or reset all bindings to replace them.", malformed.message, "read error display")
     val failed = Rig(save = false)
     val failedPanel = failed.showPanel()
-    failed.hover(HidAction.entries[3])
+    failed.hover(visibleHidRoles[3])
     check(failed.edge(KeyEvent.ACTION_DOWN))
     check(failed.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000))
     equal("HID bindings could not be saved. Try again.", failed.message, "save error display")
@@ -410,7 +417,7 @@ private fun attachmentCancellationRetainsCapturedUnboundReleaseOwnership() {
         val r = Rig()
         val panel = r.showPanel()
         r.adapter.start()
-        r.hover(HidAction.entries[0])
+        r.hover(visibleHidRoles[0])
         // An otherwise unbound Back key is owned by the capture through its complete
         // gesture. A queued release after cancellation must not escape to Activity Back.
         check(r.edge(KeyEvent.ACTION_DOWN, key = 4, scan = 158))
@@ -428,14 +435,14 @@ private fun attachmentCancellationRetainsCapturedUnboundReleaseOwnership() {
     val fresh = Rig()
     val panel = fresh.showPanel()
     fresh.adapter.start()
-    fresh.hover(HidAction.entries[0])
+    fresh.hover(visibleHidRoles[0])
     check(fresh.edge(KeyEvent.ACTION_DOWN, key = 4, scan = 158))
     fresh.android.inputManager.remove(fresh.device.id)
     // Removal can lose the old UP entirely. A fresh real DOWN on a reused runtime ID
     // must still begin and complete a new capture of the same persistent button.
     val reattached = fresh.device.copy(name = "Reattached peripheral, reused Android ID")
     fresh.android.inputManager.add(reattached.id)
-    fresh.hover(HidAction.entries[2])
+    fresh.hover(visibleHidRoles[2])
     check(fresh.edge(KeyEvent.ACTION_DOWN, at = 1100, key = 4, scan = 158, device = reattached))
     check(fresh.edge(KeyEvent.ACTION_UP, at = 1120, down = 1100, key = 4, scan = 158, device = reattached))
     equal(fresh.binding(reattached, 4, 158), fresh.bindings.binding(HidAction.SCROLL_UP), "reused attachment admits a fresh capture")
@@ -448,7 +455,7 @@ private fun missingDeviceAfterRemovalConsumesOnlyActualCapturedEdges() {
     val r = Rig()
     val panel = r.showPanel()
     r.adapter.start()
-    r.hover(HidAction.entries[0])
+    r.hover(visibleHidRoles[0])
     check(r.edge(KeyEvent.ACTION_DOWN, key = 4, scan = 158))
     r.android.inputManager.remove(r.device.id)
     // Android lookup may return no InputDevice while the queued event still carries
@@ -474,7 +481,7 @@ private fun missingDeviceAfterRemovalConsumesOnlyActualCapturedEdges() {
     // begins capture and later ordinary Function dispatch.
     val reattached = r.device.copy(name = "Actual device after readdition")
     r.android.inputManager.add(reattached.id)
-    r.hover(HidAction.entries[3])
+    r.hover(visibleHidRoles[3])
     check(!r.edge(KeyEvent.ACTION_DOWN, at = 1050, key = 4, scan = 158,
         device = null, attachmentId = reattached.id))
     equal(null, r.input.selected, "unowned missing-device DOWN cannot begin capture")
@@ -510,7 +517,7 @@ private fun missingDeviceBeforeListenerCancelsCapturedOwnerWithoutTargetUp() {
     check(held.scrolls.isEmpty() && held.functions.isEmpty())
 
     val captured = Rig()
-    captured.hover(HidAction.entries[0])
+    captured.hover(visibleHidRoles[0])
     check(captured.edge(KeyEvent.ACTION_DOWN, key = 4, scan = 158))
     check(captured.edge(KeyEvent.ACTION_DOWN, at = 1010, down = 1000, key = 4, scan = 158, repeat = 1,
         device = null, attachmentId = captured.device.id))
@@ -525,7 +532,7 @@ private fun changedDescriptorDoesNotDisownCapturedOldRelease() {
     val r = Rig()
     val panel = r.showPanel()
     r.adapter.start()
-    r.hover(HidAction.entries[0])
+    r.hover(visibleHidRoles[0])
     check(r.edge(KeyEvent.ACTION_DOWN, key = 4, scan = 158))
     r.android.inputManager.change(r.device.id)
     val changed = r.device.copy(descriptor = "actually:changed:descriptor", vendorId = 99, productId = 100,
@@ -533,7 +540,7 @@ private fun changedDescriptorDoesNotDisownCapturedOldRelease() {
     check(r.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000, key = 4, scan = 158, device = changed))
     equal(null, r.bindings.binding(HidAction.TAP), "old canceled release cannot capture new descriptor")
     r.noOutput()
-    r.hover(HidAction.entries[0])
+    r.hover(visibleHidRoles[0])
     check(r.edge(KeyEvent.ACTION_DOWN, at = 1100, key = 4, scan = 158, device = changed))
     check(r.edge(KeyEvent.ACTION_UP, at = 1120, down = 1100, key = 4, scan = 158, device = changed))
     equal(r.binding(changed, 4, 158), r.bindings.binding(HidAction.TAP), "fresh DOWN captures actual changed facts")
@@ -548,7 +555,7 @@ private fun changedFactsBeforeListenerRetireOnlyTheCapturedGesture(
     val r = Rig()
     val panel = r.showPanel()
     r.adapter.start()
-    r.hover(HidAction.entries[0])
+    r.hover(visibleHidRoles[0])
     // These actual runtime facts belong to an otherwise unbound Back press.
     check(r.edge(KeyEvent.ACTION_DOWN, key = 4, scan = 158))
     val changed = changeFacts(r.device)
@@ -583,7 +590,7 @@ private fun changedFactsBeforeListenerRetireOnlyTheCapturedGesture(
 
     // The same Android attachment can now present actual new persistent facts.
     // A new real DOWN, after the user selects capture again, owns those new facts.
-    r.hover(HidAction.entries[3])
+    r.hover(visibleHidRoles[3])
     check(r.edge(KeyEvent.ACTION_DOWN, at = 1100, key = 4, scan = 158, device = changed))
     check(r.edge(KeyEvent.ACTION_UP, at = 1120, down = 1100, key = 4, scan = 158, device = changed))
     equal(r.binding(changed, 4, 158), r.bindings.binding(HidAction.FUNCTION), "fresh DOWN captures actual changed facts")
@@ -611,7 +618,7 @@ private fun changedFactsUnrelatedRuntimeEdgesDoNotRetireCapture() {
     )
     for ((reason, edge) in cases) {
         val r = Rig()
-        r.hover(HidAction.entries[0])
+        r.hover(visibleHidRoles[0])
         check(r.edge(KeyEvent.ACTION_DOWN, key = 4, scan = 158))
         val changed = r.device.copy(id = edge.attachment, descriptor = "unrelated:changed:descriptor",
             vendorId = 99, productId = 100)
@@ -635,14 +642,14 @@ private fun changedFactsReleaseStaysConsumedWhenCancelCallbackStartsFreshCapture
         val reason = if (missingDevice) "missing device" else "changed descriptor"
         val r = Rig()
         val panel = r.showPanel()
-        r.hover(HidAction.entries[0])
+        r.hover(visibleHidRoles[0])
         check(r.edge(KeyEvent.ACTION_DOWN, key = 4, scan = 158))
         var nestedDownConsumed: Boolean? = null
         r.onChanged = {
             // The old capture's cancellation synchronously publishes a selection
             // change. A newer capture can start in that callback on the same route.
             r.onChanged = {}
-            check(r.hover(HidAction.entries[2]))
+            check(r.hover(visibleHidRoles[2]))
             // Use the original actual device facts, key and scan. This fresh DOWN
             // replaces the old 1000 tombstone rather than creating a different key.
             nestedDownConsumed = r.edge(KeyEvent.ACTION_DOWN, at = 1100, key = 4, scan = 158)
@@ -785,7 +792,7 @@ private fun visibleSingleResetUnassignsAllActionsAndSurvivesReload() {
     for (action in HidAction.entries) {
         equal(null, r.bindings.binding(action), "Reset removes $action")
         equal(null, restored.binding(action), "Reset survives $action reload")
-        check(panel.buttons[action.ordinal].text.toString().endsWith(": Unassigned"))
+        if (action in visibleHidRoles) check(panel.buttons[action.ordinal].text.toString().endsWith(": Unassigned"))
     }
     equal(null, restored.error, "reset record reloads without parse error")
     equal(null, r.input.selected, "Reset retires capture selection")
@@ -795,8 +802,8 @@ private fun visibleSingleResetUnassignsAllActionsAndSurvivesReload() {
     equal(writesBefore + 2, r.writes.size, "repeated empty Reset still writes exactly once")
     equal(emptyRecord, r.record, "empty reset preserves the existing record format")
     // Every ordinary assignment remains usable after all bindings are removed.
-    for (action in HidAction.entries) {
-        check(r.hover(HidAction.entries[action.ordinal]))
+    for (action in visibleHidRoles) {
+        check(r.hover(visibleHidRoles[action.ordinal]))
         val at = 1100L + action.ordinal * 100
         check(r.edge(KeyEvent.ACTION_DOWN, at = at, key = 210 + action.ordinal, scan = 800 + action.ordinal))
         check(r.edge(KeyEvent.ACTION_UP, at = at + 20, down = at, key = 210 + action.ordinal, scan = 800 + action.ordinal))
@@ -829,7 +836,7 @@ private fun resetCancelsHeldCaptureAndPendingFunctionWorkEvenWhenSaveFails() {
 
         val capture = Rig()
         val capturePanel = capture.showPanel()
-        check(capture.hover(HidAction.entries[0]))
+        check(capture.hover(visibleHidRoles[0]))
         check(capture.edge(KeyEvent.ACTION_DOWN, key = 4, scan = 158))
         capture.writable = writable
         check(resetControl(capturePanel).performClick())
@@ -864,7 +871,7 @@ private fun failedResetRetainsEveryStoredAssignmentAndReportsErrorUntilRetry() {
     val before = r.record
     val assignments = HidAction.entries.associateWith { r.bindings.binding(it) }
     r.writable = false
-    check(r.hover(HidAction.entries[0]))
+    check(r.hover(visibleHidRoles[0]))
     check(r.edge(KeyEvent.ACTION_DOWN, key = 4, scan = 158))
     val attempts = r.writes.size
     check(resetControl(panel).performClick())
@@ -875,7 +882,7 @@ private fun failedResetRetainsEveryStoredAssignmentAndReportsErrorUntilRetry() {
     for (action in HidAction.entries) {
         equal(assignments[action], r.bindings.binding(action), "failed Reset preserves effective $action")
         equal(assignments[action], restored.binding(action), "failed Reset preserves reloaded $action")
-        check(!panel.buttons[action.ordinal].text.toString().endsWith(": Unassigned"))
+        if (action in visibleHidRoles) check(!panel.buttons[action.ordinal].text.toString().endsWith(": Unassigned"))
     }
     equal("HID bindings could not be saved. Try again.", r.message, "failed Reset displays truthful store error")
     check(r.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000, key = 4, scan = 158))
@@ -922,7 +929,7 @@ private fun resetRepairsMalformedAndEmptyStorageWithoutFabricatingAssignments() 
 private fun excludedDeviceCannotLearnOrDispatchHid(device: InputDevice) {
     val capture = Rig()
     val panel = capture.showPanel()
-    check(capture.hover(HidAction.entries[3]))
+    check(capture.hover(visibleHidRoles[3]))
     check(!capture.edge(KeyEvent.ACTION_DOWN, key = 83, scan = 204, device = device)) {
         "excluded ${device.name} DOWN must remain available to native dispatch"
     }
@@ -1040,7 +1047,7 @@ private fun receiverNativeKey83RetainsContactMarkerRoute(capturing: Boolean, sav
         equal("HID bindings could not be saved. Try again.", r.bindings.error, "failed startup repair remains observable")
     }
     check(r.bindings.binding(HidAction.FUNCTION) != null) { "native legacy assignment must exist before the Receiver dispatch probe" }
-    if (capturing) check(r.hover(HidAction.entries[0]))
+    if (capturing) check(r.hover(visibleHidRoles[0]))
     val receiver = ExtractedReceiverKeyIngress(r.input, r.adapter)
     equal(PadGestureRecognizer.Key.CONTACT, nativePadKey(nativePad379.name, 0x101, 83),
         "exact native mapper retains key83 CONTACT")
@@ -1077,7 +1084,7 @@ private fun startupRepairPreservesUnrelatedActiveExternalHoldAndCapture() {
         r.android.inputManager.install(nativePad379)
         r.android.inputManager.install(joyCon379)
         if (capture) {
-            check(r.hover(HidAction.entries[3]))
+            check(r.hover(visibleHidRoles[3]))
             check(r.edge(KeyEvent.ACTION_DOWN, key = 195, scan = 700))
         } else check(r.edge(KeyEvent.ACTION_DOWN, key = 103, scan = 311, device = joyCon379))
         r.adapter.start()
@@ -1106,7 +1113,7 @@ private fun newlyExcludedMetadataRetiresOnlyAlreadyOwnedExternalEdges() {
     for (changed in changes) {
         for (capture in listOf(false, true)) {
             val r = Rig()
-            if (capture) check(r.hover(HidAction.entries[0])) else r.assign(HidAction.TAP)
+            if (capture) check(r.hover(visibleHidRoles[0])) else r.assign(HidAction.TAP)
             check(r.edge(KeyEvent.ACTION_DOWN))
             val excluded = changed(r.device)
             check(r.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000, device = excluded)) {
@@ -1133,7 +1140,7 @@ private fun panelExplicitlyRequestsExternalHidButtons() {
     val panel = r.showPanel()
     equal("Point at an action, then press and release an external HID button.", r.message,
         "idle instructions identify external-only learning")
-    check(r.hover(HidAction.entries[3]))
+    check(r.hover(visibleHidRoles[3]))
     equal(null, r.input.selected, "hover does not latch the Function action")
     check(r.edge(KeyEvent.ACTION_DOWN))
     equal("Release the external HID button for Function button.", r.message,
@@ -1143,7 +1150,7 @@ private fun panelExplicitlyRequestsExternalHidButtons() {
 private fun receiverExternalSameKeyCodeRemainsEligibleForCaptureAndFunction() {
     val capture = Rig()
     val panel = capture.showPanel()
-    check(capture.hover(HidAction.entries[3]))
+    check(capture.hover(visibleHidRoles[3]))
     val receiver = ExtractedReceiverKeyIngress(capture.input, capture.adapter)
     fun edge(r: Rig, target: ExtractedReceiverKeyIngress, action: Int, at: Long, down: Long) {
         r.now = at; SystemClock.now = at
@@ -1179,7 +1186,7 @@ private fun extractedNativeMappingRetainsRecordedNativeControls() {
 private fun hoveredRowsUseRootOffsetsAndActualVisibleClipping() {
     val r = Rig()
     val panel = r.showPanel()
-    for (action in HidAction.entries) {
+    for (action in visibleHidRoles) {
         r.hover(action)
         equal(action, panel.actionAt(r.point, r.root), "nonzero root-local offset resolves $action")
     }

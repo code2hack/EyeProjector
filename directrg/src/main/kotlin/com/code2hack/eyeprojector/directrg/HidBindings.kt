@@ -8,7 +8,8 @@ import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
 import java.util.Base64
 
-internal enum class HidAction { TAP, SCROLL_DOWN, SCROLL_UP, FUNCTION }
+/** Keep existing ordinal/name identities matched with protocol.PhoneHidAction. */
+internal enum class HidAction { TAP, SCROLL_DOWN, SCROLL_UP, FUNCTION, BACK_HOME, LOCK }
 
 /** Actual InputDevice facts. Android's transient device ID is deliberately not persisted. */
 internal data class HidDeviceIdentity(val descriptor: String, val vendorId: Int, val productId: Int)

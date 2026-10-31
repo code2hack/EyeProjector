@@ -189,6 +189,7 @@ internal class HidKeyInput(
             HidAction.SCROLL_UP -> if (point?.available == true) scroll(-160, point, event.timeMs)
             HidAction.FUNCTION -> if (functionAttachment == event.attachmentId)
                 recognizer.accept(FunctionGestureRecognizer.Report.UP)
+            HidAction.BACK_HOME, HidAction.LOCK -> Unit // Dispatch belongs to V03-04/06.
         }
         return true
     }
