@@ -21,7 +21,10 @@ private fun equal(expected: Any?, actual: Any?, reason: String) {
     check(expected == actual) { "$reason: expected <$expected>, actual <$actual>" }
 }
 
-private val visibleHidRoles = listOf(HidAction.TAP, HidAction.SCROLL_DOWN, HidAction.SCROLL_UP, HidAction.FUNCTION)
+private val visibleHidRoles = HidAction.entries
+private val displayedHidRoles = listOf(HidAction.TAP, HidAction.SCROLL_DOWN, HidAction.SCROLL_UP,
+    HidAction.BACK_HOME, HidAction.LOCK, HidAction.FUNCTION)
+private fun rowIndex(action: HidAction) = displayedHidRoles.indexOf(action)
 
 private class Rig(initialRecord: String? = null, save: Boolean = true) {
     data class Timer(val deadline: Long, val order: Int, val callback: () -> Unit, var canceled: Boolean = false)
@@ -83,14 +86,14 @@ private class Rig(initialRecord: String? = null, save: Boolean = true) {
     fun showPanel(): HidBindingsPanel = HidBindingsPanel(android, bindings, input) { backs++ }.also {
         panel = it
         root.addView(it)
-        it.hostVisibleRect = Rect(350, 1080, 950, 1670)
+        it.hostVisibleRect = Rect(350, 1080, 950, 1870)
         it.buttons.forEachIndexed { index, button ->
             button.hostVisibleRect = Rect(350, 1080 + index * 100, 950, 1170 + index * 100)
         }
     }
     fun hover(action: HidAction): Boolean {
         if (panel == null) showPanel()
-        point = PointerPosition(400f, 1040f + action.ordinal * 100, true)
+        point = PointerPosition(400f, 1040f + rowIndex(action) * 100, true)
         return true
     }
     fun leaveRows() { point = PointerPosition(100f, 200f, true) }
@@ -324,22 +327,22 @@ private fun actualFunctionAndScrollCallbacksUseAndroidEdges() {
     check(r.contacts.isEmpty() && r.cancels.isEmpty() && r.functions.isEmpty() && r.timers.isEmpty())
 }
 
-private fun panelShowsFourAssignmentsWithExistingBlackLightControls() {
+private fun panelShowsSixAssignmentsWithExistingBlackLightControls() {
     val r = Rig()
     val panel = r.showPanel()
     equal(LinearLayout.VERTICAL, panel.orientation, "vertical controls")
     equal(Color.BLACK, panel.backgroundColor, "black panel")
     equal("HID key bindings", (panel.children[0] as TextView).text.toString(), "panel title")
     equal(22f, (panel.children[0] as TextView).textSize, "panel title size")
-    equal(listOf("Tap: Unassigned", "Scroll down: Unassigned", "Scroll up: Unassigned", "Function button: Unassigned",
+    equal(listOf("Tap: Unassigned", "Scroll down: Unassigned", "Scroll up: Unassigned",
+        "Back/Home: Unassigned", "Lock: Unassigned", "Function button: Unassigned",
         "Reset all HID bindings", "Back"), panel.buttons.map { it.text.toString() }, "visible assignment and reset labels")
-    equal(6, panel.buttons.size, "four assignments, one reset and Back registered")
-    for (deferred in listOf(HidAction.BACK_HOME, HidAction.LOCK)) {
-        r.hover(deferred)
-        equal(null, panel.actionAt(r.point, r.root), "$deferred has no assignment row before V03-06")
+    equal(8, panel.buttons.size, "six assignments, one reset and Back registered")
+    for (action in displayedHidRoles) {
+        r.hover(action)
+        equal(action, panel.actionAt(r.point, r.root), "$action has an explicit assignment row")
     }
-    check(panel.buttons.none { it.text.toString().startsWith("Back/Home:") || it.text.toString().startsWith("Lock:") })
-    equal(panel.buttons, panel.children.drop(3), "all six controls follow title, instructions and reserved received status")
+    equal(panel.buttons, panel.children.drop(3), "all eight controls follow title, instructions and reserved received status")
     val received = panel.children[2] as TextView
     equal("", received.text.toString(), "received status starts empty")
     equal(1, received.maxLines, "received status reserves a single line")
@@ -364,13 +367,13 @@ private fun panelShowsFourAssignmentsWithExistingBlackLightControls() {
         equal(96, button.minimumHeight, "48dp minimum at host density two")
     }
     for (action in visibleHidRoles) {
-        check(!panel.buttons[action.ordinal].performClick()) { "assignment row does not latch capture on click" }
+        check(!panel.buttons[rowIndex(action)].performClick()) { "assignment row does not latch capture on click" }
         check(r.hover(action))
         equal(null, r.input.selected, "hover alone remains unselected")
         val at = 1100L + action.ordinal * 100
         check(r.edge(KeyEvent.ACTION_DOWN, at = at, key = 210 + action.ordinal, scan = 800 + action.ordinal))
         equal(action, r.input.selected, "actual DOWN captures hovered action")
-        equal(listOf(action.ordinal), panel.buttons.indices.filter { panel.buttons[it].isSelected }, "selected capture display")
+        equal(listOf(rowIndex(action)), panel.buttons.indices.filter { panel.buttons[it].isSelected }, "selected capture display")
         check(r.edge(KeyEvent.ACTION_UP, at = at + 20, down = at, key = 210 + action.ordinal, scan = 800 + action.ordinal))
         equal(null, r.input.selected, "actual UP ends capture")
     }
@@ -407,7 +410,7 @@ private fun panelSavedMoveAndErrorsRefreshFromActualStore() {
     check(failed.edge(KeyEvent.ACTION_DOWN))
     check(failed.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000))
     equal("HID bindings could not be saved. Try again.", failed.message, "save error display")
-    equal("Function button: Unassigned", failedPanel.buttons[3].text.toString(), "failed assignment is not displayed as saved")
+    equal("Function button: Unassigned", failedPanel.buttons[rowIndex(HidAction.FUNCTION)].text.toString(), "failed assignment is not displayed as saved")
     equal(null, failed.record, "failed write leaves persistence unchanged")
     failed.noOutput()
 }
@@ -784,15 +787,15 @@ private fun visibleSingleResetUnassignsAllActionsAndSurvivesReload() {
     val writesBefore = r.writes.size
     val changedBefore = r.changed
     val control = resetControl(panel)
-    equal(4, panel.buttons.indexOf(control), "single reset follows the four assignments")
+    equal(6, panel.buttons.indexOf(control), "single reset follows the six assignments")
     check(control.isEnabled && control.performClick())
-    equal(writesBefore + 1, r.writes.size, "all four assignments reset in one store write")
+    equal(writesBefore + 1, r.writes.size, "all six assignments reset in one store write")
     equal(changedBefore + 1, r.changed, "reset publishes one refresh through HID input")
     val restored = HidBindings({ r.record }) { error("reload must not write") }
     for (action in HidAction.entries) {
         equal(null, r.bindings.binding(action), "Reset removes $action")
         equal(null, restored.binding(action), "Reset survives $action reload")
-        if (action in visibleHidRoles) check(panel.buttons[action.ordinal].text.toString().endsWith(": Unassigned"))
+        check(panel.buttons[rowIndex(action)].text.toString().endsWith(": Unassigned"))
     }
     equal(null, restored.error, "reset record reloads without parse error")
     equal(null, r.input.selected, "Reset retires capture selection")
@@ -882,7 +885,7 @@ private fun failedResetRetainsEveryStoredAssignmentAndReportsErrorUntilRetry() {
     for (action in HidAction.entries) {
         equal(assignments[action], r.bindings.binding(action), "failed Reset preserves effective $action")
         equal(assignments[action], restored.binding(action), "failed Reset preserves reloaded $action")
-        if (action in visibleHidRoles) check(!panel.buttons[action.ordinal].text.toString().endsWith(": Unassigned"))
+        check(!panel.buttons[rowIndex(action)].text.toString().endsWith(": Unassigned"))
     }
     equal("HID bindings could not be saved. Try again.", r.message, "failed Reset displays truthful store error")
     check(r.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000, key = 4, scan = 158))
@@ -1024,7 +1027,7 @@ private fun failedLegacyRepairKeepsRecordAndErrorButNeverDispatchesNativeHid() {
         equal("HID bindings could not be saved. Try again.", r.bindings.error, "failed native repair reports error")
         panel.refresh()
         equal(r.bindings.error, r.message, "failed repair error remains visible")
-        check(!panel.buttons[3].text.toString().endsWith(": Unassigned"))
+        check(!panel.buttons[rowIndex(HidAction.FUNCTION)].text.toString().endsWith(": Unassigned"))
         assertJoyCon379Preserved(r)
         r.advance(2000)
         r.noOutput()
@@ -1211,7 +1214,7 @@ private fun unavailableHiddenDisabledAndNonAssignmentAreasNeverLearn() {
     val good = r.point
     for (point in listOf(good.copy(available = false), good.copy(x = Float.NaN),
         good.copy(x = Float.POSITIVE_INFINITY), PointerPosition(100f, 200f, true),
-        good.copy(y = 1440f), good.copy(y = 1540f))) {
+        good.copy(y = 1640f), good.copy(y = 1740f))) {
         equal(null, panel.actionAt(point, r.root), "unavailable/outside/Reset/Back point has no assignment")
     }
     for (view in listOf(r.root, panel, panel.buttons[0])) {
@@ -1224,7 +1227,7 @@ private fun unavailableHiddenDisabledAndNonAssignmentAreasNeverLearn() {
         equal(null, panel.actionAt(good, r.root), "disabled panel/row is not a target")
         view.isEnabled = true
     }
-    r.point = good.copy(y = 1440f)
+    r.point = good.copy(y = 1640f)
     check(!r.edge(KeyEvent.ACTION_DOWN))
     check(!r.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000))
     equal(null, r.record, "external edges over Reset do not become assignments")
@@ -1517,7 +1520,7 @@ fun main() {
         "Android canceled and unsupported events retire the owned contact" to ::canceledAndUnsupportedAndroidEventsDoNotReleaseIntoTargets,
         "InputManager lifecycle, cancellation and fresh reconnect" to ::listenerLifecycleCancelsAndReconnectRetainsBindings,
         "actual Android Function and scroll edge callbacks" to ::actualFunctionAndScrollCallbacksUseAndroidEdges,
-        "four visible bindings, black/light styling and registered buttons" to ::panelShowsFourAssignmentsWithExistingBlackLightControls,
+        "six visible bindings, black/light styling and registered buttons" to ::panelShowsSixAssignmentsWithExistingBlackLightControls,
         "saved move, restart readback and storage error display" to ::panelSavedMoveAndErrorsRefreshFromActualStore,
         "attachment cancellation retains complete captured key ownership" to ::attachmentCancellationRetainsCapturedUnboundReleaseOwnership,
         "removed capture consumes exact missing-device edges and fresh readdition works" to ::missingDeviceAfterRemovalConsumesOnlyActualCapturedEdges,

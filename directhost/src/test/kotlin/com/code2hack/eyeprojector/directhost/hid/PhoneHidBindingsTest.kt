@@ -52,6 +52,25 @@ class PhoneHidBindingsTest {
         assertNull(loaded.error)
     }
 
+    @Test fun explicitlyLearningNavigationAfterLegacyReloadRetainsAllUnrelatedAssignments() {
+        val legacy = PhoneHidAction.entries.take(4).mapIndexed { id, action ->
+            action.name to binding(20 + id, 80 + id)
+        }
+        val storage = Storage(wireRecord(legacy))
+        val first = storage.open()
+        assertEquals(0, storage.writes)
+        val backHome = binding(30, 90)
+        val lock = binding(31, 91)
+        assertTrue(first.assign(PhoneHidAction.BACK_HOME, backHome))
+        val reconnect = storage.open()
+        assertTrue(reconnect.assign(PhoneHidAction.LOCK, lock))
+        val reopened = storage.open()
+        legacy.forEach { (name, value) -> assertEquals(value, reopened.binding(PhoneHidAction.valueOf(name))) }
+        assertEquals(backHome, reopened.binding(PhoneHidAction.BACK_HOME))
+        assertEquals(lock, reopened.binding(PhoneHidAction.LOCK))
+        assertEquals(2, storage.writes)
+    }
+
     @Test fun allActionsAndActualMetadataSurviveRestartInOneVersionedRecord() {
         val storage = Storage()
         val model = storage.open()
