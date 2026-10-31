@@ -61,3 +61,18 @@ jar precedes the SDK-compiled #117 baseline classes; the runner records the mani
 hashes, archived compiler inputs and classpath precedence. Positive cases are labeled
 `PAIRED117+116 SOURCE JOIN`. The ordinary #117 production merger is unchanged, and its standalone
 test retains the inherited unavailable-pointer rejection. Final #116 must recheck the merged pair.
+# Final merged HID navigation check
+
+After the focused matched build, run the production stamped Session composition with
+the actual merged working-tree Merger, Back/Home recognizer and context-only authority:
+
+```sh
+python3 directhost/src/test/launch/run.py --stamped-nav-only --merged116 --output-dir /absolute/new/evidence/directory
+```
+
+This mode uses no private source overrides. It checks unavailable-pointer Back/Home and
+Lock in projected/local modes; spatial-action rejection; wrong, stale, retired and
+successor identities; actual stamped double Home app → grid → panel; and cancellation
+of the original released route during single/double arbitration. Android, socket,
+process, native-memory and platform launch boundaries remain modeled. It does not
+establish physical sleep, native gesture delivery or target-app behavior.
