@@ -7,6 +7,23 @@ import java.io.DataOutputStream
 import java.io.ByteArrayOutputStream
 
 class PhoneInputTest {
+    @Test fun appendedNavigationRolesPreserveExistingPhoneEdgeIdsAndPayloadSize() {
+        val roles = listOf("TAP", "SCROLL_DOWN", "SCROLL_UP", "FUNCTION", "BACK_HOME", "LOCK")
+        assertEquals(roles, PhoneHidAction.entries.map { it.name })
+        for ((id, name) in roles.withIndex()) {
+            // Existing Binder consumers encode the first byte as these exact historical IDs.
+            val payload = bytes {
+                writeByte(id); writeByte(1); writeInt(7); writeInt(66); writeInt(23)
+                writeLong(1234); writeLong(1299); writeInt(0)
+            }
+            val edge = PhoneHidEdge.from(payload)
+            assertEquals(name, edge.action.name)
+            assertEquals(PhoneHidPhase.UP, edge.phase)
+            assertEquals(34, payload.size)
+            assertArrayEquals(payload, edge.bytes())
+        }
+    }
+
     @Test fun typedPointerPreservesActualFitAndFreshVersusHeldMapping() {
         val state = HeadPointerState(8, 20, true, true, 120f, 240f, Fit(20, 40, 240, 320), Geometry(480, 640))
         assertEquals(state, HeadPointerState.from(state.bytes()))

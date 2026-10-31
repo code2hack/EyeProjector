@@ -32,6 +32,26 @@ class PhoneHidBindingsTest {
         assertEquals(0, storage.writes)
     }
 
+    @Test fun legacyFourRoleRecordKeepsFunctionAndLeavesNavigationUnassignedWithoutWriting() {
+        val legacy = listOf("TAP", "SCROLL_DOWN", "SCROLL_UP", "FUNCTION").mapIndexed { id, name ->
+            name to binding(20 + id, 80 + id)
+        }
+        val record = wireRecord(legacy)
+        val storage = Storage(record)
+        val loaded = storage.open()
+        legacy.forEachIndexed { id, (name, value) ->
+            val action = PhoneHidAction.valueOf(name)
+            assertEquals(id, action.ordinal)
+            assertEquals(value, loaded.binding(action))
+            assertEquals(action, loaded.action(value.button))
+        }
+        assertNull(loaded.binding(PhoneHidAction.BACK_HOME))
+        assertNull(loaded.binding(PhoneHidAction.LOCK))
+        assertEquals(0, storage.writes)
+        assertEquals(record, storage.record)
+        assertNull(loaded.error)
+    }
+
     @Test fun allActionsAndActualMetadataSurviveRestartInOneVersionedRecord() {
         val storage = Storage()
         val model = storage.open()
@@ -42,7 +62,7 @@ class PhoneHidBindingsTest {
             )
         }
         expected.forEach { (action, value) -> assertTrue(model.assign(action, value)) }
-        assertEquals(4, storage.writes)
+        assertEquals(expected.size, storage.writes)
         assertEquals(wireRecord(expected.map { it.key.name to it.value }), storage.record)
         val loaded = storage.open()
         expected.forEach { (action, value) ->
@@ -50,7 +70,7 @@ class PhoneHidBindingsTest {
             assertEquals(action, loaded.action(value.button))
         }
         assertNull(loaded.error)
-        assertEquals(4, storage.writes)
+        assertEquals(expected.size, storage.writes)
     }
 
     @Test fun movingOnePhysicalKeyReplacesTheTargetInOneWriteAndPreservesOtherActions() {
@@ -133,7 +153,7 @@ class PhoneHidBindingsTest {
         val values = PhoneHidAction.entries.associateWith { binding(20 + it.ordinal, 80 + it.ordinal) }
         values.forEach { (action, value) -> assertTrue(model.assign(action, value)) }
         assertTrue(model.resetAll())
-        assertEquals(5, storage.writes)
+        assertEquals(values.size + 1, storage.writes)
         assertEquals(wireRecord(emptyList()), storage.record)
         val loaded = storage.open()
         values.forEach { (action, value) ->
@@ -157,7 +177,7 @@ class PhoneHidBindingsTest {
         val saved = storage.record
         storage.writable = false
         assertFalse(model.resetAll())
-        assertEquals(5, storage.writes)
+        assertEquals(values.size + 1, storage.writes)
         assertEquals(saved, storage.record)
         assertNotNull(model.error)
         values.forEach { (action, value) ->
@@ -166,7 +186,7 @@ class PhoneHidBindingsTest {
         }
         storage.writable = true
         assertTrue(model.resetAll())
-        assertEquals(6, storage.writes)
+        assertEquals(values.size + 2, storage.writes)
         assertEquals(wireRecord(emptyList()), storage.record)
         PhoneHidAction.entries.forEach { assertNull(model.binding(it)) }
         assertNull(model.error)

@@ -56,6 +56,7 @@ def kotlin_block(source, marker):
 
 def receiver_key_fixture(receiver_source, native_source):
     dispatch = kotlin_block(receiver_source, r'^    override fun dispatchKeyEvent\(')
+    observe = kotlin_block(receiver_source, r'^    private inline fun observeNativeInput\(')
     hovered = kotlin_block(receiver_source, r'^    private fun hoveredHidAction\(')
     received_initializer = kotlin_block(receiver_source, r'^        hidDevices = AndroidHidInput\(this, hidInput\)')
     received_match = re.fullmatch(r'        hidDevices = AndroidHidInput\(this, hidInput\) \{ event ->(?P<body>[\s\S]*)\}', received_initializer)
@@ -83,6 +84,11 @@ internal class ReceiverKeyPointer {
     fun inputPosition(): PointerPosition { reads++; return position }
 }
 internal class ExtractedReceiverKeyIngress(private val input: HidKeyInput, adapter: AndroidHidInput) : ReceiverKeyBoundary() {
+    // Only the optional key-observer interface is doubled; its invocation/helper are extracted.
+    interface NativeInputObserver {
+        fun key(activityId: Int, event: KeyEvent, receiptUptimeMs: Long, receiptElapsedNs: Long)
+    }
+    var nativeInputObserver: NativeInputObserver? = null
     private lateinit var hidDevices: AndroidHidInput
     val nativeActions = mutableListOf<PadGestureRecognizer.Action>()
     val gestures = PadGestureRecognizer(500, 800) { nativeActions.add(it) }
@@ -104,8 +110,9 @@ internal class ExtractedReceiverKeyIngress(private val input: HidKeyInput, adapt
     private fun schedulePadConfirmation() { scheduled.add(gestures.deadline) }
     private fun cancelInput() { cancellations++; input.cancel(); gestures.cancel(SystemClock.uptimeMillis()) }
 '''
-    return boundary + received_method + dispatch + '\n' + hovered + '\n}\n\n' + normalize + '\n', {
+    return boundary + observe + '\n' + received_method + dispatch + '\n' + hovered + '\n}\n\n' + normalize + '\n', {
         'dispatchKeyEvent': {'source': 'ReceiverActivity.kt', 'sha256': hashlib.sha256(dispatch.encode()).hexdigest()},
+        'observeNativeInput': {'source': 'ReceiverActivity.kt', 'sha256': hashlib.sha256(observe.encode()).hexdigest()},
         'hoveredHidAction': {'source': 'ReceiverActivity.kt', 'sha256': hashlib.sha256(hovered.encode()).hexdigest()},
         'receivedInitializer': {'source': 'ReceiverActivity.kt', 'sha256': hashlib.sha256(received_initializer.encode()).hexdigest(),
                                 'bodySha256': hashlib.sha256(received_body.encode()).hexdigest()},
