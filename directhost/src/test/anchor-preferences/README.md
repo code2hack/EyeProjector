@@ -9,7 +9,7 @@ to check the actual Android adapter's application-context/process-instance bound
 The production codec, store and file persistence run unchanged against real temporary files.
 Checks cover both explicitly chosen modes, nullable Activity/static target metadata, package-level
 replacement, fresh-instance round-trips, Clear isolation, no partial-record publication, committed
-change ordering, concurrent reads, package-filtered subscription lifetimes and write/consumer failures.
+change ordering, cross-thread callback/read composition, concurrent reads, package-filtered subscription lifetimes and write/consumer failures.
 Actual existing chosen-app/scale/notification models exercise retained independent preferences.
 
 `AppAnchorPreferences.open(context)` returns the same store throughout the app process. Registration
@@ -24,17 +24,25 @@ replacement route; [Android Files.move](https://developer.android.com/reference/
 defines the platform operation. File bytes are synced before rename. This is not a power-loss or
 physical-device persistence qualification. Interrupted temporary files are not lookup candidates.
 
-Changes are typed `Replaced(previous,current)` or `Cleared(previous)`. Every completed replacement
-emits, including an equal value; Clear of an absent record is a no-op. Callbacks run synchronously
-after successful persistence, under the instance's serialization lock and before the mutation returns
-or other-thread store reads proceed. Callbacks may read/unsubscribe but must not mutate the store or
-wait for another thread using it. Observer RuntimeExceptions are reported separately and cannot undo
-the committed change or starve the remaining observers. Subscribing/reopening replays no events.
+Changes are typed `Replaced(previous,current,context)` or `Cleared(previous,context)`. Every completed
+replacement emits, including an equal value; Clear of an absent record is a no-op. Complete writes,
+package revisions and recipient snapshots enqueue under the state monitor. One caller drains events
+in commit order outside that monitor, including observer-triggered nested mutations. A busy observer
+does not block reads or further writes: those writes commit/enqueue and may return before delivery.
+An event's immutable values can therefore differ from a later read. Subscriptions do not replay
+pending/history events; Close removes future deliveries while a selected callback may finish.
+Observer RuntimeExceptions are reported separately without undoing commits or starving peers.
 
-The future shared contact owner subscribes to the active package for its entire input-context lifetime
-and retires the original contact synchronously on replacement/Clear before further input use. The menu
-subscription lasts only while its dialog exists and posts visual refreshes to its view. This issue
-provides a preference seam only: it does not implement or prove held-contact retirement. Registration,
-contact ownership, actual Android menu rendering/accessibility, device persistence and final app/input
-coverage remain downstream integration/assembled-device validation. No device or app effects are
-inferred from these host checks.
+`snapshot(package)` includes an `AnchorSettingContext(instanceId,packageName,revision)` for the complete
+value or absence. Revisions advance independently per package only after successful writes; reopening
+creates a new process-instance identity and restores values without replaying contacts/events.
+`isCurrent(context)` allows downstream owners to distinguish a stale setting observation. Neither a
+read, mutation return nor queued/delivered preference event acknowledges actual contact cancellation.
+The future shared contact owner subscribes for the input-context lifetime, serializes its own
+retirement/use and admits input only for the current setting context it has handled. This is still
+unwired in this issue and cannot claim actual held-contact retirement.
+
+The menu subscription lasts only while its dialog exists and posts visual refreshes to its view.
+Registration, contact ownership, actual Android menu rendering/accessibility, device persistence and
+final app/input coverage remain downstream integration/assembled-device validation. No device or app
+effects are inferred from these host checks.

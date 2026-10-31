@@ -10,7 +10,6 @@ import java.nio.file.Files
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.TimeoutException
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -61,7 +60,7 @@ class AppAnchorStoreTest {
         store.clear(app)
         assertNull(store().read(app))
         assertEquals(retained, store().read(other))
-        assertEquals(listOf(AppAnchorChange.Cleared(anchor())), events)
+        assertEquals(listOf(AppAnchorChange.Cleared(anchor(), store.snapshot(app).context)), events)
         assertEquals(1, directory().listFiles()!!.size)
     }
 
@@ -74,8 +73,9 @@ class AppAnchorStoreTest {
         store.replace(click)
         store.replace(hold)
         store.clear(app)
-        assertEquals(listOf(AppAnchorChange.Replaced(null, click), AppAnchorChange.Replaced(click, hold),
-            AppAnchorChange.Cleared(hold)), events)
+        assertEquals(listOf(AppAnchorChange.Replaced(null, click, store.snapshot(app).context.copy(revision = 1)),
+            AppAnchorChange.Replaced(click, hold, store.snapshot(app).context.copy(revision = 2)),
+            AppAnchorChange.Cleared(hold, store.snapshot(app).context.copy(revision = 3))), events)
     }
 
     @Test fun callbacksSeeCommittedDiskAndInstanceValueBeforeOperationReturns() {
@@ -103,7 +103,7 @@ class AppAnchorStoreTest {
         subscription.close()
         subscription.close()
         store.clear(app)
-        assertEquals(listOf(AppAnchorChange.Replaced(null, anchor())), events)
+        assertEquals(listOf(AppAnchorChange.Replaced(null, anchor(), events.single().context)), events)
     }
 
     @Test fun duplicateCallbacksHaveIndependentSubscriptionLifetimes() {
@@ -139,7 +139,7 @@ class AppAnchorStoreTest {
         assertEquals(anchor(), reopened.read(app))
         assertTrue(events.isEmpty())
         reopened.replace(anchor())
-        assertEquals(listOf(AppAnchorChange.Replaced(anchor(), anchor())), events)
+        assertEquals(listOf(AppAnchorChange.Replaced(anchor(), anchor(), reopened.snapshot(app).context)), events)
     }
 
     @Test fun failedReplacementOrClearDoesNotNotifyOrChangePriorDiskValue() {
@@ -190,29 +190,111 @@ class AppAnchorStoreTest {
         store.replace(anchor())
         assertEquals(anchor(), store().read(app))
         assertEquals(listOf(failure), failures)
-        assertEquals(listOf(AppAnchorChange.Replaced(null, anchor())), events)
+        assertEquals(listOf(AppAnchorChange.Replaced(null, anchor(), events.single().context)), events)
     }
 
-    @Test fun otherThreadCannotReadReplacementUntilSynchronousCallbacksFinish() {
+    @Test fun observerCanWaitForAnotherThreadToReadAndCheckSettingContext() {
         val store = store()
-        val callbackEntered = CountDownLatch(1)
-        val releaseCallback = CountDownLatch(1)
-        val readerStarted = CountDownLatch(1)
-        val executor = Executors.newFixedThreadPool(2)
-        store.observe(app) {
-            callbackEntered.countDown()
-            assertTrue(releaseCallback.await(5, TimeUnit.SECONDS))
+        val executor = Executors.newSingleThreadExecutor()
+        var observed: AppAnchorSetting? = null
+        store.observe(app) { change ->
+            observed = executor.submit<AppAnchorSetting> {
+                assertTrue(store.isCurrent(change.context))
+                store.snapshot(app)
+            }.get(5, TimeUnit.SECONDS)
         }
         try {
-            val writer = executor.submit { store.replace(anchor()) }
-            assertTrue(callbackEntered.await(5, TimeUnit.SECONDS))
-            val reader = executor.submit<AppAnchor?> { readerStarted.countDown(); store.read(app) }
-            assertTrue(readerStarted.await(5, TimeUnit.SECONDS))
-            assertThrows(TimeoutException::class.java) { reader.get(100, TimeUnit.MILLISECONDS) }
-            releaseCallback.countDown()
-            writer.get(5, TimeUnit.SECONDS)
-            assertEquals(anchor(), reader.get(5, TimeUnit.SECONDS))
-        } finally { releaseCallback.countDown(); executor.shutdownNow() }
+            val context = store.replace(anchor())
+            assertEquals(AppAnchorSetting(context, anchor()), observed)
+        } finally { executor.shutdownNow() }
+    }
+
+    @Test fun blockedObserverLeavesReadsAndFurtherCommitsAvailableButDeliveryOrdered() {
+        val store = store()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val executor = Executors.newSingleThreadExecutor()
+        val events = mutableListOf<AppAnchorChange>()
+        store.observe(app) { change ->
+            events.add(change)
+            if (change.context.revision == 1L) {
+                entered.countDown()
+                assertTrue(release.await(5, TimeUnit.SECONDS))
+            }
+        }
+        try {
+            val first = executor.submit { store.replace(anchor()) }
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            val second = store.replace(anchor(mode = AnchorMode.HOLD))
+            assertEquals(2L, second.revision)
+            assertEquals(AppAnchorSetting(second, anchor(mode = AnchorMode.HOLD)), store.snapshot(app))
+            val third = store.clear(app)
+            assertEquals(3L, third.revision)
+            assertNull(store.read(app))
+            assertTrue(store.isCurrent(third))
+            assertFalse(store.isCurrent(second))
+            release.countDown()
+            first.get(5, TimeUnit.SECONDS)
+            assertEquals(listOf(1L, 2L, 3L), events.map { it.context.revision })
+            assertEquals(anchor(), (events[0] as AppAnchorChange.Replaced).current)
+            assertEquals(anchor(mode = AnchorMode.HOLD), (events[1] as AppAnchorChange.Replaced).current)
+            assertEquals(anchor(mode = AnchorMode.HOLD), (events[2] as AppAnchorChange.Cleared).previous)
+        } finally { release.countDown(); executor.shutdownNow() }
+    }
+
+    @Test fun observerTriggeredMutationWaitsInQueueUntilAllOriginalRecipientsFinish() {
+        val store = store()
+        val seen = mutableListOf<String>()
+        store.observe(app) { change ->
+            seen.add("first-${change.context.revision}")
+            if (change.context.revision == 1L) store.clear(app)
+        }
+        store.observe(app) { seen.add("second-${it.context.revision}") }
+        val original = store.replace(anchor())
+        assertEquals(listOf("first-1", "second-1", "first-2", "second-2"), seen)
+        assertFalse(store.isCurrent(original))
+        assertNull(store.read(app))
+    }
+
+    @Test fun packageContextsAdvanceIndependentlyAndCannotSurviveStoreRecreation() {
+        val store = store()
+        val initial = store.snapshot(app).context
+        assertEquals(0L, initial.revision)
+        assertEquals(app, initial.packageName)
+        assertEquals(initial, store.clear(app))
+        val first = store.replace(anchor())
+        assertEquals(1L, first.revision)
+        assertFalse(store.isCurrent(initial))
+        store.replace(anchor(other))
+        assertTrue(store.isCurrent(first))
+        val next = store.replace(anchor())
+        assertEquals(2L, next.revision)
+        assertFalse(store.isCurrent(first))
+        val recreated = store()
+        assertEquals(anchor(), recreated.snapshot(app).anchor)
+        assertEquals(0L, recreated.snapshot(app).context.revision)
+        assertNotEquals(next.instanceId, recreated.snapshot(app).context.instanceId)
+        assertFalse(recreated.isCurrent(next))
+    }
+
+    @Test fun closingQueuedSubscriptionAndSubscribingAfterCommitDoesNotReplayPendingEvent() {
+        val store = store()
+        var earlyCalls = 0
+        var lateCalls = 0
+        lateinit var early: java.io.Closeable
+        store.observe(app) { change ->
+            if (change.context.revision == 1L) {
+                store.clear(app)
+                early.close()
+                store.observe(app) { lateCalls++ }
+            }
+        }
+        early = store.observe(app) { earlyCalls++ }
+        store.replace(anchor())
+        assertEquals(0, earlyCalls)
+        assertEquals(0, lateCalls)
+        store.replace(anchor())
+        assertEquals(1, lateCalls)
     }
 
     @Test fun concurrentDiskReaderSeesOnlyWholeOldOrNewRecords() {

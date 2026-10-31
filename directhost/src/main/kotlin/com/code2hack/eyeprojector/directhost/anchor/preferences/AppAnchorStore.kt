@@ -1,6 +1,7 @@
 package com.code2hack.eyeprojector.directhost.anchor.preferences
 
 import java.io.Closeable
+import java.util.UUID
 
 /** Atomic complete-value writes; an I/O failure throws without publishing a partial value. */
 interface AppAnchorStorage {
@@ -8,70 +9,122 @@ interface AppAnchorStorage {
     fun write(packageName: String, anchor: AppAnchor?)
 }
 
-/** A committed preference transition, not a touch/contact result. */
+/** Process-instance/package/revision identity; never persisted or reused as contact identity. */
+data class AnchorSettingContext(val instanceId: String, val packageName: String, val revision: Long)
+data class AppAnchorSetting(val context: AnchorSettingContext, val anchor: AppAnchor?)
+
+/** An immutable committed preference transition, not a touch/contact result. */
 sealed interface AppAnchorChange {
-    val packageName: String
+    val context: AnchorSettingContext
+    val packageName: String get() = context.packageName
     val previous: AppAnchor?
 
-    data class Replaced(override val previous: AppAnchor?, val current: AppAnchor) : AppAnchorChange {
-        override val packageName: String get() = current.packageName
-    }
+    data class Replaced(override val previous: AppAnchor?, val current: AppAnchor,
+        override val context: AnchorSettingContext) : AppAnchorChange
 
-    data class Cleared(override val previous: AppAnchor) : AppAnchorChange {
-        override val packageName: String get() = previous.packageName
-    }
+    data class Cleared(override val previous: AppAnchor,
+        override val context: AnchorSettingContext) : AppAnchorChange
 }
 
 /**
- * Use AppAnchorPreferences.open in Android: all UI and future contact owners share its process-wide
- * instance. This class owns preferences only, never a Function/contact/session or live UI target.
+ * Android consumers share AppAnchorPreferences.open's app-process instance. Preferences only: no
+ * Function/contact/session ownership. Cancel/incomplete registration must never call replace.
  *
- * Reads, writes and subscription changes serialize on this instance. A successful atomic storage
- * write precedes synchronous package-filtered callbacks, before the mutation returns or another
- * thread can read/mutate the store. Callbacks may read and unsubscribe; they must not mutate this
- * store or wait for another thread using it. Closing a subscription prevents later callbacks.
+ * Complete writes, snapshots, revisions and the event queue serialize on state. External observers
+ * run OUTSIDE that monitor. One caller drains immutable events in commit order, including nested
+ * mutations; callbacks may compose with reads/mutations on other threads without holding state.
+ * While a callback is busy, another mutation can commit/enqueue and return before its own delivery.
+ * A read may therefore observe a newer value than the callback's immutable event. No event replays
+ * on restart/subscription. Close removes future deliveries; an already selected callback may finish.
  *
- * A future shared contact owner must subscribe for its active app for its whole input-context
- * lifetime and retire the original contact synchronously on Replaced/Cleared before further use.
- * This seam alone does not retire a held contact. No events replay on open/restart/subscription;
- * read the current preference separately. No chosen-app membership or notification/scale changes
- * flow through here. Cancel/incomplete registration must never call replace.
+ * snapshot provides a package-scoped context even when absent. Each successful mutation advances
+ * that package's revision; isCurrent compares it within this instance. A future shared contact
+ * owner must subscribe for its input-context lifetime, serialize retirement/use itself, and admit
+ * use only for the current setting context it has handled. Read/mutation return or event enqueue
+ * is NOT contact-retirement acknowledgment. This seam currently retires no held contact. Contexts
+ * reset on a new store/process; live contacts must never be restored from persisted preferences.
  */
 class AppAnchorStore(
     private val storage: AppAnchorStorage,
     private val onObserverFailure: (RuntimeException) -> Unit = { it.printStackTrace() },
 ) {
     private class Observer(val packageName: String, val changed: (AppAnchorChange) -> Unit)
+    private data class Delivery(val change: AppAnchorChange, val observers: List<Observer>)
+    private val state = Any()
+    private val instanceId = UUID.randomUUID().toString()
+    private val revisions = mutableMapOf<String, Long>()
     private val observers = mutableListOf<Observer>()
+    private val pending = ArrayDeque<Delivery>()
+    private var delivering = false
 
-    @Synchronized fun read(packageName: String): AppAnchor? = storage.read(packageName)
+    fun read(packageName: String): AppAnchor? = snapshot(packageName).anchor
 
-    /** Each completed replacement emits an event, even when the descriptor/mode are unchanged. */
-    @Synchronized fun replace(anchor: AppAnchor) {
-        val previous = storage.read(anchor.packageName)
-        storage.write(anchor.packageName, anchor)
-        publish(AppAnchorChange.Replaced(previous, anchor))
+    fun snapshot(packageName: String): AppAnchorSetting = synchronized(state) {
+        AppAnchorSetting(context(packageName), storage.read(packageName))
     }
 
-    /** Missing is already clear; no write or event. Chosen-app removal never calls this method. */
-    @Synchronized fun clear(packageName: String) {
-        val previous = storage.read(packageName) ?: return
-        storage.write(packageName, null)
-        publish(AppAnchorChange.Cleared(previous))
+    fun isCurrent(context: AnchorSettingContext): Boolean = synchronized(state) {
+        context == context(context.packageName)
     }
 
-    @Synchronized fun observe(packageName: String, changed: (AppAnchorChange) -> Unit): Closeable {
+    /** Every completed replacement emits, even for equal descriptor/mode values. */
+    fun replace(anchor: AppAnchor): AnchorSettingContext {
+        val (changeContext, drain) = synchronized(state) {
+            val previous = storage.read(anchor.packageName)
+            storage.write(anchor.packageName, anchor)
+            val next = advance(anchor.packageName)
+            next to enqueue(AppAnchorChange.Replaced(previous, anchor, next))
+        }
+        if (drain) deliver()
+        return changeContext
+    }
+
+    /** Missing is already clear; no write/event/revision. Chosen removal never calls Clear. */
+    fun clear(packageName: String): AnchorSettingContext {
+        val (changeContext, drain) = synchronized(state) {
+            val previous = storage.read(packageName) ?: return context(packageName)
+            storage.write(packageName, null)
+            val next = advance(packageName)
+            next to enqueue(AppAnchorChange.Cleared(previous, next))
+        }
+        if (drain) deliver()
+        return changeContext
+    }
+
+    fun observe(packageName: String, changed: (AppAnchorChange) -> Unit): Closeable {
         val observer = Observer(packageName, changed)
-        observers.add(observer)
-        return Closeable { synchronized(this) { observers.remove(observer) } }
+        synchronized(state) { observers.add(observer) }
+        return Closeable { synchronized(state) { observers.remove(observer) } }
     }
 
-    private fun publish(change: AppAnchorChange) {
-        observers.toList().filter { it.packageName == change.packageName }.forEach { observer ->
-            if (observer in observers) {
-                // Persistence already succeeded. A broken consumer cannot roll it back or keep
-                // other consumers from receiving the committed event. Report that consumer failure.
-                try { observer.changed(change) } catch (failure: RuntimeException) { onObserverFailure(failure) }
+    private fun context(packageName: String) = AnchorSettingContext(instanceId, packageName, revisions[packageName] ?: 0)
+
+    private fun advance(packageName: String): AnchorSettingContext {
+        revisions[packageName] = (revisions[packageName] ?: 0) + 1
+        return context(packageName)
+    }
+
+    /** Called only under state; recipients belong to the subscription set at commit time. */
+    private fun enqueue(change: AppAnchorChange): Boolean {
+        pending.addLast(Delivery(change, observers.filter { it.packageName == change.packageName }))
+        if (delivering) return false
+        delivering = true
+        return true
+    }
+
+    private fun deliver() {
+        while (true) {
+            val delivery = synchronized(state) {
+                if (pending.isEmpty()) { delivering = false; return }
+                pending.removeFirst()
+            }
+            delivery.observers.forEach { observer ->
+                val active = synchronized(state) { observer in observers }
+                if (active) {
+                    // Commit already succeeded. Consumer failures cannot undo it or starve peers.
+                    try { observer.changed(delivery.change) }
+                    catch (failure: RuntimeException) { onObserverFailure(failure) }
+                }
             }
         }
     }

@@ -31,7 +31,8 @@ class AppAnchorPreferencesHostTest {
             assertEquals(anchor, reopenedDisk.read(anchor.packageName))
             menuStore.clear(anchor.packageName)
             assertNull(reopenedDisk.read(anchor.packageName))
-            assertEquals(listOf(AppAnchorChange.Replaced(null, anchor), AppAnchorChange.Cleared(anchor)), events)
+            assertEquals(listOf(AppAnchorChange.Replaced(null, anchor, events.first().context),
+                AppAnchorChange.Cleared(anchor, events.last().context)), events)
         } finally { subscription.close() }
     }
 }
