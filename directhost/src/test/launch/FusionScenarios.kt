@@ -60,7 +60,7 @@ fun fusionScenarios() {
                 if (f.peer.released || f.control.released) throw IOException("old closed transport")
             }
         }
-        if (stockBack) f.control.sink = blocked else f.set("output", DataOutputStream(blocked))
+        (f.session as com.code2hack.eyeprojector.directhost.input.FunctionIntentRoute).functionIntents.activate = { blocked.write(1) }
         try {
             val at = android.os.SystemClock.uptimeMillis()
             repeat(if (stockBack) 1 else 2) { n ->
@@ -74,7 +74,7 @@ fun fusionScenarios() {
             try { close.submit { f.closeSession() }.get(2, TimeUnit.SECONDS) } finally { close.shutdownNow() }
             check(f.peer.released && f.video.released && f.control.released && !f.child.alive)
             check(release.count == 1L)
-            println("PASS actual Session Function ${if (stockBack) "stock Back" else "TLS completed UI"} write blockage leaves shared timer and existing cleanup reachable")
+            println("PASS actual Session Function typed consumer (${if (stockBack) "projected" else "local"}) blockage leaves shared timer and existing cleanup reachable")
         } finally { release.countDown() }
     }
 }
