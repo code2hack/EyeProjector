@@ -3,7 +3,6 @@ package com.code2hack.eyeprojector.directrg
 import android.app.Activity
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Rect
 import android.graphics.Typeface
 import android.os.SystemClock
 import android.view.Gravity
@@ -16,6 +15,7 @@ import java.lang.ref.WeakReference
 internal class NativeGestureBatchGuide private constructor(private val queue: NativeInputObservationQueue) {
     private class Label(activity: Activity) : TextView(activity) {
         var promptId = ""
+        var drawAttemptPromptId: String? = null
         var onDrawn: ((Label) -> Unit)? = null
         override fun onDraw(canvas: Canvas) { super.onDraw(canvas); onDrawn?.invoke(this) }
     }
@@ -67,9 +67,7 @@ internal class NativeGestureBatchGuide private constructor(private val queue: Na
         val receiver = activity?.get()
         focused = receiver?.hasWindowFocus() == true
         val root = receiver?.window?.decorView as? ViewGroup
-        val available = observationActive && resumed && interactive && focused && root != null &&
-            root.isAttachedToWindow && root.isShown && root.windowVisibility == View.VISIBLE &&
-            root.width > 0 && root.height > 0
+        val available = observationActive && resumed && interactive && focused && root != null && hostVisible(root)
         if (!available) {
             pause()
             removeSurface("detached")
@@ -87,13 +85,18 @@ internal class NativeGestureBatchGuide private constructor(private val queue: Na
             }
             surface = Surface(root!!, label) // Retain exact ownership even if add has a partial side effect.
             label.onDrawn = { drawn -> contained {
-                if (surface?.label === drawn && observationActive && resumed && interactive &&
-                    activity?.get()?.hasWindowFocus() == true && labelVisible(drawn) &&
-                    drawnPromptId != drawn.promptId) {
-                    drawnPromptId = drawn.promptId
-                    uiShown = true
-                    setVisible(true)
-                    record("shown") // Own draw callback, not optical visibility or user acknowledgment.
+                if (surface?.label === drawn) {
+                    if (drawn.drawAttemptPromptId != drawn.promptId) {
+                        drawn.drawAttemptPromptId = drawn.promptId
+                        record("draw_attempt") // First actual own draw per prompt on this surface, even if ineligible.
+                    }
+                    if (observationActive && resumed && interactive && activity?.get()?.hasWindowFocus() == true &&
+                        labelVisible(drawn) && drawnPromptId != drawn.promptId) {
+                        drawnPromptId = drawn.promptId
+                        uiShown = true
+                        setVisible(true)
+                        record("shown") // Own draw callback, not optical visibility or user acknowledgment.
+                    }
                 }
             } }
             root.overlay.add(label)
@@ -107,9 +110,19 @@ internal class NativeGestureBatchGuide private constructor(private val queue: Na
         render()
     }
 
-    private fun labelVisible(label: Label): Boolean = label.isAttachedToWindow && label.isShown &&
-        label.windowVisibility == View.VISIBLE && label.width > 0 && label.height > 0 &&
-        label.getGlobalVisibleRect(Rect())
+    private fun hostVisible(root: ViewGroup): Boolean = root.isAttachedToWindow && root.isShown &&
+        root.visibility == View.VISIBLE && root.windowVisibility == View.VISIBLE && root.width > 0 && root.height > 0
+
+    private fun intersectsHost(label: Label, root: ViewGroup): Boolean = label.width > 0 && label.height > 0 &&
+        label.left < root.width && label.right > 0 && label.top < root.height && label.bottom > 0
+
+    private fun labelVisible(label: Label): Boolean {
+        val owned = surface ?: return false
+        // Overlay children need not have normal ancestor isShown/global-visible semantics.
+        return owned.label === label && activity?.get()?.window?.decorView === owned.root && hostVisible(owned.root) &&
+            label.isAttachedToWindow && label.visibility == View.VISIBLE && label.windowVisibility == View.VISIBLE &&
+            intersectsHost(label, owned.root)
+    }
 
     private fun render() {
         val owned = surface ?: return
@@ -159,6 +172,7 @@ internal class NativeGestureBatchGuide private constructor(private val queue: Na
     private fun record(event: String, snapshot: NativeGestureBatchGuidePlan.Snapshot = plan.snapshot,
                        errorType: String? = null) {
         val label = surface?.label
+        val root = surface?.root
         queue.capture("guide", activity?.get()?.let(System::identityHashCode),
             SystemClock.uptimeMillis(), SystemClock.elapsedRealtimeNanos()) {
             mapOf("guideEvent" to event, "promptId" to snapshot.prompt.id,
@@ -169,7 +183,17 @@ internal class NativeGestureBatchGuide private constructor(private val queue: Na
                 "guideInteractive" to interactive, "observationActive" to observationActive,
                 "interactiveSampleElapsedNs" to interactiveSampleElapsedNs,
                 "labelLeft" to label?.left, "labelTop" to label?.top,
-                "labelWidth" to label?.width, "labelHeight" to label?.height, "errorType" to errorType)
+                "labelWidth" to label?.width, "labelHeight" to label?.height, "errorType" to errorType) +
+                if (event == "draw_attempt") mapOf(
+                    "hostAttached" to root?.isAttachedToWindow, "hostShown" to root?.isShown,
+                    "hostWindowVisible" to (root?.windowVisibility == View.VISIBLE),
+                    "hostFocused" to activity?.get()?.hasWindowFocus(),
+                    "labelAttached" to label?.isAttachedToWindow,
+                    "labelVisibilityFlag" to (label?.visibility == View.VISIBLE),
+                    "labelWindowVisible" to (label?.windowVisibility == View.VISIBLE),
+                    "labelHierarchyShown" to label?.isShown,
+                    "labelIntersectsHost" to (label != null && root != null && intersectsHost(label, root))
+                ) else emptyMap()
         }
     }
 

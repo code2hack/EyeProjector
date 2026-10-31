@@ -42,7 +42,8 @@ open class View(val context: Context = Context()) {
     var windowVisibility = VISIBLE
     var isAttachedToWindow = true
     var overlayOwner: ViewGroup? = null
-    open val isShown: Boolean get() = visibility == VISIBLE && isAttachedToWindow && (overlayOwner?.isShown ?: true)
+    // Overlay dispatch is separate from the ordinary parent chain queried by isShown/global-visible.
+    open val isShown: Boolean get() = visibility == VISIBLE && isAttachedToWindow && overlayOwner == null
     var isFocusable = true
     var isFocusableInTouchMode = true
     var isClickable = true
@@ -59,7 +60,11 @@ open class View(val context: Context = Context()) {
     fun getGlobalVisibleRect(rect: Rect) = isShown && width > 0 && height > 0
     fun invalidate() = Unit
     protected open fun onDraw(canvas: Canvas) = Unit
-    fun draw() { if (isShown) onDraw(Canvas()) }
+    fun draw() {
+        val host = overlayOwner
+        if (visibility == VISIBLE && windowVisibility == VISIBLE && isAttachedToWindow &&
+            (host == null || (host.isShown && host.windowVisibility == VISIBLE))) onDraw(Canvas())
+    }
     object MeasureSpec {
         const val EXACTLY = 0x40000000
         const val AT_MOST = -2147483648
@@ -115,6 +120,7 @@ open class TextView(context: Context) : View(context) {
 CHECKS = '''package com.code2hack.eyeprojector.directrg
 import android.app.Activity
 import android.graphics.Color
+import android.graphics.Rect
 import android.os.SystemClock
 import android.view.View
 import android.widget.TextView
@@ -173,7 +179,18 @@ fun main() {
     check(label.foreground==Color.WHITE && label.background==Color.BLACK && label.textSize==28f)
     check(root.children==listOf(ordinary) && root.childMutations==childMutations && root.rootLayouts==layouts)
     check(rootBounds==listOf(root.left,root.top,root.right,root.bottom))
+    // The old ordinary-child predicate rejects this overlay even though dispatch draws it.
+    check(!label.isShown && !label.getGlobalVisibleRect(Rect()))
+    check(!(label.isAttachedToWindow && label.isShown && label.windowVisibility==View.VISIBLE &&
+        label.width>0 && label.height>0 && label.getGlobalVisibleRect(Rect())))
     root.overlay.draw(); tick(guide,7000); check(guide.uiShown)
+    root.overlay.draw()
+    val firstDrawRows=rows(queue)
+    val attempt=firstDrawRows.single { it.fields["guideEvent"]=="draw_attempt" }
+    check(attempt.fields["promptId"]=="prepare" && attempt.fields["labelHierarchyShown"]==false)
+    check(listOf("hostAttached","hostShown","hostWindowVisible","hostFocused","labelAttached",
+        "labelVisibilityFlag","labelWindowVisible","labelIntersectsHost").all { attempt.fields[it]==true })
+    check(firstDrawRows.single { it.fields["guideEvent"]=="shown" }.seq>attempt.seq)
     tick(guide,8000); check(label.text.contains("9s"))
     first.focused=false; tick(guide,8500); check(root.overlay.views.isEmpty())
     tick(guide,100000); check(guide.promptId=="prepare")
@@ -182,7 +199,9 @@ fun main() {
     val afterTransition=rows(queue)
     check(afterTransition.none { it.fields["guideEvent"]=="step_start" }) // New label has not drawn.
     root.overlay.draw(); tick(guide,109001)
-    check(rows(queue).any { it.fields["guideEvent"]=="step_start" && it.fields["promptId"]=="one_single" })
+    val nextPromptRows=rows(queue)
+    check(nextPromptRows.any { it.fields["guideEvent"]=="step_start" && it.fields["promptId"]=="one_single" })
+    check(nextPromptRows.count { it.fields["guideEvent"]=="draw_attempt" && it.fields["promptId"]=="one_single" }==1)
     guide.onUnavailable(first,"paused"); check(root.overlay.views.isEmpty())
     val second=Activity(); val other=View(); second.window.decorView.overlay.add(other)
     guide.onResumed(second); tick(guide,200000); second.window.decorView.overlay.draw(); tick(guide,200000)
@@ -192,6 +211,39 @@ fun main() {
     guide.stop(); check(guide.released && second.window.decorView.overlay.views==listOf(other))
     rows(queue); oldLabel.draw(); guide.onResumed(first); tick(guide,999999); guide.stop()
     check(rows(queue).isEmpty()) // No late draw/lifecycle/tick rows or UI after stop.
+
+    val visibilityQueue=NativeInputObservationQueue()
+    val visibilityGuide=NativeGestureBatchGuide.create("true",visibilityQueue)!!
+    val visibilityActivity=Activity(); val visibleHost=visibilityActivity.window.decorView
+    visibilityGuide.onResumed(visibilityActivity)
+    visibleHost.visibility=View.INVISIBLE; tick(visibilityGuide,0); check(visibilityGuide.released)
+    visibleHost.visibility=View.VISIBLE; visibleHost.windowVisibility=View.INVISIBLE
+    tick(visibilityGuide,0); check(visibilityGuide.released)
+    visibleHost.windowVisibility=View.VISIBLE; visibleHost.isAttachedToWindow=false
+    tick(visibilityGuide,0); check(visibilityGuide.released)
+    visibleHost.isAttachedToWindow=true; tick(visibilityGuide,0)
+    val boundedLabel=visibleHost.overlay.views.single()
+    // A draw alone is insufficient: its own bounds must intersect the eligible host.
+    boundedLabel.layout(visibleHost.width,0,visibleHost.width+100,100)
+    visibleHost.overlay.draw(); check(!visibilityGuide.uiShown)
+    val rejectedAttempt=rows(visibilityQueue).single { it.fields["guideEvent"]=="draw_attempt" }
+    check(rejectedAttempt.fields["labelIntersectsHost"]==false)
+    tick(visibilityGuide,1000); check(!visibilityGuide.uiShown) // Layout restoration still needs an actual draw.
+    boundedLabel.visibility=View.INVISIBLE; visibleHost.overlay.draw(); check(!visibilityGuide.uiShown)
+    boundedLabel.visibility=View.VISIBLE; boundedLabel.windowVisibility=View.INVISIBLE
+    visibleHost.overlay.draw(); check(!visibilityGuide.uiShown)
+    boundedLabel.windowVisibility=View.VISIBLE; boundedLabel.isAttachedToWindow=false
+    visibleHost.overlay.draw(); check(!visibilityGuide.uiShown)
+    boundedLabel.isAttachedToWindow=true; visibleHost.overlay.draw(); tick(visibilityGuide,1000)
+    check(visibilityGuide.uiShown)
+    check(rows(visibilityQueue).none { it.fields["guideEvent"]=="draw_attempt" }) // One attempt per prompt/surface.
+    visibleHost.windowVisibility=View.INVISIBLE; tick(visibilityGuide,1500); check(visibilityGuide.released)
+    visibleHost.windowVisibility=View.VISIBLE; tick(visibilityGuide,100000)
+    visibleHost.overlay.draw(); tick(visibilityGuide,100000)
+    check(visibilityGuide.promptId=="prepare") // Hidden-window time was not accrued.
+    check(rows(visibilityQueue).count { it.fields["guideEvent"]=="draw_attempt" }==1) // New surface, same prompt.
+    tick(visibilityGuide,100100,active=false); check(visibilityGuide.released)
+    visibilityGuide.stop()
 
     val batchQueue=NativeInputObservationQueue(); val batch=NativeGestureBatchGuide.create("true",batchQueue)!!
     val batchActivity=Activity(); var batchTime=0L
@@ -226,6 +278,6 @@ fun main() {
     check(runCatching { removal.stop() }.isFailure && !removal.released)
     host.window.decorView.overlay.failRemoval=false
     check(runCatching { removal.stop() }.isFailure && removal.released) // Original error is retained.
-    println("PASS: actual guide plan/UI adapter; automatic six slots, draw/visibility/sink gating, pause/resume, default-off, noninteractive unchanged root geometry, stale/late callbacks, exact cleanup and partial failures. Host doubles only.")
+    println("PASS: actual guide plan/UI adapter; nonhierarchical overlay draw regression, one draw-attempt per prompt/surface, hidden host/window and own bounds/attachment, automatic six slots, draw/visibility/sink gating, pause/resume, default-off, noninteractive unchanged root geometry, stale/late callbacks, exact cleanup and partial failures. Host doubles only.")
 }
 '''
