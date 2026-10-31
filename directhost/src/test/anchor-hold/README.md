@@ -17,6 +17,9 @@ Actual Session/Binder adapter retirement uses `run-session.py --dependency-manif
 --output-dir <evidence>`. It compiles the original Phone Session and the reflected registration
 provider, retaining the retirement/failure/settings checks and source/class-loading evidence.
 Low-level invalidation calls in the unit suite alone do not prove navigation adapter delivery.
+The Session suite also blocks the original second-activation UP while Stop runs through the
+existing bounded cleanup path. It retains wire and latch/cleanup evidence before and after
+unblocking, and checks that a separately held successor Session stays unchanged.
 
 Add `--ui-pipeline` for the joined Function producer, Glasses Session, original Phone contact and
 reflected provider, state transport, retained Glasses owner and current Activity indicator source.

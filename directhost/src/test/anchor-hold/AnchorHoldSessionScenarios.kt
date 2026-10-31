@@ -311,6 +311,107 @@ fun main() {
                 println("PASS actual Session $failure retires original input and releases sockets/child without successful release or replay")
             } finally { resume.countDown() }
         }
+        Fixture().use { original -> Fixture(ownerEpoch = "blocked-up-successor").use { successor ->
+            setup(original)
+            val events = CopyOnWriteArrayList<Touch>()
+            val enteredUp = CountDownLatch(1); val resumeUp = CountDownLatch(1); val returnedUp = CountDownLatch(1)
+            val input = original.get("inputControls") as AnchorSessionInput
+            input.bindMotionTarget(object : PhoneTouchDispatcher.MotionTarget {
+                override fun geometry(next: Geometry) = Unit
+                override fun touch(event: Touch): Boolean {
+                    events.add(event)
+                    if (event.phase == Touch.Phase.UP) {
+                        enteredUp.countDown()
+                        while (resumeUp.count > 0) try { resumeUp.await() } catch (_: InterruptedException) {}
+                        returnedUp.countDown()
+                    }
+                    return true
+                }
+                override fun tap(event: Tap) = true
+                override fun scroll(event: Scroll) = true
+            })
+            original.holdPress(runtime, 1)
+            val originalDown = events.single()
+            val successorDirectory = Files.createTempDirectory("eyeprojector-blocked-up-successor-").toFile()
+            val successorRuntime = AnchorAppRuntime(android.content.Context(successorDirectory))
+            try {
+                successor.holdManaged(); successor.holdInstall(successorRuntime.bind()); successorRuntime.holdDrain()
+                check(successorRuntime.registrationProviderState == AnchorAppRuntime.ProviderState.INSTALLED)
+                // Both real app runtimes share this process's store. Do not replace the setting:
+                // that legitimate revision change would retire the original before its UP.
+                check(successorRuntime.store === runtime.store && successorRuntime.store.read("app") == savedHold)
+                val successorEvents = successor.holdEvents()
+                val successorInput = successor.get("inputControls") as AnchorSessionInput
+                successor.holdPress(successorRuntime, 1)
+                val successorBefore = successorEvents.toList()
+                val successorMessages = successor.holdMessages()
+                check(successorBefore.single().phase == Touch.Phase.DOWN)
+                check(successorInput.anchor.holding && successorInput.holding)
+                check(original.get("controlLock") !== successor.get("controlLock"))
+                check(events.map { it.phase } == listOf(Touch.Phase.DOWN))
+
+                original.receive(Frame(Wire.FUNCTION_INTENT, payload = original.holdIntent(2).bytes()))
+                original.holdFunctions()
+                check(enteredUp.await(2, TimeUnit.SECONDS))
+                check(events.map { it.phase } == listOf(Touch.Phase.DOWN, Touch.Phase.UP))
+                check(events.last().contactId == originalDown.contactId && events.last().target == originalDown.target)
+                val cancelWorkersBefore = Thread.getAllStackTraces().keys.filter { it.name == "eyeprojector-input-cancel" }.toSet()
+                val closer = Executors.newSingleThreadExecutor()
+                val stopStarted = System.nanoTime()
+                try { closer.submit { original.closeSession() }.get(2, TimeUnit.SECONDS) } finally { closer.shutdownNow() }
+                val stopElapsed = System.nanoTime() - stopStarted
+                check(resumeUp.count == 1L && returnedUp.count == 1L) // UP still owns the old control turn.
+                check(original.peer.released && original.control.released && original.video.released && !original.child.alive)
+                val cleanup = Thread.getAllStackTraces().keys.single {
+                    it.name == "eyeprojector-input-cancel" && it !in cancelWorkersBefore
+                }
+                check(cleanup.isAlive && cleanup.state == Thread.State.BLOCKED)
+                check(successorEvents == successorBefore && successorInput.anchor.holding && successorInput.holding)
+                val evidence = File(System.getenv("EYEPROJECTOR_HOLD_EVIDENCE"))
+                File(evidence, "blocked-up-stopped-wire.bin").writeBytes(original.peer.sink.toByteArray())
+                val beforeUnblock = org.json.JSONObject()
+                    .put("existingProductionCancelJoinMs", HeldInputRelease.CANCEL_JOIN_MS)
+                    .put("existingTestStopBoundSeconds", 2).put("stopElapsedNanos", stopElapsed)
+                    .put("upEntered", enteredUp.count == 0L).put("upStillBlocked", resumeUp.count == 1L && returnedUp.count == 1L)
+                    .put("peerReleased", original.peer.released).put("controlReleased", original.control.released)
+                    .put("videoReleased", original.video.released).put("childReleased", !original.child.alive)
+                    .put("cleanupThread", cleanup.name).put("cleanupState", cleanup.state.name)
+                    .put("originalContactId", originalDown.contactId)
+                    .put("successorStillHeld", successorInput.anchor.holding && successorInput.holding)
+                    .put("successorUnchanged", successorEvents == successorBefore)
+
+                resumeUp.countDown(); runtime.holdDrain()
+                cleanup.join(3000); check(!cleanup.isAlive)
+                check(returnedUp.count == 0L)
+                check(!input.anchor.holding && !input.holding)
+                check(input.anchor.capture(original.holdIntent(3)) == null) // Original owner is closed.
+                original.receive(Frame(Wire.FUNCTION_INTENT, payload = original.holdIntent(3).bytes()))
+                successor.holdFlush(successorRuntime)
+                check(events.count { it.phase == Touch.Phase.DOWN } == 1)
+                check(events.count { it.phase == Touch.Phase.UP } == 1)
+                check(events.all { it.contactId == originalDown.contactId && it.target == originalDown.target })
+                check(successorEvents == successorBefore && successor.holdMessages() == successorMessages)
+                check(successorInput.anchor.holding && successorInput.holding)
+                val messages = original.holdMessages()
+                check(messages.filterIsInstance<AnchorMessage.HeldState>().none { it.state == AnchorHoldState.RELEASED })
+                check(messages.filterIsInstance<AnchorMessage.Feedback>().none { it.status == AnchorFeedback.RELEASE_SUBMITTED })
+                File(evidence, "blocked-up-final-wire.bin").writeBytes(original.peer.sink.toByteArray())
+                File(evidence, "blocked-up-successor-wire.bin").writeBytes(successor.peer.sink.toByteArray())
+                File(evidence, "blocked-up-stop-witness.json").writeText(org.json.JSONObject()
+                    .put("whileUpBlocked", beforeUnblock).put("cleanupJoined", !cleanup.isAlive)
+                    .put("ownerAndDispatcherClear", !input.anchor.holding && !input.holding)
+                    .put("originalDownCount", events.count { it.phase == Touch.Phase.DOWN })
+                    .put("originalUpCount", events.count { it.phase == Touch.Phase.UP })
+                    .put("successorUnchanged", successorEvents == successorBefore && successor.holdMessages() == successorMessages)
+                    .put("successorStillHeld", successorInput.anchor.holding && successorInput.holding)
+                    .put("lateReleasedState", false).put("lateReleaseSubmittedFeedback", false).toString() + "\n")
+                println("PASS actual original UP blocked + concurrent Stop: sockets/child release before UP unblocks; eventual exact owner/dispatcher cleanup; no new DOWN, successor mutation/replay or late release publication")
+            } finally {
+                resumeUp.countDown()
+                successor.closeSession(); successorRuntime.invalidateBinding(); successorRuntime.holdDrain()
+                successorDirectory.deleteRecursively()
+            }
+        } }
         Fixture().use { f ->
             setup(f); val events = f.holdEvents(); f.holdPress(runtime, 1)
             f.holdPress(runtime, 2, FunctionIntentKind.REGISTER)
