@@ -11,9 +11,9 @@ import java.io.*
 import java.nio.file.Files
 import java.util.concurrent.*
 
-private val holdGeometry = Geometry(480, 640)
-private val savedHold = AppAnchor(AnchorTargetDescriptor("app", null, 1, "app:id/action", "Button"), AnchorMode.HOLD)
-private fun Fixture.holdManaged(): ManagedProjectionDisplay {
+internal val holdGeometry = Geometry(480, 640)
+internal val savedHold = AppAnchor(AnchorTargetDescriptor("app", null, 1, "app:id/action", "Button"), AnchorMode.HOLD)
+internal fun Fixture.holdManaged(publishPointer: Boolean = true): ManagedProjectionDisplay {
     val value = ManagedProjectionDisplay::class.java.declaredConstructors.single { it.parameterCount == 1 }
         .apply { isAccessible = true }.newInstance({ _: String, _: Int?, _: Int? -> Unit }) as ManagedProjectionDisplay
     value.javaClass.getDeclaredField("capturedDisplayId").apply { isAccessible = true }.set(value, 47)
@@ -25,10 +25,10 @@ private fun Fixture.holdManaged(): ManagedProjectionDisplay {
         override fun foreground(displayId: Int) = "app"
         override fun close() = Unit
     }).also { it.initialize(47); it.snapshot(true) }
-    fusionGeometry(); pointer()
+    fusionGeometry(); if (publishPointer) pointer()
     return value
 }
-private fun holdReader() = UiTargetReader(object : UiAccess {
+internal fun holdReader() = UiTargetReader(object : UiAccess {
     override val canRead = true
     override fun windowsOnAllDisplays() = mapOf(47 to listOf(object : UiAccessWindow {
         override val metadata = UiWindowMetadata(47, 7, 1, 0, true, true, UiBounds(0, 0, 480, 640))
@@ -42,24 +42,25 @@ private fun holdReader() = UiTargetReader(object : UiAccess {
         override fun close() = Unit
     }))
 }, { 0 })
-private fun AnchorAppRuntime.holdDrain() { val done = CountDownLatch(1); onLane { done.countDown() }; check(done.await(3, TimeUnit.SECONDS)) }
-private fun Fixture.holdFunctions() {
+internal fun AnchorAppRuntime.holdDrain() { val done = CountDownLatch(1); onLane { done.countDown() }; check(done.await(3, TimeUnit.SECONDS)) }
+internal fun Fixture.holdFunctions() {
     val done = CountDownLatch(1); (get("functionWork") as FunctionWork).submit { done.countDown() }; check(done.await(3, TimeUnit.SECONDS))
 }
-private fun Fixture.holdFlush(runtime: AnchorAppRuntime) { holdFunctions(); runtime.holdDrain(); holdFunctions() }
-private fun Fixture.holdInstall(client: IAnchorAppBridge) {
+internal fun Fixture.holdFlush(runtime: AnchorAppRuntime) { holdFunctions(); runtime.holdDrain(); holdFunctions() }
+internal fun Fixture.holdInstall(client: IAnchorAppBridge) {
     type.getDeclaredMethod("installAnchorBridge", IAnchorAppBridge::class.java).apply { isAccessible = true }.invoke(session, client)
 }
 private fun Fixture.holdIntent(n: Long, kind: FunctionIntentKind = FunctionIntentKind.ACTIVATE) = FunctionIntent(kind,
     FunctionSource.GLASSES_NATIVE, n, n, FunctionIntentContext((session as CapturedProjection).receiverUsability().fact!!,
-        HeadPointerState(1, n + 1, true, true, 10f, 20f, Fit(0, 0, 480, 640), holdGeometry)))
+        HeadPointerState(1, n + 1, true, true, if (kind == FunctionIntentKind.REGISTER) 320f else 10f,
+            if (kind == FunctionIntentKind.REGISTER) 420f else 20f, Fit(0, 0, 480, 640), holdGeometry)))
 private fun Fixture.holdPress(runtime: AnchorAppRuntime, n: Long, kind: FunctionIntentKind = FunctionIntentKind.ACTIVATE) {
     receive(Frame(Wire.FUNCTION_INTENT, payload = holdIntent(n, kind).bytes())); holdFlush(runtime)
 }
-private fun Fixture.holdMessages() = DataInputStream(peer.sink.toByteArray().inputStream()).use { input ->
+internal fun Fixture.holdMessages() = DataInputStream(peer.sink.toByteArray().inputStream()).use { input ->
     buildList { while (input.available() > 0) { val f = Wire.readFrame(input); if (f.channel == Wire.ANCHOR) add(AnchorMessage.from(f.payload)) } }
 }
-private fun Fixture.holdEvents(): MutableList<Touch> {
+internal fun Fixture.holdEvents(): MutableList<Touch> {
     val events = CopyOnWriteArrayList<Touch>()
     (get("inputControls") as AnchorSessionInput).bindMotionTarget(object : PhoneTouchDispatcher.MotionTarget {
         override fun geometry(next: Geometry) = Unit
@@ -86,6 +87,7 @@ fun main() {
         UiTargetAccess.currentReader = holdReader()
         val display = f.holdManaged()
         val bridge = runtime.bind(); f.holdInstall(bridge); runtime.holdDrain()
+        check(runtime.registrationProviderState == AnchorAppRuntime.ProviderState.INSTALLED)
         runtime.store.replace(savedHold); runtime.holdDrain()
         return display to bridge
     }
@@ -311,11 +313,6 @@ fun main() {
         }
         Fixture().use { f ->
             setup(f); val events = f.holdEvents(); f.holdPress(runtime, 1)
-            runtime.installRegistration({ request -> request.original.send(AnchorMessage.Offer(request.original.transactionId,
-                request.original.intent, AnchorHighlight(300.0, 400.0, 340.0, 440.0))) }, { message, original ->
-                if (message is AnchorMessage.Choice) original.send(AnchorMessage.Result(message.transactionId,
-                    message.intent, AnchorRegistrationResult.SAVED_HOLD))
-            }); runtime.holdDrain()
             f.holdPress(runtime, 2, FunctionIntentKind.REGISTER)
             val offer = f.holdMessages().filterIsInstance<AnchorMessage.Offer>().single()
             check(events.map { it.phase } == listOf(Touch.Phase.DOWN, Touch.Phase.CANCEL))
@@ -325,9 +322,10 @@ fun main() {
             f.receive(Frame(Wire.ANCHOR, payload = AnchorMessage.Choice(offer.transactionId, offer.intent, AnchorChoice.HOLD).bytes()))
             f.holdFlush(runtime)
             check((f.holdMessages().last() as AnchorMessage.Result).result == AnchorRegistrationResult.SAVED_HOLD)
+            check(runtime.store.read("app")?.mode == AnchorMode.HOLD)
+            check(runtime.store.read("app")?.descriptor?.resourceId == "app:id/action")
             check(events.none { it.phase == Touch.Phase.UP })
-            runtime.onLane { runtime.coordinator.registration = null; runtime.coordinator.registrationMessage = null }; runtime.holdDrain()
-            println("PASS actual REGISTER cancels old hold without invalidating original Offer -> OPEN -> exact chooser fact -> Choice/Result")
+            println("PASS actual reflected121 Provider REGISTER cancels old hold without invalidating original Offer -> OPEN -> exact chooser fact -> saved Choice/Result")
         }
     } finally { UiTargetAccess.currentReader = null; runtime.invalidateBinding(); runtime.holdDrain(); directory.deleteRecursively() }
     println("PASS actual Hold Session source composition; framework Binder/Android handles doubled; no physical app-effect claim")

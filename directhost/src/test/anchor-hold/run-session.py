@@ -13,6 +13,7 @@ p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--output-dir', type=Path, required=True)
 p.add_argument('--dependency-manifest', type=Path, required=True)
 p.add_argument('--glasses', action='store_true')
+p.add_argument('--ui-pipeline', action='store_true')
 p.add_argument('--phone-artifact', type=Path)
 a = p.parse_args()
 suite = Path(__file__).resolve().parent
@@ -21,6 +22,8 @@ host = root / 'directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost'
 protocol = root / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
 rgmain = root / 'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg'
 launch = suite.parent / 'launch'
+out = a.output_dir.resolve()
+out.mkdir(parents=True, exist_ok=True)
 manifest = json.loads(a.dependency_manifest.read_text())
 sha = lambda f: hashlib.sha256(Path(f).read_bytes()).hexdigest()
 jars = manifest['jars']
@@ -33,17 +36,20 @@ java = str(Path(os.environ['JAVA_HOME']) / 'bin/java') if os.environ.get('JAVA_H
 # Every protocol DTO used by this closure is actual current source, preceding old cached Wire10.
 sources = sorted(f for f in protocol.glob('*.kt') if f.name not in
                  ['LanPairing.kt', 'Tls.kt', 'PairingPanel.kt', 'PairingExchange.kt', 'PeerStore.kt'])
-if a.glasses:
+if a.glasses or a.ui_pipeline:
     sources += [rgmain / (n + '.kt') for n in ['ProjectionSession', 'ReceiverSessionOwner', 'AnchorFeedbackUi', 'AnchorHeldIndicator',
                 'RetainedVideoOutput', 'SurfaceDecoder']]
-    sources += sorted((root / 'directrg/src/test/kotlin/android').rglob('*.kt'))
+    sources += [f for f in sorted((root / 'directrg/src/test/kotlin/android').rglob('*.kt'))
+                if not a.ui_pipeline or f.name not in ['SystemClock.kt', 'AtomicFile.kt']]
+if a.glasses:
     sources += [root / 'directrg/src/test/kotlin/org/json/JSONObject.kt']
     sources += [root / 'directrg/src/test/anchor-hold/AnchorHoldTransportTest.kt']
     sources += [root / 'directrg/src/test/kotlin/com/code2hack/eyeprojector/directrg/RetainedReceiverSessionTest.kt']
     main = 'org.junit.runner.JUnitCore'
     main_args = ['com.code2hack.eyeprojector.directrg.AnchorHoldTransportTest']
 else:
-    sources += [f for f in sorted((launch / 'doubles').glob('*.kt')) if f.name != 'AnchorInterfaces.kt']
+    sources += [f for f in sorted((launch / 'doubles').glob('*.kt')) if f.name != 'AnchorInterfaces.kt' and
+                (not a.ui_pipeline or f.name != 'Json.kt')]
     sources += [suite / 'doubles/AnchorInterfaces.kt', suite.parent / 'adapter/doubles/AtomicFile.kt']
     sources += [launch / (n + '.kt') for n in ['Scenarios', 'ServiceContextScenarios', 'FusionScenarios', 'StopRaceScenarios', 'FunctionFailureScenarios']]
     sources += [root / 'directrg/src/test/kotlin/android/util/Log.kt']
@@ -51,7 +57,7 @@ else:
         'HeldInputRelease', 'OwnedRelease', 'ProjectedAppLaunch', 'PlatformProjectionLaunch', 'ProjectionDisplayState',
         'ProjectionContext', 'ShizukuHostService', 'OwnedProjectionRoutes', 'OwnedHostLifecycle', 'OwnedShellSessions',
         'BootstrapSessionFiles', 'SessionUsability']]
-    for prefix in ['anchor/execution', 'anchor/preferences', 'anchor/target']:
+    for prefix in ['anchor/execution', 'anchor/preferences', 'anchor/target', 'anchor/registration']:
         sources += sorted((host / prefix).glob('*.kt'))
     sources += [host / 'uiaccess' / (n + '.kt') for n in ['UiTargetSnapshot', 'UiSourceGeometry', 'UiTargetReader', 'UiTargetSnapshotProvider']]
     sources += [host / 'activation/snapshot' / (n + '.kt') for n in ['NativeSnapshotRegion', 'SnapshotWord']]
@@ -60,15 +66,58 @@ else:
     sources += [suite / 'AnchorHoldSessionScenarios.kt']
     main = 'com.code2hack.eyeprojector.directhost.AnchorHoldSessionScenariosKt'
     main_args = []
-out = a.output_dir.resolve()
-out.mkdir(parents=True, exist_ok=True)
+activity_record = None
+if a.ui_pipeline:
+    import importlib.util
+    import re
+    parser_spec = importlib.util.spec_from_file_location('actual_activity_blocks', suite.parent / 'hid/run.py')
+    parser = importlib.util.module_from_spec(parser_spec)
+    parser_spec.loader.exec_module(parser)
+    activity_path = rgmain / 'ReceiverActivity.kt'
+    activity = activity_path.read_text()
+    boundary = root / 'directrg/src/test/anchor-hold/ActivityBoundary.kt'
+    fixture = boundary.read_text()
+    names = ['currentRegistrationIntent', 'anchorMessage', 'chooseAnchorRegistration', 'cancelAnchorRegistration',
+             'cancelInput', 'cancelInputState', 'updatePointerBounds', 'publishHeadPointer', 'updateAnchorHeldContext',
+             'contextualBack', 'remoteBack', 'remoteTap', 'remoteScroll', 'resize', 'captureFunction', 'dispatchFunction', 'showSnapshot']
+    blocks = {name: parser.block(activity, rf'^    (?:private|internal) fun {name}\(') for name in names}
+    for name in ['onWindowFocusChanged', 'onPause', 'onDestroy']:
+        blocks[name] = parser.block(activity, rf'^    override fun {name}\(')
+    predicates = '\n'.join(re.search(rf'^    private fun {n}\(.*$', activity, re.M).group() for n in
+                           ['usable', 'registrationActive', 'localInputVisible', 'projectedInput', 'functionContext'])
+    held_fields = re.search(r'^    private lateinit var anchorHeldLabel: TextView$', activity, re.M).group() + '\n' + \
+        parser.block(activity, r'^    private val anchorHeldIndicator = AnchorHeldIndicator ')
+    session_view = parser.block(activity, r'^    private val sessionView = object : ReceiverSessionOwner.View ')
+    anchor = parser.block(activity, r'^        anchorRegistration = AnchorRegistrationController ')
+    completed = re.search(r'^        completedInput = CompletedReceiverInput\(.*?::completedNavigation\)', activity, re.M | re.S).group()
+    held = parser.block(activity, r'^        anchorHeldLabel = TextView\(this\).apply ') + '\n' + \
+        re.search(r'^        root.addView\(anchorHeldLabel,.*$', activity, re.M).group()
+    capture = re.search(r'^    private data class FunctionCapture.*$', activity, re.M).group()
+    generated = out / 'HeldActivityWiring.kt'
+    generated.write_text(fixture.replace('// ACTUAL_HELD_FIELDS', held_fields).replace('// ACTUAL_SESSION_VIEW', session_view)
+                         .replace('// ACTUAL_ANCHOR_INITIALIZER', anchor).replace('// ACTUAL_COMPLETED_INITIALIZER', completed)
+                         .replace('// ACTUAL_HELD_INITIALIZER', held).replace('// ACTUAL_PREDICATES', predicates)
+                         .replace('// ACTUAL_METHODS', capture + '\n' + '\n'.join(blocks.values())))
+    snapshot = out / 'ReceiverActivity-source.kt'
+    snapshot.write_text(activity)
+    activity_record = {'path': str(activity_path), 'snapshot': str(snapshot), 'sha256': sha(snapshot),
+                       'boundary': str(boundary), 'boundarySha256': sha(boundary), 'blocks': blocks,
+                       'sessionView': session_view, 'heldFields': held_fields, 'heldInitializer': held,
+                       'predicates': predicates, 'functionCapture': capture,
+                       'scope': 'Complete actual Activity methods/initializer/callback source; Android widgets/service framework boundary; full Activity compile separately required'}
+    sources += [generated, suite / 'doubles/Json.kt', root / 'directrg/src/test/anchor-hold/HoldReceiverRig.kt',
+                suite / 'AnchorHeldUiPipelineScenarios.kt']
+    sources += [rgmain / (n + '.kt') for n in ['AnchorRegistrationController', 'FunctionGestureRecognizer',
+                                             'CompletedReceiverInput', 'SessionPresentation']]
+    main = 'com.code2hack.eyeprojector.directhost.AnchorHeldUiPipelineScenariosKt'
+sources = list(dict.fromkeys(sources))
 snapshots = []
 for i, source in enumerate(sources):
     copy = out / 'sources' / str(i) / source.name
     copy.parent.mkdir(parents=True, exist_ok=True)
     copy.write_bytes(source.read_bytes())
     snapshots.append(copy)
-jar = out / ('glasses-source.jar' if a.glasses else 'phone-source.jar')
+jar = out / ('ui-source.jar' if a.ui_pipeline else 'glasses-source.jar' if a.glasses else 'phone-source.jar')
 compile_cmd = [java, '-cp', cp, 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', '-Xfriend-paths=' + friends,
                '-jvm-target', '17', '-no-stdlib', '-no-reflect', '-classpath', cp, '-d', str(jar)] + list(map(str, snapshots))
 run_cmd = [java, '-Xlog:class+load=info:file=' + str(out / 'class-load.log'), '-cp', str(jar) + os.pathsep + cp, main] + main_args
@@ -78,6 +127,7 @@ record = {'scope': 'Actual current source first; only Manager-frozen accepted122
           'historicalDependencyDisposition': manifest['historicalDisposition'],
           'sources': [{'path': str(s), 'snapshot': str(c), 'sha256': sha(c)} for s, c in zip(sources, snapshots)],
           'compileCommand': compile_cmd, 'runCommand': run_cmd, 'runnerSha256': sha(__file__)}
+record['activityExtraction'] = activity_record
 env = os.environ.copy()
 env['EYEPROJECTOR_HOLD_EVIDENCE'] = str(out)
 if a.phone_artifact:
