@@ -31,6 +31,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.code2hack.eyeprojector.protocol.AnchorMessage
+import com.code2hack.eyeprojector.protocol.AnchorHoldState
 import com.code2hack.eyeprojector.protocol.AnchorChoice
 import com.code2hack.eyeprojector.protocol.AnchorRegistrationResult
 import com.code2hack.eyeprojector.protocol.ReceiverUsabilityMode
@@ -79,6 +80,10 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var screen: ProjectorSurface
     private lateinit var pointer: PointerOverlay
     private lateinit var anchorOverlay: AnchorRegistrationOverlay
+    private lateinit var anchorHeldLabel: TextView
+    private val anchorHeldIndicator = AnchorHeldIndicator { held ->
+        if (::anchorHeldLabel.isInitialized) anchorHeldLabel.visibility = if (held) View.VISIBLE else View.GONE
+    }
     private lateinit var anchorRegistration: AnchorRegistrationController<ProjectionSession>
     private var anchorOffer: AnchorMessage.Offer? = null
     private lateinit var connectionView: ScrollView
@@ -139,6 +144,10 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             if (session === source && usable()) completedInput.accept(event)
         }
         override fun anchor(source: ProjectionSession, message: AnchorMessage): Boolean = anchorMessage(source, message)
+        override fun anchorHeld(source: ProjectionSession, message: AnchorMessage.HeldState) {
+            updateAnchorHeldContext()
+            anchorHeldIndicator.accept(source, message.intent, message.revision, message.state == AnchorHoldState.HELD)
+        }
     }
     private fun attachPresentation() {
         if (!bindingValid || !resumed || !hasWindowFocus()) return
@@ -338,6 +347,13 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             }
         }
         root.addView(pointer, FrameLayout.LayoutParams(-1, -1))
+        anchorHeldLabel = TextView(this).apply {
+            text = "Anchor held"; textSize = 14f
+            setTextColor(Color.YELLOW); setBackgroundColor(0xCC000000.toInt())
+            setPadding(12, 8, 12, 8)
+            isClickable = false; isFocusable = false; visibility = View.GONE
+        }
+        root.addView(anchorHeldLabel, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL))
         gestures = PadGestureRecognizer(
             ViewConfiguration.getDoubleTapTimeout().toLong().coerceIn(100, 600),
             ViewConfiguration.getLongPressTimeout().toLong().coerceIn(200, 2000),
@@ -491,6 +507,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     /** Passive snapshot: inputPosition() publishes too, so never call it from this producer. */
     private fun publishHeadPointer() {
         owner?.presentation(sessionView, usable(), localInputVisible())
+        updateAnchorHeldContext()
         val source = session ?: return
         if (!::pointer.isInitialized || root.width <= 0 || root.height <= 0) return
         val position = pointer.position
@@ -500,6 +517,15 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         val available = usable() && position.available && (!projected || projectedInput())
         source.headPointer(HeadPointerState(inputGeneration, 0, available, projected,
             position.x, position.y, fit, size), pointer.expiresAtNs)
+    }
+
+    /** Presentation follows the current original input context, never a saved/contact toggle. */
+    private fun updateAnchorHeldContext() {
+        val source = session
+        val current = source?.observationUsability()?.takeIf {
+            usable() && projectedInput() && it.inputRevision == inputGeneration
+        }
+        anchorHeldIndicator.bind(source, current)
     }
 
     private data class FunctionCapture(val source: ProjectionSession, val context: FunctionIntentContext)
@@ -883,6 +909,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
 
     /** Opening uses this body before its correlated OPEN, without publishing the new revision. */
     private fun cancelInputState(publish: Boolean = true) {
+        anchorHeldIndicator.clear()
         nativeInputStage("cancel")
         inputGeneration = owner?.advanceInputRevision() ?: (inputGeneration + 1)
         if (::hidInput.isInitialized) hidInput.cancel()
@@ -1091,6 +1118,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         if (streaming) presentation.streaming()
         else if (session == null) presentation.disconnected()
         connectionView.visibility = if (presentation.panelVisible) View.VISIBLE else View.GONE
+        updateAnchorHeldContext()
         connectButton.text = getString(if (session != null || connectRequested) R.string.disconnect else R.string.connect)
         showStatus(when (snapshot.state) {
             "STREAMING" -> getString(R.string.connected)

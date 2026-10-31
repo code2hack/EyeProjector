@@ -2,6 +2,7 @@ package com.code2hack.eyeprojector.directhost.anchor.execution
 
 import com.code2hack.eyeprojector.directhost.anchor.preferences.AnchorSettingContext
 import com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiSource
+import com.code2hack.eyeprojector.directhost.input.FunctionWork
 import com.code2hack.eyeprojector.protocol.*
 import android.os.IBinder
 import java.io.Closeable
@@ -13,6 +14,7 @@ internal class AnchorShellSession(
     private val source: () -> ManagedUiSource?,
     private val accepts: (FunctionIntent, ManagedUiSource) -> Boolean,
     private val ordinaryHandoff: ((() -> Boolean) -> Boolean),
+    private val stateWork: FunctionWork,
     private val failure: (Exception) -> Unit,
     private val send: (AnchorMessage) -> Unit,
 ) : Closeable {
@@ -48,6 +50,7 @@ internal class AnchorShellSession(
         val original = binding.get()
         val id = sequence.incrementAndGet()
         if (!input.anchor.isCurrent(admission)) return
+        if (admission.intent.kind == FunctionIntentKind.REGISTER) input.anchor.cancelHeld()
         if (original == null || closed) {
             send(AnchorMessage.Feedback(id, admission.intent, AnchorFeedback.UNAVAILABLE)); return
         }
@@ -59,7 +62,12 @@ internal class AnchorShellSession(
     private inner class Operation(val id: Long, val admission: AnchorAdmission, val original: Binding) : IAnchorSession.Stub() {
         @Volatile var chooser: ReceiverUsability? = null
         @Volatile var chooserObserved = false
-        private fun alive() = !closed && binding.get() === original && original.binder.isBinderAlive
+        private fun attached() = !closed && binding.get() === original
+        private fun alive() = attached() && original.binder.isBinderAlive
+        private val stateOutput = AnchorHoldOutput(stateWork) { revision, state ->
+            if (!closed) try { send.invoke(AnchorMessage.HeldState(id, admission.intent, revision, state)) }
+            catch (error: Exception) { failure(error) }
+        }
         override fun source(): ByteArray? = if (alive()) source.invoke()?.bytes() else null
         override fun reconcile(settingContext: ByteArray): Boolean = alive() &&
             input.anchor.reconcile(AnchorExecutionCodec.setting(settingContext))
@@ -69,7 +77,26 @@ internal class AnchorShellSession(
             val target = AnchorExecutionCodec.target(resolvedTarget)
             val current = source.invoke() // Foreground/source query is outside the owner/control lock.
             return try { input.click(admission, setting, target, current,
-                { alive() && current != null && accepts(admission.intent, current) }, ordinaryHandoff).ordinal }
+                { attached() && current != null && accepts(admission.intent, current) }, ordinaryHandoff).ordinal }
+            catch (error: Exception) { failure(error); AnchorExecutionStatus.INPUT_REJECTED.ordinal }
+        }
+        override fun heldSetting(): ByteArray? =
+            if (alive()) input.anchor.heldSetting()?.let(AnchorExecutionCodec::setting) else null
+        override fun releaseHeld(expectedSetting: ByteArray, settingCurrent: Boolean): Int {
+            if (!alive()) return AnchorReleaseResult.RETIRED.ordinal
+            val expected = expectedSetting.takeIf { it.isNotEmpty() }?.let(AnchorExecutionCodec::setting)
+            val current = if (expected != null && settingCurrent) source.invoke() else null
+            return try { input.anchor.releaseHeld(admission, expected, settingCurrent, current,
+                { attached() && current != null && accepts(admission.intent, current) }).ordinal }
+            catch (error: Exception) { failure(error); AnchorReleaseResult.INPUT_REJECTED.ordinal }
+        }
+        override fun hold(settingContext: ByteArray, resolvedTarget: ByteArray): Int {
+            if (!alive()) return AnchorExecutionStatus.RETIRED.ordinal
+            val setting = AnchorExecutionCodec.setting(settingContext)
+            val target = AnchorExecutionCodec.target(resolvedTarget)
+            val current = source.invoke()
+            return try { input.hold(admission, setting, target, current,
+                { attached() && current != null && accepts(admission.intent, current) }, ordinaryHandoff, stateOutput).ordinal }
             catch (error: Exception) { failure(error); AnchorExecutionStatus.INPUT_REJECTED.ordinal }
         }
         override fun retire() { if (alive()) input.anchor.retire() }

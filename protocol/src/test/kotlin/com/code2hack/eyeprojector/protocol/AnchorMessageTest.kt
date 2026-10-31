@@ -16,7 +16,7 @@ class AnchorMessageTest {
         val buffer = ByteArrayOutputStream(); val out = DataOutputStream(buffer)
         Wire.writeWelcome(out); values.forEach { Wire.writeFrame(out, Frame(Wire.ANCHOR, payload = it.bytes())) }
         val input = DataInputStream(buffer.toByteArray().inputStream()); Wire.readWelcome(input)
-        assertEquals(10, Wire.VERSION)
+        assertEquals(11, Wire.VERSION)
         assertEquals(values, values.map { AnchorMessage.from(Wire.readFrame(input).payload) })
         assertEquals(0, input.available())
     }
@@ -24,6 +24,17 @@ class AnchorMessageTest {
         val bytes = AnchorMessage.Choice(2, original, AnchorChoice.HOLD).bytes()
         for (bad in listOf(bytes.copyOf(bytes.size - 1), bytes + byteArrayOf(0))) {
             assertThrows(Exception::class.java) { AnchorMessage.from(bad) }
+        }
+    }
+    @Test fun heldStatesRetainOriginalContactTransactionAndOrderingRevision() {
+        for ((index, state) in AnchorHoldState.entries.withIndex()) {
+            val value = AnchorMessage.HeldState(41, original, 90L + index, state)
+            val decoded = AnchorMessage.from(value.bytes()) as AnchorMessage.HeldState
+            assertEquals(value, decoded)
+            assertEquals(41L, decoded.transactionId)
+            assertEquals(original, decoded.intent)
+            assertEquals(90L + index, decoded.revision)
+            assertEquals(state, decoded.state)
         }
     }
 }

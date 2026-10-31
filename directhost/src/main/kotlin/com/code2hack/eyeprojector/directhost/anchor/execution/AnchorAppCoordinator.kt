@@ -18,7 +18,11 @@ internal interface AnchorOriginalRoute {
     val intent: FunctionIntent
     fun source(): ManagedUiSource?
     fun reconcile(setting: AnchorSettingContext): Boolean
+    fun heldSetting(): AnchorSettingContext? = null
+    fun releaseHeld(expected: AnchorSettingContext?, settingCurrent: Boolean): AnchorReleaseResult =
+        if (expected == null) AnchorReleaseResult.NOT_HELD else AnchorReleaseResult.RETIRED
     fun click(setting: AnchorSettingContext, target: ResolvedAnchorTarget): AnchorExecutionStatus
+    fun hold(setting: AnchorSettingContext, target: ResolvedAnchorTarget): AnchorExecutionStatus = AnchorExecutionStatus.HOLD_MODE
     fun retire()
     fun feedback(status: AnchorExecutionStatus)
     fun send(message: AnchorMessage) = Unit
@@ -43,7 +47,7 @@ internal class AnchorAppCoordinator(
 ) : Closeable {
     var registration: ((CapturedAnchorRequest) -> Unit)? = null
     var registrationMessage: ((AnchorMessage, AnchorOriginalRoute) -> Unit)? = null
-    private class Subscription(val route: AnchorOriginalRoute, val context: ProjectionContext,
+    private class Subscription(val route: AnchorOriginalRoute, val context: ProjectionContext, val displayId: Int,
         val packageName: String, val observer: Closeable)
     private val subscriptions = mutableListOf<Subscription>() // FIFO lane only.
     private var registrationRequest: CapturedAnchorRequest? = null
@@ -87,13 +91,23 @@ internal class AnchorAppCoordinator(
     }
 
     private fun execute(original: AnchorOriginalRoute) {
+        if (original.intent.kind == FunctionIntentKind.ACTIVATE) {
+            // Original metadata + in-memory revision check; no saved record/source/target lookup.
+            val held = original.heldSetting()
+            when (original.releaseHeld(held, held == null || store.isCurrent(held))) {
+                AnchorReleaseResult.RELEASE_SUBMITTED -> return original.feedback(AnchorExecutionStatus.RELEASE_SUBMITTED)
+                AnchorReleaseResult.RETIRED -> return original.feedback(AnchorExecutionStatus.RETIRED)
+                AnchorReleaseResult.INPUT_REJECTED -> return original.feedback(AnchorExecutionStatus.INPUT_REJECTED)
+                AnchorReleaseResult.NOT_HELD -> Unit
+            }
+        }
         val source = original.source() ?: return original.feedback(AnchorExecutionStatus.RETIRED)
         val access = accessRevision.get()
         val display = displayRevisions.computeIfAbsent(source.displayId) { AtomicLong() }
         val displayRevision = display.get()
         val packageName = source.foregroundPackage ?: return original.feedback(AnchorExecutionStatus.UNAVAILABLE)
         // Keep one route per original Session, as supplied by the Binder adapter's stable route key.
-        watch(original, source.context, packageName)
+        watch(original, source.context, source.displayId, packageName)
         val setting = store.snapshot(packageName)
         if (!original.reconcile(setting.context)) return original.feedback(AnchorExecutionStatus.RETIRED)
         val provider = UiTargetSnapshotProvider(ManagedUiSourceProvider { expected ->
@@ -114,7 +128,6 @@ internal class AnchorAppCoordinator(
             return
         }
         val anchor = setting.anchor ?: return original.feedback(AnchorExecutionStatus.NO_ANCHOR)
-        if (anchor.mode != AnchorMode.CLICK) return original.feedback(AnchorExecutionStatus.HOLD_MODE)
         val snapshot = provider.read(source.context, packageName)
         val resolved = AnchorTargetResolver.resolve(anchor.descriptor, snapshot)
         if (resolved !is AnchorTargetResolution.Unique) return original.feedback(AnchorExecutionStatus.UNAVAILABLE)
@@ -124,10 +137,11 @@ internal class AnchorAppCoordinator(
         if (closed || accessRevision.get() != access || display.get() != displayRevision ||
             !store.isCurrent(setting.context) || original.source() != resolved.current.source)
             return original.feedback(AnchorExecutionStatus.RETIRED)
-        original.feedback(original.click(setting.context, resolved.current))
+        original.feedback(if (anchor.mode == AnchorMode.HOLD) original.hold(setting.context, resolved.current)
+            else original.click(setting.context, resolved.current))
     }
 
-    private fun watch(route: AnchorOriginalRoute, context: ProjectionContext, packageName: String) {
+    private fun watch(route: AnchorOriginalRoute, context: ProjectionContext, displayId: Int, packageName: String) {
         // A Binder adapter can share a stable Session route while retaining per-press admission.
         if (subscriptions.any { it.context == context && it.packageName == packageName }) return
         val observer = store.observe(packageName) {
@@ -135,7 +149,7 @@ internal class AnchorAppCoordinator(
                 if (!closed) protect(route) { route.reconcile(store.snapshot(packageName).context) }
             }
         }
-        subscriptions.add(Subscription(route, context, packageName, observer))
+        subscriptions.add(Subscription(route, context, displayId, packageName, observer))
     }
 
     /** Called by real UI/accessibility/binding lifecycle observation, not a periodic synthetic read. */
@@ -149,8 +163,8 @@ internal class AnchorAppCoordinator(
         else displayRevisions.computeIfAbsent(displayId) { AtomicLong() }.incrementAndGet()
         submit {
             cancelRegistration(displayId)
-            subscriptions.map { it.route }.distinct().forEach { route ->
-                protect(route) { if (displayId == null || route.source()?.displayId == displayId) route.retire() }
+            subscriptions.filter { displayId == null || it.displayId == displayId }.map { it.route }.distinct().forEach { route ->
+                protect(route) { route.retire() }
             }
             if (displayId == null) { subscriptions.forEach { it.observer.close() }; subscriptions.clear() }
         }

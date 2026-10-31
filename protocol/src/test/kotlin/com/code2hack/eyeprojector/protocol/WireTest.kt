@@ -57,7 +57,7 @@ class WireTest {
     }
 
     @Test fun revisionNineAgreesOnVideoScaleAndControlWithoutAnyAudioHeader() {
-        assertEquals(10, Wire.VERSION)
+        assertEquals(11, Wire.VERSION)
         val request = input { Wire.writeRequest(this, Wire.STREAM) }
         assertEquals(Wire.STREAM, Wire.readRequest(request)); assertEquals(-1, request.read())
         val size = Geometry(480, 640)

@@ -46,6 +46,7 @@ internal class ReceiverSessionOwner(
         fun state(snapshot: Snapshot)
         fun input(source: ProjectionSession, event: ReceiverInput)
         fun anchor(source: ProjectionSession, message: AnchorMessage): Boolean = false
+        fun anchorHeld(source: ProjectionSession, message: AnchorMessage.HeldState) = Unit
     }
     data class Snapshot(val session: ProjectionSession?, val epoch: String?, val peer: SessionState?,
         val requested: Boolean, val state: String, val geometry: Geometry?, val activationId: String? = null)
@@ -346,7 +347,8 @@ internal class ReceiverSessionOwner(
             } }, nextUsabilityRevision = usabilityRevision::incrementAndGet, expectedPhoneOwnerEpoch = epoch,
                 onAnchor = { source, message -> deliver {
                     if (!closed && session === source && uiUsable) {
-                        val consumed = listener?.anchor(source, message) == true
+                        if (message is AnchorMessage.HeldState) listener?.anchorHeld(source, message)
+                        val consumed = message is AnchorMessage.HeldState || listener?.anchor(source, message) == true
                         if (!consumed && message is AnchorMessage.Feedback) AnchorFeedbackUi.show(context, message.status)
                     }
                 } })
