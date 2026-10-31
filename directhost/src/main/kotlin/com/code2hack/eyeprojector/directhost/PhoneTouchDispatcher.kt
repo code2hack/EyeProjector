@@ -38,13 +38,17 @@ internal class PhoneTouchDispatcher(private val lock: Any = Any(), private val w
         when (event.phase) {
             Touch.Phase.DOWN -> {
                 if (old != null) cancel()
-                if (!writeTouch(event)) return@synchronized false
+                if (closed || held != null || geometry != event.target.geometry) return@synchronized false
+                // Publish original ownership before external output, so reentrant retirement sees it.
                 held = event
+                if (!writeTouch(event)) return@synchronized false
+                if (held !== event) return@synchronized false
             }
             Touch.Phase.MOVE, Touch.Phase.UP, Touch.Phase.CANCEL -> {
                 if (old?.contactId != event.contactId) return@synchronized false
                 if (!writeTouch(event)) return@synchronized false
-                held = if (event.phase == Touch.Phase.MOVE) event else null
+                // A callback may retire this contact and admit a successor; never overwrite it.
+                if (held === old) held = if (event.phase == Touch.Phase.MOVE) event else null
             }
         }
         true

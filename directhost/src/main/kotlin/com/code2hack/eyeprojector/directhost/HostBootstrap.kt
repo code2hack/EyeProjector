@@ -45,6 +45,7 @@ class HostBootstrap private constructor(private val context: Context) {
     private val forget = HostForgetCompletion { main.post(it) }
     private val executor = Executors.newSingleThreadScheduledExecutor()
     private val displayExecutor = Executors.newSingleThreadExecutor()
+    internal val anchorRuntime = com.code2hack.eyeprojector.directhost.anchor.execution.AnchorAppRuntime(context)
     private val uiTargetExecutor = Executors.newSingleThreadExecutor()
     private val inputRoutes = java.util.concurrent.atomic.AtomicLong(System.nanoTime())
     private val scaleExecutor = Executors.newSingleThreadExecutor()
@@ -95,12 +96,14 @@ class HostBootstrap private constructor(private val context: Context) {
                             else if (remote?.asBinder() == binder) { remote = null; publish("UNKNOWN", "SERVICE_DIED") }
                             }
                         }, 0)
+                        remote?.setAnchorBridge(anchorRuntime.bind())
                         performPending()
                         refreshNow()
                     }.onFailure { remote = null; publish("UNKNOWN", "SERVICE_UNREACHABLE") }
                 }
             }
             override fun onServiceDisconnected(name: ComponentName) {
+                if (generation == bindingGeneration) anchorRuntime.invalidateBinding()
                 originalBinding?.let { original ->
                     if (!original.first.isBinderAlive) contextPublisher.retireBinding(original.second)
                 }
@@ -116,6 +119,7 @@ class HostBootstrap private constructor(private val context: Context) {
     }
 
     private fun abandonConnection() {
+        anchorRuntime.invalidateBinding()
         val previous = connection
         connection = null; connecting = false
         bindingGeneration++; acceptedGeneration = -1L
@@ -125,6 +129,7 @@ class HostBootstrap private constructor(private val context: Context) {
     }
     private val received = Shizuku.OnBinderReceivedListener { refresh() }
     private val dead = Shizuku.OnBinderDeadListener {
+        anchorRuntime.invalidateBinding()
         // The delivered capability loss is known now; it is not an acknowledgment of backend release.
         contextPublisher.retire(contextPublisher.capture())
         executor.execute { if (connecting) abandonConnection(); publish(current.backend, "SHIZUKU_DIED") }

@@ -9,7 +9,7 @@ internal fun Fixture.fusionGeometry() {
     val size = Geometry(480, 640)
     @Suppress("UNCHECKED_CAST")
     (get("geometry") as AtomicReference<Geometry?>).set(size)
-    (get("inputControls") as PhoneTouchDispatcher).geometry(size)
+    (get("inputControls") as com.code2hack.eyeprojector.directhost.anchor.execution.AnchorSessionInput).geometry(size)
 }
 
 internal fun Fixture.receive(frame: Frame) {

@@ -17,6 +17,11 @@ class ShizukuHostService internal constructor(
 ) : IHostBootstrap.Stub() {
     @Keep constructor(context: Context) : this(context,
         OwnedShellSessions(File("/data/local/tmp", "eyeprojector-${context.packageName}-${context.applicationInfo.uid}")), null)
+    @Volatile private var anchorBridge: com.code2hack.eyeprojector.directhost.anchor.execution.IAnchorAppBridge? = null
+    override fun setAnchorBridge(bridge: com.code2hack.eyeprojector.directhost.anchor.execution.IAnchorAppBridge?) {
+        anchorBridge = bridge
+        projectionBridge?.installAnchorBridge(bridge)
+    }
     private val lifecycle = OwnedHostLifecycle()
     @Volatile private var projectionBridge: Bridge? = null
     @Volatile private var lastProjectionBridge: Bridge? = null
@@ -68,6 +73,7 @@ class ShizukuHostService internal constructor(
             }
             val files = BootstrapSessionFiles(identity, password, legacyPeer, endpoint, pairedPeer)
             val bridge = prepareBridge?.invoke(files, sessionEpoch, report) ?: prepareOwnedBridge(files, sessionEpoch, report)
+            bridge.installAnchorBridge(anchorBridge)
             projectionBridge = bridge
             panelRoutes.publish(panelOwner, bridge)
             object : OwnedHostLifecycle.Backend {

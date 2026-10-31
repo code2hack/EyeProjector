@@ -77,7 +77,7 @@ data class Frame(val channel: Int, val stamp: Long = 0, val payload: ByteArray =
 
 object Wire {
     const val MAGIC = 0x50415631
-    const val VERSION = 9
+    const val VERSION = 10
     const val SCRCPY_VERSION = "5.0.1"
     const val H264 = 0x68323634
     const val MAX_PAYLOAD = 1024 * 1024
@@ -103,6 +103,7 @@ object Wire {
     const val CAMERA_PROGRESS = 21 // Either peer's own observations, projection socket.
     const val CAMERA_END = 22 // Either peer's own observations, camera socket.
     const val FUNCTION_INTENT = 23 // Typed original Function intention; no raw HID or uptime.
+    const val ANCHOR = 24 // Typed Anchor feedback and original registration transaction.
     const val STREAM = 1
     const val STOP_HOST = 2
     const val CAMERA = 3
@@ -124,7 +125,7 @@ object Wire {
         require(input.readUTF() == SCRCPY_VERSION && input.readInt() == H264)
     }
     private fun validate(channel: Int, length: Int) {
-        require(channel in GEOMETRY..FUNCTION_INTENT && length in 0..MAX_PAYLOAD)
+        require(channel in GEOMETRY..ANCHOR && length in 0..MAX_PAYLOAD)
         when (channel) {
             GEOMETRY -> require(length == 8)
             TAP -> require(length == 16)
@@ -133,6 +134,7 @@ object Wire {
             RECEIVER_INPUT -> require(length == ReceiverInput.PAYLOAD_SIZE)
             RECEIVER_USABILITY -> require(length in ReceiverUsability.MIN_PAYLOAD_SIZE..ReceiverUsability.MAX_PAYLOAD_SIZE)
             FUNCTION_INTENT -> require(length in FunctionIntent.MIN_PAYLOAD_SIZE..FunctionIntent.MAX_PAYLOAD_SIZE)
+            ANCHOR -> require(length in AnchorMessage.MIN_PAYLOAD_SIZE..AnchorMessage.MAX_PAYLOAD_SIZE)
             SCROLL -> require(length == 20)
             NAVIGATE -> require(length == 12)
             SCALE_REQUEST -> require(length == 8)

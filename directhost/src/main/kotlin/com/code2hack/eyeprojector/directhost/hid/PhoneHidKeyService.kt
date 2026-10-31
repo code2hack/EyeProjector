@@ -71,7 +71,7 @@ class PhoneHidKeyService : AccessibilityService(), InputManager.InputDeviceListe
         device.name != "ROKID,PSOC-TP-R" && device.name != "qpnp_pon"
     override fun onInputDeviceChanged(deviceId: Int) { runtime?.controller?.deviceRemoved(deviceId) }
     override fun onInputDeviceRemoved(deviceId: Int) { runtime?.controller?.deviceRemoved(deviceId) }
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) = UiTargetAccess.windowChanged(this, event)
     override fun onInterrupt() {
         if (runtime?.pin?.ownsRoute == false) runtime?.controller?.cancelInput()
     }

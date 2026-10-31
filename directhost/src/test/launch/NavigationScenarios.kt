@@ -31,12 +31,12 @@ fun navigationScenarios() {
         launches.initialize(47); launches.snapshot(true)
         fun hold(id: Long) {
             f.receive(Frame(Wire.TOUCH, payload = Touch(Touch.Phase.DOWN, id, Tap(70, 80, size)).bytes()))
-            check((f.get("inputControls") as PhoneTouchDispatcher).holding)
+            check((f.get("inputControls") as com.code2hack.eyeprojector.directhost.anchor.execution.AnchorSessionInput).holding)
         }
         fun home() {
             f.receive(Frame(Wire.NAVIGATE, payload = Navigate(Navigation.CONTEXTUAL_HOME, size).bytes()))
             launches.snapshot(true)
-            check(!(f.get("inputControls") as PhoneTouchDispatcher).holding)
+            check(!(f.get("inputControls") as com.code2hack.eyeprojector.directhost.anchor.execution.AnchorSessionInput).holding)
             check(!f.peer.released && !f.control.released && !f.video.released && f.child.alive)
         }
         hold(71); home()
