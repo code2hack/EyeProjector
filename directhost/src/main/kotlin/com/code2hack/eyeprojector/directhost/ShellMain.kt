@@ -707,9 +707,9 @@ private class Session(
         when (action) {
             Navigation.BACK -> inputControls.navigate(Navigate(action, size))
             Navigation.HOME -> launches.home()
-            Navigation.FUNCTION_DOUBLE -> {
+            Navigation.FUNCTION_DOUBLE, Navigation.CONTEXTUAL_HOME -> {
                 val original = receiverUsability.snapshot().fact ?: return
-                launches.functionDouble {
+                launches.contextualHome {
                     val latest = receiverUsability.snapshot()
                     val fact = latest.fact
                     if (running.get() && !latest.retired && fact != null &&

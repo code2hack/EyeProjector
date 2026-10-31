@@ -56,8 +56,8 @@ class WireTest {
         }) }
     }
 
-    @Test fun revisionSevenAgreesOnVideoScaleAndControlWithoutAnyAudioHeader() {
-        assertEquals(7, Wire.VERSION)
+    @Test fun revisionEightAgreesOnVideoScaleAndControlWithoutAnyAudioHeader() {
+        assertEquals(8, Wire.VERSION)
         val request = input { Wire.writeRequest(this, Wire.STREAM) }
         assertEquals(Wire.STREAM, Wire.readRequest(request)); assertEquals(-1, request.read())
         val size = Geometry(480, 640)
@@ -85,7 +85,7 @@ class WireTest {
     }
 
     @Test fun incompatibleVersionsAndVideoCodecsAreRejected() {
-        for (revision in listOf(1, 2, 3, 4, 5, 6, 999)) {
+        for (revision in listOf(1, 2, 3, 4, 5, 6, 7, 999)) {
             assertThrows(Exception::class.java) { Wire.readRequest(input {
                 writeInt(Wire.MAGIC); writeInt(revision); writeByte(Wire.STREAM)
             }) }
