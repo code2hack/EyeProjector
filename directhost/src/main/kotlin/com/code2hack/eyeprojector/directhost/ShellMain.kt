@@ -762,6 +762,21 @@ private class Session(
     override fun receiverUsability(): SessionUsabilitySnapshot = receiverUsability.snapshot()
     override fun launchApp(requestId: Long, packageName: String): ProjectionDisplayState = launches.launch(requestId, packageName)
     override fun projectionDisplayState(): ProjectionDisplayState = launches.snapshot(observe = true)
+    override fun uiTargetContext(): com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiSource? {
+        val original = synchronized(managedDisplayGate) {
+            if (!running.get() || nativeResourcesClosing.get() || managedDisplayCloseRequested) null else managedDisplay
+        } ?: return null
+        val mapping = original.uiInputSnapshot() ?: return null
+        // Mapping/admission locks have ended before this existing serialized foreground query.
+        val foreground = launches.snapshot(observe = true)
+        val retained = synchronized(managedDisplayGate) {
+            running.get() && !nativeResourcesClosing.get() && !managedDisplayCloseRequested && managedDisplay === original
+        }
+        if (!retained || original.uiInputSnapshot() != mapping || foreground.context != context ||
+            foreground.displayId != mapping.displayId) return null
+        return com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiSource(context, foreground.generation,
+            mapping.displayId, mapping.displayUniqueId, foreground.foregroundPackage, null, mapping.geometry)
+    }
     override fun phoneHidEdge(routeId: Long, edge: PhoneHidEdge) {
         try { if (running.get()) phoneInput.edge(routeId, edge) }
         catch (error: Exception) { closeSafely(sessionFailureReason(error, control = true), error) }
@@ -777,7 +792,9 @@ private class Session(
         try {
             try {
                 if (running.get()) phoneInput.stampedEdge(routeId, edge) { point, source ->
-                    receiverUsability.accepts(regionId, word, point, source)
+                    if (edge.action == PhoneHidAction.BACK_HOME || edge.action == PhoneHidAction.LOCK)
+                        receiverUsability.acceptsContext(regionId, word, point, source)
+                    else receiverUsability.accepts(regionId, word, point, source)
                 }
             } finally {
                 if (timed) {
