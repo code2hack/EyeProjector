@@ -4,6 +4,8 @@ EyeProjector runs supported Android apps on a Phone-owned workspace and projects
 
 **v0.2 is Owner-accepted.** On 2026-10-28 the Owner accepted the managed-display experiment and v0.2 and authorized publication, merge and cleanup. The [v0.2 record](docs/runs/v0.2.md) distinguishes accepted device observations, implementation checks and remaining limits. [v0.1](https://github.com/code2hack/EyeProjector/releases/tag/v0.1) remains historical; its earlier limitations are not descriptions of the current managed path.
 
+**v0.3 requirements are published for development.** The [v0.3 specification](docs/versions/v0.3/SPEC.md) defines explicit Back/Home/Lock controls and the per-app Anchor feature, including the Owner's Home sequence and mandatory Click/Hold choice. Its marked completion proposals and [small-issue implementation plan](docs/versions/v0.3/README.md) remain for review; implementation and release acceptance have not started. The input behavior below describes the accepted v0.2 implementation and is superseded by the version-specific requirements for v0.3 development.
+
 This document defines the current product contract. The [v0.2 plan](docs/versions/v0.2/README.md) records scope, [managed-display setup](docs/versions/v0.2/managed-display.md) describes the current bootstrap, [RUNBOOK.md](RUNBOOK.md) covers engineering procedures, and [AGENTS.md](AGENTS.md) governs agent coordination.
 
 ## Terms
