@@ -1,0 +1,4 @@
+<resources>
+    <item name="ui_target_click" type="id" />
+    <item name="ui_target_hold" type="id" />
+</resources>
