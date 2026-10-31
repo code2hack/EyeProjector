@@ -91,7 +91,7 @@ fun main() {
         val a = Adapter()
         val launches = f.adapter(a)
         launches.initialize(47); launches.snapshot(true)
-        val touch = f.get("inputControls") as PhoneTouchDispatcher
+        val touch = f.get("inputControls") as com.code2hack.eyeprojector.directhost.anchor.execution.AnchorSessionInput
         val g = Geometry(480,640); touch.geometry(g); touch.touch(Touch(Touch.Phase.DOWN,1,Tap(50,60,g)))
         check(f.launch(8,"example.app").foregroundPackage=="example.app")
         check(!touch.holding && f.control.sink.toString().isNotEmpty())

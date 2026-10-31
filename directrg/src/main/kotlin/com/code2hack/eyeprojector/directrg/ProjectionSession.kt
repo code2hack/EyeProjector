@@ -32,6 +32,7 @@ class ProjectionSession(
     private val expectedPhoneOwnerEpoch: String? = null,
     private val connectPeer: ((File) -> SSLSocket)? = null,
     private val tlsContextFactory: (File) -> SSLContext = Tls::context,
+    private val onAnchor: (ProjectionSession, AnchorMessage) -> Unit = { _, _ -> },
 ) : Closeable {
     private val running = AtomicBoolean(true)
     // TLS initialization stays on the connection worker. Camera roles retain this projection's
@@ -56,6 +57,7 @@ class ProjectionSession(
     @Volatile private var controlReady = false
     @Volatile private var sourceUsability: ReceiverUsability? = null
     private var serializedUsability: ReceiverUsability? = null
+    private val pendingAnchorOpen = java.util.concurrent.atomic.AtomicReference<AnchorMessage.Open?>()
     private var ownerUsabilityRevision = -1L
     // Separate from native timed input cancellation; both use the existing serialized stream writer.
     private val headPointer = LatestHeadPointer({ action ->
@@ -211,6 +213,13 @@ class ProjectionSession(
     }
     private fun writeUsabilityLocked(fact: ReceiverUsability?) {
         if (controlReady && fact != null && fact != serializedUsability) {
+            pendingAnchorOpen.get()?.let { open ->
+                if (open.chooser.ownerEpoch == fact.ownerEpoch && open.chooser.incarnation == fact.incarnation &&
+                    open.chooser.inputRevision == fact.inputRevision && open.chooser.mode == fact.mode) {
+                    if (pendingAnchorOpen.compareAndSet(open, null)) writeFrameLocked(Frame(Wire.ANCHOR,
+                        payload = open.copy(chooser = fact).bytes()))
+                } else if (fact.revision >= open.chooser.revision) pendingAnchorOpen.compareAndSet(open, null)
+            }
             writeFrameLocked(Frame(Wire.RECEIVER_USABILITY, payload = fact.bytes()))
             serializedUsability = fact
         }
@@ -330,6 +339,12 @@ class ProjectionSession(
                 }
             }
             Wire.END -> closeWithState("DISCONNECTED")
+            Wire.ANCHOR -> {
+                require(frame.stamp == 0L)
+                val message = AnchorMessage.from(frame.payload)
+                require(message is AnchorMessage.Feedback || message is AnchorMessage.Offer || message is AnchorMessage.Result)
+                onAnchor(this, message)
+            }
             Wire.RECEIVER_INPUT -> onReceiverInput(this, ReceiverInput.from(frame.payload))
             Wire.FUNCTION_INTENT -> {
                 require(frame.stamp == 0L)
@@ -421,6 +436,29 @@ class ProjectionSession(
     }
 
     /** Every accepted intention retains its original Session/context on the ordered writer. */
+    /** Bind the actual allocated chooser fact before any usability/head-pointer publication. */
+    fun openAnchorRegistration(offer: AnchorMessage.Offer, chooser: ReceiverUsability): Boolean {
+        var admitted = false
+        headPointer.sourceChanged {
+            if (running.get() && currentFunction(offer.intent.context) &&
+                chooser.ownerEpoch == offer.intent.context.usability.ownerEpoch &&
+                chooser.incarnation == offer.intent.context.usability.incarnation) {
+                val fact = chooser.copy(revision = nextUsabilityRevision())
+                pendingAnchorOpen.set(AnchorMessage.Open(offer.transactionId, offer.intent, fact))
+                ownerUsabilityRevision = chooser.revision
+                sourceUsability = fact
+                admitted = true
+            }
+        }
+        return admitted
+    }
+
+    fun chooseAnchorRegistration(offer: AnchorMessage.Offer, choice: AnchorChoice): Boolean =
+        controls.submit(SystemClock.uptimeMillis(), { running.get() && sourceUsability?.incarnation == offer.intent.context.usability.incarnation },
+            "anchor-choice", preserveTiming = false) {
+            send(Frame(Wire.ANCHOR, payload = AnchorMessage.Choice(offer.transactionId, offer.intent, choice).bytes()))
+        }
+
     fun functionIntent(captured: CapturedFunctionIntent<ProjectionSession>): Boolean = synchronized(inputLock) {
         if (captured.original !== this || !currentFunction(captured.intent.context)) return false
         controls.submit(SystemClock.uptimeMillis(), { currentFunction(captured.intent.context) },

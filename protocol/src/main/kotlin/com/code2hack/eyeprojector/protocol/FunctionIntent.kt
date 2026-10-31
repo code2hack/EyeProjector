@@ -16,7 +16,7 @@ data class FunctionIntentContext(val usability: ReceiverUsability, val pointer: 
  * Consumers retain every intention in order, including two successive ACTIVATE intentions.
  * No raw HID identity or cross-device uptime is transported here.
  *
- * Wire v9 channel FUNCTION_INTENT carries this payload. A receiver must not refresh [context]
+ * Wire v10 channel FUNCTION_INTENT carries this payload. A receiver must not refresh [context]
  * at dequeue or use a replacement local Session to reconstruct its original route.
  */
 data class FunctionIntent(

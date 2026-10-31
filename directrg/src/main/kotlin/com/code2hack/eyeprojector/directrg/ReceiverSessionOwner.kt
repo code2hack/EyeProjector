@@ -45,6 +45,7 @@ internal class ReceiverSessionOwner(
     interface View {
         fun state(snapshot: Snapshot)
         fun input(source: ProjectionSession, event: ReceiverInput)
+        fun anchor(source: ProjectionSession, message: AnchorMessage): Boolean = false
     }
     data class Snapshot(val session: ProjectionSession?, val epoch: String?, val peer: SessionState?,
         val requested: Boolean, val state: String, val geometry: Geometry?, val activationId: String? = null)
@@ -109,6 +110,15 @@ internal class ReceiverSessionOwner(
     var inputRevision = 0L
         private set
     fun advanceInputRevision(): Long = ++inputRevision
+    /** The caller has allocated this exact chooser revision and has not published it yet. */
+    fun openAnchorRegistration(source: ProjectionSession, offer: AnchorMessage.Offer, chooserRevision: Long): Boolean {
+        val demand = feature?.demand() ?: return false
+        if (closed || session !== source || chooserRevision != inputRevision ||
+            offer.intent.context.usability.incarnation != demand.incarnation || attachment.epoch != demand.ownerEpoch) return false
+        return source.openAnchorRegistration(offer, ReceiverUsability(demand.ownerEpoch, demand.incarnation,
+            usabilityRevision.incrementAndGet(), chooserRevision, ReceiverUsabilityMode.LOCAL_PANEL))
+    }
+
     @Volatile var session: ProjectionSession? = null
         private set
     private val client = clientFactory(::observePeer) {
@@ -333,7 +343,13 @@ internal class ReceiverSessionOwner(
                     authenticatedControl(source, event) // Background authenticated seam for activation/wake work.
                     if (currentDisplayed && window != null || feature != null && uiUsable && localPanel) listener?.input(source, event)
                 }
-            } }, nextUsabilityRevision = usabilityRevision::incrementAndGet, expectedPhoneOwnerEpoch = epoch)
+            } }, nextUsabilityRevision = usabilityRevision::incrementAndGet, expectedPhoneOwnerEpoch = epoch,
+                onAnchor = { source, message -> deliver {
+                    if (!closed && session === source && uiUsable) {
+                        val consumed = listener?.anchor(source, message) == true
+                        if (!consumed && message is AnchorMessage.Feedback) AnchorFeedbackUi.show(context, message.status)
+                    }
+                } })
             // This source record exists even with the optional window observer disabled.
             // A synchronous camera callback can retire it before attachProjection returns.
             val originalMedia = if (cameraOwner != null) MediaOriginal(next, video) else null
