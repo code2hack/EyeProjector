@@ -99,7 +99,7 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
     report.put("nativeObservation", detail).put("passedScope", "recorder completion only; no physical feature acceptance")
     detail.put("navigationMetadataEnabled", navigation != null)
     if (navigation != null) detail.put("broadcastActions", JSONArray(NativeNavigationObservation.ACTIONS))
-        .put("broadcastScope", "Passive known-action receipt only; existing production abort can shadow delivery")
+        .put("broadcastScope", "Subscribed source actions only; missing receipt is inconclusive; earlier abort may shadow ordered channels; unordered receipt does not establish interception")
         .put("firmwareActionOwnership", "UNKNOWN; correlate actual UI/power observations separately")
     val manager = context.getSystemService(InputManager::class.java)
     val inventoryThread = HandlerThread("native-input-inventory")

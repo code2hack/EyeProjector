@@ -4,9 +4,33 @@ Worker: Worker-EyeProjector-v0.3-112.
 
 This is an isolated observation path for the Owner's requested two-finger single tap (Back), double tap (Lock) and long press (Home). Those names describe requested physical operations, not established event classifiers. At the assigned base, `nativePadKey` maps pad key code 4 and 291 to `DOUBLE`; that is not evidence of two-finger Back. `NativePadContact` cancels on pointer transitions. `NativePadReader` forwards only `KEY_PROG1`/0094 contact edges and retains its separate power owner. None of those production paths is modified here.
 
-The existing test-only `NativeInputObservation` records original key/motion metadata before production handling, with device inventory, lifecycle and dispatch stages. The argument `navigationMetadata=true` additionally installs `NativeNavigationObservation`, which records passive receipt of the seven broadcast actions already named by `NativeFunctionInput` and `NativePadLongTouch`, and samples `PowerManager.isInteractive` in the existing approximately one-second sampling loop. It reads no broadcast extras, Intent data, text, UI content or private configuration. It never aborts a broadcast, changes its result, injects input, opens/grabs an input device, requests permissions or invokes a firmware action.
+The existing test-only `NativeInputObservation` records original key/motion metadata before production handling, with device inventory, lifecycle and dispatch stages. The argument `navigationMetadata=true` additionally installs `NativeNavigationObservation`, which records passive receipt of ten exact broadcast actions and samples `PowerManager.isInteractive` in the existing approximately one-second sampling loop. The option remains off by default. It reads no broadcast extras, Intent data, text, UI content or private configuration. It never aborts a broadcast, changes its result, injects input, opens/grabs an input device, requests permissions or invokes a firmware action.
 
-Broadcast priority matches the existing receivers. Start observation before normal foreground resume when possible. A production receiver at the same priority may abort first; registration order does not establish guaranteed delivery. An absent broadcast is inconclusive, and unknown broadcast actions cannot be discovered by this receiver. A present broadcast records its receipt flags, ordered/sticky state and result code at receipt; it is not a broadcast-send timestamp or firmware-action acknowledgment.
+The original seven actions come from `NativeFunctionInput` and `NativePadLongTouch`:
+
+```text
+com.android.action.ACTION_SPRITE_BUTTON_DOWN
+com.android.action.ACTION_SPRITE_BUTTON_UP
+com.android.action.ACTION_SPRITE_BUTTON_CLICK
+com.android.action.ACTION_SPRITE_BUTTON_DOUBLE_CLICK
+com.android.action.ACTION_BOLON_PAIRING
+com.android.action.ACTION_SPRITE_BUTTON_LONG_PRESS
+com.android.action.ACTION_AI_START
+```
+
+The three additions come from the matching-build `PhoneWindowManager.sendSettingsKeyAction`, `sendTwoFingerSingleTapAction` and `sendTwoFingerDoubleTapAction` methods:
+
+```text
+com.android.action.ACTION_SETTINGS_KEY
+com.android.action.ACTION_TWO_FINGER_SINGLE_TAP
+com.android.action.ACTION_TWO_FINGER_DOUBLE_TAP
+```
+
+The retained `/system/framework/services.jar` has SHA-256 `6bdadf1db66ed93d1d065a4669218766fc6082563fd5ab77ca50d64a4612b1ff`; its `classes2.dex` has SHA-256 `d585cdbd568fcd728195d66a58ff6593e2023eab2b419bbe44f801bd883c17ac`. The selected policy/handler outputs establish those three senders statically. Normal decompilation left `interceptKeyBeforeQueueing` unsupported; same-class fallback instructions and the direct handler/accessor chain support the numeric key/message links. They do not establish physical/layout mapping, actual app receipt or downstream default-action ownership. Earlier captures using only the original seven actions did not assess these three additions.
+
+Broadcast priority matches the existing receivers. Start observation before normal foreground resume when possible. For ordered channels, an earlier production receiver may abort before observation; registration order does not establish guaranteed delivery. The three added senders use unordered `sendBroadcastAsUser(intent, UserHandle.CURRENT)`, flags `0x50000000` (plus `8` under their debug condition), and no explicit receiver-permission argument or event/finger-count payload in those sender bodies. This does not prove ordinary-app delivery or a way to suppress a default action. Unordered receipt supplies no ordered-broadcast abort/result interception seam.
+
+Missing receipt remains inconclusive, and unknown actions cannot be discovered by this receiver. A present broadcast records its action label, flags, ordered/sticky state and result code at receipt (`null` when unordered); it is not a sender timestamp, physical finger identity, Home/sleep acknowledgment or proof of interception. Upstream gesture rules and current downstream consumers remain unresolved; the action names alone do not assign firmware ownership.
 
 ## Manager's device procedure
 

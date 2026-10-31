@@ -24,7 +24,7 @@ internal class NativeNavigationObservation(
                     "ordered" to isOrderedBroadcast, "initialSticky" to isInitialStickyBroadcast,
                     "resultCodeAtReceipt" to if (isOrderedBroadcast) resultCode else null,
                     "observerAborted" to false, "observerChangedResult" to false,
-                    "deliveryScope" to "Known source actions only; production ordered-broadcast abort may shadow this observer")
+                    "deliveryScope" to "Subscribed source actions only; missing receipt is inconclusive; earlier abort may shadow ordered channels; unordered receipt does not establish interception")
             }
         }
     }
@@ -60,7 +60,9 @@ internal class NativeNavigationObservation(
     }
 
     companion object {
-        // Exact existing NativeFunctionInput REPORTS and NativePadLongTouch ACTION at the assigned base.
+        // Existing NativeFunctionInput REPORTS and NativePadLongTouch ACTION, plus three policy10 senders.
+        // Matching services.jar SHA-256: 6bdadf1db66ed93d1d065a4669218766fc6082563fd5ab77ca50d64a4612b1ff.
+        // PhoneWindowManager sends the three additions unordered; names do not establish physical gestures.
         // No speculative native navigation actions or wildcard broadcast discovery.
         val ACTIONS = listOf(
             "com.android.action.ACTION_SPRITE_BUTTON_DOWN",
@@ -70,6 +72,9 @@ internal class NativeNavigationObservation(
             "com.android.action.ACTION_BOLON_PAIRING",
             "com.android.action.ACTION_SPRITE_BUTTON_LONG_PRESS",
             "com.android.action.ACTION_AI_START",
+            "com.android.action.ACTION_SETTINGS_KEY",
+            "com.android.action.ACTION_TWO_FINGER_SINGLE_TAP",
+            "com.android.action.ACTION_TWO_FINGER_DOUBLE_TAP",
         )
     }
 }

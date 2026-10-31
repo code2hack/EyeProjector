@@ -100,7 +100,7 @@ def analyze(app_lines=(), kernel_lines=(), case="unclassified", node=None):
             "physicalGestureClassification": "UNESTABLISHED",
             "captureCompleteness": "Requires original closed instrumentation report and kernel command outcome",
             "orderingScope": "Preserve each input stream order; do not subtract or merge unrelated clocks",
-            "broadcastAbsenceScope": "Only existing source actions observed; production abort can shadow delivery"}
+            "broadcastAbsenceScope": "Subscribed source actions only; missing receipt is inconclusive; earlier abort may shadow ordered channels; unordered receipt does not establish interception"}
 
 
 def main():

@@ -142,11 +142,17 @@ def main():
     observer = directory / "NativeNavigationObservation.kt"
     helper = directory / "NativeInputObservation.kt"
     existing = root / "directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg"
-    # The subscribed actions must continue to be actual source actions, never guessed names.
+    # Production-source seven UNION the three policy10-established PhoneWindowManager senders.
+    # Matching services.jar SHA-256: 6bdadf1db66ed93d1d065a4669218766fc6082563fd5ab77ca50d64a4612b1ff.
     action_pattern = r'"(com\.android\.action\.[A-Z_]+)"'
     expected = set(re.findall(action_pattern, (existing / "NativeFunctionInput.kt").read_text()
                               + (existing / "NativePadInput.kt").read_text()))
-    assert set(re.findall(action_pattern, observer.read_text())) == expected
+    policy_actions = {
+        "com.android.action.ACTION_SETTINGS_KEY",
+        "com.android.action.ACTION_TWO_FINGER_SINGLE_TAP",
+        "com.android.action.ACTION_TWO_FINGER_DOUBLE_TAP",
+    }
+    assert set(re.findall(action_pattern, observer.read_text())) == expected | policy_actions
     sources = [observer, directory / "NativeInputObservationQueue.kt", directory / "NativeInputObservationRunState.kt"]
     for filename, content in DOUBLES.items():
         path = output / filename
