@@ -1,5 +1,6 @@
 package com.code2hack.eyeprojector.directhost
 interface IHostBootstrap {
+    fun setAnchorBridge(bridge: com.code2hack.eyeprojector.directhost.anchor.execution.IAnchorAppBridge?) = Unit
     fun uiTargetContext(expectedOwnerEpoch: String, expectedProjectionToken: String): ByteArray? = null
     fun phoneHidSnapshot(expectedOwnerEpoch:String,expectedProjectionToken:String):com.code2hack.eyeprojector.directhost.activation.snapshot.NativeSnapshotDescriptor?=null
     fun phoneHidStampedEdge(routeId:Long,typedEdge:ByteArray,expectedOwnerEpoch:String,expectedProjectionToken:String,regionId:String,word:Long) {}
