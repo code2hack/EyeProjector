@@ -30,6 +30,10 @@ APP_FIELDS = {
     "interactive_sample": ("interactive", "readStartElapsedNs", "readEndElapsedNs"),
     "stage": ("stage", "actionId", "actionType", "actionTimeMs", "downTimeMs", "upTimeMs",
               "outcome", "local", "generation", "aiCallbackUptimeMs"),
+    "guide": ("guideEvent", "promptId", "stepNumber", "stepCount", "countdownSeconds", "remainingMs",
+              "promptElapsedMs", "activeElapsedMs", "guideVisible", "guideResumed", "guideFocused",
+              "guideInteractive", "observationActive", "interactiveSampleElapsedNs",
+              "labelLeft", "labelTop", "labelWidth", "labelHeight", "errorType"),
 }
 
 
@@ -64,7 +68,11 @@ def normalize_app(lines):
             omitted += 1
             continue
         fields = ("type", "seq", "case", "activityId", "receiptUptimeMs", "receiptElapsedNs") + APP_FIELDS[kind]
-        events.append({**{key: row[key] for key in fields if key in row}, "inputLine": line_number,
+        copied = {key: row[key] for key in fields if key in row}
+        if kind == "guide":
+            copied = {key: value for key, value in copied.items()
+                      if value is None or isinstance(value, (str, int, float, bool))}
+        events.append({**copied, "inputLine": line_number,
                        "clockDomain": "Glasses Android uptime/elapsed; eventTimeMs is event uptime"})
     return {"events": events, "malformedLines": malformed, "omittedNonEventRows": omitted}
 
@@ -95,6 +103,8 @@ def analyze(app_lines=(), kernel_lines=(), case="unclassified", node=None):
     return {"schema": 1, "app": app, "kernel": kernel,
             "appReportOccurrences": summarize(app["events"]),
             "kernelReportOccurrences": summarize(kernel["events"]),
+            "guideTimingRows": [row for row in app["events"] if row["type"] == "guide"],
+            "guideTimingScope": "Authored instruction/draw/pause timing only; not physical gesture windows or acknowledgment",
             "occurrenceScope": "Repeated report identities only; no deduplication or physical-operation counts",
             "firmwareActionOwnership": "UNKNOWN",
             "physicalGestureClassification": "UNESTABLISHED",

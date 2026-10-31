@@ -32,13 +32,34 @@ Broadcast priority matches the existing receivers. Start observation before norm
 
 Missing receipt remains inconclusive, and unknown actions cannot be discovered by this receiver. A present broadcast records its action label, flags, ordered/sticky state and result code at receipt (`null` when unordered); it is not a sender timestamp, physical finger identity, Home/sleep acknowledgment or proof of interception. Upstream gesture rules and current downstream consumers remain unresolved; the action names alone do not assign firmware ownership.
 
+## Opt-in on-Glasses batch guide
+
+The separate `gestureGuide=true` argument adds an automatically advancing test instruction label to the existing Receiver decor drawing overlay. It is off by default. It adds no Activity, normal layout child, system overlay window, permission, input listener or production change. The label is large white text on black, nonfocusable, nonclickable and nonselectable; the underlying projection dimensions and input routing are retained. A guide-enabled report explicitly records whether its own label was drawn.
+
+After the observation sink is active and a resumed, focused, interactive Receiver has drawn the label, the guide shows a 10-second preparation countdown followed by six automatic 20-second instruction slots:
+
+| Prompt ID | Instruction |
+| --- | --- |
+| `one_single` | One finger: tap once |
+| `one_double` | One finger: double tap |
+| `one_hold` | One finger: hold about 2 seconds, then release |
+| `two_single` | Two fingers: tap once |
+| `two_hold` | Two fingers: hold about 2 seconds, then release |
+| `two_double` | Two fingers: double tap last; screen may turn off |
+
+Each slot says to do it once, then wait. No tap, Back, Done or chat acknowledgment advances the guide. Only the guide's instruction clock pauses when its own label is not shown, the Receiver loses focus/resume or sampled interactivity, or the exact observation sink is no longer active. It resumes the remaining instruction time on a visible Receiver, including after Activity recreation. A late update never skips prompts that have not been shown. The existing recorder measurement window continues unchanged; the guide never wakes/relaunches the app or extends/restarts a capture. The expected last screen-off can leave the last instruction paused or incomplete, which is reported honestly.
+
+All UI changes use the recorder's main-thread/lifecycle path and existing roughly 50 ms loop. Interactivity is read on its existing roughly one-second instrumentation sampling loop, with the sample clock retained. Only the owned label, its draw/visibility and bounds are inspected. `guide` rows export primitive prompt IDs, countdown/step start/end, visibility, pause/resume, errors and cleanup with the normal receipt clocks. Authored label text and external UI text/trees/screenshots are not exported. These rows describe instructions and Android draw callbacks, not physical gesture boundaries, user completion, finger observations, optical visibility or input acknowledgment.
+
+For a later Manager-reserved guided run, supply both `-e navigationMetadata true -e gestureGuide true`, one run ID and a finite window long enough for the 130 visible instruction seconds plus setup/pauses. Root asks readiness before startup; the on-Glasses guide supplies the six instructions without per-step chat gates. Exact installation/runtime and a human-visible result still need their separately reviewed and reserved window. On completion, failure or lifecycle loss, only the exact owned label/callback is removed; guide cleanup/failure status is included in the recorder report. No guide-owned handler or delayed callback is scheduled.
+
 ## Manager's device procedure
 
 These are proposed operations for a later explicit reservation. No device, Android build, installed artifact or physical result is established by source/host checks. The Manager owns the physical window, Owner prompts, build slot and exact device/artifact bindings.
 
 1. Allocate a Receiver/AndroidTest build slot and build the exact frozen candidate. Preserve existing installed applications, app data, pairing and the working native pad/power helper. Record source/artifact/installed-byte identities separately. Starting or finishing instrumentation can restart the target process and disturb a live session: prepare the window accordingly and record that boundary. This observer does not launch/finish an Activity or reconnect a session.
 2. Under the reservation, retain actual model, OS/API, firmware build and current device route. Read `getevent -lp` to identify the actual pad input node(s) and their key/ABS/MSC capabilities. Do not assume `/dev/input/event1`; compare the Android `device_inventory` rows by actual name/source. Keep serials/endpoints and full local inventory private.
-3. Use a separate run ID/capture per operation. Include a no-input baseline, ordinary one-finger single tap, double tap and long press, Function short and long press, then two-finger single tap, double tap and long press. Ask for one physical operation per capture and record what the Owner actually performed. Restore the desired foreground state through normal UI between cases if firmware leaves the app or sleeps. Do not silently reinterpret an operation that could not be performed.
+3. Without the optional guide, use the separately allocated operation/case procedure: include a no-input baseline, ordinary one-finger input, Function references and the requested two-finger operations, retaining what the Owner actually performed. With the guide enabled, use one automatic six-step batch as described above, with no per-step acknowledgment gate. Any foreground restoration or further run needs the applicable Manager grant; do not silently reinterpret an operation that could not be performed.
 4. Start the existing instrumentation runner with the extra opt-in argument. Its ready marker confirms installation; it does not confirm an Activity is foreground or a gesture is recognized. Bring the normal Receiver UI to the required state after installation, then announce the exact live case to the Owner. In parallel, capture `getevent -lt` from the identified pad node(s) with read-only command/process supervision. This is a second non-grabbing reader; leave the existing helper running. If the shell lacks access, retain that limitation instead of changing permission/firmware.
 5. Record the visible destination and sleep/wake effect with the Owner's observation. Retain lifecycle, power samples, app reports, kernel reports, capture boundaries and closed command/report outcomes. For a firmware-before-app claim, supply an actual ordering witness; polling intervals, Android callbacks and the Owner's untimed observation alone cannot establish precise firmware onset. Preserve absent/unobservable app delivery and unknown ownership as limits.
 6. Retrieve only the owned trace/report/ready files. Verify observer/listener cleanup in the report and completion of the exact owned raw reader process. Return the reservation to the Manager without stopping or replacing the production pad/power helper.
@@ -76,6 +97,7 @@ For each physical case, retain a private evidence record with: requested/actual 
 ```sh
 python3 -m unittest discover -s tools/native-navigation-observation -p 'test_*.py' -v
 python3 tools/native-navigation-observation/run_host_checks.py --output-dir /private/new-navigation-host-checks
+python3 tools/native-navigation-observation/run_guide_host_checks.py --output-dir /private/new-guide-host-checks
 ```
 
-The focused check compiles actual test-only observation source against narrow host doubles using the already-cached Kotlin compiler and JDK. It uses no Gradle, Android SDK or device. These checks verify metadata preservation, passive broadcast behavior, exact receiver cleanup and failure accounting. They do not establish Android delivery order, SDK compilation, physical gestures, firmware interception or visible UI behavior.
+The focused checks compile actual test-only observation/guide source against narrow host doubles using the already-cached Kotlin compiler and JDK. They use no Gradle, Android SDK or device. They verify metadata preservation, passive broadcasts, automatic plan ordering, own-draw/visibility/sink gating, pause/resume, noninteractive overlay/root geometry, exact cleanup, late callbacks and failure accounting. They do not establish Android delivery order, SDK compilation, physical gestures, firmware interception or visible UI behavior. The parser's guide timing summary retains the same `UNKNOWN` ownership and `UNESTABLISHED` physical classification.

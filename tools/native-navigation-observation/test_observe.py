@@ -57,6 +57,24 @@ class ObservationChecks(unittest.TestCase):
         self.assertEqual("UNKNOWN", result["firmwareActionOwnership"])
         self.assertNotIn("passed", result)
 
+    def test_guide_rows_are_primitive_instruction_timing_only(self):
+        result = analyze([json.dumps({
+            "type": "guide", "seq": 8, "promptId": "two_single", "guideEvent": "step_start",
+            "countdownSeconds": 20, "guideVisible": True, "labelWidth": 900,
+            "receiptElapsedNs": 123456, "remainingMs": {"text": "PRIVATE"},
+            "promptText": "PRIVATE", "extras": {"text": "PRIVATE"}, "pointerCount": 2,
+        }), json.dumps({"type": "stage", "seq": 9, "stage": "dispatch_result", "actionId": 3})])
+        row = result["guideTimingRows"][0]
+        self.assertEqual("two_single", row["promptId"])
+        self.assertEqual(20, row["countdownSeconds"])
+        self.assertEqual(123456, row["receiptElapsedNs"])
+        self.assertNotIn("remainingMs", row)
+        self.assertNotIn("pointerCount", row)
+        self.assertNotIn("PRIVATE", json.dumps(result))
+        self.assertEqual([8, 9], [r["seq"] for r in result["app"]["events"]])
+        self.assertEqual("UNKNOWN", result["firmwareActionOwnership"])
+        self.assertEqual("UNESTABLISHED", result["physicalGestureClassification"])
+
 
 if __name__ == "__main__":
     unittest.main()
