@@ -14,15 +14,21 @@ internal class PhoneInputMerger(
     private val cancelControl: () -> Unit,
     private val receiver: (ReceiverInput) -> Unit,
     private val active: () -> Boolean = { true },
+    private val functionIntent: (FunctionIntent) -> Unit = {},
+    private val functionIdentity: FunctionIdentity = sourceIdentity,
 ) {
+    /** Process/source identity survives Session replacement; the original Session token stays local. */
+    class FunctionIdentity {
+        private val gesture = java.util.concurrent.atomic.AtomicLong()
+        private val delivery = java.util.concurrent.atomic.AtomicLong()
+        fun gesture() = gesture.getAndIncrement()
+        fun delivery() = delivery.getAndIncrement()
+    }
+    companion object { private val sourceIdentity = FunctionIdentity() }
+
     private class Press(val id: Long, val edge: PhoneHidEdge, val point: HeadPointerState, val contact: Long,
         val qualifies: (HeadPointerState, ReceiverUsability?) -> Boolean)
-    private class FunctionSequence(val point: HeadPointerState, val key: Triple<Int, Int, Int>) {
-        var held: Press? = null
-        var latest: Press? = null
-        var presses = 0
-        var releasedAt = 0L
-    }
+    private class FunctionPress(val press: Press, val context: FunctionIntentContext, val gestureId: Long)
     private var point: HeadPointerState? = null
     private var pointerSource: ReceiverUsability? = null
     private val presses = mutableMapOf<Long, Press>()
@@ -30,24 +36,33 @@ internal class PhoneInputMerger(
     private var nativeContact: Long? = null
     private var contactSequence = 0L
     private var generation = 0L
-    private var function: FunctionSequence? = null
+    private var function: FunctionPress? = null
     private var cancelFunctionTimer: (() -> Unit)? = null
     private var functionTimerGeneration = 0L
     private var completionSequence = 0L // Under the existing control lock.
     private val emission = Object()
     private var nextEmission = 0L
-    private val transactionOutput = ThreadLocal<MutableList<ReceiverInput>?>()
-    private data class Completion(val ticket: Long, val output: List<ReceiverInput>)
+    private sealed interface Emission {
+        data class Receiver(val event: ReceiverInput) : Emission
+        data class Function(val intent: FunctionIntent) : Emission
+    }
+    private class Output {
+        val values = mutableListOf<Emission>()
+        fun add(event: ReceiverInput) { values.add(Emission.Receiver(event)) }
+        fun add(intent: FunctionIntent) { values.add(Emission.Function(intent)) }
+    }
+    private val transactionOutput = ThreadLocal<Output?>()
+    private data class Completion(val ticket: Long, val output: List<Emission>)
     private val reentrantEmissions = ThreadLocal<MutableList<Completion>?>()
 
     /** Completed Receiver writes happen after releasing the short control lock. */
-    private fun <T> transaction(action: (MutableList<ReceiverInput>) -> T): T {
+    private fun <T> transaction(action: (Output) -> T): T {
         transactionOutput.get()?.let { return action(it) }
-        val output = mutableListOf<ReceiverInput>()
+        val output = Output()
         val committed = synchronized(lock) {
             transactionOutput.set(output)
             val result = try { runCatching { action(output) } } finally { transactionOutput.remove() }
-            result to if (output.isEmpty()) null else Completion(completionSequence++, output)
+            result to if (output.values.isEmpty()) null else Completion(completionSequence++, output.values.toList())
         }
         val emitted = runCatching { committed.second?.let(::emit) }
         committed.first.exceptionOrNull()?.let { error ->
@@ -70,7 +85,10 @@ internal class PhoneInputMerger(
                 while (nextEmission != value.ticket) try { emission.wait() }
                 catch (_: InterruptedException) { interrupted = true }
             }
-            try { value.output.forEach(receiver) }
+            try { value.output.forEach { when (it) {
+                is Emission.Receiver -> receiver(it.event)
+                is Emission.Function -> functionIntent(it.intent)
+            } } }
             catch (error: Throwable) { if (failure == null) failure = error else failure!!.addSuppressed(error) }
             finally {
                 synchronized(emission) { nextEmission++; emission.notifyAll() }
@@ -128,14 +146,14 @@ internal class PhoneInputMerger(
                     held = press
                     contact(press, Touch.Phase.DOWN, position, edge.eventTimeMs, out)
                 }
-                PhoneHidAction.FUNCTION -> functionDown(press, out)
+                PhoneHidAction.FUNCTION -> functionDown(press)
                 else -> Unit
             }
             return@transaction
         }
         if (old == null) {
             if (edge.phase == PhoneHidPhase.CANCEL) {
-                val latest = function?.latest
+                val latest = function?.press
                 if (latest?.id == routeId && latest.edge.samePress(edge)) cancelFunction()
             }
             return@transaction
@@ -144,13 +162,13 @@ internal class PhoneInputMerger(
         presses.remove(routeId)
         if (edge.phase == PhoneHidPhase.CANCEL) {
             if (held === old) retireContact(out)
-            if (function?.latest === old) cancelFunction()
+            if (function?.press === old) cancelFunction()
             return@transaction
         }
         val position = point
         if (position?.available != true || position.revision != old.point.revision || position.projected != old.point.projected) {
             if (held === old) retireContact(out)
-            if (function?.latest === old) cancelFunction()
+            if (function?.press === old) cancelFunction()
             return@transaction
         }
         when (old.edge.action) {
@@ -168,7 +186,7 @@ internal class PhoneInputMerger(
         }
     }
 
-    private fun contact(press: Press, phase: Touch.Phase, position: HeadPointerState, at: Long, out: MutableList<ReceiverInput>) {
+    private fun contact(press: Press, phase: Touch.Phase, position: HeadPointerState, at: Long, out: Output) {
         if (held !== press) return
         if (phase == Touch.Phase.DOWN && !allowsNew(press, position)) {
             held = null; presses.remove(press.id); return
@@ -188,7 +206,7 @@ internal class PhoneInputMerger(
         }
     }
 
-    private fun retireContact(out: MutableList<ReceiverInput>, emit: Boolean = true) {
+    private fun retireContact(out: Output, emit: Boolean = true) {
         val old = held ?: return
         held = null; presses.remove(old.id)
         if (old.point.projected) cancelControl()
@@ -218,7 +236,7 @@ internal class PhoneInputMerger(
     /** Launch/resize/release already invalidate Receiver context; do not send under output/publication locks. */
     fun invalidate() = transaction { out -> retire(out, false) }
 
-    private fun retire(out: MutableList<ReceiverInput>, emit: Boolean, clearPoint: Boolean = true) {
+    private fun retire(out: Output, emit: Boolean, clearPoint: Boolean = true) {
         generation++
         val old = held
         held = null; presses.clear(); nativeContact = null
@@ -235,61 +253,38 @@ internal class PhoneInputMerger(
         cancel?.invoke()
     }
 
-    private fun functionDown(press: Press, out: MutableList<ReceiverInput>) {
+    private fun functionDown(press: Press) {
         if (!allowsNew(press, press.point)) { presses.remove(press.id); return }
-        val key = Triple(press.edge.attachmentId, press.edge.keyCode, press.edge.scanCode)
-        var current = function
-        if (current != null && (current.key != key || current.point.revision != press.point.revision ||
-                current.latest?.let { allowsNew(it, press.point) } != true)) { cancelFunction(); current = null }
-        if (current != null && current.held == null && press.edge.eventTimeMs - current.releasedAt >= 500) {
-            val afterCompletion = generation + 1
-            finishFunction(current, out); current = null
-            if (generation != afterCompletion || point?.let { it.available && it.revision == press.point.revision && allowsNew(press, it) } != true) return
-            presses[press.id] = press
-        }
-        val next = current ?: FunctionSequence(press.point, key).also { function = it }
-        next.held = press; next.latest = press
+        cancelFunction()
+        val source = pointerSource ?: return
+        val next = FunctionPress(press, FunctionIntentContext(source, press.point), functionIdentity.gesture())
+        function = next
         armFunction(next, press.edge.downTimeMs + 800)
     }
 
-    private fun functionUp(press: Press, at: Long, out: MutableList<ReceiverInput>) {
-        val current = function?.takeIf { it.held === press } ?: return
-        current.held = null
-        if (at - press.edge.downTimeMs >= 800) { cancelFunction(); return } // Existing LONG is a no-op.
-        current.presses = (current.presses + 1).coerceAtMost(3)
-        current.releasedAt = at
-        armFunction(current, at + 500)
+    private fun functionUp(press: Press, at: Long, out: Output) {
+        val current = function?.takeIf { it.press === press } ?: return
+        finishFunction(current, if (at - press.edge.downTimeMs >= 800) FunctionIntentKind.REGISTER
+            else FunctionIntentKind.ACTIVATE, out)
     }
 
-    private fun armFunction(current: FunctionSequence, deadline: Long) {
+    private fun armFunction(current: FunctionPress, deadline: Long) {
         cancelFunctionTimer?.invoke()
         val timerGeneration = ++functionTimerGeneration
         cancelFunctionTimer = schedule(deadline) { transaction { out ->
             if (!active()) { cancelFunction(); return@transaction }
             if (function !== current || timerGeneration != functionTimerGeneration) return@transaction
-            val position = point
-            if (position?.available != true || position.revision != current.point.revision ||
-                current.latest?.let { allowsNew(it, position) } != true) { cancelFunction(); return@transaction }
             if (now() < deadline) armFunction(current, deadline)
-            else if (current.held != null) cancelFunction() else finishFunction(current, out)
+            else finishFunction(current, FunctionIntentKind.REGISTER, out)
         } }
     }
 
-    private fun finishFunction(current: FunctionSequence, out: MutableList<ReceiverInput>) {
+    private fun finishFunction(current: FunctionPress, kind: FunctionIntentKind, out: Output) {
         if (function !== current) return
-        cancelFunction()
-        val position = point?.takeIf { it.available && it.revision == current.point.revision } ?: return
-        if (current.latest?.let { allowsNew(it, position) } != true) return
-        val admitted = generation + 1
-        retire(out, true, clearPoint = false)
-        if (generation != admitted || !active() || current.latest?.let { allowsNew(it, position) } != true) return
-        when (current.presses) {
-            1 -> if (position.projected) position.geometry?.let { navigation(Navigation.BACK, it) }
-                else out.add(ReceiverInput(ReceiverInputKind.BACK, position.revision))
-            2 -> if (position.projected) position.geometry?.let { navigation(Navigation.FUNCTION_DOUBLE, it) }
-                else out.add(ReceiverInput(ReceiverInputKind.FUNCTION_DOUBLE, position.revision))
-            3 -> out.add(ReceiverInput(ReceiverInputKind.SLEEP, position.revision))
-        }
+        cancelFunction() // A long's eventual physical UP cannot become an activation.
+        val position = point?.takeIf { it.available && it.revision == current.context.pointer.revision } ?: return
+        if (!allowsNew(current.press, position)) return
+        out.add(FunctionIntent(kind, FunctionSource.PHONE_HID, current.gestureId, functionIdentity.delivery(), current.context))
     }
 
     private fun allowsNew(press: Press, position: HeadPointerState): Boolean = active() && position.available &&

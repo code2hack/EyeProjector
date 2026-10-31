@@ -48,7 +48,7 @@ private class Rig(initialRecord: String? = null, save: Boolean = true) {
     val contacts = mutableListOf<Contact>()
     val cancels = mutableListOf<Cancel>()
     val scrolls = mutableListOf<Scroll>()
-    val functions = mutableListOf<FunctionGestureRecognizer.Action>()
+    val functions = mutableListOf<com.code2hack.eyeprojector.protocol.FunctionIntentKind>()
     var point = PointerPosition(100f, 200f, true)
     var targetReads = 0
     var positionReads = 0
@@ -66,7 +66,7 @@ private class Rig(initialRecord: String? = null, save: Boolean = true) {
     }, { positionReads++; point }, { owner, event -> contacts.add(Contact(owner, event)) },
         { owner, at -> cancels.add(Cancel(owner, at)) },
         { pixels, position, at -> scrolls.add(Scroll(pixels, position, at)) },
-        { functions.add(it) }, { changed++; panel?.refresh(); onChanged() }, { trace -> targetReads++; captureTarget(trace) })
+        { functions.add(it.kind) }, { changed++; panel?.refresh(); onChanged() }, { trace -> targetReads++; captureTarget(trace) })
     val adapter = AndroidHidInput(android, input) { event ->
         receivedCalls++
         val route = receivedRoute
@@ -263,7 +263,6 @@ private fun listenerLifecycleCancelsAndReconnectRetainsBindings() {
     check(r.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000))
     equal(1, r.contacts.size, "changed attachment cannot finish old press")
     check(r.edge(KeyEvent.ACTION_DOWN, at = 1100, key = 196, scan = 701))
-    check(r.edge(KeyEvent.ACTION_UP, at = 1120, down = 1100, key = 196, scan = 701))
     val stale = r.timers.toList()
     manager.remove(r.device.id)
     stale.forEach { it.callback() }
@@ -302,13 +301,12 @@ private fun actualFunctionAndScrollCallbacksUseAndroidEdges() {
             check(r.edge(KeyEvent.ACTION_DOWN, at = down + 5, down = down, repeat = 1,
                 flags = KeyEvent.FLAG_LONG_PRESS))
             check(r.edge(KeyEvent.ACTION_UP, at = down + 20, down = down))
-            check(r.functions.isEmpty())
+            equal(List(index + 1) { com.code2hack.eyeprojector.protocol.FunctionIntentKind.ACTIVATE }, r.functions,
+                "each actual Function UP completes one activation")
         }
-        val deadline = r.now + 500
-        r.advance(deadline - 1)
-        check(r.functions.isEmpty())
-        r.advance(deadline)
-        equal(listOf(FunctionGestureRecognizer.Action.entries[presses - 1]), r.functions, "actual Function classification")
+        r.advance(r.now + 500)
+        equal(List(presses) { com.code2hack.eyeprojector.protocol.FunctionIntentKind.ACTIVATE }, r.functions,
+            "multiple Function edges retain every activation")
         check(r.contacts.isEmpty() && r.cancels.isEmpty() && r.scrolls.isEmpty())
     }
     val r = Rig()
@@ -493,7 +491,7 @@ private fun missingDeviceAfterRemovalConsumesOnlyActualCapturedEdges() {
     check(r.edge(KeyEvent.ACTION_DOWN, at = 1200, key = 4, scan = 158, device = reattached))
     check(r.edge(KeyEvent.ACTION_UP, at = 1220, down = 1200, key = 4, scan = 158, device = reattached))
     r.advance(1720)
-    equal(listOf(FunctionGestureRecognizer.Action.SINGLE), r.functions, "fresh readdition dispatch works")
+    equal(listOf(com.code2hack.eyeprojector.protocol.FunctionIntentKind.ACTIVATE), r.functions, "fresh readdition dispatch works")
     check(r.contacts.isEmpty() && r.cancels.isEmpty() && r.scrolls.isEmpty())
     r.adapter.stop()
 }
@@ -601,7 +599,7 @@ private fun changedFactsBeforeListenerRetireOnlyTheCapturedGesture(
     check(r.edge(KeyEvent.ACTION_DOWN, at = 1200, key = 4, scan = 158, device = changed))
     check(r.edge(KeyEvent.ACTION_UP, at = 1220, down = 1200, key = 4, scan = 158, device = changed))
     r.advance(1720)
-    equal(listOf(FunctionGestureRecognizer.Action.SINGLE), r.functions, "fresh changed-facts binding dispatches")
+    equal(listOf(com.code2hack.eyeprojector.protocol.FunctionIntentKind.ACTIVATE), r.functions, "fresh changed-facts binding dispatches")
     check(r.contacts.isEmpty() && r.cancels.isEmpty() && r.scrolls.isEmpty())
     r.adapter.stop()
 }
@@ -850,7 +848,6 @@ private fun resetCancelsHeldCaptureAndPendingFunctionWorkEvenWhenSaveFails() {
         function.assign(HidAction.FUNCTION)
         val functionPanel = function.showPanel()
         check(function.edge(KeyEvent.ACTION_DOWN))
-        check(function.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000))
         val staleTimers = function.timers.toList()
         val functionBefore = function.record
         function.writable = writable
@@ -1167,7 +1164,7 @@ private fun receiverExternalSameKeyCodeRemainsEligibleForCaptureAndFunction() {
     edge(capture, receiver, KeyEvent.ACTION_DOWN, 1100, 1100)
     edge(capture, receiver, KeyEvent.ACTION_UP, 1120, 1100)
     capture.advance(1620)
-    equal(listOf(FunctionGestureRecognizer.Action.SINGLE), capture.functions, "external key83 retains Function classification")
+    equal(listOf(com.code2hack.eyeprojector.protocol.FunctionIntentKind.ACTIVATE), capture.functions, "external key83 retains Function classification")
     check(receiver.nativeActions.isEmpty() && receiver.scheduled.isEmpty() && receiver.fallthrough.isEmpty())
 }
 

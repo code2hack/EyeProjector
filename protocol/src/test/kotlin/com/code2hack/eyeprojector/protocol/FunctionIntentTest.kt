@@ -2,6 +2,9 @@ package com.code2hack.eyeprojector.protocol
 
 import org.junit.Assert.*
 import org.junit.Test
+import java.io.ByteArrayOutputStream
+import java.io.DataOutputStream
+import java.io.DataInputStream
 
 class FunctionIntentTest {
     private val context = FunctionIntentContext(
@@ -46,6 +49,35 @@ class FunctionIntentTest {
         assertEquals(intents, intents.map { FunctionIntent.from(it.bytes()) })
         assertNotEquals(intents[0].gestureId, intents[1].gestureId)
         assertTrue(intents[0].sequence < intents[1].sequence)
+    }
+
+    @Test fun matchedWireNineCarriesOriginalIntentionsOnChannelTwentyThree() {
+        assertEquals(9, Wire.VERSION); assertEquals(23, Wire.FUNCTION_INTENT)
+        val output = ByteArrayOutputStream()
+        val expected = listOf(FunctionIntentKind.ACTIVATE, FunctionIntentKind.ACTIVATE, FunctionIntentKind.REGISTER)
+            .mapIndexed { n, kind -> FunctionIntent(kind, FunctionSource.GLASSES_NATIVE, n.toLong(), n.toLong(), context) }
+        DataOutputStream(output).use { wire -> expected.forEach { Wire.writeFrame(wire, Frame(Wire.FUNCTION_INTENT, payload = it.bytes())) } }
+        DataInputStream(output.toByteArray().inputStream()).use { wire ->
+            assertEquals(expected, expected.map { val f = Wire.readFrame(wire); assertEquals(0L, f.stamp); FunctionIntent.from(f.payload) })
+            assertEquals(-1, wire.read())
+        }
+        for (length in listOf(0, FunctionIntent.MIN_PAYLOAD_SIZE - 1, FunctionIntent.MAX_PAYLOAD_SIZE + 1)) {
+            assertThrows(IllegalArgumentException::class.java) {
+                Wire.writeFrame(DataOutputStream(ByteArrayOutputStream()), Frame(Wire.FUNCTION_INTENT, payload = ByteArray(length)))
+            }
+        }
+    }
+
+    @Test fun typedConsumersPreserveTheExactOriginalRouteAndDoNotInventAnAnchorAction() {
+        val route = Any(); val consumers = FunctionIntentConsumers<Any>()
+        val first = CapturedFunctionIntent(FunctionIntent(FunctionIntentKind.ACTIVATE, FunctionSource.PHONE_HID, 1, 1, context), route)
+        assertFalse(consumers.dispatch(first))
+        val seen = mutableListOf<CapturedFunctionIntent<Any>>()
+        consumers.activate = seen::add; consumers.register = seen::add
+        assertTrue(consumers.dispatch(first))
+        val second = CapturedFunctionIntent(first.intent.copy(kind = FunctionIntentKind.REGISTER, gestureId = 2, sequence = 2), route)
+        assertTrue(consumers.dispatch(second))
+        assertSame(first, seen[0]); assertSame(second, seen[1]); assertTrue(seen.all { it.original === route })
     }
 
     @Test fun clickAndHoldEdgesRetainExactOriginalRouteContactAndTarget() {

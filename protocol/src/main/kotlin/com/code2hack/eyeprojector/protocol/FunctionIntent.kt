@@ -16,8 +16,8 @@ data class FunctionIntentContext(val usability: ReceiverUsability, val pointer: 
  * Consumers retain every intention in order, including two successive ACTIVATE intentions.
  * No raw HID identity or cross-device uptime is transported here.
  *
- * This payload contract does not allocate a LAN channel or enable a new grammar. Both endpoints
- * must adopt the eventual transport together. A receiver must not refresh [context] at dequeue.
+ * Wire v9 channel FUNCTION_INTENT carries this payload. A receiver must not refresh [context]
+ * at dequeue or use a replacement local Session to reconstruct its original route.
  */
 data class FunctionIntent(
     val kind: FunctionIntentKind,
@@ -35,6 +35,8 @@ data class FunctionIntent(
     }
 
     companion object {
+        const val MIN_PAYLOAD_SIZE = 22 + ReceiverUsability.MIN_PAYLOAD_SIZE + HeadPointerState.MIN_PAYLOAD_SIZE
+        const val MAX_PAYLOAD_SIZE = 22 + ReceiverUsability.MAX_PAYLOAD_SIZE + HeadPointerState.MAX_PAYLOAD_SIZE
         fun from(payload: ByteArray): FunctionIntent = DataInputStream(payload.inputStream()).use { input ->
             val kind = FunctionIntentKind.entries[input.readUnsignedByte()]
             val source = FunctionSource.entries[input.readUnsignedByte()]
@@ -54,3 +56,18 @@ data class FunctionIntent(
  * The grammar and work queue do not own the execution contact.
  */
 class CapturedFunctionIntent<C : Any>(val intent: FunctionIntent, val original: C)
+
+/** Per-Session feature entrypoints. Unwired means no Anchor action occurred; no contact is owned here. */
+class FunctionIntentConsumers<C : Any> {
+    @Volatile var register: ((CapturedFunctionIntent<C>) -> Unit)? = null
+    @Volatile var activate: ((CapturedFunctionIntent<C>) -> Unit)? = null
+
+    fun dispatch(captured: CapturedFunctionIntent<C>): Boolean {
+        val consumer = when (captured.intent.kind) {
+            FunctionIntentKind.REGISTER -> register
+            FunctionIntentKind.ACTIVATE -> activate
+        } ?: return false
+        consumer(captured)
+        return true
+    }
+}

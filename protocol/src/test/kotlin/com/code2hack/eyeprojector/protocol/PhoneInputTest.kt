@@ -67,8 +67,8 @@ class PhoneInputTest {
 
     private fun stateBytesWithTrailingData() = HeadPointerState(0, 0, false, false, 0f, 0f, null, null).bytes() + 0.toByte()
 
-    @Test fun wireEightMatchesBothNewDirectionsAndRejectsThePriorHandshakes() {
-        assertEquals(8, Wire.VERSION); assertEquals(15, Wire.HEAD_POINTER); assertEquals(16, Wire.RECEIVER_INPUT)
+    @Test fun wireNineMatchesBothNewDirectionsAndRejectsThePriorHandshakes() {
+        assertEquals(9, Wire.VERSION); assertEquals(15, Wire.HEAD_POINTER); assertEquals(16, Wire.RECEIVER_INPUT)
         assertEquals(14, Wire.TOUCH); assertEquals(3, Wire.TAP); assertEquals(8, Wire.SCROLL)
         val frames = listOf(Frame(Wire.HEAD_POINTER, payload = HeadPointerState(1, 2, false, false, 0f, 0f, null, null).bytes()),
             Frame(Wire.RECEIVER_INPUT, payload = ReceiverInput(ReceiverInputKind.PANEL, 1).bytes()))
@@ -77,7 +77,7 @@ class PhoneInputTest {
             val decoded = Wire.readFrame(DataInputStream(b.toByteArray().inputStream()))
             assertEquals(frame.channel, decoded.channel); assertArrayEquals(frame.payload, decoded.payload)
         }
-        for (revision in listOf(5, 6, 7)) {
+        for (revision in listOf(5, 6, 7, 8)) {
             val old = bytes { writeInt(Wire.MAGIC); writeInt(revision); writeByte(Wire.STREAM) }
             assertThrows(IllegalArgumentException::class.java) { Wire.readRequest(DataInputStream(old.inputStream())) }
             val oldWelcome=bytes { writeInt(Wire.MAGIC);writeInt(revision);writeUTF(Wire.SCRCPY_VERSION);writeInt(Wire.H264) }
