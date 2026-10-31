@@ -52,6 +52,7 @@ private class Rig(initialRecord: String? = null, save: Boolean = true) {
     val cancels = mutableListOf<Cancel>()
     val scrolls = mutableListOf<Scroll>()
     val functions = mutableListOf<com.code2hack.eyeprojector.protocol.FunctionIntentKind>()
+    val navigation = mutableListOf<ContextualNavigationAction>()
     var point = PointerPosition(100f, 200f, true)
     var targetReads = 0
     var positionReads = 0
@@ -69,7 +70,8 @@ private class Rig(initialRecord: String? = null, save: Boolean = true) {
     }, { positionReads++; point }, { owner, event -> contacts.add(Contact(owner, event)) },
         { owner, at -> cancels.add(Cancel(owner, at)) },
         { pixels, position, at -> scrolls.add(Scroll(pixels, position, at)) },
-        { functions.add(it.kind) }, { changed++; panel?.refresh(); onChanged() }, { trace -> targetReads++; captureTarget(trace) })
+        { functions.add(it.kind) }, { changed++; panel?.refresh(); onChanged() }, { trace -> targetReads++; captureTarget(trace) },
+        navigation = { navigation.add(it) })
     val adapter = AndroidHidInput(android, input) { event ->
         receivedCalls++
         val route = receivedRoute
@@ -123,7 +125,7 @@ private class Rig(initialRecord: String? = null, save: Boolean = true) {
         now = to
     }
     fun noOutput() {
-        check(contacts.isEmpty() && cancels.isEmpty() && scrolls.isEmpty() && functions.isEmpty())
+        check(contacts.isEmpty() && cancels.isEmpty() && scrolls.isEmpty() && functions.isEmpty() && navigation.isEmpty())
     }
     val message get() = (panel!!.children[1] as TextView).text.toString()
     val receivedText get() = (panel!!.children[2] as TextView).text.toString()
@@ -1510,6 +1512,79 @@ private fun throwingReceivedStatusSinkLeavesOriginalHeldRoutingAndCountsUntouche
     equal(run(false), run(true), "received status exception cannot change original output or functional callback evaluations")
 }
 
+private fun dedicatedNavigationUsesActualAndroidEdgesWithoutSpatialReads() {
+    for (count in 1..2) {
+        val r = Rig()
+        r.assign(HidAction.BACK_HOME)
+        r.point = PointerPosition(-500f, 10000f, false)
+        repeat(count) { index ->
+            val down = 1000L + index * 100
+            check(r.edge(KeyEvent.ACTION_DOWN, at = down))
+            check(r.edge(KeyEvent.ACTION_DOWN, at = down + 5, down = down, repeat = 1))
+            check(r.edge(KeyEvent.ACTION_UP, at = down + 10, down = down))
+            check(r.edge(KeyEvent.ACTION_UP, at = down + 10, down = down))
+        }
+        r.advance(2000)
+        equal(listOf(if (count == 1) ContextualNavigationAction.BACK else ContextualNavigationAction.HOME), r.navigation,
+            "single/double dedicated destination")
+        equal(0, r.positionReads, "dedicated Back/Home never queries spatial aim")
+        check(r.contacts.isEmpty() && r.scrolls.isEmpty() && r.functions.isEmpty())
+    }
+    val lock = Rig()
+    lock.assign(HidAction.LOCK)
+    lock.point = PointerPosition(-500f, 10000f, false)
+    check(lock.edge(KeyEvent.ACTION_DOWN))
+    check(lock.edge(KeyEvent.ACTION_UP, at = 1010, down = 1000))
+    // Replayed reports of the same physical press keep their original association.
+    check(lock.edge(KeyEvent.ACTION_DOWN, at = 1000))
+    check(lock.edge(KeyEvent.ACTION_UP, at = 1010, down = 1000))
+    lock.advance(2000)
+    equal(listOf(ContextualNavigationAction.LOCK), lock.navigation, "dedicated Lock occurs once")
+    equal(0, lock.positionReads, "Lock never queries aim")
+}
+
+private fun pendingNavigationRetiresOnContextOrSourceLossIncludingHeldDouble() {
+    val retirements: List<Pair<String, (Rig) -> Unit>> = listOf(
+        "cancel" to { it.input.cancel() },
+        "stop adapter" to { it.adapter.stop() },
+        "remove attachment" to { it.input.cancelDevice(41) },
+        "successor context" to { it.context = "replacement view" },
+        "lost context" to { it.context = null },
+    )
+    for ((name, retire) in retirements) for (double in listOf(false, true)) {
+        val r = Rig(); r.assign(HidAction.BACK_HOME)
+        check(r.edge(KeyEvent.ACTION_DOWN))
+        check(r.edge(KeyEvent.ACTION_UP, at = 1010, down = 1000))
+        if (double) check(r.edge(KeyEvent.ACTION_DOWN, at = 1100))
+        retire(r)
+        if (double) r.edge(KeyEvent.ACTION_UP, at = 1110, down = 1100)
+        r.advance(2000)
+        r.timers.forEach { it.callback() }
+        equal(emptyList<ContextualNavigationAction>(), r.navigation, "$name retires original single/double")
+        equal(0, r.positionReads, "$name uses no spatial reads")
+    }
+}
+
+private fun dedicatedCapturePreservesFunctionAndCanceledLockNeverDispatches() {
+    val r = Rig()
+    r.assign(HidAction.FUNCTION, key = 196, scan = 701)
+    val original = r.bindings.binding(HidAction.FUNCTION)
+    r.showPanel()
+    for (role in listOf(HidAction.BACK_HOME, HidAction.LOCK)) {
+        r.hover(role)
+        val down = 1000L + role.ordinal * 100
+        check(r.edge(KeyEvent.ACTION_DOWN, at = down, key = 200 + role.ordinal, scan = 800 + role.ordinal))
+        check(r.edge(KeyEvent.ACTION_UP, at = down + 10, down = down, key = 200 + role.ordinal, scan = 800 + role.ordinal))
+        equal(original, r.bindings.binding(HidAction.FUNCTION), "learning $role preserves Function")
+    }
+    r.noOutput()
+    r.leaveRows()
+    check(r.edge(KeyEvent.ACTION_DOWN, at = 2000, key = 205, scan = 805))
+    check(r.edge(KeyEvent.ACTION_UP, at = 2010, down = 2000, key = 205, scan = 805, flags = KeyEvent.FLAG_CANCELED))
+    r.advance(3000)
+    equal(emptyList<ContextualNavigationAction>(), r.navigation, "canceled Lock produces no operation")
+}
+
 fun main() {
     val scenarios = linkedMapOf<String, () -> Unit>(
         "actual Android device/button facts and complete capture ownership" to ::capturesActualFactsAndConsumesWholeGesture,
@@ -1517,6 +1592,9 @@ fun main() {
         "Android canceled and unsupported events retire the owned contact" to ::canceledAndUnsupportedAndroidEventsDoNotReleaseIntoTargets,
         "InputManager lifecycle, cancellation and fresh reconnect" to ::listenerLifecycleCancelsAndReconnectRetainsBindings,
         "actual Android Function and scroll edge callbacks" to ::actualFunctionAndScrollCallbacksUseAndroidEdges,
+        "dedicated Back Home Lock actual Android edges need no spatial reads" to ::dedicatedNavigationUsesActualAndroidEdgesWithoutSpatialReads,
+        "pending original single/double navigation retires on context and source loss" to ::pendingNavigationRetiresOnContextOrSourceLossIncludingHeldDouble,
+        "new-role capture preserves Function and canceled Lock never dispatches" to ::dedicatedCapturePreservesFunctionAndCanceledLockNeverDispatches,
         "six visible bindings, black/light styling and registered buttons" to ::panelShowsSixAssignmentsWithExistingBlackLightControls,
         "saved move, restart readback and storage error display" to ::panelSavedMoveAndErrorsRefreshFromActualStore,
         "attachment cancellation retains complete captured key ownership" to ::attachmentCancellationRetainsCapturedUnboundReleaseOwnership,

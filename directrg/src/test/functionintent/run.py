@@ -18,11 +18,11 @@ if out.exists() and any(out.iterdir()):
     p.error('Choose a new empty evidence directory')
 out.mkdir(parents=True, exist_ok=True)
 protocol = root / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
-sources = [protocol / n for n in ('Wire.kt', 'Touch.kt', 'PhoneInput.kt', 'ReceiverUsability.kt', 'ActivationControl.kt', 'CameraFeed.kt', 'FunctionIntent.kt')]
+sources = [protocol / n for n in ('Wire.kt', 'Touch.kt', 'PhoneInput.kt', 'ReceiverUsability.kt', 'ActivationControl.kt', 'CameraFeed.kt', 'FunctionIntent.kt', 'BackHomeGestureRecognizer.kt')]
 sources += [root / 'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/FunctionGestureRecognizer.kt',
             root / 'directrg/src/test/kotlin/com/code2hack/eyeprojector/directrg/FunctionGestureRecognizerTest.kt']
 sources += [root / 'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg' / n
-            for n in ('NativeFunctionInput.kt', 'HidKeyInput.kt', 'HidBindings.kt', 'HidDecisionTrace.kt', 'PadGestureRecognizer.kt', 'HeadPointerModel.kt', 'HeadOrientation.kt', 'HeldInputOwner.kt', 'HeldPointerDispatcher.kt')]
+            for n in ('NativeFunctionInput.kt', 'HidKeyInput.kt', 'HidBindings.kt', 'HidDecisionTrace.kt', 'ContextualNavigation.kt', 'PadGestureRecognizer.kt', 'HeadPointerModel.kt', 'HeadOrientation.kt', 'HeldInputOwner.kt', 'HeldPointerDispatcher.kt')]
 sources += [root / 'directrg/src/test/functionadapter/doubles' / n for n in ('Android.kt', 'Activity.kt', 'Annotation.kt', 'Clock.kt')]
 sources += [root / 'directrg/src/test/hidframework/doubles' / n for n in ('Point.kt', 'Rect.kt', 'Log.kt')]
 sources += [root / 'directrg/src/test/kotlin/com/code2hack/eyeprojector/directrg/HidKeyInputTest.kt',
@@ -39,6 +39,7 @@ sources += [root / 'directhost/src/main/kotlin/com/code2hack/eyeprojector/direct
              'activation/PhoneActivationOwner.kt', 'activation/HidWakeRequest.kt',
              'activation/LaunchCommitPermit.kt')]
 sources += [root / 'directhost/src/test/kotlin/com/code2hack/eyeprojector/directhost/hid/PhoneHidFunctionCompositionTest.kt',
+            root / 'directhost/src/test/kotlin/com/code2hack/eyeprojector/directhost/hid/PhoneHidNavigationCompositionTest.kt',
             root / 'directrg/src/test/functionintent/ProjectionContextBoundary.kt']
 tests = ['com.code2hack.eyeprojector.directrg.FunctionGestureRecognizerTest',
          'com.code2hack.eyeprojector.directrg.HidKeyInputTest',
@@ -46,7 +47,8 @@ tests = ['com.code2hack.eyeprojector.directrg.FunctionGestureRecognizerTest',
          'com.code2hack.eyeprojector.directrg.NativeFunctionIntentTest',
          'com.code2hack.eyeprojector.directhost.PhoneInputMergerTest',
          'com.code2hack.eyeprojector.directhost.input.FunctionWorkTest',
-         'com.code2hack.eyeprojector.directhost.hid.PhoneHidFunctionCompositionTest']
+         'com.code2hack.eyeprojector.directhost.hid.PhoneHidFunctionCompositionTest',
+         'com.code2hack.eyeprojector.directhost.hid.PhoneHidNavigationCompositionTest']
 cache = Path(os.environ.get('GRADLE_USER_HOME', Path.home() / '.gradle')) / 'caches/modules-2/files-2.1'
 deps = ['org.jetbrains.kotlin/kotlin-compiler-embeddable/2.2.21', 'org.jetbrains.kotlin/kotlin-stdlib/2.2.21',
         'org.jetbrains.kotlin/kotlin-script-runtime/2.2.21', 'org.jetbrains.kotlin/kotlin-reflect',

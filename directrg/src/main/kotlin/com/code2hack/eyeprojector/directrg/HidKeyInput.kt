@@ -2,6 +2,7 @@ package com.code2hack.eyeprojector.directrg
 
 import com.code2hack.eyeprojector.directrg.HidDecisionTrace.Step
 import com.code2hack.eyeprojector.directrg.HidDecisionTrace.observed
+import com.code2hack.eyeprojector.protocol.BackHomeGestureRecognizer
 
 /** Actual HID edges stay separate from Rokid marker/summary normalization. */
 internal class HidKeyInput(
@@ -17,6 +18,7 @@ internal class HidKeyInput(
     private val changed: () -> Unit = {},
     private val captureTarget: (HidDecisionTrace.Event?) -> HidAction? = { null },
     functionCapture: (Any) -> Any? = { it },
+    private val navigation: (ContextualNavigationAction) -> Unit = {},
 ) {
     companion object { private val functionIdentities = FunctionGestureRecognizer.Identity() }
 
@@ -36,6 +38,7 @@ internal class HidKeyInput(
     private var contactAdmission: Press? = null
     // A canceled capture still owns its release; it must never become ordinary Back/input.
     private val suppressed = mutableSetOf<Retired>()
+    private val navigationDowns = mutableMapOf<Key, Long>()
     private var capture: Capture? = null
     private var captureAttempt: Any? = null
     val selected: HidAction? get() = capture?.action
@@ -44,6 +47,11 @@ internal class HidKeyInput(
     private val recognizer = FunctionGestureRecognizer(now,
         { context()?.let { Pair(it, functionAttachment) } }, schedule, function, edgeOnly = true,
         capture = { functionCapture((it as Pair<*, *>).first!!) }, identity = functionIdentities)
+    private val backHome = BackHomeGestureRecognizer<Any>(now, { context() == it }, schedule,
+        { action, _ -> navigation(when (action) {
+            BackHomeGestureRecognizer.Action.BACK -> ContextualNavigationAction.BACK
+            BackHomeGestureRecognizer.Action.HOME -> ContextualNavigationAction.HOME
+        }) })
 
     fun owns(owner: Any): Boolean = presses.values.any {
         it.owner === owner && it.context == context() &&
@@ -100,6 +108,7 @@ internal class HidKeyInput(
             return action != null
         }
         if (event.phase == Phase.DOWN) {
+            if (navigationDowns[key] == event.downTimeMs) return true
             if (observed(trace, Step.INPUT_REPEAT, admissions[key]?.event?.downTimeMs == event.downTimeMs || event.repeat != 0)) return action != null
             val current = context()
             observed(trace, Step.INPUT_DOWN_CONTEXT_PRESENT, current != null)
@@ -159,6 +168,7 @@ internal class HidKeyInput(
             val point = if (action == HidAction.TAP) position() else null
             if (!currentAdmission(key, press, admitted)) { abandon(key, press); return true }
             presses[key] = press // Output may synchronously cancel/change the view.
+            if (action == HidAction.BACK_HOME || action == HidAction.LOCK) navigationDowns[key] = event.downTimeMs
             when (action) {
                 HidAction.TAP -> contact(press.owner, edge(event, PadGestureRecognizer.Phase.DOWN, point))
                 HidAction.FUNCTION -> {
@@ -166,6 +176,7 @@ internal class HidKeyInput(
                     functionAttachment = event.attachmentId
                     recognizer.accept(FunctionGestureRecognizer.Report.DOWN, event.downTimeMs)
                 }
+                HidAction.BACK_HOME -> backHome.down(retired, key, press.context)
                 else -> Unit
             }
             return true
@@ -178,7 +189,7 @@ internal class HidKeyInput(
         if (old.event.downTimeMs != event.downTimeMs) return true
         val admitted = generation
         // Refresh admission even for a stationary UP. Pointer freshness may synchronously cancel.
-        val point = if (event.phase == Phase.UP && old.action != HidAction.FUNCTION) position() else null
+        val point = if (event.phase == Phase.UP && old.action in listOf(HidAction.TAP, HidAction.SCROLL_DOWN, HidAction.SCROLL_UP)) position() else null
         if (admitted != generation || presses[key] !== old) return true
         presses.remove(key) // Retire before callbacks.
         if (admissions[key] === old) admissions.remove(key)
@@ -193,7 +204,8 @@ internal class HidKeyInput(
             HidAction.SCROLL_UP -> if (point?.available == true) scroll(-160, point, event.timeMs)
             HidAction.FUNCTION -> if (functionAttachment == event.attachmentId)
                 recognizer.accept(FunctionGestureRecognizer.Report.UP, event.timeMs)
-            HidAction.BACK_HOME, HidAction.LOCK -> Unit // Dispatch belongs to V03-04/06.
+            HidAction.BACK_HOME -> backHome.up(retired, event.timeMs)
+            HidAction.LOCK -> navigation(ContextualNavigationAction.LOCK)
         }
         return true
     }
@@ -259,6 +271,7 @@ internal class HidKeyInput(
         admissions.clear()
         presses.clear()
         recognizer.cancel(); functionAttachment = null
+        backHome.cancel()
         // Function was retired above; an old callback must not cancel a newly admitted Function.
         old.filter { it.action == HidAction.TAP }.forEach { cancelPress(it, now()) }
         if (oldCapture != null || nextCapture != null) changed()
@@ -278,6 +291,7 @@ internal class HidKeyInput(
         when (press.action) {
             HidAction.TAP -> cancelContact(press.owner, at)
             HidAction.FUNCTION -> if (functionAttachment == press.event.attachmentId) recognizer.cancel()
+            HidAction.BACK_HOME -> backHome.cancel(Retired(Key(press.event.attachmentId, press.event.binding.button), press.event.downTimeMs))
             else -> Unit
         }
     }

@@ -409,6 +409,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             { if (::hidPanel.isInitialized) hidPanel.refresh() },
             ::hoveredHidAction,
             functionCapture = ::captureFunction,
+            navigation = ::dispatchNavigation,
         )
         hidDevices = AndroidHidInput(this, hidInput) { event ->
             if (::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE && connectionView.visibility == View.VISIBLE)

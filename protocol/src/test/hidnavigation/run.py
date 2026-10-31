@@ -15,7 +15,7 @@ out = a.output_dir.resolve()
 out.mkdir(parents=True, exist_ok=False)
 protocol = 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol/'
 files = [root / (protocol + n + '.kt') for n in [
-    'BackHomeGestureRecognizer', 'Wire', 'PhoneInput', 'Touch', 'ReceiverUsability', 'CameraFeed', 'ActivationControl']]
+    'BackHomeGestureRecognizer', 'Wire', 'PhoneInput', 'Touch', 'ReceiverUsability', 'CameraFeed', 'ActivationControl', 'FunctionIntent']]
 files += [root / n for n in [
     'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/HidBindings.kt',
     'directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost/hid/PhoneHidBindings.kt',
