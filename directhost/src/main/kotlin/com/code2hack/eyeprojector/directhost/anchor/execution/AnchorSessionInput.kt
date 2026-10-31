@@ -41,7 +41,17 @@ internal class AnchorSessionInput(private val lock: Any, write: (ByteArray) -> U
     /** The actual merger's nativeAction retires its previous ordinary contact/source bookkeeping. */
     fun click(admission: AnchorAdmission, setting: AnchorSettingContext, target: ResolvedAnchorTarget,
         current: ManagedUiSource?, accepts: () -> Boolean,
-        ordinaryHandoff: ((() -> Boolean) -> Boolean)): AnchorExecutionStatus = synchronized(lock) {
+        ordinaryHandoff: ((() -> Boolean) -> Boolean)): AnchorExecutionStatus =
+        activate(admission, setting, target, current, accepts, ordinaryHandoff, null)
+
+    fun hold(admission: AnchorAdmission, setting: AnchorSettingContext, target: ResolvedAnchorTarget,
+        current: ManagedUiSource?, accepts: () -> Boolean,
+        ordinaryHandoff: ((() -> Boolean) -> Boolean), state: AnchorHoldOutput): AnchorExecutionStatus =
+        activate(admission, setting, target, current, accepts, ordinaryHandoff, state)
+
+    private fun activate(admission: AnchorAdmission, setting: AnchorSettingContext, target: ResolvedAnchorTarget,
+        current: ManagedUiSource?, accepts: () -> Boolean,
+        ordinaryHandoff: ((() -> Boolean) -> Boolean), state: AnchorHoldOutput?): AnchorExecutionStatus = synchronized(lock) {
         // Reject pending/changed contexts before canceling any unrelated ordinary contact.
         if (!anchor.admits(admission, setting, target, current, accepts))
             return@synchronized AnchorExecutionStatus.RETIRED
@@ -50,8 +60,9 @@ internal class AnchorSessionInput(private val lock: Any, write: (ByteArray) -> U
         try {
             ordinaryHandoff {
                 transferring = false
-                result = anchor.click(admission, setting, target, current, accepts)
-                result == AnchorExecutionStatus.CLICK_SUBMITTED
+                result = if (state == null) anchor.click(admission, setting, target, current, accepts)
+                    else anchor.hold(admission, setting, target, current, accepts, state)
+                result == AnchorExecutionStatus.CLICK_SUBMITTED || result == AnchorExecutionStatus.HOLD_SUBMITTED
             }
             result
         } finally { transferring = false }

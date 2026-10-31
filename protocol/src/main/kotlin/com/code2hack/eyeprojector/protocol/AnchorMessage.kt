@@ -3,7 +3,9 @@ package com.code2hack.eyeprojector.protocol
 import java.io.DataInputStream
 import java.io.DataOutputStream
 
-enum class AnchorFeedback { CLICK_SUBMITTED, NO_ANCHOR, UNAVAILABLE, HOLD_MODE, RETIRED, INPUT_REJECTED }
+enum class AnchorFeedback { CLICK_SUBMITTED, NO_ANCHOR, UNAVAILABLE, HOLD_MODE, RETIRED, INPUT_REJECTED,
+    HOLD_SUBMITTED, RELEASE_SUBMITTED }
+enum class AnchorHoldState { HELD, RELEASED, CANCELED }
 enum class AnchorChoice { CLICK, HOLD, CANCEL }
 enum class AnchorRegistrationResult { SAVED_CLICK, SAVED_HOLD, CANCELED, UNAVAILABLE }
 data class AnchorHighlight(val left: Double, val top: Double, val right: Double, val bottom: Double) {
@@ -22,9 +24,14 @@ sealed class AnchorMessage(open val transactionId: Long, open val intent: Functi
         val choice: AnchorChoice) : AnchorMessage(transactionId, intent)
     data class Result(override val transactionId: Long, override val intent: FunctionIntent,
         val result: AnchorRegistrationResult) : AnchorMessage(transactionId, intent)
+    /** Original contact facts only; revision orders presentation, never input admission. */
+    data class HeldState(override val transactionId: Long, override val intent: FunctionIntent,
+        val revision: Long, val state: AnchorHoldState) : AnchorMessage(transactionId, intent) {
+        init { require(revision >= 0) }
+    }
 
     fun bytes(): ByteArray = bytes {
-        writeByte(when (this@AnchorMessage) { is Feedback -> 0; is Offer -> 1; is Open -> 2; is Choice -> 3; is Result -> 4 })
+        writeByte(when (this@AnchorMessage) { is Feedback -> 0; is Offer -> 1; is Open -> 2; is Choice -> 3; is Result -> 4; is HeldState -> 5 })
         require(transactionId >= 0); writeLong(transactionId)
         val original = intent.bytes(); writeInt(original.size); write(original)
         when (val message = this@AnchorMessage) {
@@ -33,6 +40,7 @@ sealed class AnchorMessage(open val transactionId: Long, open val intent: Functi
             is Open -> { val fact = message.chooser.bytes(); writeInt(fact.size); write(fact) }
             is Choice -> writeByte(message.choice.ordinal)
             is Result -> writeByte(message.result.ordinal)
+            is HeldState -> { writeLong(message.revision); writeByte(message.state.ordinal) }
         }
     }
     companion object {
@@ -53,6 +61,7 @@ sealed class AnchorMessage(open val transactionId: Long, open val intent: Functi
                 }
                 3 -> Choice(id, intent, AnchorChoice.entries[input.readUnsignedByte()])
                 4 -> Result(id, intent, AnchorRegistrationResult.entries[input.readUnsignedByte()])
+                5 -> HeldState(id, intent, input.readLong(), AnchorHoldState.entries[input.readUnsignedByte()])
                 else -> error("Unknown Anchor message")
             }
             require(input.available() == 0)

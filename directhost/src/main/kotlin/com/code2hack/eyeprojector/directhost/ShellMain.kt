@@ -674,7 +674,7 @@ private class Session(
                 geometry.get() == source.geometry.video &&
                 managedDisplay?.uiInputSnapshot()?.let { mapping -> mapping.displayId == source.displayId &&
                     mapping.displayUniqueId == source.displayUniqueId && mapping.geometry == source.geometry } == true },
-            phoneInput::nativeAction, { error -> closeSafely(sessionFailureReason(error, control = true), error) },
+            phoneInput::nativeAction, functionWork, { error -> closeSafely(sessionFailureReason(error, control = true), error) },
             { message -> if (running.get()) try { send(Frame(Wire.ANCHOR, payload = message.bytes())) }
                 catch (error: Exception) { closeSafely(sessionFailureReason(error, control = true), error) } })
     }

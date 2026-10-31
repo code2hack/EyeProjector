@@ -11,7 +11,7 @@ internal object AnchorFeedbackUi {
             AnchorFeedback.NO_ANCHOR -> "Hover a target and long-press Function to set an Anchor"
             AnchorFeedback.UNAVAILABLE, AnchorFeedback.RETIRED, AnchorFeedback.INPUT_REJECTED -> "Anchor unavailable"
             AnchorFeedback.HOLD_MODE -> "Anchor unavailable"
-            AnchorFeedback.CLICK_SUBMITTED -> null
+            AnchorFeedback.CLICK_SUBMITTED, AnchorFeedback.HOLD_SUBMITTED, AnchorFeedback.RELEASE_SUBMITTED -> null
         }
         if (context != null && text != null) Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
     }

@@ -78,8 +78,15 @@ internal class AnchorAppRuntime(context: Context, registrationProviderName: Stri
         override val identity: Any get() = original.asBinder()
         override fun source(): ManagedUiSource? = if (current()) original.source()?.let(ManagedUiSource::from) else null
         override fun reconcile(setting: AnchorSettingContext) = current() && original.reconcile(AnchorExecutionCodec.setting(setting))
+        override fun heldSetting(): AnchorSettingContext? =
+            if (current()) original.heldSetting()?.let(AnchorExecutionCodec::setting) else null
+        override fun releaseHeld(expected: AnchorSettingContext?, settingCurrent: Boolean): AnchorReleaseResult =
+            if (!current()) AnchorReleaseResult.RETIRED else AnchorReleaseResult.entries[
+                original.releaseHeld(expected?.let(AnchorExecutionCodec::setting) ?: byteArrayOf(), settingCurrent)]
         override fun click(setting: AnchorSettingContext, target: ResolvedAnchorTarget): AnchorExecutionStatus =
             if (!current()) AnchorExecutionStatus.RETIRED else AnchorExecutionStatus.entries[original.click(AnchorExecutionCodec.setting(setting), AnchorExecutionCodec.target(target))]
+        override fun hold(setting: AnchorSettingContext, target: ResolvedAnchorTarget): AnchorExecutionStatus =
+            if (!current()) AnchorExecutionStatus.RETIRED else AnchorExecutionStatus.entries[original.hold(AnchorExecutionCodec.setting(setting), AnchorExecutionCodec.target(target))]
         override fun retire() = original.retire()
         override fun send(message: AnchorMessage) = original.send(message.bytes())
         override fun feedback(status: AnchorExecutionStatus) = send(AnchorMessage.Feedback(transactionId, intent,
