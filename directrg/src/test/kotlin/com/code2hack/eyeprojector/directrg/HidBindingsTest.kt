@@ -52,6 +52,25 @@ class HidBindingsTest {
         assertNull(loaded.error)
     }
 
+    @Test fun explicitlyLearningNavigationAfterLegacyReloadRetainsAllUnrelatedAssignments() {
+        val legacy = HidAction.entries.take(4).mapIndexed { id, action ->
+            action.name to binding(20 + id, 80 + id)
+        }
+        val storage = Storage(wireRecord(legacy))
+        val first = storage.open()
+        assertEquals(0, storage.writes)
+        val backHome = binding(30, 90)
+        val lock = binding(31, 91)
+        assertTrue(first.assign(HidAction.BACK_HOME, backHome))
+        val reconnect = storage.open()
+        assertTrue(reconnect.assign(HidAction.LOCK, lock))
+        val reopened = storage.open()
+        legacy.forEach { (name, value) -> assertEquals(value, reopened.binding(HidAction.valueOf(name))) }
+        assertEquals(backHome, reopened.binding(HidAction.BACK_HOME))
+        assertEquals(lock, reopened.binding(HidAction.LOCK))
+        assertEquals(2, storage.writes)
+    }
+
     @Test fun everyActionAndActualMetadataSurviveRestartInOneRecord() {
         val storage = Storage()
         val first = storage.open()

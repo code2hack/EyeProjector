@@ -33,6 +33,7 @@ internal class ActivityFunctionWiring : Activity() {
     private fun schedulePadConfirmation() { schedules++ }
     private fun updateEdgeScroll() = Unit
     private fun dispatchPadAction(action: PadGestureRecognizer.Action) { ordinaryActions++ }
+    private fun dispatchNavigation(action: ContextualNavigationAction) { error("Function must not navigate: $action") }
     // ACTUAL_CAPTURE_TYPE
     init {
         hidPanel = Boundary()

@@ -42,8 +42,9 @@ private fun Fixture.drain() {
 }
 
 fun main(args: Array<String>) {
-    val paired = args.single() == "paired"
-    val label = if (paired) "PAIRED117+116 SOURCE JOIN" else "STANDALONE117 BASELINE"
+    val merged = args.single() == "merged"
+    val paired = merged || args.single() == "paired"
+    val label = if (merged) "ACTUAL MERGED116+117" else if (paired) "PAIRED117+116 SOURCE JOIN" else "STANDALONE117 BASELINE"
     for (projected in listOf(false, true)) for (action in listOf(PhoneHidAction.BACK_HOME, PhoneHidAction.LOCK)) {
         Fixture().use { f ->
             val context = f.noPoint(projected)
@@ -110,5 +111,53 @@ fun main(args: Array<String>) {
         check(fresh.presses() == 0 && fresh.events().isEmpty())
         println("PASS $label same-owner successor Session rejects the original region/word identity")
     } }
-    println("PASS $label precise stamped navigation composition; immutable116 Merger/BackHome test inputs only; final116 merged-pair recheck required; no device/permission proof")
+    if (merged) mergedNavigationCompletionScenarios(label)
+    println("PASS $label precise stamped navigation composition; ${if (merged) "actual merged working-tree sources, no private overrides" else "immutable116 test inputs only; final merged-pair recheck required"}; no device/permission proof")
+}
+
+/** Final merged sources, including real stamped authority, merger, launcher and completion writer. */
+private fun mergedNavigationCompletionScenarios(label: String) {
+    Fixture().use { f ->
+        var component = "example.app/.Main"
+        val adapter = object : Adapter() {
+            override fun foregroundComponent(displayId: Int): String {
+                check(displayId == 47)
+                return component
+            }
+        }
+        val launches = f.adapter(adapter)
+        launches.initialize(47); launches.snapshot(true)
+        fun double(firstRoute: Long) {
+            val context = f.noPoint(projected = true)
+            val at = android.os.SystemClock.uptimeMillis()
+            f.edge(firstRoute, PhoneHidAction.BACK_HOME, context, at = at)
+            f.edge(firstRoute, PhoneHidAction.BACK_HOME, context, PhoneHidPhase.UP, at + 1, at)
+            f.edge(firstRoute + 1, PhoneHidAction.BACK_HOME, context, at = at + 100)
+            f.edge(firstRoute + 1, PhoneHidAction.BACK_HOME, context, PhoneHidPhase.UP, at + 101, at + 100)
+            launches.snapshot(true)
+            check(!f.peer.released && !f.control.released && !f.video.released && f.child.alive)
+        }
+        double(20)
+        check(adapter.calls == listOf(47, 47) && f.events().isEmpty())
+        component = ProjectionLaunchCommands.HOME_COMPONENT
+        double(30)
+        check(adapter.calls == listOf(47, 47))
+        check(f.events().map { it.kind } == listOf(ReceiverInputKind.PANEL))
+        println("PASS $label unavailable-pointer stamped double Home actual Session app->grid->PANEL; transport/workspace retained")
+    }
+    for (heldDouble in listOf(false, true)) Fixture().use { f ->
+        val context = f.noPoint()
+        val at = android.os.SystemClock.uptimeMillis()
+        f.edge(40, PhoneHidAction.BACK_HOME, context, at = at)
+        f.edge(40, PhoneHidAction.BACK_HOME, context, PhoneHidPhase.UP, at + 1, at)
+        if (heldDouble) f.edge(41, PhoneHidAction.BACK_HOME, context, at = at + 100)
+        // Cancellation still addresses the first physical route after its UP.
+        f.edge(40, PhoneHidAction.BACK_HOME, context, PhoneHidPhase.CANCEL, at + 110, at)
+        if (heldDouble) f.edge(41, PhoneHidAction.BACK_HOME, context, PhoneHidPhase.UP, at + 120, at + 100)
+        val passed = CountDownLatch(1)
+        f.timer.schedule({ passed.countDown() }, 600, TimeUnit.MILLISECONDS)
+        check(passed.await(2, TimeUnit.SECONDS)); f.drain()
+        check(f.events().isEmpty() && (f.control.sink as ByteArrayOutputStream).size() == 0)
+        println("PASS $label actual stamped original cancel after UP retires pending ${if (heldDouble) "double" else "single"}")
+    }
 }

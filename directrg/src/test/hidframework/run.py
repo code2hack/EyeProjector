@@ -133,12 +133,12 @@ def main():
     production = root / 'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg'
     production_paths = [production / name for name in (
         'AndroidHidInput.kt', 'HidBindingsPanel.kt', 'HidKeyInput.kt', 'HidBindings.kt', 'HidDecisionTrace.kt',
-        'FunctionGestureRecognizer.kt', 'PadGestureRecognizer.kt', 'HeadPointerModel.kt', 'HeadOrientation.kt',
+        'FunctionGestureRecognizer.kt', 'ContextualNavigation.kt', 'PadGestureRecognizer.kt', 'HeadPointerModel.kt', 'HeadOrientation.kt',
         'LocalInputSettings.kt', 'LocalInputSettingsPanel.kt',
     )]
     protocol = root / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
     production_paths += [protocol / n for n in ('Wire.kt', 'Touch.kt', 'PhoneInput.kt', 'ReceiverUsability.kt',
-        'ActivationControl.kt', 'CameraFeed.kt', 'FunctionIntent.kt')]
+        'ActivationControl.kt', 'CameraFeed.kt', 'FunctionIntent.kt', 'BackHomeGestureRecognizer.kt')]
     suite_paths = sorted((suite / 'doubles').glob('*.kt')) + [suite / 'Scenarios.kt']
     extraction_paths = [production / 'ReceiverActivity.kt', production / 'NativePadInput.kt']
     metadata_paths = [suite / 'run.py', suite / 'README.md']
