@@ -24,6 +24,7 @@ class AnchorRegistrationProviderTest {
         var writes = 0
         var fail = false
         var windowId = 7
+        var present = true
         var duringRead: () -> Unit = {}
         val store = AppAnchorStore(object : AppAnchorStorage {
             override fun read(packageName: String) = value
@@ -54,8 +55,9 @@ class AnchorRegistrationProviderTest {
                     override val windowId get() = this@Fixture.windowId
                     override val childCount = 0
                     override fun child(index: Int): UiAccessNode? = null
-                    override fun observation(ordinal: Int): UiTargetObservation {
+                    override fun observation(ordinal: Int): UiTargetObservation? {
                         duringRead()
+                        if (!present) return null
                         return UiTargetObservation(ordinal, windowId, app, "$app:id/control", "Button",
                             UiBounds(10, 20, 70, 60), emptyList(), true, false, true, true)
                     }
@@ -116,6 +118,23 @@ class AnchorRegistrationProviderTest {
         assertEquals(0, f.writes)
         assertEquals(f.old, f.value)
         assertEquals(AnchorRegistrationResult.CANCELED, f.last().result)
+    }
+
+    @Test fun unavailableCaptureUsesFeedbackWithoutRequiringAnOfferedTransaction() {
+        val f = Fixture(); f.present = false; f.begin()
+        assertEquals(AnchorMessage.Feedback(1, f.intent, AnchorFeedback.UNAVAILABLE), f.route.messages.single())
+        assertEquals(0, f.writes)
+        assertEquals(f.old, f.value)
+    }
+
+    @Test fun anotherOperationWithSameContextIdAndIntentCannotChooseTheOriginal() {
+        val f = Fixture(); f.begin(); f.open()
+        val other = f.Route()
+        f.choose(AnchorChoice.HOLD, other)
+        f.choose(AnchorChoice.CANCEL, other)
+        assertEquals(0, f.writes)
+        f.choose(AnchorChoice.CLICK)
+        assertEquals(AnchorRegistrationResult.SAVED_CLICK, f.last().result)
     }
 
     @Test fun duplicateBeginAndIdenticalOpenKeepTheOriginalPendingTransaction() {

@@ -11,7 +11,6 @@ import subprocess
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--output-dir', type=Path, required=True)
-p.add_argument('--modeled-shared-api', action='store_true', help='Use the recorded #122 ABI double before reviewed source handoff')
 a = p.parse_args()
 suite = Path(__file__).resolve().parent
 root = suite.parents[3]
@@ -43,7 +42,7 @@ protocol = root / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
 files = [generated, suite / 'Boundaries.kt', suite / 'Scenarios.kt']
 files += [actual / (n + '.kt') for n in ['ContextualNavigation', 'CompletedReceiverInput', 'SessionPresentation', 'AnchorRegistrationController']]
 files += [protocol / n for n in ['Wire.kt', 'PhoneInput.kt', 'Touch.kt', 'LayoutScale.kt', 'ReceiverUsability.kt', 'ActivationControl.kt', 'CameraFeed.kt', 'FunctionIntent.kt']]
-files += [suite / 'AnchorMessageApi.kt' if a.modeled_shared_api else protocol / 'AnchorMessage.kt']
+files += [protocol / 'AnchorMessage.kt']
 cache = Path(os.environ.get('GRADLE_USER_HOME', Path.home() / '.gradle')) / 'caches/modules-2/files-2.1'
 dependencies = ['org.jetbrains.kotlin/kotlin-compiler-embeddable/2.2.21', 'org.jetbrains.kotlin/kotlin-stdlib/2.2.21',
                 'org.jetbrains.kotlin/kotlin-script-runtime/2.2.21', 'org.jetbrains.kotlin/kotlin-reflect/1.6.10',
@@ -68,7 +67,7 @@ commands = {
     'run': [java, '-cp', str(jar) + os.pathsep + cp, 'com.code2hack.eyeprojector.directrg.ScenariosKt']}
 record = {'source': str(actual / 'ReceiverActivity.kt'), 'sourceSha256': sha(actual / 'ReceiverActivity.kt'),
           'extractedMethods': dict(zip(names, blocks)), 'completedInitializer': initializer, 'anchorInitializer': anchor_initializer,
-          'contextGetter': getter, 'registrationPredicates': predicates, 'modeledSharedApi': a.modeled_shared_api,
+          'contextGetter': getter, 'registrationPredicates': predicates, 'modeledSharedApi': False,
           'inputs': entries, 'commands': commands,
           'scope': 'Actual Activity method bodies and completed-input initializer/consumer; modeled UI, Android clock, sleep submission and session APIs. No device/native/secure-keyguard proof.'}
 try:

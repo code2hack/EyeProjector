@@ -17,10 +17,10 @@ navigation, Click/Hold waiting for matching completion and old-Session feedback.
 dispatch and request ordering; they do not establish native gesture delivery,
 physical screen sleep, secure keyguard or optical/input usability.
 
-Before the reviewed #122 shared-source handoff, add `--modeled-shared-api` to use the explicitly
-recorded Anchor message ABI double. The runner otherwise compiles the actual shared message
-source. In either case the retained Session/owner boundaries model the OPEN/choice transport;
-these checks do not prove Binder or wire delivery. The result records the selected mode.
+The runner compiles the actual shared message source. The retained Session/owner boundaries
+model the OPEN/choice transport; these focused Activity-method checks do not prove Binder or
+wire delivery. The separate registration production-composition harness exercises both real
+Sessions and the actual owner/runtime with named external Android boundaries.
 
 After the focused Gradle host/protocol checks, run
 `python3 directhost/src/test/launch/run.py --navigation-only --output-dir /private/evidence/session-navigation`

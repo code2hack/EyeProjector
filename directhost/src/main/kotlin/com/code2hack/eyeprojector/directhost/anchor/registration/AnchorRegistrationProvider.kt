@@ -2,6 +2,7 @@ package com.code2hack.eyeprojector.directhost.anchor.registration
 
 import com.code2hack.eyeprojector.directhost.ProjectionContext
 import com.code2hack.eyeprojector.directhost.anchor.execution.AnchorAppRuntime
+import com.code2hack.eyeprojector.directhost.anchor.execution.AnchorExecutionStatus
 import com.code2hack.eyeprojector.directhost.anchor.execution.AnchorOriginalRoute
 import com.code2hack.eyeprojector.directhost.anchor.execution.AnchorRegistrationInstaller
 import com.code2hack.eyeprojector.directhost.anchor.execution.CapturedAnchorRequest
@@ -11,7 +12,7 @@ import com.code2hack.eyeprojector.protocol.*
 
 /** Installed by #122's runtime; all handlers, reads and complete-value saves use its one FIFO. */
 internal class AnchorRegistrationProvider : AnchorRegistrationInstaller {
-    private data class Token(val context: ProjectionContext, val id: Long, val intent: FunctionIntent)
+    private data class Token(val route: Any, val context: ProjectionContext, val id: Long, val intent: FunctionIntent)
     private data class Pending(val token: Token, val route: AnchorOriginalRoute, val source: ManagedUiSource,
         var chooser: ReceiverUsability? = null)
 
@@ -27,16 +28,16 @@ internal class AnchorRegistrationProvider : AnchorRegistrationInstaller {
 
     private fun begin(request: CapturedAnchorRequest) {
         val original = request.original
-        val token = Token(request.source.context, original.transactionId, original.intent)
+        val token = Token(original.identity, request.source.context, original.transactionId, original.intent)
         if (pending?.let { it.token == token && it.source == request.source } == true) return
         cancelPending()
         if (request.snapshot.request?.source != request.source || original.source() != request.source) {
-            result(original, AnchorRegistrationResult.UNAVAILABLE)
+            original.feedback(AnchorExecutionStatus.UNAVAILABLE)
             return
         }
         val capture = coordinator.begin(token, original.intent, request.snapshot)
         if (capture !is AnchorRegistrationCapture.Selected) {
-            result(original, AnchorRegistrationResult.UNAVAILABLE)
+            original.feedback(AnchorExecutionStatus.UNAVAILABLE)
             return
         }
         pending = Pending(token, original, request.source)
@@ -49,7 +50,8 @@ internal class AnchorRegistrationProvider : AnchorRegistrationInstaller {
         val selected = pending ?: return
         // A numeric id alone is Session-local. Recheck the original route's context and intent.
         if (message.transactionId != selected.token.id || message.intent != selected.token.intent ||
-            original.transactionId != selected.token.id || original.intent != selected.token.intent) return
+            original.transactionId != selected.token.id || original.intent != selected.token.intent ||
+            original.identity != selected.token.route) return
         val source = original.source()
         if (source != selected.source) {
             // A successor route cannot retire or save the original pending registration.

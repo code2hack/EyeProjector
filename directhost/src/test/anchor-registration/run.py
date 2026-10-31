@@ -10,7 +10,7 @@ import subprocess
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--output-dir', type=Path, required=True)
-parser.add_argument('--provider-api-checks', action='store_true', help='Compile actual provider against the explicitly modeled #122 ABI')
+parser.add_argument('--provider-api-checks', action='store_true', help='Actual provider/shared DTO with explicitly modeled runtime API')
 args = parser.parse_args()
 suite = Path(__file__).resolve().parent
 root = suite.parents[3]
@@ -36,7 +36,7 @@ sources += [actual / 'uiaccess' / (name + '.kt') for name in
             ['UiTargetSnapshot', 'UiSourceGeometry', 'UiTargetReader', 'UiTargetSnapshotProvider']]
 sources += [actual / 'ProjectionContext.kt']
 sources += [protocol / (name + '.kt') for name in
-            ['Wire', 'Touch', 'PhoneInput', 'ReceiverUsability', 'CameraFeed', 'ActivationControl', 'FunctionIntent']]
+            ['Wire', 'Touch', 'PhoneInput', 'ReceiverUsability', 'CameraFeed', 'ActivationControl', 'FunctionIntent', 'AnchorMessage']]
 # Only unused CapturedProjection return types are doubled; all snapshot/geometry/identity models are real.
 sources += [suite.parent / 'uiaccess/doubles/ProjectionDependencies.kt', suite.parent / 'uiaccess/doubles/SnapshotDescriptor.kt']
 sources += [suite.parent / 'kotlin/com/code2hack/eyeprojector/directhost/anchor/registration/AnchorRegistrationTest.kt']
@@ -44,7 +44,7 @@ sources += [root / 'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg
             root / 'directrg/src/test/kotlin/com/code2hack/eyeprojector/directrg/AnchorRegistrationControllerTest.kt']
 if args.provider_api_checks:
     sources += [actual / 'anchor/registration/AnchorRegistrationProvider.kt', suite / 'AnchorRuntimeApi.kt',
-                root / 'directrg/src/test/navigation/AnchorMessageApi.kt', suite / 'AnchorRegistrationProviderTest.kt']
+                suite / 'AnchorRegistrationProviderTest.kt']
 out = args.output_dir.resolve()
 out.mkdir(parents=True, exist_ok=True)
 jar = out / 'anchor-registration-checks.jar'

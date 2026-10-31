@@ -6,11 +6,15 @@ import com.code2hack.eyeprojector.protocol.*
 
 /** Only the recorded #122 provider ABI and app FIFO entry boundary, not a production bridge. */
 internal interface AnchorOriginalRoute {
+    val identity: Any get() = this
     val transactionId: Long
     val intent: FunctionIntent
     fun source(): ManagedUiSource?
     fun send(message: AnchorMessage)
+    fun feedback(status: AnchorExecutionStatus) = send(AnchorMessage.Feedback(transactionId, intent,
+        AnchorFeedback.valueOf(status.name)))
 }
+internal enum class AnchorExecutionStatus { UNAVAILABLE }
 internal class CapturedAnchorRequest(val original: AnchorOriginalRoute, val source: ManagedUiSource,
     val snapshot: UiTargetSnapshot)
 internal fun interface AnchorRegistrationInstaller { fun install(runtime: AnchorAppRuntime) }

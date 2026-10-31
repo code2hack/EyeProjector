@@ -21,8 +21,8 @@ These are host behavior checks. The Android overlay, shared Binder/transport int
 production accessibility grant and physical target/gesture behavior require their allocated
 build and device verification windows.
 
-To include the actual registration provider before the reviewed #122 handoff, add
-`--provider-api-checks`. This explicitly compiles the provider against the recorded runtime
-and message ABI doubles, while retaining actual reader/provider/resolver/store behavior.
-It does not compile or execute the shared Binder, FIFO runtime or wire codec. Its result
-records `modeledProviderApi: true`; the matched production build verifies the real join.
+To include focused registration-provider cases, add `--provider-api-checks`. This uses the
+actual shared message DTO/codec and a named runtime API double, while retaining actual
+provider/reader/resolver/store behavior. Its result records `modeledProviderApi: true`.
+The [production composition](../../../../directrg/src/test/registration-pipeline/README.md)
+separately exercises the real shared runtime, FIFO, reflected installer and both Sessions.
