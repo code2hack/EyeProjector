@@ -60,9 +60,10 @@ internal class NativeNavigationObservation(
     }
 
     companion object {
-        // Existing NativeFunctionInput REPORTS and NativePadLongTouch ACTION, plus three policy10 senders.
-        // Matching services.jar SHA-256: 6bdadf1db66ed93d1d065a4669218766fc6082563fd5ab77ca50d64a4612b1ff.
-        // PhoneWindowManager sends the three additions unordered; names do not establish physical gestures.
+        // Existing seven source actions plus five current57 PhoneWindowManager senders, firmware1.28.016.
+        // Matching services.jar SHA-256: ec3ae29ad1c39c69a2b80d29b7c98979ec6b5aec70ca947db3195957a8341603.
+        // Current classes2.dex SHA-256: 71738098b098c89b2718410734fac4635d2fd6780d50e48e4d3ce9be01f6b49b.
+        // The five additions are unordered; names do not establish physical gestures or suppression.
         // No speculative native navigation actions or wildcard broadcast discovery.
         val ACTIONS = listOf(
             "com.android.action.ACTION_SPRITE_BUTTON_DOWN",
@@ -75,6 +76,8 @@ internal class NativeNavigationObservation(
             "com.android.action.ACTION_SETTINGS_KEY",
             "com.android.action.ACTION_TWO_FINGER_SINGLE_TAP",
             "com.android.action.ACTION_TWO_FINGER_DOUBLE_TAP",
+            "com.android.action.ACTION_TWO_FINGER_SWIPE_BACK",
+            "com.android.action.ACTION_TWO_FINGER_SWIPE_FORWARD",
         )
     }
 }

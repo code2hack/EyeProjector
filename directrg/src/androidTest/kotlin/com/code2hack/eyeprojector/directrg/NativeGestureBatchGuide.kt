@@ -13,7 +13,7 @@ import java.lang.ref.WeakReference
 
 /** Main-thread test UI. Uses only an owned label in the existing decor drawing overlay. */
 internal class NativeGestureBatchGuide private constructor(private val queue: NativeInputObservationQueue,
-                                                         private val manualRepeat: Boolean) {
+                                                         guideCase: String?) {
     private class Label(activity: Activity) : TextView(activity) {
         var promptId = ""
         var drawAttemptPromptId: String? = null
@@ -21,7 +21,9 @@ internal class NativeGestureBatchGuide private constructor(private val queue: Na
         override fun onDraw(canvas: Canvas) { super.onDraw(canvas); onDrawn?.invoke(this) }
     }
     private data class Surface(val root: ViewGroup, val label: Label)
-    private val plan = NativeGestureBatchGuidePlan()
+    private val manualRepeat = guideCase == "two-single-repeat"
+    private val swipeNavigation = guideCase == "swipe-navigation"
+    private val plan = NativeGestureBatchGuidePlan(swipeNavigation)
     private var activity: WeakReference<Activity>? = null
     private var surface: Surface? = null
     private var resumed = false
@@ -37,7 +39,11 @@ internal class NativeGestureBatchGuide private constructor(private val queue: Na
     private var firstFailure: Throwable? = null
     var failureCount = 0; private set
     var uiShown = false; private set
-    val mode get() = if (manualRepeat) "manual_repeat" else "automatic_six_steps"
+    val mode get() = when {
+        manualRepeat -> "manual_repeat"
+        swipeNavigation -> "automatic_four_swipes"
+        else -> "automatic_six_steps"
+    }
     val completed get() = !manualRepeat && plan.snapshot.complete
     val promptId get() = if (manualRepeat) "two_single_repeat" else plan.snapshot.prompt.id
     val released get() = surface == null
@@ -133,7 +139,7 @@ internal class NativeGestureBatchGuide private constructor(private val queue: Na
             manualRepeat -> "TWO FINGERS: ONE TAP\nRepeat 10–15 times\nAbout 3 seconds apart\nThen stop."
             snapshot.complete -> snapshot.prompt.instruction
             snapshot.step == 0 -> "${snapshot.prompt.instruction}\n${snapshot.countdownSeconds}s"
-            else -> "STEP ${snapshot.step} / ${NativeGestureBatchGuidePlan.STEP_COUNT}  ·  ${snapshot.countdownSeconds}s\n" +
+            else -> "STEP ${snapshot.step} / ${plan.stepCount}  ·  ${snapshot.countdownSeconds}s\n" +
                 "${snapshot.prompt.instruction}\nDo it once, then wait."
         }
         if (owned.label.promptId != promptId) {
@@ -183,7 +189,7 @@ internal class NativeGestureBatchGuide private constructor(private val queue: Na
             mapOf("guideEvent" to event, "guideMode" to mode,
                 "promptId" to if (manualRepeat) promptId else snapshot.prompt.id,
                 "stepNumber" to if (manualRepeat) null else snapshot.step,
-                "stepCount" to if (manualRepeat) null else NativeGestureBatchGuidePlan.STEP_COUNT,
+                "stepCount" to if (manualRepeat) null else plan.stepCount,
                 "countdownSeconds" to if (manualRepeat) null else snapshot.countdownSeconds,
                 "remainingMs" to if (manualRepeat) null else snapshot.remainingMs,
                 "promptElapsedMs" to if (manualRepeat) null else snapshot.promptElapsedMs,
@@ -243,6 +249,6 @@ internal class NativeGestureBatchGuide private constructor(private val queue: Na
     companion object {
         fun create(argument: String?, queue: NativeInputObservationQueue,
                    guideCase: String? = null): NativeGestureBatchGuide? =
-            if (argument == "true") NativeGestureBatchGuide(queue, guideCase == "two-single-repeat") else null
+            if (argument == "true") NativeGestureBatchGuide(queue, guideCase) else null
     }
 }

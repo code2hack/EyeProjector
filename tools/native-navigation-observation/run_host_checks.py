@@ -92,7 +92,11 @@ fun main() {
         intent.action = "mutated after receipt"; intent.flags = 0
         receiver.isOrderedBroadcast = false
         receiver.isInitialStickyBroadcast = true
-        receiver.onReceive(context, Intent(NativeNavigationObservation.ACTIONS.last()))
+        receiver.onReceive(context, Intent(NativeNavigationObservation.ACTIONS[9]))
+        val swipeActions = listOf("com.android.action.ACTION_TWO_FINGER_SWIPE_BACK",
+                                  "com.android.action.ACTION_TWO_FINGER_SWIPE_FORWARD")
+        check(NativeNavigationObservation.ACTIONS.size == 12 && NativeNavigationObservation.ACTIONS.takeLast(2) == swipeActions)
+        swipeActions.forEach { receiver.onReceive(context, Intent(it)) }
         context.power.interactive = false
         observer.sample()
         observer.stop()
@@ -101,13 +105,16 @@ fun main() {
         check(context.removals == 1 && context.receiver == null)
         val rows = mutableListOf<NativeInputObservationQueue.Row>()
         queue.close(); queue.drain { rows.add(it) }
-        check(rows.map { it.seq } == listOf(1L, 2L, 3L))
+        check(rows.map { it.seq } == listOf(1L, 2L, 3L, 4L, 5L))
         check(rows[0].fields["actionName"] == NativeNavigationObservation.ACTIONS.first())
         check(rows[0].fields["intentFlags"] == 0x40000000)
         check(rows[0].fields["resultCodeAtReceipt"] == 37)
         check(rows[0].fields["observerAborted"] == false && rows[0].fields["observerChangedResult"] == false)
         check(rows[1].fields["resultCodeAtReceipt"] == null && rows[1].fields["initialSticky"] == true)
-        check(rows[2].fields["interactive"] == false)
+        check(rows.slice(2..3).map { it.fields["actionName"] } == swipeActions)
+        check(rows.slice(2..3).all { it.fields["ordered"] == false && it.fields["resultCodeAtReceipt"] == null &&
+            it.fields["observerAborted"] == false && it.fields["observerChangedResult"] == false })
+        check(rows[4].fields["interactive"] == false)
         check(rows.all { it.uptimeMs == 1234L && it.elapsedNs == 9000000L })
         check(queue.failureCount == 0L)
     }
@@ -142,8 +149,8 @@ def main():
     observer = directory / "NativeNavigationObservation.kt"
     helper = directory / "NativeInputObservation.kt"
     existing = root / "directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg"
-    # Production-source seven UNION the three policy10-established PhoneWindowManager senders.
-    # Matching services.jar SHA-256: 6bdadf1db66ed93d1d065a4669218766fc6082563fd5ab77ca50d64a4612b1ff.
+    # Production-source seven UNION five current57-established PhoneWindowManager senders, firmware1.28.016.
+    # Matching services.jar SHA-256: ec3ae29ad1c39c69a2b80d29b7c98979ec6b5aec70ca947db3195957a8341603.
     action_pattern = r'"(com\.android\.action\.[A-Z_]+)"'
     expected = set(re.findall(action_pattern, (existing / "NativeFunctionInput.kt").read_text()
                               + (existing / "NativePadInput.kt").read_text()))
@@ -151,8 +158,11 @@ def main():
         "com.android.action.ACTION_SETTINGS_KEY",
         "com.android.action.ACTION_TWO_FINGER_SINGLE_TAP",
         "com.android.action.ACTION_TWO_FINGER_DOUBLE_TAP",
+        "com.android.action.ACTION_TWO_FINGER_SWIPE_BACK",
+        "com.android.action.ACTION_TWO_FINGER_SWIPE_FORWARD",
     }
     assert set(re.findall(action_pattern, observer.read_text())) == expected | policy_actions
+    assert len(re.findall(action_pattern, observer.read_text())) == 12
     sources = [observer, directory / "NativeInputObservationQueue.kt", directory / "NativeInputObservationRunState.kt"]
     for filename, content in DOUBLES.items():
         path = output / filename

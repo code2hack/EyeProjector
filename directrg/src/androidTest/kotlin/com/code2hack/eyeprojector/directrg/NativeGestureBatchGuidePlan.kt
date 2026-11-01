@@ -1,13 +1,16 @@
 package com.code2hack.eyeprojector.directrg
 
 /** Instruction time only. It never observes an input or acknowledges a physical gesture. */
-internal class NativeGestureBatchGuidePlan {
+internal class NativeGestureBatchGuidePlan(swipeNavigation: Boolean = false) {
     data class Prompt(val id: String, val instruction: String, val durationMs: Long)
     data class Snapshot(val prompt: Prompt, val step: Int, val remainingMs: Long,
                         val promptElapsedMs: Long, val activeElapsedMs: Long, val complete: Boolean) {
         val countdownSeconds get() = (remainingMs + 999) / 1000
     }
     data class Event(val name: String, val snapshot: Snapshot)
+
+    private val prompts = if (swipeNavigation) SWIPE_PROMPTS else PROMPTS
+    val stepCount get() = prompts.size - 1
 
     private var index = 0
     private var promptElapsed = 0L
@@ -19,9 +22,9 @@ internal class NativeGestureBatchGuidePlan {
     private var closed = false
 
     val snapshot: Snapshot get() {
-        val complete = index >= PROMPTS.size
-        val prompt = if (complete) FINISHED else PROMPTS[index]
-        return Snapshot(prompt, if (complete) STEP_COUNT else index, (prompt.durationMs - promptElapsed).coerceAtLeast(0),
+        val complete = index >= prompts.size
+        val prompt = if (complete) FINISHED else prompts[index]
+        return Snapshot(prompt, if (complete) stepCount else index, (prompt.durationMs - promptElapsed).coerceAtLeast(0),
             promptElapsed, activeElapsed, complete)
     }
 
@@ -76,6 +79,13 @@ internal class NativeGestureBatchGuidePlan {
             Prompt("two_double", "TWO FINGERS: DOUBLE TAP\nScreen may turn off.", 20_000),
         )
         val FINISHED = Prompt("finished", "INSTRUCTIONS FINISHED\nNo more gestures. Wait.", 0)
+        val SWIPE_PROMPTS = listOf(
+            PROMPTS.first(),
+            Prompt("one_swipe_left", "ONE FINGER: SWIPE LEFT", 20_000),
+            Prompt("one_swipe_right", "ONE FINGER: SWIPE RIGHT", 20_000),
+            Prompt("two_swipe_left", "TWO FINGERS: SWIPE LEFT", 20_000),
+            Prompt("two_swipe_right", "TWO FINGERS: SWIPE RIGHT", 20_000),
+        )
         const val STEP_COUNT = 6
     }
 }

@@ -156,6 +156,15 @@ fun main() {
     delayed.update(0,true); val late=delayed.update(900000,true)
     check(delayed.snapshot.prompt.id=="one_single" && !delayed.snapshot.complete)
     check(late.none { it.name=="step_start" }) // A late callback cannot skip an unseen prompt.
+    val swipeIds=listOf("prepare","one_swipe_left","one_swipe_right","two_swipe_left","two_swipe_right")
+    check(NativeGestureBatchGuidePlan.SWIPE_PROMPTS.map { it.id }==swipeIds)
+    check(NativeGestureBatchGuidePlan.SWIPE_PROMPTS.map { it.durationMs }==listOf(10000L,20000L,20000L,20000L,20000L))
+    val swipePlan=NativeGestureBatchGuidePlan(true); var swipePlanTime=0L
+    check(swipePlan.stepCount==4 && plan.stepCount==6)
+    for (prompt in NativeGestureBatchGuidePlan.SWIPE_PROMPTS) {
+        swipePlan.update(swipePlanTime,true); swipePlanTime+=prompt.durationMs; swipePlan.update(swipePlanTime,true)
+    }
+    check(swipePlanTime==90000L && swipePlan.snapshot.complete && swipePlan.snapshot.step==4)
 
     val offQueue=NativeInputObservationQueue()
     check(NativeGestureBatchGuide.create(null,offQueue)==null)
@@ -163,6 +172,8 @@ fun main() {
     check(NativeGestureBatchGuide.create("True",offQueue)==null)
     check(NativeGestureBatchGuide.create(null,offQueue,"two-single-repeat")==null)
     check(NativeGestureBatchGuide.create("false",offQueue,"two-single-repeat")==null)
+    check(NativeGestureBatchGuide.create(null,offQueue,"swipe-navigation")==null)
+    check(NativeGestureBatchGuide.create("false",offQueue,"swipe-navigation")==null)
     check(rows(offQueue).isEmpty())
 
     SystemClock.now=0
@@ -273,6 +284,42 @@ fun main() {
     check(repeatRows.all { row-> row.fields.values.all { it==null || it is String || it is Number || it is Boolean } })
     tick(repeat,3900000); repeatRoot.overlay.draw(); check(rows(repeatQueue).isEmpty())
 
+    val swipeQueue=NativeInputObservationQueue()
+    val swipeGuide=NativeGestureBatchGuide.create("true",swipeQueue,"swipe-navigation")!!
+    val swipeActivity=Activity(); val swipeRoot=swipeActivity.window.decorView
+    val unrelated=View(); swipeRoot.overlay.add(unrelated)
+    swipeGuide.onResumed(swipeActivity); tick(swipeGuide,0); tick(swipeGuide,5000)
+    check(!swipeGuide.uiShown && swipeGuide.mode=="automatic_four_swipes" && swipeGuide.promptId=="prepare")
+    swipeRoot.overlay.draw(); tick(swipeGuide,5000)
+    var swipeTime=905000L; tick(swipeGuide,swipeTime)
+    check(swipeGuide.promptId=="one_swipe_left" && !swipeGuide.completed)
+    check(rows(swipeQueue).none { it.fields["guideEvent"]=="step_start" }) // Late tick finishes only preparation.
+    for ((i,prompt) in NativeGestureBatchGuidePlan.SWIPE_PROMPTS.drop(1).withIndex()) {
+        swipeTime+=5000; tick(swipeGuide,swipeTime)
+        check(swipeGuide.promptId==prompt.id && !swipeGuide.completed)
+        val instruction=swipeRoot.overlay.views.last() as TextView
+        check(instruction.text.contains(prompt.instruction) && instruction.text.contains("STEP ${i+1} / 4"))
+        check(!instruction.isFocusable && !instruction.isClickable && !instruction.selectable)
+        swipeRoot.overlay.draw(); tick(swipeGuide,swipeTime)
+        if (i==0) {
+            tick(swipeGuide,swipeTime+5000)
+            swipeActivity.focused=false; tick(swipeGuide,swipeTime+5100); check(swipeGuide.released)
+            swipeTime+=500000; tick(swipeGuide,swipeTime); check(swipeGuide.promptId==prompt.id)
+            swipeActivity.focused=true; tick(swipeGuide,swipeTime); swipeRoot.overlay.draw(); tick(swipeGuide,swipeTime)
+            swipeTime+=15000
+        } else swipeTime+=20000
+        tick(swipeGuide,swipeTime)
+    }
+    check(swipeGuide.completed && swipeGuide.promptId=="finished")
+    swipeGuide.stop(); check(swipeGuide.released && swipeRoot.overlay.views==listOf(unrelated))
+    val swipeRows=rows(swipeQueue)
+    check(swipeRows.filter { it.fields["guideEvent"]=="step_start" }.map { it.fields["promptId"] }==swipeIds.drop(1))
+    check(swipeRows.filter { it.fields["guideEvent"]=="step_end" }.map { it.fields["promptId"] }==swipeIds.drop(1))
+    check(swipeRows.filter { it.fields["guideEvent"]=="shown" }.map { it.fields["promptId"] }.distinct().containsAll(swipeIds.drop(1)))
+    check(swipeRows.all { it.fields["guideMode"]=="automatic_four_swipes" && it.fields["stepCount"]==4 })
+    check(swipeRows.any { it.fields["guideEvent"]=="pause" } && swipeRows.any { it.fields["guideEvent"]=="cleanup" })
+    tick(swipeGuide,swipeTime+900000); swipeRoot.overlay.draw(); check(rows(swipeQueue).isEmpty())
+
     val stopDirectory=java.nio.file.Files.createTempDirectory("native-owner-stop-host-").toFile()
     try {
         val stop=NativeInputObservationOwnerStop(stopDirectory,"run_a")
@@ -337,6 +384,6 @@ fun main() {
     repeatFailure.onResumed(repeatBadHost); tick(repeatFailure,0)
     check(repeatFailure.failureCount>0 && repeatFailure.released && repeatBadHost.window.decorView.overlay.views.isEmpty())
     check(runCatching { repeatFailure.stop() }.isFailure)
-    println("PASS: actual guide plan/UI adapter; static manual-repeat draw/pause/resume/cleanup, exact per-run Owner-stop control and early closure integrity, default six slots, nonhierarchical overlay draw regression, one draw-attempt per prompt/surface, hidden host/window and own bounds/attachment, draw/visibility/sink gating, default-off, noninteractive unchanged root geometry, stale/late callbacks, exact cleanup and partial failures. Host doubles only.")
+    println("PASS: actual guide plan/UI adapter; four own-drawn swipe slots/order/late-tick/pause/cleanup, preserved default six and static repeat, exact per-run Owner-stop control, nonhierarchical overlay draw regression, hidden host/window and own bounds/attachment, draw/visibility/sink gating, default-off, noninteractive unchanged root geometry, stale/late callbacks and partial failures. Host doubles only.")
 }
 '''
