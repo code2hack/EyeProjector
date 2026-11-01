@@ -1,0 +1,389 @@
+"""Narrow host-only Android boundaries for the actual guide adapter; no SDK/device."""
+
+DOUBLES = {
+    "Context.kt": '''package android.content
+import android.content.res.Resources
+open class Context { val resources = Resources() }
+''',
+    "Resources.kt": '''package android.content.res
+class DisplayMetrics { var density = 1f }
+class Resources { val displayMetrics = DisplayMetrics() }
+''',
+    "Graphics.kt": '''package android.graphics
+class Canvas
+class Rect
+object Color { const val WHITE = -1; const val BLACK = -16777216 }
+class Typeface { companion object { val DEFAULT_BOLD = Typeface() } }
+''',
+    "Clock.kt": '''package android.os
+object SystemClock {
+    var now = 0L
+    fun uptimeMillis() = now
+    fun elapsedRealtimeNanos() = 9000000000L + now * 1000000L
+}
+''',
+    "Activity.kt": '''package android.app
+import android.content.Context
+import android.view.ViewGroup
+class Window { val decorView = ViewGroup() }
+open class Activity : Context() {
+    val window = Window()
+    var focused = true
+    fun hasWindowFocus() = focused
+}
+''',
+    "View.kt": '''package android.view
+import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Rect
+open class View(val context: Context = Context()) {
+    val resources get() = context.resources
+    var visibility = VISIBLE
+    var windowVisibility = VISIBLE
+    var isAttachedToWindow = true
+    var overlayOwner: ViewGroup? = null
+    // Overlay dispatch is separate from the ordinary parent chain queried by isShown/global-visible.
+    open val isShown: Boolean get() = visibility == VISIBLE && isAttachedToWindow && overlayOwner == null
+    var isFocusable = true
+    var isFocusableInTouchMode = true
+    var isClickable = true
+    var isLongClickable = true
+    var importantForAccessibility = 0
+    var left = 0; var top = 0; var right = 0; var bottom = 0
+    val width get() = right - left
+    val height get() = bottom - top
+    var measuredWidth = 0; var measuredHeight = 0
+    var padding = 0
+    fun setPadding(l: Int, t: Int, r: Int, b: Int) { padding = l + t + r + b }
+    open fun measure(w: Int, h: Int) { measuredWidth = MeasureSpec.getSize(w); measuredHeight = minOf(220, MeasureSpec.getSize(h)) }
+    open fun layout(l: Int, t: Int, r: Int, b: Int) { left=l; top=t; right=r; bottom=b }
+    fun getGlobalVisibleRect(rect: Rect) = isShown && width > 0 && height > 0
+    fun invalidate() = Unit
+    protected open fun onDraw(canvas: Canvas) = Unit
+    fun draw() {
+        val host = overlayOwner
+        if (visibility == VISIBLE && windowVisibility == VISIBLE && isAttachedToWindow &&
+            (host == null || (host.isShown && host.windowVisibility == VISIBLE))) onDraw(Canvas())
+    }
+    object MeasureSpec {
+        const val EXACTLY = 0x40000000
+        const val AT_MOST = -2147483648
+        fun makeMeasureSpec(size: Int, mode: Int) = size or mode
+        fun getSize(value: Int) = value and 0x3fffffff
+    }
+    companion object { const val VISIBLE=0; const val INVISIBLE=4; const val IMPORTANT_FOR_ACCESSIBILITY_NO=2 }
+}
+class ViewGroup : View() {
+    val children = mutableListOf<View>()
+    val overlay = ViewGroupOverlay(this)
+    var childMutations = 0
+    var rootLayouts = 0
+    init { super.layout(0, 0, 1280, 720) }
+    fun addView(view: View) { children.add(view); childMutations++ }
+    override fun layout(l: Int,t: Int,r: Int,b: Int) { rootLayouts++; super.layout(l,t,r,b) }
+}
+class ViewGroupOverlay(private val root: ViewGroup) {
+    val views = mutableListOf<View>()
+    var failAddAfterSideEffect = false
+    var failRemoval = false
+    fun add(view: View) {
+        check(view !in views); views.add(view); view.overlayOwner=root
+        if (failAddAfterSideEffect) error("add after side effect")
+    }
+    fun remove(view: View) {
+        if (failRemoval) error("remove failure")
+        views.remove(view); view.overlayOwner=null; view.isAttachedToWindow=false
+    }
+    fun draw() { views.toList().forEach { it.draw() } }
+}
+object Gravity { const val CENTER=17 }
+''',
+    "Text.kt": '''package android.widget
+import android.content.Context
+import android.graphics.Typeface
+import android.view.View
+open class TextView(context: Context) : View(context) {
+    var text: CharSequence = ""
+    var textSize = 0f
+    var typeface: Typeface? = null
+    var gravity = 0
+    var foreground = 0
+    var background = 0
+    var selectable = true
+    fun setTextColor(value: Int) { foreground=value }
+    fun setBackgroundColor(value: Int) { background=value }
+    fun setTextIsSelectable(value: Boolean) { selectable=value }
+}
+''',
+}
+
+CHECKS = '''package com.code2hack.eyeprojector.directrg
+import android.app.Activity
+import android.graphics.Color
+import android.graphics.Rect
+import android.os.SystemClock
+import android.view.View
+import android.widget.TextView
+
+private fun rows(queue: NativeInputObservationQueue): List<NativeInputObservationQueue.Row> {
+    val result = mutableListOf<NativeInputObservationQueue.Row>()
+    queue.drain { result.add(it) }; return result
+}
+private fun tick(guide: NativeGestureBatchGuide, now: Long, active: Boolean=true, interactive: Boolean=true) {
+    SystemClock.now=now; guide.tick(active, interactive, SystemClock.elapsedRealtimeNanos())
+}
+fun main() {
+    val ids = listOf("prepare","one_single","one_double","one_hold","two_single","two_hold","two_double")
+    check(NativeGestureBatchGuidePlan.PROMPTS.map { it.id } == ids)
+    check(NativeGestureBatchGuidePlan.PROMPTS.map { it.durationMs } == listOf(10000L,20000L,20000L,20000L,20000L,20000L,20000L))
+    val plan=NativeGestureBatchGuidePlan(); val events=mutableListOf<NativeGestureBatchGuidePlan.Event>(); var time=0L
+    for (prompt in NativeGestureBatchGuidePlan.PROMPTS) {
+        events += plan.update(time,true)
+        time += prompt.durationMs
+        events += plan.update(time,true)
+    }
+    check(plan.snapshot.complete && time==130000L)
+    check(events.filter { it.name=="step_start" }.map { it.snapshot.prompt.id } == ids.drop(1))
+    check(events.filter { it.name=="step_end" }.map { it.snapshot.prompt.id } == ids.drop(1))
+    check(events.count { it.name=="complete" }==1)
+    val paused=NativeGestureBatchGuidePlan()
+    paused.update(0,true); paused.update(4000,true); paused.update(4500,false)
+    paused.update(100000,false); check(paused.snapshot.remainingMs==6000L)
+    paused.update(100001,true); check(paused.snapshot.remainingMs==6000L)
+    paused.update(106001,true); check(paused.snapshot.prompt.id=="one_single")
+    paused.close(); check(paused.update(999999,true).isEmpty())
+    val delayed=NativeGestureBatchGuidePlan()
+    delayed.update(0,true); val late=delayed.update(900000,true)
+    check(delayed.snapshot.prompt.id=="one_single" && !delayed.snapshot.complete)
+    check(late.none { it.name=="step_start" }) // A late callback cannot skip an unseen prompt.
+    val swipeIds=listOf("prepare","one_swipe_left","one_swipe_right","two_swipe_left","two_swipe_right")
+    check(NativeGestureBatchGuidePlan.SWIPE_PROMPTS.map { it.id }==swipeIds)
+    check(NativeGestureBatchGuidePlan.SWIPE_PROMPTS.map { it.durationMs }==listOf(10000L,20000L,20000L,20000L,20000L))
+    val swipePlan=NativeGestureBatchGuidePlan(true); var swipePlanTime=0L
+    check(swipePlan.stepCount==4 && plan.stepCount==6)
+    for (prompt in NativeGestureBatchGuidePlan.SWIPE_PROMPTS) {
+        swipePlan.update(swipePlanTime,true); swipePlanTime+=prompt.durationMs; swipePlan.update(swipePlanTime,true)
+    }
+    check(swipePlanTime==90000L && swipePlan.snapshot.complete && swipePlan.snapshot.step==4)
+
+    val offQueue=NativeInputObservationQueue()
+    check(NativeGestureBatchGuide.create(null,offQueue)==null)
+    check(NativeGestureBatchGuide.create("false",offQueue)==null)
+    check(NativeGestureBatchGuide.create("True",offQueue)==null)
+    check(NativeGestureBatchGuide.create(null,offQueue,"two-single-repeat")==null)
+    check(NativeGestureBatchGuide.create("false",offQueue,"two-single-repeat")==null)
+    check(NativeGestureBatchGuide.create(null,offQueue,"swipe-navigation")==null)
+    check(NativeGestureBatchGuide.create("false",offQueue,"swipe-navigation")==null)
+    check(rows(offQueue).isEmpty())
+
+    SystemClock.now=0
+    val queue=NativeInputObservationQueue(); val guide=NativeGestureBatchGuide.create("true",queue)!!
+    val first=Activity(); val root=first.window.decorView
+    val ordinary=View(); root.addView(ordinary)
+    val rootBounds=listOf(root.left,root.top,root.right,root.bottom)
+    val childMutations=root.childMutations; val layouts=root.rootLayouts
+    guide.onResumed(first)
+    tick(guide,0,active=false); check(root.overlay.views.isEmpty())
+    tick(guide,1000,interactive=false); check(root.overlay.views.isEmpty())
+    tick(guide,2000); check(root.overlay.views.size==1 && !guide.uiShown)
+    tick(guide,7000); check(!guide.uiShown) // Attaching without a draw cannot start countdown.
+    val label=root.overlay.views.single() as TextView
+    check(!label.isFocusable && !label.isFocusableInTouchMode && !label.isClickable && !label.isLongClickable && !label.selectable)
+    check(label.foreground==Color.WHITE && label.background==Color.BLACK && label.textSize==28f)
+    check(root.children==listOf(ordinary) && root.childMutations==childMutations && root.rootLayouts==layouts)
+    check(rootBounds==listOf(root.left,root.top,root.right,root.bottom))
+    // The old ordinary-child predicate rejects this overlay even though dispatch draws it.
+    check(!label.isShown && !label.getGlobalVisibleRect(Rect()))
+    check(!(label.isAttachedToWindow && label.isShown && label.windowVisibility==View.VISIBLE &&
+        label.width>0 && label.height>0 && label.getGlobalVisibleRect(Rect())))
+    root.overlay.draw(); tick(guide,7000); check(guide.uiShown)
+    root.overlay.draw()
+    val firstDrawRows=rows(queue)
+    val attempt=firstDrawRows.single { it.fields["guideEvent"]=="draw_attempt" }
+    check(attempt.fields["promptId"]=="prepare" && attempt.fields["labelHierarchyShown"]==false)
+    check(listOf("hostAttached","hostShown","hostWindowVisible","hostFocused","labelAttached",
+        "labelVisibilityFlag","labelWindowVisible","labelIntersectsHost").all { attempt.fields[it]==true })
+    check(firstDrawRows.single { it.fields["guideEvent"]=="shown" }.seq>attempt.seq)
+    tick(guide,8000); check(label.text.contains("9s"))
+    first.focused=false; tick(guide,8500); check(root.overlay.views.isEmpty())
+    tick(guide,100000); check(guide.promptId=="prepare")
+    first.focused=true; tick(guide,100001); root.overlay.draw(); tick(guide,100001)
+    tick(guide,109001); check(guide.promptId=="one_single")
+    val afterTransition=rows(queue)
+    check(afterTransition.none { it.fields["guideEvent"]=="step_start" }) // New label has not drawn.
+    root.overlay.draw(); tick(guide,109001)
+    val nextPromptRows=rows(queue)
+    check(nextPromptRows.any { it.fields["guideEvent"]=="step_start" && it.fields["promptId"]=="one_single" })
+    check(nextPromptRows.count { it.fields["guideEvent"]=="draw_attempt" && it.fields["promptId"]=="one_single" }==1)
+    guide.onUnavailable(first,"paused"); check(root.overlay.views.isEmpty())
+    val second=Activity(); val other=View(); second.window.decorView.overlay.add(other)
+    guide.onResumed(second); tick(guide,200000); second.window.decorView.overlay.draw(); tick(guide,200000)
+    guide.onUnavailable(first,"destroyed") // Stale callback leaves the successor's overlay intact.
+    check(second.window.decorView.overlay.views.size==2 && guide.promptId=="one_single")
+    val oldLabel=second.window.decorView.overlay.views.last()
+    guide.stop(); check(guide.released && second.window.decorView.overlay.views==listOf(other))
+    rows(queue); oldLabel.draw(); guide.onResumed(first); tick(guide,999999); guide.stop()
+    check(rows(queue).isEmpty()) // No late draw/lifecycle/tick rows or UI after stop.
+
+    val visibilityQueue=NativeInputObservationQueue()
+    val visibilityGuide=NativeGestureBatchGuide.create("true",visibilityQueue)!!
+    val visibilityActivity=Activity(); val visibleHost=visibilityActivity.window.decorView
+    visibilityGuide.onResumed(visibilityActivity)
+    visibleHost.visibility=View.INVISIBLE; tick(visibilityGuide,0); check(visibilityGuide.released)
+    visibleHost.visibility=View.VISIBLE; visibleHost.windowVisibility=View.INVISIBLE
+    tick(visibilityGuide,0); check(visibilityGuide.released)
+    visibleHost.windowVisibility=View.VISIBLE; visibleHost.isAttachedToWindow=false
+    tick(visibilityGuide,0); check(visibilityGuide.released)
+    visibleHost.isAttachedToWindow=true; tick(visibilityGuide,0)
+    val boundedLabel=visibleHost.overlay.views.single()
+    // A draw alone is insufficient: its own bounds must intersect the eligible host.
+    boundedLabel.layout(visibleHost.width,0,visibleHost.width+100,100)
+    visibleHost.overlay.draw(); check(!visibilityGuide.uiShown)
+    val rejectedAttempt=rows(visibilityQueue).single { it.fields["guideEvent"]=="draw_attempt" }
+    check(rejectedAttempt.fields["labelIntersectsHost"]==false)
+    tick(visibilityGuide,1000); check(!visibilityGuide.uiShown) // Layout restoration still needs an actual draw.
+    boundedLabel.visibility=View.INVISIBLE; visibleHost.overlay.draw(); check(!visibilityGuide.uiShown)
+    boundedLabel.visibility=View.VISIBLE; boundedLabel.windowVisibility=View.INVISIBLE
+    visibleHost.overlay.draw(); check(!visibilityGuide.uiShown)
+    boundedLabel.windowVisibility=View.VISIBLE; boundedLabel.isAttachedToWindow=false
+    visibleHost.overlay.draw(); check(!visibilityGuide.uiShown)
+    boundedLabel.isAttachedToWindow=true; visibleHost.overlay.draw(); tick(visibilityGuide,1000)
+    check(visibilityGuide.uiShown)
+    check(rows(visibilityQueue).none { it.fields["guideEvent"]=="draw_attempt" }) // One attempt per prompt/surface.
+    visibleHost.windowVisibility=View.INVISIBLE; tick(visibilityGuide,1500); check(visibilityGuide.released)
+    visibleHost.windowVisibility=View.VISIBLE; tick(visibilityGuide,100000)
+    visibleHost.overlay.draw(); tick(visibilityGuide,100000)
+    check(visibilityGuide.promptId=="prepare") // Hidden-window time was not accrued.
+    check(rows(visibilityQueue).count { it.fields["guideEvent"]=="draw_attempt" }==1) // New surface, same prompt.
+    tick(visibilityGuide,100100,active=false); check(visibilityGuide.released)
+    visibilityGuide.stop()
+
+    val repeatQueue=NativeInputObservationQueue()
+    val repeat=NativeGestureBatchGuide.create("true",repeatQueue,"two-single-repeat")!!
+    val repeatActivity=Activity(); val repeatRoot=repeatActivity.window.decorView
+    val preservedOverlay=View(); repeatRoot.overlay.add(preservedOverlay)
+    repeat.onResumed(repeatActivity); tick(repeat,0)
+    check(repeat.mode=="manual_repeat" && repeat.promptId=="two_single_repeat" && !repeat.uiShown)
+    val repeatLabel=repeatRoot.overlay.views.last() as TextView
+    val repeatText="TWO FINGERS: ONE TAP\\nRepeat 10–15 times\\nAbout 3 seconds apart\\nThen stop."
+    check(repeatLabel.text==repeatText && !repeatLabel.isFocusable && !repeatLabel.isClickable && !repeatLabel.selectable)
+    repeatRoot.overlay.draw(); check(repeat.uiShown)
+    tick(repeat,900000); check(repeatLabel.text==repeatText && !repeat.completed)
+    repeatRoot.visibility=View.INVISIBLE; tick(repeat,900100); check(repeat.released)
+    repeatRoot.visibility=View.VISIBLE; tick(repeat,1900000); repeatRoot.overlay.draw()
+    check(repeat.promptId=="two_single_repeat" && !repeat.completed)
+    repeat.onUnavailable(repeatActivity,"paused"); check(repeat.released)
+    repeat.onResumed(repeatActivity); tick(repeat,2900000); repeatRoot.overlay.draw()
+    repeat.stop(); check(repeat.released && repeatRoot.overlay.views==listOf(preservedOverlay))
+    val repeatRows=rows(repeatQueue)
+    check(repeatRows.any { it.fields["guideEvent"]=="shown" })
+    check(repeatRows.any { it.fields["guideEvent"]=="pause" } && repeatRows.any { it.fields["guideEvent"]=="resume" })
+    check(repeatRows.all { it.fields["guideMode"]=="manual_repeat" && it.fields["promptId"]=="two_single_repeat" &&
+        listOf("stepNumber","stepCount","countdownSeconds","remainingMs","promptElapsedMs","activeElapsedMs").all { key->it.fields[key]==null } })
+    check(repeatRows.none { it.fields["guideEvent"] in listOf("countdown","countdown_start","step_start","step_end","complete") })
+    check(repeatRows.all { row-> row.fields.values.all { it==null || it is String || it is Number || it is Boolean } })
+    tick(repeat,3900000); repeatRoot.overlay.draw(); check(rows(repeatQueue).isEmpty())
+
+    val swipeQueue=NativeInputObservationQueue()
+    val swipeGuide=NativeGestureBatchGuide.create("true",swipeQueue,"swipe-navigation")!!
+    val swipeActivity=Activity(); val swipeRoot=swipeActivity.window.decorView
+    val unrelated=View(); swipeRoot.overlay.add(unrelated)
+    swipeGuide.onResumed(swipeActivity); tick(swipeGuide,0); tick(swipeGuide,5000)
+    check(!swipeGuide.uiShown && swipeGuide.mode=="automatic_four_swipes" && swipeGuide.promptId=="prepare")
+    swipeRoot.overlay.draw(); tick(swipeGuide,5000)
+    var swipeTime=905000L; tick(swipeGuide,swipeTime)
+    check(swipeGuide.promptId=="one_swipe_left" && !swipeGuide.completed)
+    check(rows(swipeQueue).none { it.fields["guideEvent"]=="step_start" }) // Late tick finishes only preparation.
+    for ((i,prompt) in NativeGestureBatchGuidePlan.SWIPE_PROMPTS.drop(1).withIndex()) {
+        swipeTime+=5000; tick(swipeGuide,swipeTime)
+        check(swipeGuide.promptId==prompt.id && !swipeGuide.completed)
+        val instruction=swipeRoot.overlay.views.last() as TextView
+        check(instruction.text.contains(prompt.instruction) && instruction.text.contains("STEP ${i+1} / 4"))
+        check(!instruction.isFocusable && !instruction.isClickable && !instruction.selectable)
+        swipeRoot.overlay.draw(); tick(swipeGuide,swipeTime)
+        if (i==0) {
+            tick(swipeGuide,swipeTime+5000)
+            swipeActivity.focused=false; tick(swipeGuide,swipeTime+5100); check(swipeGuide.released)
+            swipeTime+=500000; tick(swipeGuide,swipeTime); check(swipeGuide.promptId==prompt.id)
+            swipeActivity.focused=true; tick(swipeGuide,swipeTime); swipeRoot.overlay.draw(); tick(swipeGuide,swipeTime)
+            swipeTime+=15000
+        } else swipeTime+=20000
+        tick(swipeGuide,swipeTime)
+    }
+    check(swipeGuide.completed && swipeGuide.promptId=="finished")
+    swipeGuide.stop(); check(swipeGuide.released && swipeRoot.overlay.views==listOf(unrelated))
+    val swipeRows=rows(swipeQueue)
+    check(swipeRows.filter { it.fields["guideEvent"]=="step_start" }.map { it.fields["promptId"] }==swipeIds.drop(1))
+    check(swipeRows.filter { it.fields["guideEvent"]=="step_end" }.map { it.fields["promptId"] }==swipeIds.drop(1))
+    check(swipeRows.filter { it.fields["guideEvent"]=="shown" }.map { it.fields["promptId"] }.distinct().containsAll(swipeIds.drop(1)))
+    check(swipeRows.all { it.fields["guideMode"]=="automatic_four_swipes" && it.fields["stepCount"]==4 })
+    check(swipeRows.any { it.fields["guideEvent"]=="pause" } && swipeRows.any { it.fields["guideEvent"]=="cleanup" })
+    tick(swipeGuide,swipeTime+900000); swipeRoot.overlay.draw(); check(rows(swipeQueue).isEmpty())
+
+    val stopDirectory=java.nio.file.Files.createTempDirectory("native-owner-stop-host-").toFile()
+    try {
+        val stop=NativeInputObservationOwnerStop(stopDirectory,"run_a")
+        val otherStop=NativeInputObservationOwnerStop(stopDirectory,"run_b")
+        stop.prepare(); otherStop.prepare()
+        check(stop.requestFile.name=="probe-run_a-native-stop.request" && !stop.requested() && !otherStop.requested())
+        stop.requestFile.writeText("OWNER_DONE")
+        check(stop.requested() && !otherStop.requested())
+        check(runCatching { stop.prepare() }.isFailure && stop.requested()) // Prior exact request remains untouched.
+        fun stoppedState()=NativeInputObservationRunState(300000).apply {
+            windowStartMs=100; windowEndMs=2100; sinkInstalled=true; exactSinkDetached=true
+            cleanupComplete=true; exportComplete=true; rowsRecorded=3; rowsWritten=3
+        }
+        check(!stoppedState().captureComplete) // Early closure must not pretend the full window elapsed.
+        check(nativeInputObservationOwnerStopComplete(stoppedState(),true))
+        check(!nativeInputObservationOwnerStopComplete(stoppedState(),false))
+        check(!nativeInputObservationOwnerStopComplete(stoppedState().apply { cleanupComplete=false },true))
+        check(!nativeInputObservationOwnerStopComplete(stoppedState().apply { exportComplete=false },true))
+        check(!nativeInputObservationOwnerStopComplete(stoppedState().apply { observerFailures=1 },true))
+        check(!nativeInputObservationOwnerStopComplete(stoppedState().apply { exportFailures=1 },true))
+        check(!nativeInputObservationOwnerStopComplete(stoppedState().apply { rowsWritten=2 },true))
+        check(!nativeInputObservationOwnerStopComplete(stoppedState().apply { windowEndMs=99 },true))
+        check(!nativeInputObservationOwnerStopComplete(stoppedState().apply { failed(IllegalStateException("failure")) },true))
+    } finally { stopDirectory.deleteRecursively() }
+
+    val batchQueue=NativeInputObservationQueue(); val batch=NativeGestureBatchGuide.create("true",batchQueue)!!
+    val batchActivity=Activity(); var batchTime=0L
+    batch.onResumed(batchActivity); tick(batch,batchTime)
+    for (prompt in NativeGestureBatchGuidePlan.PROMPTS) {
+        batchActivity.window.decorView.overlay.draw(); tick(batch,batchTime)
+        if (prompt.id=="two_double") {
+            tick(batch,batchTime+1000); tick(batch,batchTime+1100,interactive=false)
+            check(!batch.completed && batch.promptId=="two_double" && batch.released)
+            batchTime+=60000 // Screen-off/hidden time cannot complete the final instruction.
+            tick(batch,batchTime); batchActivity.window.decorView.overlay.draw(); tick(batch,batchTime)
+            batchTime+=19000
+        } else batchTime+=prompt.durationMs
+        tick(batch,batchTime)
+    }
+    check(batch.completed)
+    check((batchActivity.window.decorView.overlay.views.single() as TextView).text.contains("INSTRUCTIONS FINISHED"))
+    batch.stop(); val batchRows=rows(batchQueue)
+    check(batchRows.filter { it.fields["guideEvent"]=="step_start" }.map { it.fields["promptId"] }==ids.drop(1))
+    check(batchRows.filter { it.fields["guideEvent"]=="step_end" }.map { it.fields["promptId"] }==ids.drop(1))
+    check(batchRows.all { it.fields["guideMode"]=="automatic_six_steps" })
+    check(batchRows.all { row -> row.fields.values.all { it==null || it is String || it is Number || it is Boolean } })
+
+    val failureQueue=NativeInputObservationQueue(); val failed=NativeGestureBatchGuide.create("true",failureQueue)!!
+    val bad=Activity(); val kept=View(); bad.window.decorView.overlay.add(kept)
+    bad.window.decorView.overlay.failAddAfterSideEffect=true
+    failed.onResumed(bad); tick(failed,0)
+    check(failed.failureCount>0 && failed.released && bad.window.decorView.overlay.views==listOf(kept))
+    check(runCatching { failed.throwIfFailed() }.isFailure)
+    check(rows(failureQueue).any { it.fields["guideEvent"]=="error" })
+    val removal=NativeGestureBatchGuide.create("true",NativeInputObservationQueue())!!; val host=Activity()
+    removal.onResumed(host); tick(removal,0); host.window.decorView.overlay.failRemoval=true
+    check(runCatching { removal.stop() }.isFailure && !removal.released)
+    host.window.decorView.overlay.failRemoval=false
+    check(runCatching { removal.stop() }.isFailure && removal.released) // Original error is retained.
+    val repeatFailure=NativeGestureBatchGuide.create("true",NativeInputObservationQueue(),"two-single-repeat")!!
+    val repeatBadHost=Activity(); repeatBadHost.window.decorView.overlay.failAddAfterSideEffect=true
+    repeatFailure.onResumed(repeatBadHost); tick(repeatFailure,0)
+    check(repeatFailure.failureCount>0 && repeatFailure.released && repeatBadHost.window.decorView.overlay.views.isEmpty())
+    check(runCatching { repeatFailure.stop() }.isFailure)
+    println("PASS: actual guide plan/UI adapter; four own-drawn swipe slots/order/late-tick/pause/cleanup, preserved default six and static repeat, exact per-run Owner-stop control, nonhierarchical overlay draw regression, hidden host/window and own bounds/attachment, draw/visibility/sink gating, default-off, noninteractive unchanged root geometry, stale/late callbacks and partial failures. Host doubles only.")
+}
+'''
