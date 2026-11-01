@@ -12,7 +12,7 @@ import org.json.*
 /** Full actual native listener/connect/queue/controller/route -> real original Phone Binder/merger.
  * Android service transport and JSON registry are named boundaries; publication uses actual region/word. */
 internal fun pinProducerScenarios(run:(String,(Joined)->Unit)->Unit) {
-    val modes=if(System.getenv("EYEPROJECTOR_C206_NATIVE_ONLY")=="1")listOf("first-observation")else listOf("H1-Long-H2","first-observation","canceling-first-result","empty-Long-H2","normal-Short","normal-Long","two-Shorts","learning-H1-H2","learning-UP-H2","learning-persist-H2","learning-normal","binding-retired","state-before-DOWN","routed-binding-retired")
+    val modes=if(System.getenv("EYEPROJECTOR_C206_NATIVE_ONLY")=="1")listOf("first-observation")else listOf("H1-Long-H2","first-observation","canceling-first-result","empty-Long-H2","normal-Short","normal-Long","two-Shorts","learning-H1-H2","learning-UP-H2","learning-persist-H2","learning-normal","binding-retired","state-before-DOWN","routed-binding-retired","routed-CANCELING-UP","routed-CANCELING-CANCEL","routed-CANCELING-REPEAT")
     for(queue in listOf("lane","main")) for(mode in modes)
         run("R187-3-actual-native-$queue-$mode") { j ->
         var listener:IHidCaptureListener?=null
@@ -59,6 +59,52 @@ internal fun pinProducerScenarios(run:(String,(Joined)->Unit)->Unit) {
         try {
             pin.javaClass.getDeclaredMethod("connect").apply{isAccessible=true}.invoke(pin);flush();flush();check(listener!=null)
             field("main").set(pin,android.os.Handler(android.os.Looper(main)))
+            if(mode.startsWith("routed-CANCELING-")) {
+                val merger=j.phone.get("phoneInput")!!
+                fun rootCount(name:String)=(merger.javaClass.getDeclaredField(name).apply{isAccessible=true}.get(merger) as Map<*,*>).size
+                fun appCount()=(controller.javaClass.getDeclaredField("presses").apply{isAccessible=true}.get(controller) as Map<*,*>).size
+                fun nativeCount()=(field("originals").get(pin) as Map<*,*>).size
+                repeat(3) { cycle ->
+                    val before=j.events.size
+                    j.press();check(j.input.anchor.holding)
+                    val down=android.os.SystemClock.uptimeMillis();val press=100L+cycle
+                    fun raw(phase:String,at:Long=down,time:Long=at,physical:Long=press,repeats:Int=0)=JSONObject()
+                        .put("deviceKey","pin").put("generation",1).put("sourceId",3).put("collectionKey","keys")
+                        .put("vendorId",2).put("productId",3).put("code",195).put("deviceName","Pin").put("label","Function")
+                        .put("phase",phase).put("downTimeMs",at).put("eventTimeMs",time).put("repeatCount",repeats).put("pressId",physical)
+                        .retain("r215-$queue-$mode-$cycle-$phase-$physical-$repeats")
+                    listener!!.onInput(raw("DOWN"));drain()
+                    check(rootCount("receivedPresses")==1&&rootCount("presses")==1&&appCount()==1&&nativeCount()==1)
+                    val canceled=CountDownLatch(1);val finish=CountDownLatch(1)
+                    j.cancelBehavior={canceled.countDown();check(finish.await(4,TimeUnit.SECONDS));true}
+                    j.phone.receive(Frame(Wire.TAP,payload=Tap(20,30,Geometry(480,640)).bytes()))
+                    try {
+                        check(canceled.await(2,TimeUnit.SECONDS))
+                        when(mode.substringAfterLast('-')) {
+                            "REPEAT"->{listener!!.onInput(raw("DOWN",time=down+10,repeats=1));drain();listener!!.onInput(raw("UP",time=down+100))}
+                            "CANCEL"->listener!!.onInput(raw("CANCEL",time=down+100))
+                            else->listener!!.onInput(raw("UP",time=down+100))
+                        }
+                        drain()
+                        check(j.input.anchor.discardingControls&&finish.count==1L)
+                        check(rootCount("receivedPresses")==0&&rootCount("presses")==0&&appCount()==0&&nativeCount()==0) {
+                            "discarded routed original leaked before CANCEL completion: received=${rootCount("receivedPresses")} presses=${rootCount("presses")} app=${appCount()} native=${nativeCount()}"
+                        }
+                        check(j.events.drop(before).map{it.phase}==listOf(Touch.Phase.DOWN,Touch.Phase.CANCEL))
+                    }finally{finish.countDown();j.pump()}
+                    check(!j.input.anchor.holding)
+                    // Admit B and deliver A's stale ending while B still owns all three records.
+                    val fresh=android.os.SystemClock.uptimeMillis();val next=press+10
+                    listener!!.onInput(raw("DOWN",at=fresh,physical=next));drain()
+                    check(rootCount("receivedPresses")==1&&rootCount("presses")==1&&appCount()==1&&nativeCount()==1)
+                    listener!!.onInput(raw("UP",time=down+200));drain()
+                    check(rootCount("receivedPresses")==1&&rootCount("presses")==1&&appCount()==1&&nativeCount()==1)
+                    listener!!.onInput(raw("UP",at=fresh,time=fresh+100,physical=next));drain();j.pump()
+                    check(j.input.anchor.holding&&rootCount("receivedPresses")==0&&rootCount("presses")==0&&appCount()==0&&nativeCount()==0)
+                    check(j.events.drop(before).map{it.phase}==listOf(Touch.Phase.DOWN,Touch.Phase.CANCEL,Touch.Phase.DOWN))
+                    j.press();check(j.events.drop(before).map{it.phase}==listOf(Touch.Phase.DOWN,Touch.Phase.CANCEL,Touch.Phase.DOWN,Touch.Phase.UP))
+                }
+            } else {
             if(mode.startsWith("H1")||mode in listOf("first-observation","canceling-first-result")||mode=="learning-H1-H2"||mode=="binding-retired")j.hold()
             val entered=CountDownLatch(1);val release=CountDownLatch(1)
             if(queue=="lane"){lane.execute{entered.countDown();check(release.await(4,TimeUnit.SECONDS))};check(entered.await(2,TimeUnit.SECONDS))}
@@ -136,6 +182,7 @@ internal fun pinProducerScenarios(run:(String,(Joined)->Unit)->Unit) {
             }
             if(mode=="learning-H1-H2")check(writes==saved&&!controller.capturing)
             check((field("originals").get(pin) as Map<*,*>).isEmpty()){"raw metadata survived matching original end"}
+            }
         }finally{lane.shutdownNow();check(lane.awaitTermination(3,TimeUnit.SECONDS));rikka.shizuku.Shizuku.capture=null}
     }
 }

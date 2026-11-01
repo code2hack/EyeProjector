@@ -317,7 +317,7 @@ internal class PhoneHidController(
         retireInput().forEach(::cancel)
     }
 
-    /** Retire this represented raw operation without dispatching its action or route cancellation. */
+    /** Discard the action and retire only a route already created by this exact original DOWN. */
     fun discardRaw(device: Int, key: Int, scan: Int, down: Long, phase: PhoneHidPhase, pressId: Long = down): Boolean {
         val raw = Raw(device,key,scan,down,pressId)
         remember(raw,true)
@@ -325,11 +325,13 @@ internal class PhoneHidController(
         capture?.takeIf { raw(it.event)==raw }?.let { capture=null }
         val old=presses.remove(raw)
         if(old!=null) {
-            old.canceled=true;old.route=null
+            old.canceled=true
             admissions.entries.removeAll { it.value===old }
             if(tapAdmission===old)tapAdmission=null
             if(releasedFunction===old)releasedFunction=null
             if(releasedBackHome===old)releasedBackHome=null
+            // The original proxy receives CANCEL metadata only: no new admission or Anchor action.
+            cancel(old)
         }
         if(phase!=PhoneHidPhase.DOWN)retired.remove(raw)
         return true
