@@ -718,7 +718,8 @@ private class Session(
         ::phoneNavigation,
         { inputControls.cancel() },
         { event -> if (running.get()) send(Frame(Wire.RECEIVER_INPUT, payload = event.bytes())) },
-        { running.get() }, functionIntent = ::acceptFunction)
+        { running.get() }, functionIntent = ::acceptFunction,
+        anchorControl = inputControls::consumeHeldControl, cancelPassiveControl = inputControls::cancelOrdinary)
     private var server: java.lang.Process? = null
     private var inputThread: Thread? = null
     @Volatile private var streamThread: Thread? = null
@@ -748,6 +749,8 @@ private class Session(
     private var identifiedDisplay = false
     private fun phoneNavigation(action: Navigation, size: Geometry) {
         if (!running.get()) return
+        if (inputControls.consumeHeldControl(com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission()) !=
+            com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.NORMAL) return
         when (action) {
             Navigation.BACK -> inputControls.navigate(Navigate(action, size))
             Navigation.HOME -> launches.home()
@@ -817,7 +820,8 @@ private class Session(
         if (timed) Log.i("EyeProjectorInput", "hid_tap phase=${edge.phase} route=$routeId stage=arrival uptimeMs=$arrived sourceEventMs=${edge.eventTimeMs} sourceDownMs=${edge.downTimeMs} sourceAgeMs=${arrived - edge.eventTimeMs} tid=${Process.myTid()}")
         try {
             try {
-                if (running.get()) phoneInput.stampedEdge(routeId, edge) { point, source ->
+                if (running.get()) phoneInput.stampedEdge(routeId, edge,
+                    { point, source -> receiverUsability.acceptsContext(regionId, word, point, source) }) { point, source ->
                     if (edge.action == PhoneHidAction.BACK_HOME || edge.action == PhoneHidAction.LOCK)
                         receiverUsability.acceptsContext(regionId, word, point, source)
                     else receiverUsability.accepts(regionId, word, point, source)

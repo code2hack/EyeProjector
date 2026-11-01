@@ -1,0 +1,108 @@
+package com.code2hack.eyeprojector.directhost
+
+import com.code2hack.eyeprojector.directhost.anchor.execution.*
+import com.code2hack.eyeprojector.directrg.*
+import com.code2hack.eyeprojector.protocol.*
+import java.nio.file.Files
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+
+fun main() {
+    val directory = Files.createTempDirectory("eyeprojector-cancel-only-core-").toFile()
+    val runtime = AnchorAppRuntime(android.content.Context(directory)); runtime.holdDrain()
+    var passed = 0
+    val failures = mutableListOf<String>()
+    fun scenario(name: String, test: (Joined) -> Unit) {
+        Joined(runtime).use { joined ->
+            try { test(joined); passed++; println("PASS $name actual Phone core source") }
+            catch (failure: Throwable) { failures.add(name); println("FAIL $name: $failure"); failure.printStackTrace(System.out) }
+            finally { joined.retain(name) }
+        }
+    }
+    fun frame(j: Joined, channel: Int, bytes: ByteArray) { j.phone.receive(Frame(channel, payload = bytes)); j.pump() }
+    val geometry = Geometry(480, 640)
+    try {
+        if (System.getenv("EYEPROJECTOR_PENDING_LAUNCH") == "1") {
+            scenario("PENDING-queued-normal-Home-must-not-cancel-or-launch-after-successor-Hold") { j ->
+                queuedHomeBefore(j)
+            }
+            println("PENDING RESULT $passed passed; ${failures.size} failed; actual queued Home remains outside current source allocation")
+            check(failures.isEmpty()) { failures.joinToString() }
+            return
+        }
+        scenario("held-wire-tap-cancels-only-and-distinct-tap-recovers") { j ->
+            j.hold(); val setting = runtime.store.snapshot("app")
+            frame(j, Wire.TAP, Tap(200, 100, geometry).bytes()); j.canceled()
+            check(j.ordinary.isEmpty()) { "Cancelling Tap also tapped: ${j.ordinary}" }
+            check(runtime.store.snapshot("app") == setting)
+            frame(j, Wire.TAP, Tap(200, 100, geometry).bytes()); check(j.ordinary == listOf("tap"))
+        }
+        scenario("held-wire-scroll-cancels-only") { j ->
+            j.hold(); frame(j, Wire.SCROLL, Scroll(Tap(200, 100, geometry), 100).bytes()); j.canceled()
+            check(j.ordinary.isEmpty()) { "Cancelling Scroll also scrolled: ${j.ordinary}" }
+        }
+        scenario("held-wire-back-cancels-only-before-nativeAction") { j ->
+            j.hold(); val before = j.phone.control.sink.toString()
+            frame(j, Wire.NAVIGATE, Navigate(Navigation.BACK, geometry).bytes()); j.canceled()
+            check(j.phone.control.sink.toString() == before) { "Cancelling Back also wrote navigation" }
+        }
+        scenario("held-wire-home-cancels-only-before-launch") { j ->
+            j.hold(); frame(j, Wire.NAVIGATE, Navigate(Navigation.CONTEXTUAL_HOME, geometry).bytes()); j.canceled()
+            check(j.appLaunches.isEmpty()) { "Cancelling Home also launched: ${j.appLaunches}" }
+            check(j.fromPhone.none { it.channel == Wire.RECEIVER_INPUT })
+        }
+        scenario("held-long-function-has-no-registration") { j ->
+            j.hold(); val saved = runtime.store.snapshot("app"); val reads = j.windows.reads
+            j.register(); j.canceled()
+            check(!j.wiring.active() && j.messages.none { it is AnchorMessage.Offer }) { "Long also opened registration" }
+            check(j.windows.reads == reads && runtime.store.snapshot("app") == saved) { "Cancel-only Long performed lookup/save" }
+        }
+        scenario("short-held-release-is-UP-only") { j ->
+            j.hold(); val reads = j.windows.reads
+            j.press()
+            check(j.events.map { it.phase } == listOf(Touch.Phase.DOWN, Touch.Phase.UP))
+            check(j.events[0].contactId == j.events[1].contactId && !j.input.anchor.holding)
+            check(j.windows.reads == reads)
+        }
+        scenario("distinct-queued-shorts-preserve-FIFO-DOWN-UP") { j ->
+            j.wiring.short(1000); j.wiring.short(2000); j.pump()
+            check(j.events.map { it.phase } == listOf(Touch.Phase.DOWN, Touch.Phase.UP)) { "Distinct Shorts were coalesced or both snapshotted: ${j.events}" }
+            check(!j.input.anchor.holding)
+        }
+        scenario("queued-activate-then-register-is-consumed-at-app-FIFO") { j ->
+            val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            runtime.onLane { entered.countDown(); check(release.await(5, TimeUnit.SECONDS)) }
+            check(entered.await(2, TimeUnit.SECONDS))
+            try {
+                j.wiring.short(1000)
+                j.wiring.move(320f, 420f); j.wiring.register(2000); j.wiring.releaseRegister(2000)
+                j.glasses.frames().forEach(j.phone::receive)
+                j.phone.holdFunctions()
+                check(!j.input.anchor.holding) // Both early shell checks ran before actual DOWN.
+            } finally { release.countDown() }
+            j.pump()
+            check(j.events.map { it.phase } == listOf(Touch.Phase.DOWN, Touch.Phase.CANCEL))
+            check(!j.wiring.active() && j.messages.none { it is AnchorMessage.Offer }) { "FIFO REGISTER continued after earlier ACTIVATE established Hold" }
+            check(j.windows.reads == 1) { "Consumed FIFO REGISTER read targets: ${j.windows.reads}" }
+        }
+        scenario("no-hold-ordinary-and-fresh-long-remain-normal") { j ->
+            frame(j, Wire.TAP, Tap(200, 100, geometry).bytes())
+            frame(j, Wire.SCROLL, Scroll(Tap(200, 100, geometry), 100).bytes())
+            check(j.ordinary == listOf("tap", "scroll"))
+            j.register(); check(j.wiring.active() && j.messages.any { it is AnchorMessage.Offer })
+        }
+        scenario("registration-observer-yields-to-real-activation-and-setting-change-retires-Hold") { j ->
+            j.register(); j.wiring.choose(AnchorRegistrationAction.CANCEL); j.pump()
+            check(!j.wiring.active())
+            j.press(); check(j.input.anchor.holding)
+            runtime.store.replace(savedHold.copy(mode = com.code2hack.eyeprojector.directhost.anchor.preferences.AnchorMode.CLICK))
+            runtime.holdDrain(); j.pump(); j.canceled()
+        }
+        coreUnitScenarios { name, test ->
+            try { test(); passed++; println("PASS $name actual Phone core source") }
+            catch (failure: Throwable) { failures.add(name); println("FAIL $name: $failure"); failure.printStackTrace(System.out) }
+        }
+        println("RESULT $passed passed; ${failures.size} failed; Owner88 Phone core only, matched client/wire/UI joins not implemented")
+        check(failures.isEmpty()) { failures.joinToString() }
+    } finally { runtime.invalidateBinding(); runtime.holdDrain(); directory.deleteRecursively() }
+}

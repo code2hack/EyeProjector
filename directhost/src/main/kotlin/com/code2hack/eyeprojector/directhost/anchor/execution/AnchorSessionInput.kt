@@ -19,6 +19,14 @@ internal class AnchorSessionInput(private val lock: Any, write: (ByteArray) -> U
     private var geometry: Geometry? = null
     val holding: Boolean get() = output.holding
 
+    fun consumeHeldControl(admission: AnchorControlAdmission): AnchorControlDisposition =
+        anchor.consumeHeldControl(admission)
+
+    /** Passive pointer loss may retire ordinary pointer work, not a stationary Anchor Hold. */
+    fun cancelOrdinary() = synchronized(lock) {
+        if (anchor.heldSetting() == null) output.cancel()
+    }
+
     fun bindMotionTarget(target: PhoneTouchDispatcher.MotionTarget) = output.bindMotionTarget(target)
     fun geometry(next: Geometry) = synchronized(lock) {
         if (geometry != next) {

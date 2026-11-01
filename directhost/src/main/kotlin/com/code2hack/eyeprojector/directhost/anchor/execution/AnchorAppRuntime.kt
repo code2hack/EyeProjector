@@ -80,6 +80,9 @@ internal class AnchorAppRuntime(context: Context, registrationProviderName: Stri
         override fun reconcile(setting: AnchorSettingContext) = current() && original.reconcile(AnchorExecutionCodec.setting(setting))
         override fun heldSetting(): AnchorSettingContext? =
             if (current()) original.heldSetting()?.let(AnchorExecutionCodec::setting) else null
+        override fun consumeHeldControl(): AnchorControlDisposition =
+            if (!current()) AnchorControlDisposition.RETIRED
+            else AnchorControlDisposition.entries[original.consumeHeldControl()]
         override fun releaseHeld(expected: AnchorSettingContext?, settingCurrent: Boolean): AnchorReleaseResult =
             if (!current()) AnchorReleaseResult.RETIRED else AnchorReleaseResult.entries[
                 original.releaseHeld(expected?.let(AnchorExecutionCodec::setting) ?: byteArrayOf(), settingCurrent)]

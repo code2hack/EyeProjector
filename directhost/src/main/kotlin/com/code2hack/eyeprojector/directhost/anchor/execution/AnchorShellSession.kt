@@ -50,7 +50,8 @@ internal class AnchorShellSession(
         val original = binding.get()
         val id = sequence.incrementAndGet()
         if (!input.anchor.isCurrent(admission)) return
-        if (admission.intent.kind == FunctionIntentKind.REGISTER) input.anchor.cancelHeld()
+        if (admission.intent.kind == FunctionIntentKind.REGISTER &&
+            input.anchor.consumeHeldControl(admission, captureNormal = false) != AnchorControlDisposition.NORMAL) return
         if (original == null || closed) {
             send(AnchorMessage.Feedback(id, admission.intent, AnchorFeedback.UNAVAILABLE)); return
         }
@@ -68,9 +69,12 @@ internal class AnchorShellSession(
             if (!closed) try { send.invoke(AnchorMessage.HeldState(id, admission.intent, revision, state)) }
             catch (error: Exception) { failure(error) }
         }
-        override fun source(): ByteArray? = if (alive()) source.invoke()?.bytes() else null
+        private fun currentControl() = admission.intent.kind != FunctionIntentKind.REGISTER ||
+            input.anchor.isCurrent(admission.control)
+        override fun source(): ByteArray? = if (alive() && currentControl()) source.invoke()?.bytes() else null
         override fun reconcile(settingContext: ByteArray): Boolean = alive() &&
-            input.anchor.reconcile(AnchorExecutionCodec.setting(settingContext))
+            input.anchor.reconcile(AnchorExecutionCodec.setting(settingContext),
+                admission.control.takeIf { admission.intent.kind == FunctionIntentKind.REGISTER })
         override fun click(settingContext: ByteArray, resolvedTarget: ByteArray): Int {
             if (!alive()) return AnchorExecutionStatus.RETIRED.ordinal
             val setting = AnchorExecutionCodec.setting(settingContext)
@@ -81,7 +85,10 @@ internal class AnchorShellSession(
             catch (error: Exception) { failure(error); AnchorExecutionStatus.INPUT_REJECTED.ordinal }
         }
         override fun heldSetting(): ByteArray? =
-            if (alive()) input.anchor.heldSetting()?.let(AnchorExecutionCodec::setting) else null
+            if (alive()) input.anchor.heldSetting(admission)?.let(AnchorExecutionCodec::setting) else null
+        override fun consumeHeldControl(): Int =
+            if (!alive()) AnchorControlDisposition.RETIRED.ordinal
+            else input.anchor.consumeHeldControl(admission).ordinal
         override fun releaseHeld(expectedSetting: ByteArray, settingCurrent: Boolean): Int {
             if (!alive()) return AnchorReleaseResult.RETIRED.ordinal
             val expected = expectedSetting.takeIf { it.isNotEmpty() }?.let(AnchorExecutionCodec::setting)
@@ -99,7 +106,7 @@ internal class AnchorShellSession(
                 { attached() && current != null && accepts(admission.intent, current) }, ordinaryHandoff, stateOutput).ordinal }
             catch (error: Exception) { failure(error); AnchorExecutionStatus.INPUT_REJECTED.ordinal }
         }
-        override fun retire() { if (alive()) input.anchor.retire() }
+        override fun retire() { if (alive() && currentControl()) input.anchor.retire(admission) }
         override fun send(typedMessage: ByteArray) {
             if (!alive()) return
             val message = AnchorMessage.from(typedMessage)

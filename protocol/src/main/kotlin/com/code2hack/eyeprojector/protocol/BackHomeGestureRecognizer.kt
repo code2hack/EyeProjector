@@ -22,6 +22,11 @@ class BackHomeGestureRecognizer<C : Any>(
     private var cancelTimer: (() -> Unit)? = null
     private var generation = 0L
 
+    /** Read-only membership: an expired callback may have installed another sequence. */
+    fun capturedSequence(press: Any): C? = sequence?.takeIf {
+        it.first == press || it.latest == press
+    }?.captured
+
     fun down(press: Any, source: Any, captured: C) {
         var old = sequence
         if (old != null && (old.first == press || old.latest == press)) return

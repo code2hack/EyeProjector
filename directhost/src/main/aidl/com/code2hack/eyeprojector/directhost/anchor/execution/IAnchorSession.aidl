@@ -8,4 +8,5 @@ interface IAnchorSession {
     @nullable byte[] heldSetting();
     int releaseHeld(in byte[] expectedSetting, boolean settingCurrent);
     int hold(in byte[] settingContext, in byte[] resolvedTarget);
+    int consumeHeldControl();
 }

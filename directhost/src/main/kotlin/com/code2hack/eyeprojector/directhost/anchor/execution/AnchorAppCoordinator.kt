@@ -21,6 +21,7 @@ internal interface AnchorOriginalRoute {
     fun heldSetting(): AnchorSettingContext? = null
     fun releaseHeld(expected: AnchorSettingContext?, settingCurrent: Boolean): AnchorReleaseResult =
         if (expected == null) AnchorReleaseResult.NOT_HELD else AnchorReleaseResult.RETIRED
+    fun consumeHeldControl(): AnchorControlDisposition = AnchorControlDisposition.NORMAL
     fun click(setting: AnchorSettingContext, target: ResolvedAnchorTarget): AnchorExecutionStatus
     fun hold(setting: AnchorSettingContext, target: ResolvedAnchorTarget): AnchorExecutionStatus = AnchorExecutionStatus.HOLD_MODE
     fun retire()
@@ -47,7 +48,7 @@ internal class AnchorAppCoordinator(
 ) : Closeable {
     var registration: ((CapturedAnchorRequest) -> Unit)? = null
     var registrationMessage: ((AnchorMessage, AnchorOriginalRoute) -> Unit)? = null
-    private class Subscription(val route: AnchorOriginalRoute, val context: ProjectionContext, val displayId: Int,
+    private class Subscription(var route: AnchorOriginalRoute, val context: ProjectionContext, val displayId: Int,
         val packageName: String, val observer: Closeable)
     private val subscriptions = mutableListOf<Subscription>() // FIFO lane only.
     private var registrationRequest: CapturedAnchorRequest? = null
@@ -91,6 +92,8 @@ internal class AnchorAppCoordinator(
     }
 
     private fun execute(original: AnchorOriginalRoute) {
+        if (original.intent.kind == FunctionIntentKind.REGISTER &&
+            original.consumeHeldControl() != AnchorControlDisposition.NORMAL) return
         if (original.intent.kind == FunctionIntentKind.ACTIVATE) {
             // Original metadata + in-memory revision check; no saved record/source/target lookup.
             val held = original.heldSetting()
@@ -114,12 +117,14 @@ internal class AnchorAppCoordinator(
             original.source()?.takeIf { it.context == expected }
         }, reader, uptime)
         if (original.intent.kind == FunctionIntentKind.REGISTER) {
+            if (original.consumeHeldControl() != AnchorControlDisposition.NORMAL) return
             val snapshot = provider.read(source.context, packageName)
             if (closed || accessRevision.get() != access || display.get() != displayRevision ||
                 original.source() != source) return original.feedback(AnchorExecutionStatus.RETIRED)
             val handler = registration
             if (handler == null) original.feedback(AnchorExecutionStatus.UNAVAILABLE)
             else {
+                if (original.consumeHeldControl() != AnchorControlDisposition.NORMAL) return
                 cancelRegistration(null)
                 val request = CapturedAnchorRequest(original, source, snapshot)
                 registrationRequest = request
@@ -143,13 +148,23 @@ internal class AnchorAppCoordinator(
 
     private fun watch(route: AnchorOriginalRoute, context: ProjectionContext, displayId: Int, packageName: String) {
         // A Binder adapter can share a stable Session route while retaining per-press admission.
-        if (subscriptions.any { it.context == context && it.packageName == packageName }) return
+        subscriptions.firstOrNull { it.context == context && it.packageName == packageName }?.let {
+            // REGISTER has an operation-scoped normal lease. A later real ACTIVATE owns the
+            // continuing setting observation; do not retain the completed chooser's lease.
+            if (it.route.intent.kind == FunctionIntentKind.REGISTER &&
+                route.intent.kind == FunctionIntentKind.ACTIVATE) it.route = route
+            return
+        }
+        lateinit var subscription: Subscription
         val observer = store.observe(packageName) {
             submit {
-                if (!closed) protect(route) { route.reconcile(store.snapshot(packageName).context) }
+                if (!closed) protect(subscription.route) {
+                    subscription.route.reconcile(store.snapshot(packageName).context)
+                }
             }
         }
-        subscriptions.add(Subscription(route, context, displayId, packageName, observer))
+        subscription = Subscription(route, context, displayId, packageName, observer)
+        subscriptions.add(subscription)
     }
 
     /** Called by real UI/accessibility/binding lifecycle observation, not a periodic synthetic read. */
