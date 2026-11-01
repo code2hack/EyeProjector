@@ -97,8 +97,9 @@ internal fun nativeInputObservationOwnerStopComplete(state: NativeInputObservati
         state.primary == null
 // END NATIVE_OBSERVATION_OWNER_STOP
 
-/** One finite case. Root/Owner operate the normal UI; this driver neither launches nor finishes it. */
-internal fun runNativeInputObservation(instrumentation: Instrumentation, args: Bundle, id: String, report: JSONObject) {
+/** One finite capture. The default is passive; an opt-in same-invocation test driver may act. */
+internal fun runNativeInputObservation(instrumentation: Instrumentation, args: Bundle, id: String, report: JSONObject,
+                                       automation: NativeObservationAutomation? = null) {
     val seconds = args.getString("seconds")?.toInt() ?: 90
     require(seconds in 1..660) // Same existing instrumentation measurement budget; no product expiry.
     val case = args.getString("case") ?: "unclassified"
@@ -228,6 +229,7 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
             .put("case", case).put("seconds", seconds).put("startElapsedMs", started)
             .put("gestureGuideMode", guide?.mode ?: JSONObject.NULL)
             .put("ownerStopRequestFile", ownerStop?.requestFile?.name ?: JSONObject.NULL).toString())
+        automation?.installed(recorder.queue) // Same process and invocation; never a second instrumentation.
         var nextSample = 0L
         var guideInteractive = false
         var guidePowerReadElapsedNs: Long? = null
@@ -269,6 +271,7 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
                 guide.tick(ReceiverActivity.nativeInputObserver === recorder, guideInteractive, guidePowerReadElapsedNs)
                 guide.throwIfFailed()
             }
+            automation?.tick()
             drain()
             Thread.sleep(50)
         }
@@ -284,6 +287,8 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
         var streamClosed = false
         var navigationReleased = navigation == null
         var guideReleased = guide == null
+        var automationReleased = automation == null
+        if (automation != null) state.attempt("adbAutomationStop") { automation.close(); automationReleased = true }
         state.attempt("gestureGuideStop") { if (guide != null) onMain {
             try { guide.stop() } finally { guideReleased = guide.released }
         } }
@@ -321,7 +326,7 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
         state.observerFailures = recorder.queue.failureCount
         state.rowsRecorded = recorder.queue.recorded
         state.cleanupComplete = sinkReleased && lifecycleReleased && listenerReleased &&
-            navigationReleased && guideReleased && !inventoryThread.isAlive && queueClosed && writerClosed && streamClosed
+            navigationReleased && guideReleased && automationReleased && !inventoryThread.isAlive && queueClosed && writerClosed && streamClosed
         state.exportComplete = writerOpened && state.exportFailures == 0L &&
             state.outcomes["traceDrain"] == "SUCCESS" && state.outcomes["traceFlush"] == "SUCCESS" &&
             state.outcomes["traceClose"] == "SUCCESS" && state.outcomes["traceStreamClose"] == "SUCCESS" &&
@@ -356,8 +361,12 @@ internal fun runNativeInputObservation(instrumentation: Instrumentation, args: B
             .put("observerFailures", recorder.queue.failureCount)
             .put("callbackTotalNs", recorder.queue.totalCallbackNs).put("callbackMaxNs", recorder.queue.maxCallbackNs)
             .put("callbackTimingScope", "Only raw event/stage copy+enqueue duration; inventory and sample work excluded. UI receipt uses recorded Android uptime/elapsed clocks")
-            .put("teardown", "Only exact observer/listeners removed; no Activity finish, Stop, reconnect, synthetic input or Phone command")
+            .put("teardown", if (automation == null)
+                "Only exact observer/listeners removed; no Activity finish, Stop, reconnect, synthetic input or Phone command"
+                else "Exact observer/listeners and same-invocation automation removed; driver reports its own actions and acquisition cleanup")
             .put("captureComplete", state.captureComplete)
+            .put("activityLaunchedOrFinished", automation?.let { it.activityLaunched || it.activityFinished } ?: false)
+            .put("syntheticInputInjected", automation?.syntheticInputInjected ?: false)
         }
     }
     state.primary?.let { error ->

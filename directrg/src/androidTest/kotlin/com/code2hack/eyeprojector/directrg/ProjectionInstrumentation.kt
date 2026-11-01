@@ -445,7 +445,9 @@ class ProjectionInstrumentation : Instrumentation() {
             ownsRecord = true
             val operation = args.getString("operation") ?: "stream"
             report.put("operation", operation)
-            if (operation == "native-input-observation") {
+            if (operation == "anchor-adb-control") {
+                runAnchorAdbControlDriver(this, args, id, report)
+            } else if (operation == "native-input-observation") {
                 setupStage("NATIVE_OBSERVER_START")
                 runNativeInputObservation(this, args, id, report)
                 setupStage("NATIVE_OBSERVER_FINISHED")
