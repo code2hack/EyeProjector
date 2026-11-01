@@ -36,6 +36,11 @@ class ChosenAppsInstrumentation : Instrumentation() {
         val result = Bundle()
         try {
             when (arguments.getString("operation", "ui")) {
+                "anchor-adb-phone-control" -> {
+                    AnchorAdbPhoneDriver(this, targetContext, arguments, result).run()
+                    finish(if (result.getString("result") == "DIAGNOSTIC_ERROR") Activity.RESULT_CANCELED else Activity.RESULT_OK, result)
+                    return
+                }
                 "ui" -> testUi()
                 "notification-probe" -> {
                     // This diagnostic reports its stages; readiness/event receipt is not feature PASS.
