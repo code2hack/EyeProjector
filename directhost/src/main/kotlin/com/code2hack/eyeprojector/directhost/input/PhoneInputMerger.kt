@@ -163,6 +163,17 @@ internal class PhoneInputMerger(
         // Correlate the represented physical press before stamping/removing any current receipt.
         // Reads are lock-free; a fresh receipt observes CANCELING before its first map/merger wait.
         val existing = receivedPresses[routeId]
+        if (existing == null && edge.phase == PhoneHidPhase.CANCEL && edge.action == PhoneHidAction.BACK_HOME) {
+            // Physical UP disposed its raw record; this captured route still owns pending grammar cleanup.
+            val token = navigationToken(routeId, edge)
+            backHomeReceipts.cancel(token)
+            transaction {
+                val original = backHome.capturedSequence(token)
+                if (original != null && navigationOriginal === original) navigationOriginal = null
+                backHome.cancel(token)
+            }
+            return
+        }
         val received = if (existing != null) {
             if (!existing.edge.samePress(edge)) return
             receiveControl(existing.control, edge.action == PhoneHidAction.FUNCTION)

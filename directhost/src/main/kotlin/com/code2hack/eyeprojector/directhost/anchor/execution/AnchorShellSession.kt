@@ -20,7 +20,7 @@ internal class AnchorShellSession(
     private val rawEdge: (AnchorControlAdmission, Long, PhoneHidEdge, String, Long) -> Unit = { _, _, _, _, _ -> },
 ) : Closeable {
     private var controlContext = com.code2hack.eyeprojector.directhost.ProjectionContext()
-    private val controlPort = object : IAnchorControlSession.Stub() {
+    private val controlPort by lazy { object : IAnchorControlSession.Stub() {
         override fun captureRawControl(disposition: IntArray): IAnchorRawControl? {
             if (closed) { disposition[0] = AnchorControlDisposition.RETIRED.ordinal; return null }
             val original = AnchorControlAdmission()
@@ -49,7 +49,7 @@ internal class AnchorShellSession(
             if (original.terminal || recognitionOnly) return original.disposition.ordinal
             return input.consumeHeldControl(original).ordinal
         }
-    }
+    } }
 
     fun controlContext(original: com.code2hack.eyeprojector.directhost.ProjectionContext) { controlContext = original }
     private class Binding(val client: IAnchorAppBridge) {
