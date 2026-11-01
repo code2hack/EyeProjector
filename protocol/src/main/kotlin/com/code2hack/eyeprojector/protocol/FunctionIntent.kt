@@ -9,6 +9,27 @@ enum class FunctionSource { PHONE_HID, GLASSES_HID, GLASSES_NATIVE }
 /** Receiver-owned context captured at the original gesture, including its original hover position. */
 data class FunctionIntentContext(val usability: ReceiverUsability, val pointer: HeadPointerState)
 
+/** Existing grammar identity captured before classification; this selects no Short mode/contact. */
+data class FunctionOriginal(val source: FunctionSource, val gestureId: Long, val context: FunctionIntentContext,
+    val summaryOriginal: Long? = null, val retired: Boolean = false) {
+    init { require(gestureId >= 0 && (summaryOriginal == null || summaryOriginal >= 0)) }
+    fun bytes(): ByteArray = bytes {
+        writeByte(source.ordinal);writeLong(gestureId);writeLong(summaryOriginal ?: -1);writeBoolean(retired)
+        val fact=context.usability.bytes();writeInt(fact.size);write(fact);write(context.pointer.bytes())
+    }
+    companion object {
+        const val MIN_PAYLOAD_SIZE=22+ReceiverUsability.MIN_PAYLOAD_SIZE+HeadPointerState.MIN_PAYLOAD_SIZE
+        const val MAX_PAYLOAD_SIZE=22+ReceiverUsability.MAX_PAYLOAD_SIZE+HeadPointerState.MAX_PAYLOAD_SIZE
+        fun from(payload:ByteArray):FunctionOriginal = DataInputStream(payload.inputStream()).use { input ->
+            val source=FunctionSource.entries[input.readUnsignedByte()];val id=input.readLong();val parent=input.readLong();val retired=input.readBoolean();val size=input.readInt()
+            require(parent >= -1)
+            require(size in ReceiverUsability.MIN_PAYLOAD_SIZE..ReceiverUsability.MAX_PAYLOAD_SIZE&&size<=input.available())
+            val fact=ReceiverUsability.from(ByteArray(size).also(input::readFully))
+            FunctionOriginal(source,id,FunctionIntentContext(fact,HeadPointerState.from(input.readBytes())),parent.takeIf{it>=0},retired)
+        }
+    }
+}
+
 /**
  * One classified original gesture, independent of physical release or an Anchor output contact.
  * [gestureId] is opaque within [source] and the captured Receiver incarnation; duplicate firmware

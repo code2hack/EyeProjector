@@ -18,6 +18,7 @@ internal class LocalInputSettingsPanel(
     private val settings: LocalInputSettings,
     private val hidBindings: () -> Unit,
     private val changed: () -> Unit,
+    private val userAction: ((() -> Unit) -> Unit) = { it() },
 ) : LinearLayout(context) {
     val buttons = mutableListOf<Button>()
 
@@ -36,11 +37,11 @@ internal class LocalInputSettingsPanel(
                 stateDescription = if (settings.headScrollEnabled) "On" else "Off"
             }
             refresh()
-            setOnClickListener {
+            setOnClickListener { userAction {
                 settings.setHeadScroll(!settings.headScrollEnabled)
                 refresh()
                 changed()
-            }
+            } }
         })
         addView(button().apply { text = "HID key bindings"; setOnClickListener { hidBindings() } })
     }
@@ -65,11 +66,11 @@ internal class LocalInputSettingsPanel(
             minus.isEnabled = enabled(-1); plus.isEnabled = enabled(1)
         }
         for ((button, direction) in listOf(minus to -1, plus to 1)) {
-            button.setOnClickListener {
+            button.setOnClickListener { userAction {
                 step(direction)
                 refresh()
                 changed()
-            }
+            } }
         }
         refresh()
         return LinearLayout(context).apply {

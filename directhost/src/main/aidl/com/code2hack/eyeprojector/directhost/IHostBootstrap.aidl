@@ -19,5 +19,6 @@ interface IHostBootstrap {
     oneway void phoneHidStampedEdge(long routeId, in byte[] typedEdge, String expectedOwnerEpoch, String expectedProjectionToken, String regionId, long word) = 11;
     @nullable byte[] uiTargetContext(String expectedOwnerEpoch, String expectedProjectionToken) = 12;
     void setAnchorBridge(@nullable IAnchorAppBridge bridge) = 13;
+    int userControl(int kind, String expectedOwnerEpoch, String expectedProjectionToken) = 14;
     void destroy() = 16777114;
 }

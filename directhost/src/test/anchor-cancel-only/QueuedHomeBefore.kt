@@ -46,3 +46,19 @@ internal fun queuedHomeBefore(j:Joined) {
         "Stale queued Home canceled successor/launched: events=${j.events}; launches=${j.appLaunches}"
     }
 }
+
+/** Inject a genuine accepted same-Session H2 while its app FIFO is deterministically parked. */
+internal fun startResolvedHold(j:Joined) {
+    val source=(j.phone.session as CapturedProjection).uiTargetContext()!!
+    val fact=(j.phone.session as CapturedProjection).receiverUsability().fact!!
+    val geometry=Geometry(480,640)
+    val snapshot=UiTargetSnapshotProvider(ManagedUiSourceProvider{source},{j.windows.reader},{0}).read(source.context,"app")
+    val target=(AnchorTargetResolver.resolve(savedHold.descriptor,snapshot) as AnchorTargetResolution.Unique).current
+    val setting=j.runtime.store.snapshot("app").context
+    val intent=FunctionIntent(FunctionIntentKind.ACTIVATE,FunctionSource.PHONE_HID,990,990,
+        FunctionIntentContext(fact,HeadPointerState(fact.inputRevision,1,true,true,10f,20f,Fit(0,0,480,640),geometry)))
+    val admission=j.input.anchor.capture(intent)!!
+    val merger=j.phone.get("phoneInput") as PhoneInputMerger
+    val work=j.phone.get("functionWork") as FunctionWork
+    check(j.input.hold(admission,setting,target,source,{true},merger::nativeAction,AnchorHoldOutput(work){_,_->})==AnchorExecutionStatus.HOLD_SUBMITTED)
+}

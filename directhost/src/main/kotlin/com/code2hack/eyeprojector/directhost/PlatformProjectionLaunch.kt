@@ -10,15 +10,19 @@ internal class PlatformProjectionLaunch(
     private val context: ProjectionContext = ProjectionContext(),
 ) : ProjectionLaunchAdapter {
     override fun launch(displayId: Int, packageName: String, home: Boolean): ProjectionCommandResult {
-        if (home) return commands.run(ProjectionLaunchCommands.launch(displayId, packageName, true, context), 4000)
+        return launchOriginal(displayId,packageName,home){true}
+    }
+
+    override fun launchOriginal(displayId: Int, packageName: String, home: Boolean, current: () -> Boolean): ProjectionCommandResult {
+        if (home) return commands.run(ProjectionLaunchCommands.launch(displayId, packageName, true, context), 4000,current)
         val started = System.nanoTime()
-        val resolved = commands.run(ProjectionLaunchCommands.resolve(packageName), 4000)
+        val resolved = commands.run(ProjectionLaunchCommands.resolve(packageName), 4000,current)
         val component = ProjectionLaunchCommands.resolvedComponent(resolved, packageName)
         // Include resolver output draining/reaping in the same existing native launch budget.
         val remainingMs = TimeUnit.NANOSECONDS.toMillis(TimeUnit.MILLISECONDS.toNanos(4000) - (System.nanoTime() - started))
         if (resolved.timedOut || remainingMs <= 0) return ProjectionCommandResult(null, "", true)
         if (component == null) return ProjectionCommandResult(null, "")
-        return commands.run(ProjectionLaunchCommands.launch(displayId, packageName, false, context, component), remainingMs)
+        return commands.run(ProjectionLaunchCommands.launch(displayId, packageName, false, context, component), remainingMs,current)
     }
 
     override fun foreground(displayId: Int): String? {
@@ -41,9 +45,10 @@ internal class OwnedProjectionCommands(
     private var closed = false
     private var active: Process? = null
 
-    fun run(command: List<String>, timeoutMs: Long): ProjectionCommandResult {
+    fun run(command: List<String>, timeoutMs: Long, current: () -> Boolean = {true}): ProjectionCommandResult {
         val process = synchronized(lock) {
-            if (closed || Thread.currentThread().isInterrupted) return ProjectionCommandResult(null, "")
+            // Production current is a pure volatile/atomic original-scope read; no contact/Binder lock.
+            if (closed || Thread.currentThread().isInterrupted || !current()) return ProjectionCommandResult(null, "")
             check(active == null)
             start(command).also { active = it }
         }

@@ -11,6 +11,8 @@ class KeyEvent(
     val deviceId: Int = device?.id ?: -1,
     val source: Int = 0x101, val metaState: Int = 0,
 ) {
+    constructor(original:KeyEvent):this(original.device,original.action,original.keyCode,original.scanCode,
+        original.downTime,original.eventTime,original.repeatCount,original.flags,original.deviceId,original.source,original.metaState)
     val isCanceled get() = flags and FLAG_CANCELED != 0
     val isLongPress get() = flags and FLAG_LONG_PRESS != 0
     companion object {

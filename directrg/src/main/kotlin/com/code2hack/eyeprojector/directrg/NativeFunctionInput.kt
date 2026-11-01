@@ -20,9 +20,21 @@ internal class NativeFunctionInput(
     schedule: (Long, () -> Unit) -> (() -> Unit) = handlerSchedule(),
     timing: FunctionGestureRecognizer.Timing = FunctionGestureRecognizer.Timing(),
     capture: (Any) -> Any? = { it },
+    captureOriginal: ((Any, Long, Long?) -> Any?)? = null,
+    retireOriginal: ((Long, Any) -> Unit)? = null,
 ) {
     private var registered = false
-    private val recognizer = FunctionGestureRecognizer(now, { if (registered) currentContext() else null }, schedule, dispatch, timing, capture = capture, identity = identities)
+    private var retiring: MutableList<() -> Unit>? = null
+    private val recognizer = FunctionGestureRecognizer(now, { if (registered) currentContext() else null },
+        { at, action ->
+            val cancel = schedule(at, action)
+            val original: () -> Unit = { retiring?.add(cancel) ?: cancel() }
+            original
+        }, dispatch, timing, capture = capture, identity = identities, captureOriginal = captureOriginal,
+        retireOriginal = retireOriginal?.let { retire -> { id, original ->
+            val effect: () -> Unit = {retire(id,original)}
+            retiring?.add(effect) ?: effect()
+        } })
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (!registered) return
@@ -47,7 +59,15 @@ internal class NativeFunctionInput(
         registered = true
     }
 
-    fun cancel() = recognizer.cancel()
+    fun prepareCancel(): InputRetirement {
+        val effects = mutableListOf<() -> Unit>()
+        retiring = effects
+        try { recognizer.cancel() } finally { retiring = null }
+        val original = recognizer.retirementState()
+        return InputRetirement({ InputRetirement.finishAll(effects) }, { recognizer.retirementState() != original })
+    }
+
+    fun cancel() = prepareCancel().finishOriginal()
 
     fun stop() {
         recognizer.cancel()

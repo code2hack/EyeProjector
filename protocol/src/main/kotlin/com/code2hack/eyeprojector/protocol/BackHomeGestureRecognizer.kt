@@ -10,8 +10,43 @@ class BackHomeGestureRecognizer<C : Any>(
     private val current: (C) -> Boolean,
     private val schedule: (Long, () -> Unit) -> (() -> Unit),
     private val dispatch: (Action, C) -> Unit,
-    val doublePressMs: Long = 500,
+    val doublePressMs: Long = DEFAULT_DOUBLE_PRESS_MS,
 ) {
+    companion object { const val DEFAULT_DOUBLE_PRESS_MS = 500L }
+
+    /** Source receipt membership before any consumer queue/lock. No dispatch, timer or permission.
+     * Uses this recognizer's existing source/held/release interval grammar even for discarded edges. */
+    class Receipts<C : Any>(private val doublePressMs: Long = DEFAULT_DOUBLE_PRESS_MS) {
+        private data class Sequence<C>(val first: Any, val latest: Any, val held: Any?, val source: Any,
+            val original: C, val releasedAt: Long = 0)
+        private val sequence = java.util.concurrent.atomic.AtomicReference<Sequence<C>?>()
+        fun down(press: Any, source: Any, original: C, at: Long): C {
+            while (true) {
+                val old = sequence.get()
+                if (old != null && (old.first == press || old.latest == press)) return old.original
+                val extends = old != null && old.source == source && old.held == null && at < old.releasedAt + doublePressMs
+                val next = if (extends) old!!.copy(latest = press, held = press)
+                    else Sequence(press, press, press, source, original)
+                if (sequence.compareAndSet(old, next)) return next.original
+            }
+        }
+        fun up(press: Any, at: Long) {
+            while (true) {
+                val old = sequence.get() ?: return
+                if (old.held != press) return
+                val next = if (old.first != press) null else old.copy(held = null, releasedAt = at)
+                if (sequence.compareAndSet(old, next)) return
+            }
+        }
+        fun cancel(press: Any? = null) {
+            while (true) {
+                val old = sequence.get() ?: return
+                if (press != null && old.first != press && old.latest != press) return
+                if (sequence.compareAndSet(old, null)) return
+            }
+        }
+    }
+
     enum class Action { BACK, HOME }
     private class Sequence<C>(val first: Any, val source: Any, val captured: C) {
         var latest = first

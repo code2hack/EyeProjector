@@ -7,30 +7,72 @@ import android.view.View
 import com.code2hack.eyeprojector.protocol.Touch
 
 /** Ordinary Android events traverse the local View hierarchy, including nested widgets. */
-internal class LocalPointerDispatcher(private val root: View) {
+internal class LocalPointerDispatcher(private val root: View,
+    private val admit: (((Boolean) -> Unit) -> Unit)? = null) {
     private var held: HeldPointerDispatcher.Event? = null
     private var epoch = 0L
     private var dispatchDepth = 0
     private var deferredCancel: HeldPointerDispatcher.Event? = null
+    private val deferredInput = ArrayDeque<HeldPointerDispatcher.Event>()
+    private var drainingDeferred = false
+    private val contacts = admit?.let { ReceiverContactInput<HeldPointerDispatcher.Event>(
+        { it.contactId }, { it.phase }, it, { event -> touchAdmitted(event) }) }
+    private val pendingActions = mutableSetOf<Any>()
+    private var actionAdmission = 0L
+
+    private fun action(operation: () -> Boolean): Boolean {
+        val gate = admit ?: return operation()
+        val original = Any()
+        pendingActions.add(original); actionAdmission++
+        gate { normal -> if (pendingActions.remove(original) && normal) operation() }
+        return true
+    }
 
     private fun dispatch(event: MotionEvent): Boolean {
         dispatchDepth++
         return try { root.dispatchTouchEvent(event) } finally {
             dispatchDepth--
-            if (dispatchDepth == 0) {
+            drainDeferred()
+        }
+    }
+
+    private fun drainDeferred() {
+        if (dispatchDepth != 0 || drainingDeferred) return
+        drainingDeferred = true
+        try {
+            while (deferredCancel != null || deferredInput.isNotEmpty()) {
                 val old = deferredCancel
                 deferredCancel = null
                 if (old != null) dispatchCancel(old)
+                if (deferredInput.isNotEmpty()) touchAdmitted(deferredInput.removeFirst())
             }
-        }
+        } finally { drainingDeferred = false }
     }
 
     fun touch(event: HeldPointerDispatcher.Event): Boolean {
         if (event.phase == Touch.Phase.CANCEL) {
-            if (held?.contactId != event.contactId) return false
-            cancel(); return true
+            // Original cleanup is a release obligation, never a fresh user-control request.
+            return contacts?.accept(event) == true || touchAdmitted(event)
         }
-        if (event.phase == Touch.Phase.DOWN) cancel()
+        return contacts?.accept(event) ?: touchAdmitted(event)
+    }
+
+    private fun touchAdmitted(event: HeldPointerDispatcher.Event): Boolean {
+        if (dispatchDepth > 0 && event.phase != Touch.Phase.CANCEL) {
+            if (event.phase == Touch.Phase.DOWN) { cancelHeld(); epoch++ }
+            deferredInput.addLast(event)
+            return true
+        }
+        if (event.phase == Touch.Phase.CANCEL) {
+            if (held?.contactId != event.contactId) return false
+            cancelHeld(); return true
+        }
+        if (event.phase == Touch.Phase.DOWN) {
+            val expected = epoch + 1
+            cancelHeld()
+            if (epoch != expected) return false
+            epoch++
+        } // Record actual admission separately from release.
         else if (held?.contactId != event.contactId) return false
         val generation = epoch
         held = if (event.phase == Touch.Phase.DOWN || event.phase == Touch.Phase.MOVE) event else null
@@ -43,24 +85,29 @@ internal class LocalPointerDispatcher(private val root: View) {
         } finally { motion.recycle() }
     }
 
-    fun tap(action: PadGestureRecognizer.Action.Tap): Boolean {
-        cancel()
-        val point = action.position ?: return false
-        if (!point.available) return false
-        val offset = action.timeMs - action.upTimeMs
-        val downTime = action.downTimeMs + offset
-        val down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, point.x, point.y, 0)
-        val up = MotionEvent.obtain(downTime, action.timeMs, MotionEvent.ACTION_UP, point.x, point.y, 0)
-        return try {
-            down.source = InputDevice.SOURCE_TOUCHSCREEN; up.source = InputDevice.SOURCE_TOUCHSCREEN
-            val accepted = root.dispatchTouchEvent(down)
-            root.dispatchTouchEvent(up) || accepted
-        } finally { down.recycle(); up.recycle() }
+    fun tap(action: PadGestureRecognizer.Action.Tap): Boolean = action {
+        val point = action.position ?: return@action false
+        if (!point.available) return@action false
+        val downTime = action.downTimeMs + action.timeMs - action.upTimeMs
+        val down = HeldPointerDispatcher.Event(Touch.Phase.DOWN, downTime, downTime, point)
+        if (dispatchDepth > 0) {
+            // This is a complete admitted tap, so defer both of its own edges together.
+            cancelHeld(); epoch++
+            deferredInput.addLast(down)
+            deferredInput.addLast(down.copy(phase = Touch.Phase.UP, timeMs = action.timeMs))
+            return@action true
+        }
+        val accepted = touchAdmitted(down)
+        // A widget DOWN can admit another contact. Only this exact local DOWN owns its UP.
+        if (held !== down) accepted
+        else touchAdmitted(down.copy(phase = Touch.Phase.UP, timeMs = action.timeMs)) || accepted
     }
 
-    fun scroll(point: PointerPosition, pixels: Int): Boolean {
-        cancel()
-        if (!point.available || pixels == 0) return false
+    fun scroll(point: PointerPosition, pixels: Int): Boolean = action {
+        val expected = epoch + 1
+        cancelHeld()
+        if (epoch != expected) return@action false
+        if (!point.available || pixels == 0) return@action false
         val coords = MotionEvent.PointerCoords().apply {
             x = point.x; y = point.y
             setAxisValue(MotionEvent.AXIS_VSCROLL, -pixels / 64f)
@@ -69,16 +116,52 @@ internal class LocalPointerDispatcher(private val root: View) {
         val now = SystemClock.uptimeMillis()
         val event = MotionEvent.obtain(now, now, MotionEvent.ACTION_SCROLL, 1, arrayOf(properties), arrayOf(coords),
             0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0)
-        return try { root.dispatchGenericMotionEvent(event) } finally { event.recycle() }
+        try { root.dispatchGenericMotionEvent(event) } finally { event.recycle() }
     }
 
     fun cancel() {
+        contacts?.retire()
+        pendingActions.clear()
+        deferredInput.clear()
+        cancelHeld()
+    }
+
+    private fun cancelHeld() {
         epoch++
         val old = held ?: return
         held = null
         // ViewGroup attaches a DOWN target after its child callback returns. Cancel after that
         // attachment if a local widget callback changed the panel during DOWN dispatch.
         if (dispatchDepth > 0) deferredCancel = old else dispatchCancel(old)
+    }
+
+    fun captureCancellation(): InputRetirement {
+        contacts?.retire()
+        pendingActions.clear()
+        deferredInput.clear()
+        val contactBaseline = contacts?.admission
+        val actionBaseline = actionAdmission
+        val original = held
+        val baseline = epoch
+        var expected = baseline
+        var released = false
+        fun observeOriginalRelease() {
+            // A shared HeldInputOwner may already have released this same local contact.
+            // New DOWN advances twice, so a completed later contact cannot look like this release.
+            if (!released && original != null && held == null && epoch == baseline + 1) {
+                released = true; expected = epoch
+            }
+        }
+        return InputRetirement({
+            observeOriginalRelease()
+            if (!released && original != null && epoch == baseline && held?.contactId == original.contactId) {
+                released = true; expected = epoch + 1 // Fix own release before dispatch can reenter.
+                cancelHeld()
+            }
+        }, {
+            observeOriginalRelease()
+            epoch != expected || contacts?.admission != contactBaseline || actionAdmission != actionBaseline
+        })
     }
 
     private fun dispatchCancel(old: HeldPointerDispatcher.Event) {

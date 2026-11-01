@@ -54,6 +54,7 @@ internal class Joined(val runtime: AnchorAppRuntime) : AutoCloseable {
     val launches: ProjectedAppLaunch
     val appLaunches = mutableListOf<String>()
     var cancelBehavior: (Touch) -> Boolean = { true }
+    var upBehavior: (Touch) -> Boolean = { true }
     private var phoneOffset = 0
     private var time = android.os.SystemClock.uptimeMillis()
     init {
@@ -76,7 +77,7 @@ internal class Joined(val runtime: AnchorAppRuntime) : AutoCloseable {
             override fun geometry(next: Geometry) = Unit
             override fun touch(event: Touch): Boolean {
                 events.add(event)
-                return if (event.phase == Touch.Phase.CANCEL) cancelBehavior(event) else true
+                return when(event.phase) { Touch.Phase.CANCEL -> cancelBehavior(event); Touch.Phase.UP -> upBehavior(event); else -> true }
             }
             override fun tap(event: Tap): Boolean { ordinary.add("tap"); return true }
             override fun scroll(event: Scroll): Boolean { ordinary.add("scroll"); return true }
@@ -90,6 +91,11 @@ internal class Joined(val runtime: AnchorAppRuntime) : AutoCloseable {
             phone.holdFlush(runtime)
             launches.snapshot(true) // Serial launch observation barrier, not a synthetic navigation decision.
             phone.holdFlush(runtime)
+            // Exact source reply queue barrier; old frozen before-source has no such field.
+            try {
+                val replies=phone.get("controlReplies") as com.code2hack.eyeprojector.directhost.input.FunctionWork
+                val done=CountDownLatch(1);replies.submit{done.countDown()};check(done.await(3,TimeUnit.SECONDS))
+            } catch (_:NoSuchFieldException) { }
             val bytes = phone.peer.sink.toByteArray()
             val reader = DataInputStream(bytes.copyOfRange(phoneOffset, bytes.size).inputStream())
             val replies = buildList { while (reader.available() > 0) add(Wire.readFrame(reader)) }

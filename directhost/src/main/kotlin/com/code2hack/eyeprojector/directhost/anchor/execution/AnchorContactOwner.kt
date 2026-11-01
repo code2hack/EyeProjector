@@ -4,6 +4,7 @@ import com.code2hack.eyeprojector.directhost.anchor.preferences.AnchorSettingCon
 import com.code2hack.eyeprojector.directhost.uiaccess.*
 import com.code2hack.eyeprojector.directhost.anchor.target.ResolvedAnchorTarget
 import com.code2hack.eyeprojector.directhost.input.FunctionWork
+import com.code2hack.eyeprojector.directhost.PhoneInputTrace
 import com.code2hack.eyeprojector.protocol.*
 
 /** A local admission token captured by the original Session before any Function/Binder queue. */
@@ -38,39 +39,149 @@ internal class AnchorContactOwner(
     private val touch: (Touch) -> Boolean,
     private val cancelOutput: () -> Unit,
 ) {
-    private var generation = 0L
-    private var closed = false
-    private var sequence = 0L
-    private class Contact(val down: Touch, val setting: AnchorSettingContext,
+    @Volatile private var generation = 0L
+    @Volatile private var closed = false
+    @Volatile private var sequence = 0L
+    private class Contact(val intent: FunctionIntent, val down: Touch, val setting: AnchorSettingContext,
         val source: ManagedUiSource, val hold: Boolean, val state: AnchorHoldOutput?) {
         var downSubmitted = false
     }
-    private var contact: Contact? = null
+    @Volatile private var contact: Contact? = null
+    @Volatile private var cancellation: Contact? = null
+    private var prepareCancellation: () -> (() -> Unit) = { cancelOutput }
+    private var scheduleCancellation: (() -> Unit) -> Unit = { it() }
+    private var cancellationFailure: (Throwable) -> Unit = { throw it }
+    private var prepareRelease: (Touch) -> (() -> Boolean) = { down -> {
+        var result = false
+        var failure: Throwable? = null
+        try { result = touch(down.copy(phase = Touch.Phase.UP)) } catch (error: Throwable) { failure = error }
+        if (!result) try { cancelOutput() } catch (cleanup: Throwable) {
+            failure?.let { it.addSuppressed(cleanup) } ?: run { failure = cleanup }
+        }
+        failure?.let { throw it }
+        result
+    } }
+    fun releaseOutput(prepare: (Touch) -> (() -> Boolean)) { prepareRelease = prepare }
     private var stateRevision = 0L
+    @Volatile private var observation: PhoneInputTrace? = null
+    fun observation(trace: PhoneInputTrace?) { observation = trace }
+    private fun observed(stage: String, original: Contact? = (contact ?: cancellation), control: AnchorControlAdmission? = null,
+                         failure: Throwable? = null, cleared: Boolean? = null) {
+        val trace = observation ?: return
+        try {
+        val fact = original?.intent?.context?.usability
+        trace.record(stage, mapOf("anchorOwnerIdentity" to System.identityHashCode(this),
+            "contactRole" to if(control==null) "capturedOriginal" else "atControlObservation",
+            "contactIdentity" to original?.let(System::identityHashCode), "contactId" to original?.down?.contactId,
+            "anchorSequence" to sequence, "anchorGeneration" to generation,
+            "controlIdentity" to control?.let(System::identityHashCode), "disposition" to control?.disposition?.name,
+            "capturedSequence" to control?.normalSequence, "receivedDuringRetirement" to control?.receivedDuringRetirement,
+            "canceling" to (cancellation != null), "downSubmitted" to original?.downSubmitted,
+            "functionSource" to original?.intent?.source?.name, "gestureId" to original?.intent?.gestureId,
+            "receiverOwnerEpoch" to fact?.ownerEpoch, "incarnation" to fact?.incarnation?.id,
+            "incarnationSequence" to fact?.incarnation?.sequence, "inputRevision" to fact?.inputRevision,
+            "displayId" to original?.source?.displayId, "displayUniqueId" to original?.source?.displayUniqueId,
+            "videoWidth" to original?.source?.geometry?.video?.width, "videoHeight" to original?.source?.geometry?.video?.height,
+            "targetVideoX" to original?.down?.target?.x, "targetVideoY" to original?.down?.target?.y,
+            "clearedOriginal" to cleared, "failureFamily" to failure?.javaClass?.name))
+        } catch (_: Throwable) { /* Observational copies cannot alter input or its failure. */ }
+    }
+    private inline fun <T> observing(operation: () -> T): T {
+        val original = observation?.retain()
+        try { return operation() } finally { original?.close() }
+    }
     private val handled = mutableMapOf<String, AnchorSettingContext>()
-    val holding: Boolean get() = synchronized(lock) { contact != null }
+    val holding: Boolean get() = cancellation != null || synchronized(lock) { contact != null }
+    val discardingControls: Boolean get() = cancellation != null
 
-    fun capture(intent: FunctionIntent): AnchorAdmission? = synchronized(lock) {
-        if (closed) null else AnchorAdmission(intent, generation)
+    /** First ingress observation, before the merger/Binder/FIFO can wait. This records lifetime;
+     * completed Short still selects its release contact only on the original app FIFO. */
+    fun receiveControl(control: AnchorControlAdmission, function: Boolean = false) {
+        try {
+        if (control.terminal) return
+        if (discardingControls) {
+            control.receivedDuringRetirement = true
+            control.disposition = AnchorControlDisposition.CONSUMED; return
+        }
+        if (control.owner == null) {
+            control.owner = this
+            if (function) control.functionGeneration = generation
+            val held = contact?.let { it.hold && it.downSubmitted } == true
+            control.capturedHold = held
+            if (!function || held) control.normalSequence = sequence
+        }
+        if (closed) control.disposition = AnchorControlDisposition.RETIRED
+        else if (discardingControls) {
+            control.receivedDuringRetirement = true
+            control.disposition = AnchorControlDisposition.CONSUMED
+        }
+        } finally { observed("CONTROL_RECEIVED", control = control) }
+    }
+
+    fun cancellationOutput(prepare: () -> (() -> Unit), schedule: (() -> Unit) -> Unit,
+        failure: (Throwable) -> Unit) {
+        prepareCancellation = prepare; scheduleCancellation = schedule; cancellationFailure = failure
+    }
+
+    fun capture(intent: FunctionIntent, original: AnchorControlAdmission? = null): AnchorAdmission? {
+        if (discardingControls) return null
+        return synchronized(lock) {
+            if (closed || discardingControls || original != null && (original.terminal || original.owner !== this || original.functionGeneration != generation ||
+                original.capturedHold && (original.normalSequence != sequence || contact?.let { it.hold && it.downSubmitted } != true))) null
+            else AnchorAdmission(intent, generation)
+        }
     }
     fun isCurrent(admission: AnchorAdmission): Boolean = synchronized(lock) {
-        !closed && !admission.consumed && admission.generation == generation &&
+        !closed && !discardingControls && !admission.consumed && admission.generation == generation &&
             admission.control.current(this, sequence)
     }
     fun isCurrent(control: AnchorControlAdmission): Boolean = synchronized(lock) {
-        !closed && control.current(this, sequence)
+        !closed && !discardingControls && control.current(this, sequence)
+    }
+
+    /** Pure original ownership witness for the last process/write submission boundary. */
+    fun currentAtSubmission(control: AnchorControlAdmission): Boolean =
+        !closed && !discardingControls && control.current(this, sequence)
+
+    /** Retain a Function original's existing Hold for later Long classification; no cancellation. */
+    fun captureHeldControl(control: AnchorControlAdmission) = synchronized(lock) {
+        if (discardingControls) { control.disposition = AnchorControlDisposition.CONSUMED; return@synchronized }
+        if (control.terminal) return@synchronized
+        if (control.owner != null) {
+            if (control.owner !== this || control.functionGeneration != generation)
+                control.disposition = AnchorControlDisposition.RETIRED
+            return@synchronized
+        }
+        if (closed) return@synchronized
+        control.owner = this
+        control.functionGeneration = generation // Lifetime only; FIFO still chooses Short mode.
+        if (contact?.let { it.hold && it.downSubmitted } == true) {
+            control.normalSequence = sequence
+            control.capturedHold = true
+        }
     }
 
     /** NORMAL is only current in this critical section; it is not a durable effect grant. */
     fun consumeHeldControl(control: AnchorControlAdmission, captureNormal: Boolean = true): AnchorControlDisposition = synchronized(lock) {
+        val observedContact = contact ?: cancellation
+        try {
         if (control.terminal) return@synchronized control.disposition
-        if (closed || !control.current(this, sequence)) {
+        if (discardingControls) {
+            control.disposition = AnchorControlDisposition.CONSUMED
+            return@synchronized control.disposition
+        }
+        if (closed || !control.current(this, sequence) || !control.capturedHold &&
+            control.functionGeneration?.let { it != generation } == true) {
             control.disposition = AnchorControlDisposition.RETIRED
             return@synchronized control.disposition
         }
         control.owner = this
         val original = contact?.takeIf { it.hold && it.downSubmitted }
         if (original == null) {
+            if (control.capturedHold) {
+                control.disposition = AnchorControlDisposition.CONSUMED
+                return@synchronized control.disposition
+            }
             if (captureNormal) control.normalSequence = sequence
             return@synchronized AnchorControlDisposition.NORMAL
         }
@@ -79,6 +190,7 @@ internal class AnchorContactOwner(
         generation++
         cancelContact(original)
         AnchorControlDisposition.CONSUMED
+        } finally { observed("CONTROL_DISPOSITION", observedContact, control) }
     }
 
     fun consumeHeldControl(admission: AnchorAdmission, captureNormal: Boolean = true): AnchorControlDisposition = synchronized(lock) {
@@ -107,7 +219,7 @@ internal class AnchorContactOwner(
 
     fun admits(admission: AnchorAdmission, setting: AnchorSettingContext, target: ResolvedAnchorTarget,
         current: ManagedUiSource?, accepts: () -> Boolean): Boolean = synchronized(lock) {
-        !closed && !admission.consumed && admission.generation == generation && handled[setting.packageName] == setting &&
+        !closed && !discardingControls && !admission.consumed && admission.generation == generation && handled[setting.packageName] == setting &&
             admission.control.current(this, sequence) &&
             (!admission.releaseInspected || admission.releaseSequence == sequence && admission.releaseContact == null) &&
             target.source == current && target.target.packageName == setting.packageName && accepts()
@@ -123,7 +235,7 @@ internal class AnchorContactOwner(
 
     private fun start(admission: AnchorAdmission, setting: AnchorSettingContext, target: ResolvedAnchorTarget,
         current: ManagedUiSource?, accepts: () -> Boolean, hold: Boolean,
-        state: AnchorHoldOutput?): AnchorExecutionStatus = synchronized(lock) {
+        state: AnchorHoldOutput?): AnchorExecutionStatus = observing { synchronized(lock) {
         if (!admits(admission, setting, target, current, accepts))
             return@synchronized AnchorExecutionStatus.RETIRED
         admission.consumed = true
@@ -138,7 +250,7 @@ internal class AnchorContactOwner(
         cancelContact()
         val down = Touch(Touch.Phase.DOWN, ++sequence, Tap(x, y, geometry.video))
         admission.startedSequence = sequence
-        val original = Contact(down, setting, target.source, hold, state)
+        val original = Contact(admission.intent, down, setting, target.source, hold, state)
         contact = original // Own cleanup even when output throws or retires reentrantly.
         try {
             if (!touch(down)) {
@@ -151,6 +263,7 @@ internal class AnchorContactOwner(
                 cancelContact(original); return@synchronized AnchorExecutionStatus.RETIRED
             }
             if (hold) {
+                observed("HELD", original)
                 publish(original, AnchorHoldState.HELD)
                 return@synchronized AnchorExecutionStatus.HOLD_SUBMITTED
             }
@@ -164,6 +277,8 @@ internal class AnchorContactOwner(
             try { cancelContact(original) } catch (cleanup: Throwable) { error.addSuppressed(cleanup) }
             throw error
         }
+    }
+
     }
 
     /** Metadata only. A successful retirement call, not this read, acknowledges cancellation. */
@@ -181,35 +296,58 @@ internal class AnchorContactOwner(
     }
 
     fun releaseHeld(admission: AnchorAdmission, expected: AnchorSettingContext?, settingCurrent: Boolean,
-        current: ManagedUiSource?, accepts: () -> Boolean): AnchorReleaseResult = synchronized(lock) {
-        if (!isCurrent(admission) || admission.intent.kind != FunctionIntentKind.ACTIVATE)
-            return@synchronized AnchorReleaseResult.RETIRED
-        val original = contact?.takeIf { it.hold && it.downSubmitted }
-        if (admission.releaseInspected && (admission.releaseSequence != sequence || admission.releaseContact !== original)) {
-            admission.consumed = true
-            return@synchronized AnchorReleaseResult.RETIRED
-        }
-        if (original == null && expected == null) return@synchronized AnchorReleaseResult.NOT_HELD
-        admission.consumed = true
-        if (original == null || original.setting != expected) return@synchronized AnchorReleaseResult.RETIRED
-        if (!settingCurrent || original.source != current || !accepts()) {
-            cancelContact(original)
-            return@synchronized AnchorReleaseResult.RETIRED
-        }
+        current: ManagedUiSource?, accepts: () -> Boolean): AnchorReleaseResult {
+        val observationObligation = observation?.retain()
         try {
-            if (!touch(original.down.copy(phase = Touch.Phase.UP))) {
-                cancelContact(original)
-                return@synchronized AnchorReleaseResult.INPUT_REJECTED
+        val original: Contact
+        val finish: () -> Boolean
+        val revision: Long
+        synchronized(lock) {
+            if (!isCurrent(admission) || admission.intent.kind != FunctionIntentKind.ACTIVATE)
+                return AnchorReleaseResult.RETIRED
+            val held = contact?.takeIf { it.hold && it.downSubmitted }
+            if (admission.releaseInspected && (admission.releaseSequence != sequence || admission.releaseContact !== held)) {
+                admission.consumed = true
+                return AnchorReleaseResult.RETIRED
             }
-            if (contact !== original || closed || admission.generation != generation)
-                return@synchronized AnchorReleaseResult.RETIRED
+            if (held == null && expected == null) return AnchorReleaseResult.NOT_HELD
+            admission.consumed = true
+            if (held == null || held.setting != expected) return AnchorReleaseResult.RETIRED
+            if (!settingCurrent || held.source != current || !accepts()) {
+                cancelContact(held)
+                return AnchorReleaseResult.RETIRED
+            }
+            original = held
+            // The exact original retirement is fixed before a blocking or reentrant UP.
+            cancellation = original
+            observed("SHORT_UP_CANCELING", original)
             contact = null
-            publish(original, AnchorHoldState.RELEASED)
-            AnchorReleaseResult.RELEASE_SUBMITTED
+            revision = ++stateRevision
+            finish = try { prepareRelease(original.down) }
+            catch (error: Throwable) { observed("SHORT_UP_PREPARE_FAILED", original, failure = error); cancellationFailure(error); throw error }
+            observed("SHORT_UP_PREPARED", original)
+        }
+        val submitted = try {
+            val result = finish()
+            if (result) original.state?.publish(revision, AnchorHoldState.RELEASED)
+            result
         } catch (error: Throwable) {
-            try { cancelContact(original) } catch (cleanup: Throwable) { error.addSuppressed(cleanup) }
+            observed("SHORT_UP_FAILED", original, failure = error)
+            cancellationFailure(error)
             throw error
         }
+        if (!submitted) {
+            observed("SHORT_UP_REJECTED", original)
+            cancellationFailure(java.io.IOException("Original Anchor UP was rejected"))
+            return AnchorReleaseResult.INPUT_REJECTED
+        }
+        synchronized(lock) {
+            val same = cancellation === original
+            if (same) cancellation = null
+            observed("SHORT_UP_FINISHED", original, cleared = same)
+        }
+        return AnchorReleaseResult.RELEASE_SUBMITTED
+        } finally { observationObligation?.close() }
     }
 
     /** Registration cancels old Hold without invalidating its own captured REGISTER admission. */
@@ -229,10 +367,39 @@ internal class AnchorContactOwner(
 
     private fun cancelContact(original: Contact? = contact) {
         if (original == null || contact !== original) return
+        val persistent = original.hold && original.downSubmitted
+        if (persistent) {
+            cancellation = original // Owner119: discard before detachment, callbacks or output.
+            observed("CANCELING", original)
+        }
         contact = null // Clear first: a reentrant ordinary-input handoff cannot cancel a successor.
         val revision = if (original.hold) ++stateRevision else null
-        try { cancelOutput() }
-        finally { if (revision != null) original.state?.publish(revision, AnchorHoldState.CANCELED) }
+        if (!persistent) {
+            try { cancelOutput() }
+            finally { if (revision != null) original.state?.publish(revision, AnchorHoldState.CANCELED) }
+            return
+        }
+        val finish = try { prepareCancellation() }
+        catch (error: Throwable) { observed("CANCEL_PREPARE_FAILED", original, failure = error); cancellationFailure(error); throw error }
+        observed("CANCEL_PREPARED", original)
+        var started = false
+        try { scheduleCancellation {
+            started = true
+            var failure: Throwable? = null
+            observed("CANCEL_FINISH_ENTER", original)
+            try { finish() } catch (error: Throwable) { failure = error }
+            try { if (revision != null) original.state?.publish(revision, AnchorHoldState.CANCELED) }
+            catch (error: Throwable) { failure?.let { if (it !== error) it.addSuppressed(error) } ?: run { failure = error } }
+            val error = failure
+            if (error == null) synchronized(lock) {
+                val same = cancellation === original
+                if (same) cancellation = null
+                observed("CANCEL_FINISHED", original, cleared = same)
+            } else {
+                observed("CANCEL_FAILED", original, failure = error)
+                cancellationFailure(error)
+            } // Failed retirement never makes the gate normal-ready.
+        } } catch (error: Throwable) { if (!started) cancellationFailure(error); throw error }
     }
 
     private fun publish(original: Contact, state: AnchorHoldState) {

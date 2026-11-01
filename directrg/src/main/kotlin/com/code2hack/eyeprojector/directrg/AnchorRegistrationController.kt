@@ -28,13 +28,18 @@ internal class AnchorRegistrationController<S : Any>(
 
     var offer: Offer<S>? = null
         private set
+    private var revision = 0L
     val active: Boolean get() = offer != null
 
     fun show(source: S, id: Long, original: FunctionIntentContext, highlight: AnchorRegistrationHighlight): Boolean {
         val fit = original.pointer.fit ?: return false
         val geometry = original.pointer.geometry ?: return false
         if (offer?.let { it.source === source && it.id == id } == true) return true
-        cancel()
+        val previousOffer = offer
+        val ownRevision = ++revision
+        offer = null
+        previousOffer?.let { send(it.source, it.id, AnchorRegistrationAction.CANCEL) }
+        if (revision != ownRevision || offer != null) return false
         offer = Offer(source, id, original, highlight.receiver(fit, geometry), fit, geometry)
         return true
     }
@@ -63,14 +68,14 @@ internal class AnchorRegistrationController<S : Any>(
         if (action == AnchorRegistrationAction.CANCEL) { cancel(); return true }
         if (pending.choosing) return true
         pending.choosing = true
-        if (!send(pending.source, pending.id, action)) offer = null
+        if (!send(pending.source, pending.id, action) && offer === pending) { offer = null; revision++ }
         return true
     }
 
     /** Back and genuine lifecycle/context loss discard only this original registration. */
     fun cancel(): Boolean {
         val pending = offer ?: return false
-        offer = null
+        offer = null; revision++
         send(pending.source, pending.id, AnchorRegistrationAction.CANCEL)
         return true
     }
@@ -79,7 +84,7 @@ internal class AnchorRegistrationController<S : Any>(
     fun completed(source: S, id: Long): Boolean {
         val pending = offer ?: return false
         if (source !== pending.source || id != pending.id) return false
-        offer = null
+        offer = null; revision++
         return true
     }
 }

@@ -13,6 +13,7 @@ p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--output-dir', type=Path, required=True)
 p.add_argument('--dependency-manifest', type=Path, required=True)
 p.add_argument('--queued-launch-before', action='store_true')
+p.add_argument('--phone-before-result', type=Path)
 
 a = p.parse_args()
 suite = Path(__file__).resolve().parent
@@ -47,20 +48,30 @@ binder = out / 'AnchorInterfaces.kt'
 binder_origin = shared.parent / 'anchor-hold/doubles/AnchorInterfaces.kt'
 # AIDL generation is an explicit host boundary; actual two consumers compile against this new method.
 binder.write_text(binder_origin.read_text().replace('    fun heldSetting(): ByteArray?',
-    '    fun consumeHeldControl(): Int = 0\n    fun heldSetting(): ByteArray?'))
+    '    fun consumeHeldControl(): Int = 0\n    fun heldSetting(): ByteArray?').replace('    fun onIntent(transactionId:',
+    '    fun onControl(original: IAnchorUserControl) = original.apply()\n    fun onSession(ownerEpoch: String, projectionToken: String, original: IAnchorControlSession) = Unit\n    fun onIntent(transactionId:') + '''\ninterface IAnchorUserControl {
+    fun apply()
+    abstract class Stub: android.os.Binder(), IAnchorUserControl
+}
+interface IAnchorControlSession {
+    fun admitUserControl(recognitionOnly: Boolean): Int
+    abstract class Stub: android.os.Binder(), IAnchorControlSession
+}
+''')
 sources += [binder, shared.parent / 'adapter/doubles/AtomicFile.kt']
 sources += [launch / (n + '.kt') for n in ['Scenarios', 'ServiceContextScenarios', 'FusionScenarios', 'StopRaceScenarios', 'FunctionFailureScenarios']]
 sources += [root / 'directrg/src/test/kotlin/android/util/Log.kt']
-sources += [host / (n + '.kt') for n in ['ShellMain', 'PanelPower', 'LiveScale', 'PhoneTouchDispatcher',
+sources += [host / (n + '.kt') for n in ['PhoneInputTraceConfig', 'PhoneInputTrace', 'CameraSourceSettings', 'ShellMain', 'PanelPower', 'LiveScale', 'PhoneTouchDispatcher',
     'HeldInputRelease', 'OwnedRelease', 'ProjectedAppLaunch', 'PlatformProjectionLaunch', 'ProjectionDisplayState',
     'ProjectionContext', 'ShizukuHostService', 'OwnedProjectionRoutes', 'OwnedHostLifecycle', 'OwnedShellSessions',
-    'BootstrapSessionFiles', 'SessionUsability']]
+    'BootstrapSessionFiles', 'SessionUsability', 'UserControls']]
 for prefix in ['anchor/execution', 'anchor/preferences', 'anchor/target', 'anchor/registration']:
     sources += sorted((host / prefix).glob('*.kt'))
 sources += [host / 'uiaccess' / (n + '.kt') for n in ['UiTargetSnapshot', 'UiSourceGeometry', 'UiTargetReader', 'UiTargetSnapshotProvider']]
 sources += [host / 'activation/snapshot' / (n + '.kt') for n in ['NativeSnapshotRegion', 'SnapshotWord']]
 sources += sorted((shared.parent / 'snapshot/transport/doubles').glob('*.kt'))
 sources += [host / 'input' / (n + '.kt') for n in ['PhoneInputMerger', 'FunctionWork', 'FunctionIntentRoute']]
+sources += [host/'hid'/(n+'.kt') for n in ['PhoneHidController','PhoneHidBindings']]
 sources += [shared.parent / 'anchor-hold/AnchorHoldSessionScenarios.kt']
 import importlib.util
 import re
@@ -70,12 +81,29 @@ parser_spec.loader.exec_module(parser)
 activity_path = rgmain / 'ReceiverActivity.kt'
 activity = activity_path.read_text()
 boundary = rg_suite / 'CompositionBoundary.kt'
-fixture = boundary.read_text()
-names = ['currentRegistrationIntent', 'anchorMessage', 'chooseAnchorRegistration', 'cancelAnchorRegistration',
+fixture = boundary.read_text().replace('// ACTUAL_METHODS', '    private fun runOnUiThread(action: () -> Unit) { action() }\n// ACTUAL_METHODS')
+fixture = fixture.replace('    val confirmTap = Runnable {}','    private var confirmTap: Runnable = newConfirmTap()').replace('    val edgeTick = Runnable {}','    private var edgeTick: Runnable = newEdgeTick()')
+fixture = fixture.replace('}, capture = ::captureFunction)', '}, capture = ::captureFunction, captureOriginal = { expected, id, parent -> captureFunctionOriginal(expected,id,FunctionSource.GLASSES_NATIVE,parent) }, retireOriginal = { id, original -> retireFunctionOriginal(id,original,FunctionSource.GLASSES_NATIVE) })')
+fixture = fixture.replace('    val edgeMotion = HeldNode()', '    val edgeMotion = HeldNode()\n    private val settings = object { val scrollSpeed = 100 }')
+fixture = fixture.replace('    private fun nativeInputStage(stage: String) = Unit', '    private fun nativeInputStage(stage: String, due: Long? = null) = Unit')
+fixture = fixture.replace('    fun cancel() = Unit', """    fun prepareCancel() = InputRetirement({}, { false })
+    fun prepareCancel(time: Long) = InputRetirement({}, { false })
+    fun captureCancellation() = InputRetirement({}, { false })
+    fun prepareDismiss() = InputRetirement({}, { false })
+    fun confirm(time: Long) = Unit
+    val deadline: Long? get() = null
+    fun postDelayed(task: Runnable, delay: Long) = Unit
+    var visibleBounds = PointerBounds(0f,0f,480f,640f)
+    fun direction(point: PointerPosition, bounds: PointerBounds, expires: Long, now: Long) = 0
+    fun step(point: PointerPosition, bounds: PointerBounds, expires: Long, now: Long, speed: Int) = 0
+    fun cancel() = Unit""")
+names = ['currentRegistrationIntent', 'anchorMessage', 'chooseAnchorRegistration', 'retireRegistration', 'cancelAnchorRegistration',
          'cancelInput', 'cancelInputState', 'updatePointerBounds', 'publishHeadPointer', 'updateAnchorHeldContext',
-         'contextualBack', 'contextualHome', 'showControlPanel', 'showHidBindings', 'dispatchNavigation', 'completedNavigation', 'sleepGlasses', 'exitToLauncher', 'finishProjection', 'cancelOriginalOnExit', 'remoteBack', 'remoteTap', 'remoteScroll', 'resize', 'captureFunction', 'dispatchFunction', 'showSnapshot']
-names += ['currentNavigation', 'cancelInputRevision']
+         'contextualBack', 'contextualHome', 'showControlPanel', 'showHidBindings', 'dispatchNavigation', 'localControl', 'admitLocalControl', 'showControlPanelAdmitted', 'showHidBindingsAdmitted', 'contextualBackAdmitted', 'contextualHomeAdmitted', 'sleepGlassesAdmitted', 'exitToLauncherAdmitted', 'completedNavigation', 'sleepGlasses', 'exitToLauncher', 'finishProjection', 'cancelOriginalOnExit', 'remoteBack', 'remoteTap', 'remoteScroll', 'resize', 'captureFunction', 'captureFunctionOriginal', 'retireFunctionOriginal', 'dispatchFunction', 'showSnapshot']
+names += ['currentNavigation', 'cancelInputRevision', 'prepareInputCancellation', 'cancelInputOperation', 'newEdgeTick', 'newConfirmTap', 'schedulePadConfirmation']
 blocks = {name: parser.block(activity, rf'^    (?:private|internal) fun {name}\(') for name in names}
+blocks['nativePadMotionInput'] = '    private var nativePadMotionAdmitted = false\n' + parser.block(activity,r'^    private val nativePadMotionInput by lazy ').replace('try { if (::padContact.isInitialized) padContact.accept(event) }','try { Unit }')
+blocks['padControlInput'] = parser.block(activity,r'^    private val padControlInput by lazy ').replace('dispatchPadActionAdmitted(PadGestureRecognizer.Action.Contact(event))','Unit')
 blocks['NavigationContext'] = parser.block(activity, r'^    private data class NavigationContext\(')
 blocks['navigationContext'] = re.search(r'^    private fun navigationContext\(\).*?anchorRegistration.offer\)', activity, re.M | re.S).group()
 for name in ['onResume', 'onWindowFocusChanged', 'onPause', 'onDestroy']:
@@ -102,10 +130,10 @@ activity_record = {'path': str(activity_path), 'snapshot': str(snapshot), 'sha25
                    'boundary': str(boundary), 'boundarySha256': sha(boundary), 'blocks': blocks,
                    'sessionView': session_view, 'heldFields': held_fields, 'heldInitializer': held,
                    'predicates': predicates, 'functionCapture': capture, 'nativeInitializer': native,
-                   'scope': 'Complete actual Activity methods/initializer/callback source; Android widgets/service framework boundary; full Activity compile separately required'}
+                   'scope': 'Actual Activity destination/cancellation/Function/registration source on named widgets/service boundaries; padControlInput field callback is explicitly Unit here because this closure does not exercise native pad normalization/delivery. Actual full pad callback/body is compiled by run-retirement.py; full Activity SDK compile separately required', 'adaptations': {'padControlInputDelivery': 'Unit: native pad delivery is not included in this Phone/Function closure', 'nativePadMotionDelivery': 'Unit: new original Motion queue metadata is compiled but raw delivery exercised by full retirement runner' }}
 sources += [root / 'directrg/src/test/anchor-integration/ToastBoundary.kt', generated, shared.parent / 'anchor-hold/doubles/Json.kt', root / 'directrg/src/test/anchor-integration/ReceiverRig.kt',
-            rg_suite / 'CompositionRig.kt', suite / 'CoreScenarios.kt', suite / 'CoreUnitScenarios.kt', suite / 'QueuedHomeBefore.kt']
-sources += [rgmain / (n + '.kt') for n in ['AnchorRegistrationController', 'FunctionGestureRecognizer',
+            rg_suite / 'CompositionRig.kt', suite / 'CoreScenarios.kt', suite / 'CoreUnitScenarios.kt', suite / 'QueuedHomeBefore.kt', suite / 'CentralGateScenarios.kt', suite / 'PhoneIngressScenarios.kt', suite / 'LocalGateScenarios.kt', suite / 'TraceScenarios.kt', suite / 'RawGlassesScenarios.kt', suite / 'ScopedLaunchScenarios.kt']
+sources += [rgmain / (n + '.kt') for n in ['NativePadMotionInput', 'ReceiverContactInput', 'InputRetirement', 'AnchorRegistrationController', 'FunctionGestureRecognizer',
                                          'CompletedReceiverInput', 'SessionPresentation', 'ContextualNavigation', 'NativeSwipeNavigationInput', 'PadGestureRecognizer', 'HeldInputOwner', 'HeldPointerDispatcher', 'OrderedControlDispatcher']]
 mapping = out / 'NativePadMapping.kt'
 mapping.write_text('package com.code2hack.eyeprojector.directrg\n' + parser.block(
@@ -115,24 +143,66 @@ sources += sorted((rg_suite / 'doubles').glob('*.kt')) + sorted((rg_suite / 'com
 control_type=host/'anchor/execution/AnchorControlAdmission.kt'
 if control_type.exists(): sources.append(control_type)
 main = 'com.code2hack.eyeprojector.directhost.CoreScenariosKt'
+for index, file in enumerate(sources):
+    if file.is_file() and 'interface IHostBootstrap' in file.read_text():
+        adapted = out / 'HostBootstrapInterfaces.kt'
+        adapted.write_text(file.read_text().replace('    fun destroy()',
+            '    fun userControl(kind: Int, expectedOwnerEpoch: String, expectedProjectionToken: String): Int = 0\n    fun destroy()'))
+        sources[index] = adapted
+# Actual HostBootstrap START/config bodies; Android binding/executor/status-only boundaries are explicit.
+bootstrap = host / 'HostBootstrap.kt'
+bootstrap_text = bootstrap.read_text()
+bootstrap_blocks = [parser.block(bootstrap_text, r'^    fun start\('), parser.block(bootstrap_text, r'^    private fun performPending\(')]
+bootstrap_blocks += [re.search(r'^    (?:private val inputTraceConfiguration|fun configureInputTrace).*$', bootstrap_text, re.M).group()]
+bootstrap_blocks += [re.search(r'^    fun configureInputTrace.*$', bootstrap_text, re.M).group(), re.search(r'^    private fun inputTraceEndpoint.*?PhoneInputTraceConfig.endpoint.*$', bootstrap_text, re.M|re.S).group().split('\n\n')[0]]
+bootstrap_boundary = suite / 'BootstrapTraceBoundary.kt'
+bootstrap_generated = out / 'BootstrapTraceWiring.kt'
+bootstrap_generated.write_text(bootstrap_boundary.read_text().replace('// ACTUAL_FIELDS_AND_METHODS', '\n'.join(bootstrap_blocks)).replace('JSONObject(result)', 'BootstrapStatusBoundary(result)'))
+sources += [bootstrap_generated, suite / 'BootstrapTraceScenarios.kt', suite / 'BootstrapAudioBoundary.kt']
+
 sources = list(dict.fromkeys(sources))
+before_sources = {}
+if a.phone_before_result:
+    before_record = json.loads(a.phone_before_result.read_text())
+    before_sources = {entry['path']: entry for entry in before_record['sources']}
+
 snapshots = []
 for i, source in enumerate(sources):
     copy = out / 'sources' / str(i) / source.name
     copy.parent.mkdir(parents=True, exist_ok=True)
-    copy.write_bytes(source.read_bytes())
+    old = before_sources.get(str(source)) if source.is_relative_to(host) else None
+    if old:
+        original = Path(old['snapshot'])
+        if sha(original) != old['sha256']: p.error('Changed frozen before source: ' + str(original))
+        copy.write_bytes(original.read_bytes())
+    else:
+        copy.write_bytes(source.read_bytes())
     snapshots.append(copy)
 jar = out / 'integration-source.jar'
 compile_cmd = [java, '-cp', cp, 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', '-Xfriend-paths=' + friends,
                '-jvm-target', '17', '-no-stdlib', '-no-reflect', '-classpath', cp, '-d', str(jar)] + list(map(str, snapshots))
 run_cmd = [java, '-Xlog:class+load=info:file=' + str(out / 'class-load.log'), '-cp', str(jar) + os.pathsep + cp, main]
-record = {'scope': 'Owner88 Phone core actual source; original Session/merger/Anchor/Binder/FIFO implementations, cached accepted122 dependencies and named Android/transport/UI boundaries; no Glasses/wire join or SDK/device claim',
+record = {'scope': 'Bounded actual Phone central gate, matched Glasses local intents/Function frames and original lifetimes; actual Session/merger/Anchor/Binder/FIFO/marker producer sources and cached accepted122 dependencies. Named Android/TLS/UI/native pad/Motion delivery boundaries; separate full-source Android/runtime acceptance required',
           'dependencyManifest': str(a.dependency_manifest.resolve()), 'dependencyManifestSha256': sha(a.dependency_manifest),
           'dependencies': jars, 'originAcceptedHead': manifest['originAcceptedHead'],
           'historicalDependencyDisposition': manifest['historicalDisposition'],
           'sources': [{'path': str(s), 'snapshot': str(c), 'sha256': sha(c)} for s, c in zip(sources, snapshots)],
           'compileCommand': compile_cmd, 'runCommand': run_cmd, 'runnerSha256': sha(__file__), 'base': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()}
 record['activityExtraction'] = activity_record
+bootstrap_frozen=out/'HostBootstrap-source.kt';bootstrap_frozen.write_bytes(bootstrap.read_bytes())
+record['bootstrapExtraction']={'source':str(bootstrap),'snapshot':str(bootstrap_frozen),'sha256':sha(bootstrap_frozen),'blocks':bootstrap_blocks,'boundary':str(bootstrap_boundary),'boundarySha256':sha(bootstrap_boundary),'scope':'Actual START/config/performPending bodies, already-connected remote forwarding to real Shizuku service; setup/executor/binding/status publication boundary. Unused STOP JSONObject parser explicitly substituted.'}
+
+record['phoneBeforeResult'] = str(a.phone_before_result) if a.phone_before_result else None
+for label, path in [('runner', Path(__file__)), ('parser', shared.parent / 'hid/run.py')]:
+    frozen = out / (label + '-source.py')
+    frozen.write_bytes(path.read_bytes())
+    record[label + 'Snapshot'] = {'path': str(path), 'snapshot': str(frozen), 'sha256': sha(frozen)}
+record['aidlSources'] = []
+for path in sorted((root / 'directhost/src/main/aidl').rglob('*.aidl')):
+    if path.name not in ['IAnchorControlSession.aidl', 'IAnchorAppBridge.aidl', 'IAnchorUserControl.aidl', 'IHostBootstrap.aidl']: continue
+    frozen = out / path.name
+    frozen.write_bytes(path.read_bytes())
+    record['aidlSources'].append({'path': str(path), 'snapshot': str(frozen), 'sha256': sha(frozen)})
 actual_aidl = root / 'directhost/src/main/aidl/com/code2hack/eyeprojector/directhost/anchor/execution/IAnchorSession.aidl'
 aidl_snapshot = out / 'IAnchorSession-source.aidl'
 aidl_snapshot.write_bytes(actual_aidl.read_bytes())
@@ -143,6 +213,17 @@ record['binderBoundary'] = {'source': str(binder_origin), 'sourceSha256': sha(bi
     'qualification': 'Generated Binder boundary adapted with new consumeHeldControl method; default NORMAL only for existing stateless host fixture Stubs. Actual production Operation/Runtime methods override and load from new source.'}
 env = os.environ.copy()
 env['EYEPROJECTOR_HOLD_EVIDENCE'] = str(out)
+fixture_dir=out/'trace-fixtures';fixture_dir.mkdir()
+keytool=str(Path(java).parent/'keytool')
+fixture_commands=[[keytool,'-genkeypair','-alias','fixture','-keyalg','RSA','-keysize','2048','-dname','CN=Host-only trace test','-validity','2','-storetype','PKCS12','-keystore',str(fixture_dir/'identity.p12'),'-storepass','host-fixture-only'],[keytool,'-exportcert','-alias','fixture','-keystore',str(fixture_dir/'identity.p12'),'-storepass','host-fixture-only','-file',str(fixture_dir/'peer.crt')]]
+with (fixture_dir/'keytool.log').open('w') as log:
+    for command in fixture_commands: subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,check=True,timeout=30)
+(fixture_dir/'password').write_text('host-fixture-only')
+server=Path('/home/code2hack/.local/state/eyeprojector/v0.3/run-001/issue-115/current-production-sdk159/run01/source/third_party/scrcpy-server-v5.0.1')
+assert sha(server)=='764eb6f79811d5211fe9df341120882ba9994c7a61b897d7bf3fb662e53bc536'
+env['EYEPROJECTOR_TRACE_FIXTURES']=str(fixture_dir);env['EYEPROJECTOR_TRACE_SERVER']=str(server)
+record['tracePreparationFixtures']={'commands':fixture_commands,'files':[{'path':str(f),'sha256':sha(f)} for f in sorted(fixture_dir.iterdir())],'server':{'path':str(server),'sha256':sha(server)},'qualification':'Host-generated self-signed test-only identity, fake external listener/peer TLS boundary; real public owned-preparation/Tls.context/config and Bridge Session factory. No SDK/device/test private data.'}
+
 if a.queued_launch_before: env['EYEPROJECTOR_PENDING_LAUNCH'] = '1'
 record['pendingQueuedLaunchBeforeOnly'] = a.queued_launch_before
 with (out / 'compile.log').open('w') as log:
@@ -167,7 +248,20 @@ if r.returncode == 0:
     record['loadedClasses'] = str(out / 'class-load.log')
     # Verify the critical closure actually loaded from the newly compiled source artifact.
     required = [
+        'com.code2hack.eyeprojector.directhost.anchor.preferences.AppAnchorStore',
+        'com.code2hack.eyeprojector.directrg.PadGestureRecognizer',
+        'com.code2hack.eyeprojector.directhost.PhoneInputTrace',
+        'com.code2hack.eyeprojector.directhost.input.FunctionWork',
         'com.code2hack.eyeprojector.protocol.BackHomeGestureRecognizer',
+        'com.code2hack.eyeprojector.protocol.ReceiverControlIntent',
+        'com.code2hack.eyeprojector.protocol.ReceiverControlResult',
+        'com.code2hack.eyeprojector.protocol.FunctionOriginal',
+        'com.code2hack.eyeprojector.directhost.hid.PhoneHidController',
+        'com.code2hack.eyeprojector.directhost.PlatformProjectionLaunch',
+        'com.code2hack.eyeprojector.directhost.OwnedProjectionCommands',
+        'com.code2hack.eyeprojector.directrg.FunctionGestureRecognizer',
+        'com.code2hack.eyeprojector.directrg.InputRetirement',
+        'com.code2hack.eyeprojector.directrg.ReceiverContactInput',
         'com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission',
         'com.code2hack.eyeprojector.directhost.PhoneTouchDispatcher',
         'com.code2hack.eyeprojector.directhost.Session',

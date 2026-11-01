@@ -141,6 +141,13 @@ internal class Bridge(
     private val peers = ConcurrentHashMap.newKeySet<SSLSocket>()
     private val workers = ThreadPoolExecutor(2, 2, 0, TimeUnit.SECONDS, ArrayBlockingQueue(2))
     private val settings = Tls.settings(directory)
+    private var inputTraceConfiguration: PhoneInputTraceConfig? = null
+    fun installInputTraceConfiguration(config: PhoneInputTraceConfig?) { inputTraceConfiguration = config }
+    private fun createSession(socket: SSLSocket, input: DataInputStream): Session =
+        Session(socket, input, directory, jar, timer, ownerEpoch) { if (running.get()) status("STREAMING") }.also {
+            it.installManagedDisplayFactory(managedDisplayFactory)
+            it.installInputTraceConfiguration(inputTraceConfiguration)
+        }
     private val refused = AtomicLong()
     private val unauthenticatedRefused = AtomicLong()
     private var boundPort = 0
@@ -209,14 +216,11 @@ internal class Bridge(
                         transfer.pending!!.startOwnedLane()
                     }
                 }
-                Wire.STOP_HOST -> { status("HOST_STOPPING"); close(SessionStopReason.HOST_STOP) }
+                Wire.STOP_HOST -> { stopFromUser() }
                 Wire.STREAM -> {
                     session = synchronized(admission) {
                         if (!running.get() || active.get() != null) return
-                        Session(socket, input, directory, jar, timer, ownerEpoch) { if (running.get()) status("STREAMING") }.also {
-                            it.installManagedDisplayFactory(managedDisplayFactory)
-                            active.set(it)
-                        }
+                        createSession(socket, input).also { active.set(it) }
                     }
                     session.installAnchorBridge(anchorAppBridge)
                     status("SESSION_STARTING")
@@ -242,6 +246,37 @@ internal class Bridge(
     }
 
     override fun close() = close(SessionStopReason.OWNER_CLOSE)
+
+    /** A user Stop is a control; internal/fatal close remains unconditional. */
+    fun stopFromUser(): Boolean {
+        val received = active.get()
+        if (received != null && !received.consumeUserControl()) return false
+        val accepted = synchronized(admission) {
+            if (!running.get()) return@synchronized false
+            val original = active.get()
+            if (original !== received) return@synchronized false
+            if (original != null && !original.consumeUserControl()) return@synchronized false
+            running.set(false) // Claim this original Host before another STREAM can be admitted.
+            true
+        }
+        if (accepted) { status("HOST_STOPPING"); close(SessionStopReason.HOST_STOP) }
+        return accepted
+    }
+
+    fun recognizeUserInput(): Boolean = running.get() && active.get()?.recognizeUserInput() != false
+
+    fun consumeUserControl(expected: ProjectionContext): Boolean {
+        val received = active.get()
+        if (received != null && (received.projectionContext() != expected || !received.consumeUserControl())) return false
+        return synchronized(admission) {
+        if (!running.get() || !launchOperationsAccepted) return@synchronized false
+        val original = active.get()
+        if (original !== received) return@synchronized false
+        if (original == null) return@synchronized !expected.available
+        if (original.projectionContext() != expected) return@synchronized false
+        original.consumeUserControl()
+        }
+    }
 
     /** Typed local controller hooks capture only this Bridge's exact actual Session. */
     fun requestScale(requestId: Long, value: Double, expectedOwnerEpoch: String, expectedProjectionToken: String): ScaleState {
@@ -396,6 +431,7 @@ private class Session(
     fun managedProjectionStatus(): JSONObject = JSONObject()
         .put("ownerEpoch", ownerEpoch).put("projectionToken", projectionToken)
         .put("enabled", managedDisplayFactory != null).put("state", managedDisplayState)
+        .put("inputTrace", inputTrace?.status() ?: lastInputTraceStatus)
         .put("failure", managedDisplayFailure ?: JSONObject.NULL)
         .put("platformStage", managedPlatformStage)
         .put("callerUid", Process.myUid()).put("statusFile", managedStatusFileName)
@@ -663,8 +699,33 @@ private class Session(
     private var localListener: LocalServerSocket? = null
     private var video: LocalSocket? = null
     private var control: LocalSocket? = null
-    private val inputControls = com.code2hack.eyeprojector.directhost.anchor.execution.AnchorSessionInput(controlLock) { control!!.outputStream.write(it) }
     private val functionWork = FunctionWork()
+    private val controlReplies = FunctionWork("eyeprojector-phone-control-reply")
+    @Volatile private var inputTrace: PhoneInputTrace? = null
+    @Volatile private var lastInputTraceStatus = JSONObject().put("enabled", false)
+    fun installInputTraceConfiguration(config: PhoneInputTraceConfig?) {
+        val trace = PhoneInputTrace.open(config, context, System.identityHashCode(this)) ?: return
+        inputTrace = trace
+        inputControls.anchor.observation(trace)
+        val work = trace.retain()
+        functionWork.whenTerminated {
+            trace.record("ORIGINAL_FUNCTION_WORK_RETIRED", mapOf("discardedCallbacks" to functionWork.discardedCallbacks))
+            work?.close()
+        }
+        trace.whenTerminated {
+            if (inputTrace === trace) {
+                lastInputTraceStatus = trace.status()
+                inputControls.anchor.observation(null)
+                inputTrace = null
+            }
+        }
+    }
+    private val inputControls = com.code2hack.eyeprojector.directhost.anchor.execution.AnchorSessionInput(controlLock) { control!!.outputStream.write(it) }.apply {
+        cancellation(functionWork::submit) { error ->
+            val original = error as? Exception ?: java.io.IOException("Original Anchor retirement failed", error)
+            closeSafely(sessionFailureReason(original, control = true), original)
+        }
+    }
     /** #121/#122 install typed consumers on the actual Session; grammar owns no Anchor contact. */
     private var executingAnchor: com.code2hack.eyeprojector.directhost.anchor.execution.AnchorAdmission? = null
     private val anchorSession by lazy {
@@ -676,7 +737,9 @@ private class Session(
                     mapping.displayUniqueId == source.displayUniqueId && mapping.geometry == source.geometry } == true },
             phoneInput::nativeAction, functionWork, { error -> closeSafely(sessionFailureReason(error, control = true), error) },
             { message -> if (running.get()) try { send(Frame(Wire.ANCHOR, payload = message.bytes())) }
-                catch (error: Exception) { closeSafely(sessionFailureReason(error, control = true), error) } })
+                catch (error: Exception) { closeSafely(sessionFailureReason(error, control = true), error) } }).also {
+                    it.controlContext(context)
+                }
     }
     fun installAnchorBridge(client: com.code2hack.eyeprojector.directhost.anchor.execution.IAnchorAppBridge?) = anchorSession.install(client)
     override val functionIntents = FunctionIntentConsumers<CapturedProjection>().apply {
@@ -686,8 +749,17 @@ private class Session(
         activate = consume; register = consume
     }
 
-    private fun acceptFunction(intent: FunctionIntent) {
-        val admission = inputControls.anchor.capture(intent) ?: return
+    private fun acceptFunction(intent: FunctionIntent) = acceptFunction(intent, null)
+
+    private data class RemoteFunctionKey(val incarnation: ReceiverIncarnation, val source: FunctionSource, val id: Long)
+    private val remoteFunctionOriginals = java.util.concurrent.ConcurrentHashMap<RemoteFunctionKey,
+        Pair<FunctionOriginal,com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission>>()
+    private val remoteFunctionSeen=java.util.concurrent.ConcurrentHashMap<Pair<ReceiverIncarnation,FunctionSource>,Long>()
+    private val remoteFunctionRetiredBeforeBirth=java.util.concurrent.ConcurrentHashMap.newKeySet<RemoteFunctionKey>()
+
+    private fun acceptFunction(intent: FunctionIntent,
+        original: com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission?) {
+        val admission = inputControls.anchor.capture(intent, original) ?: return
         val captured = CapturedFunctionIntent<CapturedProjection>(intent, this)
         functionWork.submit {
             try {
@@ -719,7 +791,11 @@ private class Session(
         { inputControls.cancel() },
         { event -> if (running.get()) send(Frame(Wire.RECEIVER_INPUT, payload = event.bytes())) },
         { running.get() }, functionIntent = ::acceptFunction,
-        anchorControl = inputControls::consumeHeldControl, cancelPassiveControl = inputControls::cancelOrdinary)
+        anchorControl = inputControls::consumeHeldControl, cancelPassiveControl = inputControls::cancelOrdinary,
+        captureHeldControl = inputControls.anchor::captureHeldControl,
+        originalFunctionIntent = { intent, original -> acceptFunction(intent, original) },
+        receiveControl = inputControls.anchor::receiveControl,
+        passiveAllowed = { !inputControls.anchor.holding })
     private var server: java.lang.Process? = null
     private var inputThread: Thread? = null
     @Volatile private var streamThread: Thread? = null
@@ -749,15 +825,19 @@ private class Session(
     private var identifiedDisplay = false
     private fun phoneNavigation(action: Navigation, size: Geometry) {
         if (!running.get()) return
-        if (inputControls.consumeHeldControl(com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission()) !=
+        val originalControl = com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission()
+        if (inputControls.consumeHeldControl(originalControl) !=
             com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.NORMAL) return
+        val originalSource = receiverUsability.snapshot().fact
+        val commit: () -> Boolean = { commitUserControl(originalControl, originalSource) }
+        val current: () -> Boolean = { currentUserControl(originalControl,originalSource) }
         when (action) {
             Navigation.BACK -> inputControls.navigate(Navigate(action, size))
-            Navigation.HOME -> launches.home()
+            Navigation.HOME -> launches.home(commit,current)
             Navigation.FUNCTION_DOUBLE -> Unit // Reserved legacy key; Function is never navigation.
             Navigation.CONTEXTUAL_HOME -> {
                 val original = receiverUsability.snapshot().fact ?: return
-                launches.contextualHome {
+                launches.contextualHome(commit,current) {
                     val latest = receiverUsability.snapshot()
                     val fact = latest.fact
                     if (running.get() && !latest.retired && fact != null &&
@@ -769,6 +849,32 @@ private class Session(
             }
         }
     }
+
+    private fun commitUserControl(original: com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission,
+        source: ReceiverUsability?): Boolean {
+        fun current(): Boolean {
+            val now = receiverUsability.snapshot().fact
+            return running.get() && if (source == null) now == null else now != null &&
+                now.ownerEpoch == source.ownerEpoch && now.incarnation == source.incarnation &&
+                now.inputRevision == source.inputRevision && now.mode == source.mode
+        }
+        if (!current() || !inputControls.anchor.isCurrent(original)) return false
+        return phoneInput.nativeAction(original) {
+            if (!current()) false else {
+                inputControls.cancel()
+                current() && inputControls.anchor.isCurrent(original)
+            }
+        }
+    }
+
+    private fun currentUserControl(original: com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission,
+        source: ReceiverUsability?): Boolean {
+        val current=receiverUsability.snapshot()
+        val fact=current.fact
+        return running.get()&&!current.retired&&inputControls.anchor.currentAtSubmission(original)&&
+            (if(source==null)fact==null else fact!=null&&fact.ownerEpoch==source.ownerEpoch&&fact.incarnation==source.incarnation&&
+                fact.inputRevision==source.inputRevision&&fact.mode==source.mode)
+    }
     private val tlsProtocol = peer.session.protocol
     private val localAddress = peer.localAddress.hostAddress
     private val localPort = peer.localPort
@@ -779,6 +885,7 @@ private class Session(
 
     fun requestScale(id: Long, value: Double, streamRequest: Boolean = false): ScaleState {
         if (!running.get()) return LiveScale.unavailable(id, value)
+        if (!consumeUserControl()) return LiveScale.unavailable(id, value)
         return try { scale.request(id, value, publishUnavailable = streamRequest) }
         catch (error: Exception) {
             closeSafely(sessionFailureReason(error, control = true), error)
@@ -788,8 +895,23 @@ private class Session(
     fun scaleState(): ScaleState = if (running.get()) scale.state() else LiveScale.unavailable()
 
     fun projectionContext(): ProjectionContext = if (running.get()) context else ProjectionContext()
+    fun recognizeUserInput(): Boolean = running.get() && !inputControls.anchor.discardingControls
+    override fun consumeUserControl(): Boolean {
+        if (!running.get()) return false
+        val original = com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission()
+        inputControls.anchor.receiveControl(original)
+        return !original.terminal && inputControls.consumeHeldControl(original) ==
+            com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.NORMAL
+    }
     override fun receiverUsability(): SessionUsabilitySnapshot = receiverUsability.snapshot()
-    override fun launchApp(requestId: Long, packageName: String): ProjectionDisplayState = launches.launch(requestId, packageName)
+    override fun launchApp(requestId: Long, packageName: String): ProjectionDisplayState {
+        val original = com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission()
+        if (inputControls.consumeHeldControl(original) != com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.NORMAL)
+            return ProjectionDisplayState(requestId = requestId, requestedPackage = packageName, context = context)
+        val source = receiverUsability.snapshot().fact
+        return launches.launch(requestId,packageName,commitOriginal={commitUserControl(original,source)},
+            currentOriginal={currentUserControl(original,source)})
+    }
     override fun projectionDisplayState(): ProjectionDisplayState = launches.snapshot(observe = true)
     override fun uiTargetContext(): com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiSource? {
         val original = synchronized(managedDisplayGate) {
@@ -869,6 +991,7 @@ private class Session(
     }
 
     fun requestPanelOff(id: Long): PanelPowerState {
+        if (!consumeUserControl()) return PanelPowerState.unavailable(id, panelContext)
         val result = panelPower.requestOff(id)
         if (result.off == PanelSubmission.FAILED) {
             close(SessionStopReason.CONTROL_IO)
@@ -1016,17 +1139,7 @@ private class Session(
         val videoInput = video?.let { DataInputStream(it.inputStream) }
         startupStage.set(StartupStage.READ_CODEC)
         if (videoInput != null) require(videoInput.readInt() == Wire.H264)
-        inputThread = Thread({
-            var reason = SessionStopReason.CONTROL_END
-            var failure: Exception? = null
-            try {
-                while (running.get()) {
-                    val frame = Wire.readFrame(input)
-                    if (!receiveControl(frame)) break
-                }
-            } catch (error: Exception) { reason = sessionFailureReason(error, control = true); failure = error }
-            finally { closeSafely(reason, failure) }
-        }, "eyeprojector-control").apply { start() }
+        inputThread = Thread(::readControls, "eyeprojector-control").apply { start() }
         startupStage.set(StartupStage.VIDEO_STREAM)
         var reason = SessionStopReason.VIDEO_END
         var failure: Exception? = null
@@ -1093,9 +1206,63 @@ private class Session(
     }
 
     /** Actual authenticated control consumer, shared by the reader and composition checks. */
+    private fun readControls() {
+    var reason = SessionStopReason.CONTROL_END
+    var failure: Exception? = null
+    try {
+        while (running.get()) {
+            val frame = Wire.readFrame(input)
+            if (!receiveControl(frame)) break
+        }
+    } catch (error: Exception) { reason = sessionFailureReason(error, control = true); failure = error }
+    finally { closeSafely(reason, failure) }
+    }
+
     private fun receiveControl(frame: Frame): Boolean {
+        val trace = inputTrace
+        return if (trace == null) receiveControlBody(frame) else trace.withFrame(frame) { receiveControlBody(frame) }
+    }
+
+    private fun receiveControlBody(frame: Frame): Boolean {
         when (frame.channel) {
             Wire.PING -> { lastPingNs.set(System.nanoTime()); pongLane.submit(frame.stamp) }
+            Wire.CONTROL_INTENT -> {
+                val intent = ReceiverControlIntent.from(frame.payload)
+                val original = com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission()
+                inputControls.anchor.receiveControl(original)
+                fun current(): Boolean {
+                    val fact = receiverUsability.snapshot().takeUnless { it.retired }?.fact ?: return false
+                    return running.get() && fact.ownerEpoch == intent.context.ownerEpoch && fact.incarnation == intent.context.incarnation &&
+                        fact.inputRevision == intent.context.inputRevision && fact.mode == intent.context.mode
+                }
+                val reply: (com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition) -> Unit = { disposition ->
+                    val result = ReceiverControlResult(intent.id, ReceiverControlDisposition.entries[disposition.ordinal])
+                    controlReplies.submit {
+                        try { synchronized(this@Session) {
+                            if (running.get()) {
+                                // Wait for this original writer before checking the original receipt.
+                                // NORMAL never authorizes a later Hold/binding/context at dequeue.
+                                val disposition = if (result.disposition == ReceiverControlDisposition.NORMAL &&
+                                    (!current() || !inputControls.anchor.currentAtSubmission(original))) ReceiverControlDisposition.RETIRED
+                                    else result.disposition
+                                send(Frame(Wire.CONTROL_RESULT, payload = result.copy(disposition = disposition).bytes()))
+                            }
+                        } } catch (error: Exception) { closeSafely(sessionFailureReason(error, control = true), error) }
+                    }
+                }
+                if (original.terminal) reply(original.disposition)
+                else if (!current()) reply(com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.RETIRED)
+                else {
+                    val disposition = inputControls.consumeHeldControl(original)
+                    if (disposition != com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.NORMAL) reply(disposition)
+                    else {
+                        val finish = anchorSession.localControl(original, ::current, reply)
+                        functionWork.submit { try { finish() } catch (error: Exception) {
+                            closeSafely(sessionFailureReason(error, control = true), error)
+                        } }
+                    }
+                }
+            }
             Wire.SCALE_REQUEST -> {
                 requestScale(frame.stamp, ScaleRequest.from(frame.payload).scale, streamRequest = true)
             }
@@ -1115,6 +1282,10 @@ private class Session(
             Wire.SCROLL -> {
                 val scroll = Scroll.from(frame.payload)
                 if (scroll.target.geometry == geometry.get()) phoneInput.nativeAction { inputControls.scroll(scroll) }
+            }
+            Wire.PASSIVE_SCROLL -> {
+                val scroll = Scroll.from(frame.payload)
+                if (scroll.target.geometry == geometry.get()) phoneInput.passiveAction { inputControls.scroll(scroll) }
             }
             Wire.NAVIGATE -> {
                 val navigate = Navigate.from(frame.payload)
@@ -1143,7 +1314,12 @@ private class Session(
                 val previous = receiverUsability.snapshot().fact
                 if (receiverUsability.publish(fact)) {
                     if (previous == null || previous.ownerEpoch != fact.ownerEpoch || previous.incarnation != fact.incarnation ||
-                        previous.inputRevision != fact.inputRevision || previous.mode != fact.mode) inputControls.anchor.retire()
+                        previous.inputRevision != fact.inputRevision || previous.mode != fact.mode) {
+                        inputControls.anchor.retire()
+                        remoteFunctionOriginals.clear()
+                        remoteFunctionRetiredBeforeBirth.clear()
+                        remoteFunctionSeen.keys.removeAll { it.first != fact.incarnation }
+                    }
                     anchorSession.usability(fact)
                 }
                 if (receiverUsability.needsRegion()) prepareHidRegionAsync()
@@ -1155,7 +1331,37 @@ private class Session(
             }
             Wire.FUNCTION_INTENT -> {
                 require(frame.stamp == 0L)
-                acceptFunction(FunctionIntent.from(frame.payload))
+                val intent = FunctionIntent.from(frame.payload)
+                val key = RemoteFunctionKey(intent.context.usability.incarnation,intent.source,intent.gestureId)
+                val original = remoteFunctionOriginals.remove(key)
+                if (original != null && original.first.context == intent.context) acceptFunction(intent,original.second)
+            }
+            Wire.FUNCTION_ORIGINAL -> {
+                require(frame.stamp == 0L)
+                val original = FunctionOriginal.from(frame.payload)
+                val key = RemoteFunctionKey(original.context.usability.incarnation,original.source,original.gestureId)
+                val domain=key.incarnation to key.source
+                if(original.retired) {
+                    remoteFunctionOriginals.remove(key)
+                    if((remoteFunctionSeen[domain]?:-1)<key.id)remoteFunctionRetiredBeforeBirth.add(key)
+                } else {
+                    val control = com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission()
+                    inputControls.anchor.receiveControl(control,true) // Before any source gate/queue wait.
+                    val seen=remoteFunctionSeen[domain]?:-1
+                    if(key.id>seen) {
+                        remoteFunctionSeen[domain]=key.id
+                        val retired=remoteFunctionRetiredBeforeBirth.remove(key)
+                        remoteFunctionRetiredBeforeBirth.removeAll { it.incarnation==key.incarnation&&it.source==key.source&&it.id<key.id }
+                        if(!retired&&!control.terminal&&receiverUsability.acceptsPointer(original.context.usability,original.context.pointer)) {
+                            original.summaryOriginal?.let { parent ->
+                                val captured = remoteFunctionOriginals[RemoteFunctionKey(key.incarnation,key.source,parent)]
+                                if (captured == null) control.disposition = com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.RETIRED
+                                else control.inheritLifetime(captured.second)
+                            }
+                            if(!control.terminal)remoteFunctionOriginals[key]=original to control
+                        }
+                    }
+                }
             }
             Wire.ANCHOR -> { require(frame.stamp == 0L); anchorSession.receive(AnchorMessage.from(frame.payload)) }
             Wire.CAMERA_PROGRESS -> { require(frame.stamp == 0L); cameraRoles.observeProgress(CameraFeed.readProgress(frame.payload)) }
@@ -1186,8 +1392,9 @@ private class Session(
         retireManagedDisplay() // Admission closed first; actual VDM destruction is later/off-caller.
         cameraRoles.retireAll(CameraEndReason.PROJECTION_CLOSED)
         retireNativeResources() // Terminal store precedes resource/deadline/stock cleanup; never joins setup.
-        release.close {
+        try { release.close {
         running.set(false)
+        controlReplies.close()
         functionWork.close()
         anchorSession.close()
         val stopStartedMs = (System.nanoTime() - begin) / 1_000_000
@@ -1209,9 +1416,12 @@ private class Session(
             phase("localListenerCloseMs") { runCatching { localListener?.close() } }
             // Reuse the bounded held-release turn: a stuck writer must not prevent socket/child release.
             phase("inputAndPanelReleaseMs") {
+                val originalObservation = inputTrace?.retain()
                 HeldInputRelease.beforeTransportClose {
-                    try { phoneInput.invalidate() }
-                    finally { try { inputControls.close() } finally { panelPower.close() } }
+                    try {
+                        try { phoneInput.invalidate() }
+                        finally { try { inputControls.close() } finally { panelPower.close() } }
+                    } finally { originalObservation?.close() }
                 }
             }
 
@@ -1262,7 +1472,7 @@ private class Session(
         println(data.toString())
         check(server?.isAlive != true) { "Owned stock child release incomplete" }
         launchRelease.getOrThrow()
-        }
+        } } finally { inputTrace?.close() }
         if (managedDisplayFactory != null) {
             synchronized(managedDisplayGate) { managedTransportRetired = true }
             tryReleaseManagedDisplay(cameraMediaOwner.snapshot())

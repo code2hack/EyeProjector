@@ -57,6 +57,9 @@ class ProjectionSession(
     @Volatile private var controlReady = false
     @Volatile private var sourceUsability: ReceiverUsability? = null
     private var serializedUsability: ReceiverUsability? = null
+    private class LocalControl(val intent: ReceiverControlIntent, val complete: (ReceiverControlDisposition) -> Unit)
+    private val localControlIds = AtomicLong()
+    private val localControls = java.util.concurrent.ConcurrentHashMap<Long, LocalControl>()
     private val pendingAnchorOpen = java.util.concurrent.atomic.AtomicReference<AnchorMessage.Open?>()
     private var ownerUsabilityRevision = -1L
     // Separate from native timed input cancellation; both use the existing serialized stream writer.
@@ -309,6 +312,11 @@ class ProjectionSession(
 
     internal fun receive(frame: Frame) {
         when (frame.channel) {
+            Wire.CONTROL_RESULT -> {
+                val result = ReceiverControlResult.from(frame.payload)
+                val original = localControls.remove(result.id) ?: return
+                original.complete(if (currentLocalControl(original.intent.context)) result.disposition else ReceiverControlDisposition.RETIRED)
+            }
             Wire.SCALE_STATE -> {
                 val next = ScaleState.from(frame.payload)
                 scaleState = next
@@ -472,11 +480,31 @@ class ProjectionSession(
         }
     }
 
+    /** Same source grammar identity as its later intention, on the same ordered original writer. */
+    fun beginFunction(original: FunctionOriginal): Boolean = synchronized(inputLock) {
+        if (!currentFunction(original.context)) return false
+        controls.submit(SystemClock.uptimeMillis(), { currentFunction(original.context) }, "function-original", preserveTiming = false) {
+            synchronized(outputLock) {
+                if (currentFunction(original.context)) {
+                    writeUsabilityLocked(original.context.usability)
+                    writeFrameLocked(Frame(Wire.FUNCTION_ORIGINAL,payload=original.bytes()))
+                }
+            }
+        }
+    }
+
+    fun retireFunction(original: FunctionOriginal): Boolean = scaleControls.submit(SystemClock.uptimeMillis(),
+        {running.get()},"function-retire",preserveTiming=false) {
+        synchronized(outputLock) {
+            if(running.get())writeFrameLocked(Frame(Wire.FUNCTION_ORIGINAL,payload=original.copy(retired=true).bytes()))
+        }
+    }
+
     /** True means queued, not an acknowledgment from the Phone's target widget. */
     fun tap(tap: Tap, eventTimeMs: Long = System.nanoTime() / 1_000_000): Boolean =
         input(Wire.TAP, tap.geometry, tap.bytes(), eventTimeMs)
     fun scroll(scroll: Scroll, eventTimeMs: Long = System.nanoTime() / 1_000_000, headMotion: Boolean = false): Boolean =
-        input(Wire.SCROLL, scroll.target.geometry, scroll.bytes(), eventTimeMs, if (headMotion) "head-scroll" else "input")
+        input(if (headMotion) Wire.PASSIVE_SCROLL else Wire.SCROLL, scroll.target.geometry, scroll.bytes(), eventTimeMs, if (headMotion) "head-scroll" else "input")
     fun navigate(action: Navigation): Boolean {
         val size = geometry ?: return false
         return input(Wire.NAVIGATE, size, Navigate(action, size).bytes(), System.nanoTime() / 1_000_000)
@@ -493,6 +521,35 @@ class ProjectionSession(
         heldTouch.cancel(0)
     }
     fun cancelHeadScroll() = controls.cancelPending("head-scroll")
+
+    private fun currentLocalControl(original: ReceiverUsability): Boolean {
+        val current = sourceUsability ?: return false
+        return running.get() && current.ownerEpoch == original.ownerEpoch && current.incarnation == original.incarnation &&
+            current.inputRevision == original.inputRevision && current.mode == original.mode
+    }
+
+    /** Dedicated original writer: no cleanup, latest-mode substitution or local effect before reply. */
+    fun localControl(source: ReceiverControlSource, complete: (ReceiverControlDisposition) -> Unit): Boolean {
+        if (!running.get()) { complete(ReceiverControlDisposition.RETIRED); return false }
+        // No Function can establish Anchor before this Session has its first source fact.
+        val fact = sourceUsability ?: run { complete(ReceiverControlDisposition.NORMAL); return true }
+        val intent = ReceiverControlIntent(localControlIds.getAndIncrement(), source, fact)
+        val original = LocalControl(intent, complete)
+        localControls[intent.id] = original
+        val accepted = scaleControls.submit(SystemClock.uptimeMillis(), { running.get() }, "control-intent", preserveTiming = false) {
+            val written = synchronized(outputLock) {
+                if (!currentLocalControl(fact)) false
+                else {
+                    writeUsabilityLocked(fact)
+                    writeFrameLocked(Frame(Wire.CONTROL_INTENT, payload = intent.bytes()))
+                    true
+                }
+            }
+            if (!written && localControls.remove(intent.id, original)) complete(ReceiverControlDisposition.RETIRED)
+        }
+        if (!accepted && localControls.remove(intent.id, original)) complete(ReceiverControlDisposition.RETIRED)
+        return accepted
+    }
     fun headPointer(state: HeadPointerState, sourceExpiresAtNs: Long): Boolean = synchronized(inputLock) {
         if (!running.get() || geometry == null) return false
         val current = state.copy(sequence = ++pointerSequence, available = state.available && presentationUsable)
@@ -509,7 +566,7 @@ class ProjectionSession(
             send(Frame(channel, payload = payload))
             synchronized(this) { when (channel) {
                 Wire.TAP -> touches++
-                Wire.SCROLL -> scrolls++
+                Wire.SCROLL, Wire.PASSIVE_SCROLL -> scrolls++
                 Wire.NAVIGATE -> navigations++
             } }
         }
@@ -540,6 +597,8 @@ class ProjectionSession(
             } finally { closingThread = null }
         }
         // Callbacks may synchronously close again or wait for another close caller.
+        val pendingControls = localControls.values.toList()
+        pendingControls.forEach { if (localControls.remove(it.intent.id, it)) it.complete(ReceiverControlDisposition.RETIRED) }
         state(value)
     }
     override fun close() = closeWithState("STOPPED")

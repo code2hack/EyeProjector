@@ -32,6 +32,8 @@ internal class PhoneHidPinRuntime(
     private val controller: PhoneHidController,
     private val connectionChanged: (Boolean) -> Unit,
     private val changed: () -> Unit,
+    private val userControl: () -> Boolean = { true },
+    private val recognizeInput: () -> Boolean = { true },
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val lane = Executors.newSingleThreadExecutor()
@@ -108,12 +110,14 @@ internal class PhoneHidPinRuntime(
     }
 
     fun select(key: String) {
+        if (!userControl()) return
         if (!canSelectDevice || state.devices.none { it.key == key }) return
         selectedKey = key
         changed()
     }
 
     fun pinSelected() {
+        if (!userControl()) return
         if (!canPinSelected) return
         // A saved/desired pin can only be retried. Unpin/reset is the device-switch operation.
         val key = pinnedKey ?: selectedKey ?: return
@@ -144,6 +148,7 @@ internal class PhoneHidPinRuntime(
     }
 
     fun unpinAndReset() {
+        if (!userControl()) return
         val token = ++command
         val hadPin = desiredKey != null || state.intercepted || releasePending
         desiredKey = null; desiredName = null; selectedKey = null
@@ -240,9 +245,12 @@ internal class PhoneHidPinRuntime(
                                     if (epoch == bindingEpoch) runCatching { acceptState(stateJson) }
                                         .onFailure { lost("The capture service returned an unreadable state.") }
                                 } }
-                                override fun onInput(inputJson: String) { lane.execute {
-                                    if (epoch == bindingEpoch) runCatching { acceptInput(inputJson) }
-                                } }
+                                override fun onInput(inputJson: String) {
+                                    val discarded = !recognizeInput() // Before the original oneway callback queues.
+                                    lane.execute {
+                                        if (epoch == bindingEpoch) runCatching { acceptInput(inputJson, discarded) }
+                                    }
+                                }
                             })
                             if (releasePending) acceptState(remote!!.unpin())
                             else if (desiredKey != null) requestPin()
@@ -322,7 +330,7 @@ internal class PhoneHidPinRuntime(
         }
     }
 
-    private fun acceptInput(value: String) {
+    private fun acceptInput(value: String, discarded: Boolean = false) {
         val json = JSONObject(value)
         val key = json.getString("deviceKey")
         if (!ownerActive || !intercepted || key != activeKey || key != desiredKey || json.getLong("generation") != generation) return
@@ -335,7 +343,7 @@ internal class PhoneHidPinRuntime(
             PhoneHidBinding(PhoneHidButton(identity, json.getInt("code"), 0),
                 json.getString("deviceName"), json.getString("label")),
             PhoneHidPhase.valueOf(json.getString("phase")), json.getLong("downTimeMs"),
-            json.getLong("eventTimeMs"), json.getInt("repeatCount"), json.getLong("pressId"))
+            json.getLong("eventTimeMs"), json.getInt("repeatCount"), json.getLong("pressId"), discarded)
         val token = command
         val epoch = bindingEpoch
         main.post {

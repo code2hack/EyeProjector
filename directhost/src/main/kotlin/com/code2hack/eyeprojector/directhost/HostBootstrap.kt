@@ -47,6 +47,12 @@ class HostBootstrap private constructor(private val context: Context) {
     private val displayExecutor = Executors.newSingleThreadExecutor()
     internal val anchorRuntime = com.code2hack.eyeprojector.directhost.anchor.execution.AnchorAppRuntime(context)
     private val uiTargetExecutor = Executors.newSingleThreadExecutor()
+    private val inputTraceConfiguration = java.util.concurrent.atomic.AtomicReference<PhoneInputTraceConfig?>()
+    /** Test-owned configuration for subsequent normal starts; the caller can restore the prior value. */
+    fun configureInputTrace(config: PhoneInputTraceConfig?): PhoneInputTraceConfig? = inputTraceConfiguration.getAndSet(config)
+    private fun inputTraceEndpoint(endpoint: ByteArray): ByteArray =
+        PhoneInputTraceConfig.endpoint(endpoint, inputTraceConfiguration.get())
+
     private val inputRoutes = java.util.concurrent.atomic.AtomicLong(System.nanoTime())
     private val scaleExecutor = Executors.newSingleThreadExecutor()
     private val panelExecutor = Executors.newSingleThreadExecutor()
@@ -150,6 +156,17 @@ class HostBootstrap private constructor(private val context: Context) {
     }
     fun observe(observer: (Status) -> Unit) { observers.add(observer); main.post { observer(current) } }
     fun status(): Status = current
+    /** Forward before app queues/stores/UI effects; a held label never authorizes this command. */
+    fun userControl(expected: ProjectionContext? = null, kind: Int = UserControls.ORDINARY): Boolean {
+        val original = remote ?: return anchorRuntime.userControl(expected, kind == UserControls.RECOGNITION)
+        val owner = current.sessionEpoch
+        val captured = expected ?: ProjectionContext()
+        val result = try { original.userControl(kind, captured.ownerEpoch, captured.projectionToken) }
+        catch (_: Exception) { return false }
+        return result == com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.NORMAL.ordinal &&
+            remote === original && current.sessionEpoch == owner &&
+            (kind == UserControls.STOP || expected == null || current.projectionContext == expected)
+    }
     fun removeObserver(observer: (Status) -> Unit) { observers.remove(observer) }
     fun refresh() { executor.execute { runCatching { refreshNow() }.onFailure { publish("UNKNOWN", "STATUS_UNAVAILABLE") } } }
     fun requestAuthorization() {
@@ -177,6 +194,7 @@ class HostBootstrap private constructor(private val context: Context) {
         requestScaleOperation(value, expected, complete)
 
     private fun requestScaleOperation(value: Double, expected: ProjectionContext?, complete: (ScaleState?) -> Unit) {
+        if (!userControl(expected)) return
         val id = System.nanoTime()
         scaleOperation(expected, { service, context -> service.requestScale(id, value, context.ownerEpoch, context.projectionToken) }, complete)
     }
@@ -314,6 +332,10 @@ class HostBootstrap private constructor(private val context: Context) {
             { service, requestId -> service.launchApp(requestId, packageName, expected.ownerEpoch, expected.projectionToken) }, complete)
 
     internal fun launchNotification(carrier: NotificationLaunchCarrier, complete: (NotificationDispatchOutcome) -> Unit) {
+        if (!userControl(carrier.ready.target)) {
+            complete(NotificationDispatchOutcome.rejected(carrier))
+            return
+        }
         displayOperation(carrier.ready.target, LaunchOperationDiagnostics.Kind.LAUNCH, carrier.packageName,
             { _, _ -> error("Notification uses the fixed original Binder call") }, {}, carrier, complete)
     }
@@ -529,7 +551,7 @@ class HostBootstrap private constructor(private val context: Context) {
                     if (files == null) {
                         localDetail = "SESSION_SETUP_REQUIRED"; publish("STOPPED", localDetail, rejectedEpoch = pendingEpoch); return
                     }
-                    val endpoint = CameraSourceSettings.endpointForStart(context, files.endpoint)
+                    val endpoint = inputTraceEndpoint(CameraSourceSettings.endpointForStart(context, files.endpoint))
                     service.start(files.identity, files.password, files.legacyPeer, endpoint, files.pairedPeer, pendingEpoch)
                 }
                 Action.STOP -> service.stop()

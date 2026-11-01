@@ -155,6 +155,7 @@ class PhoneSessionController private constructor(context: Context) {
     }
     /** Original scope validation, pure identity and merge are one fast transition; effects follow it. */
     internal fun requestHidActivation(wake: HidWakeRequest, originalSetup: HidInputAuthority? = null): ActivationHandle? {
+        if (!userControl()) return null
         val handle = synchronized(fastLock) {
             if (originalSetup != null && !originalHidScopeCurrentLocked(originalSetup)) return@synchronized null
             if (!originalHidScopeCurrentLocked(wake.authority) || wake.disposition == PhoneHidDisposition.USABLE ||
@@ -192,6 +193,7 @@ class PhoneSessionController private constructor(context: Context) {
 
     /** Typed notification G admission and original D creation share Stop's in-memory order. */
     internal fun admitNotification(selection: NotificationSelection, snapshot: NotificationPolicy.Snapshot): ActivationHandle? {
+        if (!userControl()) { selection.permit.retire(); return null }
         val policy = NotificationPolicy.process
         val handle = synchronized(policy.gate) {
             if (!policy.installLocked(selection, snapshot)) { selection.permit.retire(); null }
@@ -508,11 +510,14 @@ class PhoneSessionController private constructor(context: Context) {
         main.post { stateObservers.forEach { observer -> runCatching { observer() } } }
     }
 
-    fun start(): SessionState { requestActivation(ActivationCause.PHONE_START); return state() }
-    fun start(expectedEpoch: String): SessionState = featureLane.submit<SessionState> {
+    fun start(): SessionState { if (userControl()) requestActivation(ActivationCause.PHONE_START); return state() }
+    fun start(expectedEpoch: String): SessionState {
+        if (!userControl()) return state()
+        return featureLane.submit<SessionState> {
         val revision = synchronized(fastLock) { localRevision.get() }
         drain(); activation.start(expectedEpoch).also { publishActivation(revision) }
-    }.get(4, TimeUnit.SECONDS)
+        }.get(4, TimeUnit.SECONDS)
+    }
     fun stop(): SessionState {
         synchronized(NotificationPolicy.process.gate) {
             NotificationPolicy.process.retireLocked()
@@ -531,7 +536,17 @@ class PhoneSessionController private constructor(context: Context) {
         invalidateInput(); scheduleDrain()
         return state()
     }
-    fun stop(expectedEpoch: String): SessionState = featureLane.submit<SessionState> {
+    fun userControl(expected: ProjectionContext? = null): Boolean = bootstrap.userControl(expected)
+    fun stopFromUser(): SessionState {
+        val original = currentHandle.get()
+        if (!bootstrap.userControl(kind = UserControls.STOP)) return state()
+        if (original != null) cancelActivation(original.id)
+        else if (currentHandle.get() == null) stop()
+        return state()
+    }
+    fun stop(expectedEpoch: String): SessionState {
+        if (!userControl()) return state()
+        return featureLane.submit<SessionState> {
         drain()
         val owner = if (controller.acceptsStopCaller(expectedEpoch)) controller.stopCallerOwner(expectedEpoch) else null
         val h = owner?.let { activation.journal.attempts[it]?.activation }
@@ -539,7 +554,8 @@ class PhoneSessionController private constructor(context: Context) {
             ?: synchronized(fastLock) { FastRetirement(localRevision.get(),false) }
         if (retirement.notify) invalidateInput()
         activation.stop(expectedEpoch).also { publishActivation(retirement.revision) }
-    }.get(4, TimeUnit.SECONDS)
+        }.get(4, TimeUnit.SECONDS)
+    }
     internal fun cancelActivation(id: String) {
         val invalidate = synchronized(NotificationPolicy.process.gate) {
             synchronized(fastLock) {
@@ -558,6 +574,7 @@ class PhoneSessionController private constructor(context: Context) {
     }
 
     fun stopBeforeForget(complete: () -> Unit) {
+        if (!userControl()) return
         stop()
         pendingForget.set(complete)
         scheduleDrain()
@@ -568,10 +585,12 @@ class PhoneSessionController private constructor(context: Context) {
         launchApp(packageName, bootstrap.status().projectionContext, complete)
     }
     fun launchApp(packageName: String, expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit) {
+        if (!userControl(expected)) return
         NotificationPolicy.process.explicitChoice()
         appScales.launch(packageName, expected, complete)
     }
     fun launchAppForScale(packageName: String, expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit): AppScaleTarget {
+        if (!userControl(expected)) return AppScaleTarget("", packageName, ProjectionContext())
         NotificationPolicy.process.explicitChoice()
         return appScales.launch(packageName, expected, complete)
     }
@@ -589,9 +608,16 @@ class PhoneSessionController private constructor(context: Context) {
     fun submitPhoneHid(route: PhoneHidRoute, edge: PhoneHidEdge) = route.submit(edge)
     fun cancelPhoneHid(route: PhoneHidRoute, eventTimeMs: Long) = route.cancel(eventTimeMs)
 
-    private fun command(request: SessionControl.Request): SessionState = featureLane.submit<SessionState> {
-        drain(request) ?: state().copy(detail = "ACTIVATION_STORAGE_PENDING")
-    }.get(4, TimeUnit.SECONDS)
+    private fun command(request: SessionControl.Request): SessionState {
+        val userTransition = request.operation in setOf(SessionControl.Operation.START, SessionControl.Operation.STOP) ||
+            request.intent != null || request.cancelTrigger != null || request.cancelActivation != null
+        // Polling, presentation and genuine failure reports remain live. Embedded STATUS commands
+        // are user input and must not wait behind the feature writer before this decision.
+        if (userTransition && !userControl()) return state()
+        return featureLane.submit<SessionState> {
+            drain(request) ?: state().copy(detail = "ACTIVATION_STORAGE_PENDING")
+        }.get(4, TimeUnit.SECONDS)
+    }
 
     companion object {
         @SuppressLint("StaticFieldLeak") // Only the applicationContext is passed to app-scoped owners.

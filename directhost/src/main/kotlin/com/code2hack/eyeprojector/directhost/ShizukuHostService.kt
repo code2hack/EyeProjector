@@ -113,7 +113,9 @@ class ShizukuHostService internal constructor(
         val managedDisplayFactory: (((String, Int?, Int?) -> Unit) -> ManagedProjectionDisplay)? =
             if (endpoint.getProperty("camera.source") == "glasses") ({ observe -> ManagedProjectionDisplay.create(observe) }) else null
         return Bridge(session, jar, reportStatus = report, ownerEpoch = ownerEpoch,
-            managedDisplayFactory = managedDisplayFactory)
+            managedDisplayFactory = managedDisplayFactory).also {
+                it.installInputTraceConfiguration(PhoneInputTraceConfig.fromEndpoint(endpoint))
+            }
     }
 
     @Synchronized override fun stop(): String {
@@ -124,6 +126,19 @@ class ShizukuHostService internal constructor(
             revokeFailed = !removed
         }
         return status()
+    }
+
+    override fun userControl(kind: Int, expectedOwnerEpoch: String, expectedProjectionToken: String): Int {
+        val route = panelRoutes.current() ?: return com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.NORMAL.ordinal
+        val expected = ProjectionContext(expectedOwnerEpoch, expectedProjectionToken)
+        if (expected.available && route.target.projectionContext() != expected)
+            return com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.RETIRED.ordinal
+        val normal = if (kind == UserControls.RECOGNITION) route.target.recognizeUserInput()
+            else if (kind == UserControls.STOP) route.target.stopFromUser()
+            else route.target.consumeUserControl(if (expected.available) expected else route.target.projectionContext())
+        if (!normal) return com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.CONSUMED.ordinal
+        if (kind == UserControls.STOP) stop() // The same original Bridge has already claimed its user Stop.
+        return com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.NORMAL.ordinal
     }
 
     override fun requestScale(requestId: Long, scale: Double, expectedOwnerEpoch: String, expectedProjectionToken: String): ByteArray =

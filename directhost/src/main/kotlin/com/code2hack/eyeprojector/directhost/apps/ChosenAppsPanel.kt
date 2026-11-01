@@ -51,6 +51,7 @@ class ChosenAppsPanel @JvmOverloads constructor(
     private var subscription: Closeable? = null
     private var dialog: AlertDialog? = null
     private var pollMenuScale: (() -> Unit)? = null
+    private fun userControl() = com.code2hack.eyeprojector.directhost.PhoneSessionController.get(context).userControl()
     var appScales: AppScaleCoordinator? = null
     var onAppSelected: ((ChosenApp) -> Unit)? = null
         set(value) { field = value; refresh() }
@@ -157,7 +158,7 @@ class ChosenAppsPanel @JvmOverloads constructor(
         })
         isFocusable = true
         if (entry.availability == AppAvailability.AVAILABLE && onAppSelected != null) {
-            setOnClickListener { onAppSelected?.invoke(entry.app) }
+            setOnClickListener { if (userControl()) onAppSelected?.invoke(entry.app) }
         }
         setOnLongClickListener {
             showAppMenu(entry.app, scaleAction)
@@ -166,6 +167,7 @@ class ChosenAppsPanel @JvmOverloads constructor(
     }
 
     private fun showAppMenu(app: ChosenApp, action: ((ChosenApp) -> AppScaleTarget)?) {
+        if (!userControl()) return
         dialog?.dismiss()
         val coordinator = appScales
         val connected = action != null && coordinator != null
@@ -216,6 +218,7 @@ class ChosenAppsPanel @JvmOverloads constructor(
             }
         }
         clearAnchor.setOnClickListener {
+            if (!userControl()) return@setOnClickListener
             try {
                 anchors.clear(app.packageName)
                 renderAnchor()
@@ -229,7 +232,7 @@ class ChosenAppsPanel @JvmOverloads constructor(
             addView(Switch(context).apply {
                 text = "Glasses notifications"
                 isChecked = notifications.isEnabled(app.packageName)
-                setOnCheckedChangeListener { _, enabled -> notifications.setEnabled(app.packageName, enabled) }
+                setOnCheckedChangeListener { _, enabled -> if (userControl()) notifications.setEnabled(app.packageName, enabled) }
             })
             addView(LinearLayout(context).apply {
                 gravity = Gravity.CENTER_VERTICAL
@@ -251,7 +254,7 @@ class ChosenAppsPanel @JvmOverloads constructor(
             addView(clearAnchor)
         }
         val menu = AlertDialog.Builder(context).setTitle(app.label).setView(body)
-            .setNegativeButton(R.string.chosen_apps_remove) { _, _ -> store.remove(app.packageName); refresh() }
+            .setNegativeButton(R.string.chosen_apps_remove) { _, _ -> if (userControl()) { store.remove(app.packageName); refresh() } }
             .setPositiveButton(android.R.string.ok, null).create()
 
         fun preview(value: Double, forceText: Boolean = false) {
@@ -293,6 +296,7 @@ class ChosenAppsPanel @JvmOverloads constructor(
             if (feedback.text.toString() != text) feedback.text = text
         }
         fun attach(next: AppScaleTarget) {
+            if (!next.context.available) return
             scaleSubscription?.close()
             target?.let { coordinator?.detach(it, owner) }
             target = next
@@ -302,6 +306,7 @@ class ChosenAppsPanel @JvmOverloads constructor(
         }
         fun apply(value: Double) {
             if (!connected || !AppScaleStore.valid(value) || lastSubmitted == value) return
+            if (!userControl()) return
             requested = value
             preview(value, forceText = true)
             if (!editingStarted) {
@@ -332,6 +337,7 @@ class ChosenAppsPanel @JvmOverloads constructor(
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
             override fun afterTextChanged(s: Editable?) {
                 if (updating) return
+                if (!userControl()) return
                 val value = s.toString().replace(',', '.').toDoubleOrNull() ?: return
                 if (AppScaleStore.valid(value)) {
                     input.error = null
@@ -349,6 +355,7 @@ class ChosenAppsPanel @JvmOverloads constructor(
             override fun onStartTrackingTouch(seekBar: SeekBar) { dragging = true }
             override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
                 if (!fromUser || updating) return
+                if (!userControl()) return
                 val value = AppScaleStore.MIN_SCALE + progress / 100.0
                 preview(value, forceText = true)
                 if (!dragging) apply(value) // Keyboard/accessibility adjustment.
@@ -379,6 +386,7 @@ class ChosenAppsPanel @JvmOverloads constructor(
     }
 
     private fun showPicker() {
+        if (!userControl()) return
         val candidates = store.candidates(catalog)
         val builder = AlertDialog.Builder(context).setTitle(R.string.chosen_apps_add)
         if (candidates.isEmpty()) {
@@ -406,6 +414,7 @@ class ChosenAppsPanel @JvmOverloads constructor(
                     }
                 }
             }) { _, position ->
+                if (!userControl()) return@setAdapter
                 store.add(candidates[position])
                 refresh()
             }

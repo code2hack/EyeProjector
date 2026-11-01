@@ -19,6 +19,7 @@ internal class HidBindingsPanel(
     context: Context,
     private val bindings: HidBindings,
     private val input: HidKeyInput,
+    private val userAction: ((() -> Unit) -> Unit) = { it() },
     back: () -> Unit,
 ) : LinearLayout(context) {
     val buttons = mutableListOf<Button>()
@@ -47,7 +48,7 @@ internal class HidBindingsPanel(
         }
         addView(button().apply {
             text = "Reset all HID bindings"
-            setOnClickListener { input.resetAllBindings(); refresh() }
+            setOnClickListener { userAction { input.resetAllBindings(); refresh() } }
         }, LayoutParams(-1, -2))
         addView(button().apply { text = "Back"; setOnClickListener { back() } }, LayoutParams(-1, -2))
         refresh()

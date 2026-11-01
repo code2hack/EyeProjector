@@ -19,6 +19,8 @@ internal class HidKeyInput(
     private val captureTarget: (HidDecisionTrace.Event?) -> HidAction? = { null },
     functionCapture: (Any) -> Any? = { it },
     private val navigation: (ContextualNavigationAction) -> Unit = {},
+    functionCaptureOriginal: ((Any, Long, Long?) -> Any?)? = null,
+    functionRetireOriginal: ((Long, Any) -> Unit)? = null,
 ) {
     companion object { private val functionIdentities = FunctionGestureRecognizer.Identity() }
 
@@ -44,14 +46,34 @@ internal class HidKeyInput(
     val selected: HidAction? get() = capture?.action
     private var functionAttachment: Int? = null
     private var generation = 0L
+    private var admission = 0L // Actual Press publication, including a later completed Scroll.
+    private var retiring: MutableList<() -> Unit>? = null
+    private val originalSchedule: (Long, () -> Unit) -> (() -> Unit) = { at, action ->
+        val cancel = schedule(at, action)
+        val original: () -> Unit = { retiring?.add(cancel) ?: cancel() }
+        original
+    }
     private val recognizer = FunctionGestureRecognizer(now,
-        { context()?.let { Pair(it, functionAttachment) } }, schedule, function, edgeOnly = true,
-        capture = { functionCapture((it as Pair<*, *>).first!!) }, identity = functionIdentities)
-    private val backHome = BackHomeGestureRecognizer<Any>(now, { context() == it }, schedule,
+        { context()?.let { Pair(it, functionAttachment) } }, originalSchedule, function, edgeOnly = true,
+        capture = { functionCapture((it as Pair<*, *>).first!!) }, identity = functionIdentities,
+        captureOriginal = functionCaptureOriginal?.let { capture -> { owner, id, parent -> capture((owner as Pair<*, *>).first!!,id,parent) } },
+        retireOriginal = functionRetireOriginal?.let { retire -> { id, original ->
+            val effect: () -> Unit = {retire(id,original)}
+            retiring?.add(effect) ?: effect()
+        } })
+    private val backHome = BackHomeGestureRecognizer<Any>(now, { context() == it }, originalSchedule,
         { action, _ -> navigation(when (action) {
             BackHomeGestureRecognizer.Action.BACK -> ContextualNavigationAction.BACK
             BackHomeGestureRecognizer.Action.HOME -> ContextualNavigationAction.HOME
         }) })
+
+    /** Pure current binding/captured-route observation before the adapter's central admission. */
+    fun actionFor(event: Event): HidAction? {
+        val key = Key(event.attachmentId, event.binding.button)
+        return presses[key]?.takeIf { it.event.downTimeMs == event.downTimeMs }?.action
+            ?: admissions[key]?.takeIf { it.event.downTimeMs == event.downTimeMs }?.action
+            ?: bindings.action(event.binding.button)
+    }
 
     fun owns(owner: Any): Boolean = presses.values.any {
         it.owner === owner && it.context == context() &&
@@ -168,6 +190,7 @@ internal class HidKeyInput(
             val point = if (action == HidAction.TAP) position() else null
             if (!currentAdmission(key, press, admitted)) { abandon(key, press); return true }
             presses[key] = press // Output may synchronously cancel/change the view.
+            admission++
             if (action == HidAction.BACK_HOME || action == HidAction.LOCK) navigationDowns[key] = event.downTimeMs
             when (action) {
                 HidAction.TAP -> contact(press.owner, edge(event, PadGestureRecognizer.Phase.DOWN, point))
@@ -255,26 +278,38 @@ internal class HidKeyInput(
         // Fresh presses carry no old pending action; each retired release keeps its exact downTime.
     }
 
-    fun cancel() = retire(null, null)
+    fun prepareCancel(): InputRetirement = prepareRetirement(null, null)
 
-    private fun retire(nextCapture: Capture?, attempt: Any?) {
+    fun cancel() = prepareCancel().finishOriginal()
+
+    private fun retire(nextCapture: Capture?, attempt: Any?) = prepareRetirement(nextCapture, attempt).finishOriginal()
+
+    private fun prepareRetirement(nextCapture: Capture?, attempt: Any?): InputRetirement {
+        val at = now()
         generation++
         captureAttempt = attempt
         contactAdmission = null
         val oldCapture = capture
         capture = nextCapture
-        oldCapture?.trace?.record(if (nextCapture == null) Step.CAPTURE_CANCEL else Step.CAPTURE_RETIRE, target = oldCapture.action)
-        nextCapture?.trace?.record(Step.CAPTURE_BEGIN, target = nextCapture.action)
         if (oldCapture != null) suppressed.add(Retired(Key(oldCapture.event.attachmentId, oldCapture.event.binding.button), oldCapture.event.downTimeMs))
         val old = presses.values.toList()
         admissions.forEach { (key, press) -> suppressed.add(Retired(key, press.event.downTimeMs)) }
         admissions.clear()
         presses.clear()
-        recognizer.cancel(); functionAttachment = null
-        backHome.cancel()
-        // Function was retired above; an old callback must not cancel a newly admitted Function.
-        old.filter { it.action == HidAction.TAP }.forEach { cancelPress(it, now()) }
-        if (oldCapture != null || nextCapture != null) changed()
+        val effects = mutableListOf<() -> Unit>()
+        retiring = effects
+        try { recognizer.cancel(); functionAttachment = null; backHome.cancel() }
+        finally { retiring = null }
+        val originalGeneration = generation
+        val originalAdmission = admission
+        val originalFunction = recognizer.retirementState()
+        effects.add { oldCapture?.trace?.record(if (nextCapture == null) Step.CAPTURE_CANCEL else Step.CAPTURE_RETIRE, target = oldCapture.action) }
+        effects.add { nextCapture?.trace?.record(Step.CAPTURE_BEGIN, target = nextCapture.action) }
+        old.filter { it.action == HidAction.TAP }.forEach { press -> effects.add { cancelPress(press, at) } }
+        if (oldCapture != null || nextCapture != null) effects.add(changed)
+        return InputRetirement({ InputRetirement.finishAll(effects) }, {
+            generation != originalGeneration || admission != originalAdmission || recognizer.retirementState() != originalFunction
+        })
     }
 
     private fun currentAdmission(key: Key, press: Press, admitted: Long): Boolean =

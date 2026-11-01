@@ -120,22 +120,26 @@ class AnchorHoldTest {
         assertEquals(AnchorReleaseResult.NOT_HELD, f.release(3))
     }
 
-    @Test fun rejectedOrReentrantReleaseCancelsWithoutSuccessAndPreservesSuccessor() {
-        for (cause in listOf("reject", "throw", "retire")) {
+    @Test fun rejectedOrThrownReleaseReportsOriginalFailureAndNeverFabricatesReadyOrSuccess() {
+        for (cause in listOf("reject", "throw")) {
             val f = Fixture(); f.hold()
-            f.onTouch = { event ->
-                if (event.phase == Touch.Phase.UP) when (cause) {
-                    "reject" -> false
-                    "throw" -> throw java.io.IOException("original output failed")
-                    else -> { f.input.anchor.retire(); true }
-                } else true
-            }
-            val result = runCatching { f.release() }
-            if (cause == "throw") assertTrue(result.exceptionOrNull() is java.io.IOException)
-            else assertNotEquals(AnchorReleaseResult.RELEASE_SUBMITTED, result.getOrThrow())
-            assertFalse(f.input.holding)
-            assertEquals(AnchorHoldState.CANCELED, f.states.last().second)
-            assertEquals(1, f.events.count { it.phase == Touch.Phase.CANCEL })
+            val original = java.io.IOException("original output failed")
+            f.onTouch = { event -> if (event.phase == Touch.Phase.UP) {
+                if (cause == "throw") throw original else false
+            } else true }
+            val failure = runCatching { f.release() }.exceptionOrNull()
+            assertTrue(failure is java.io.IOException)
+            if (cause == "throw") assertSame(original, failure)
+            assertEquals(listOf(Touch.Phase.DOWN, Touch.Phase.UP, Touch.Phase.CANCEL), f.events.map { it.phase })
+            assertTrue(f.events.all { it.contactId == f.events.first().contactId && it.target == f.events.first().target })
+            assertTrue(f.input.anchor.discardingControls)
+            assertTrue(f.states.none { it.second == AnchorHoldState.RELEASED })
+            val later = AnchorControlAdmission()
+            f.input.anchor.receiveControl(later, true)
+            assertEquals(AnchorControlDisposition.CONSUMED, later.disposition)
+            assertNull(f.input.anchor.capture(intent(3), later))
+            // The direct fixture reports failure; actual Session failure/transport teardown is
+            // independently composed by CoreScenarios, never modeled here as successful cleanup.
         }
     }
 
@@ -148,23 +152,29 @@ class AnchorHoldTest {
         assertFalse(f.states.any { it.second == AnchorHoldState.HELD })
     }
 
-    @Test fun originalUpCannotCancelReentrantlyAdmittedSuccessorHold() {
+    @Test fun originalUpDiscardsReentrantHoldAndAllowsDistinctInputOnlyAfterCompletion() {
         val f = Fixture(); f.hold()
+        val during = AnchorControlAdmission()
         f.onTouch = { event ->
             if (event.phase == Touch.Phase.UP) {
-                f.onTouch = { true }
-                f.input.anchor.retire()
-                assertEquals(AnchorExecutionStatus.HOLD_SUBMITTED, f.hold(3))
+                f.input.anchor.receiveControl(during, true)
+                assertEquals(AnchorControlDisposition.CONSUMED, during.disposition)
+                assertNull(f.input.anchor.capture(intent(3), during))
+                f.input.anchor.retire() // Internal retirement never replays the discarded input.
+                assertNull(f.input.anchor.capture(intent(3)))
             }
             true
         }
-        assertEquals(AnchorReleaseResult.RETIRED, f.release())
-        assertTrue(f.input.anchor.holding)
-        assertTrue(f.input.holding)
+        assertEquals(AnchorReleaseResult.RELEASE_SUBMITTED, f.release())
+        assertEquals(listOf(Touch.Phase.DOWN, Touch.Phase.UP), f.events.map { it.phase })
+        assertFalse(f.input.anchor.holding)
+        assertEquals(listOf(AnchorHoldState.HELD, AnchorHoldState.RELEASED), f.states.map { it.second })
+        f.onTouch = { true }
+        assertEquals(AnchorExecutionStatus.HOLD_SUBMITTED, f.hold(4))
         val successor = f.events.last()
-        assertEquals(Touch.Phase.DOWN, successor.phase)
-        assertEquals(AnchorHoldState.HELD, f.states.last().second)
-        assertEquals(AnchorReleaseResult.RELEASE_SUBMITTED, f.release(4))
+        assertEquals(AnchorControlDisposition.CONSUMED, f.input.consumeHeldControl(during))
+        assertSame(successor, f.events.last())
+        assertEquals(AnchorReleaseResult.RELEASE_SUBMITTED, f.release(5))
         assertEquals(successor.contactId, f.events.last().contactId)
     }
 

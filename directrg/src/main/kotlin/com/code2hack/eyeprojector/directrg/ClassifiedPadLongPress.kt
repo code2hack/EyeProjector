@@ -14,6 +14,7 @@ internal class ClassifiedPadLongPress(
         var unschedule: (() -> Unit)? = null
     }
     private var press: Press? = null
+    private var admission = 0L // Bookkeeping only; does not retain a retired current/route closure.
 
     /** Capture a fixed target only for this helper's DOWN; other contacts retain pointer motion. */
     fun route(send: (HeldPointerDispatcher.Event) -> Boolean): (HeldPointerDispatcher.Event) -> Boolean {
@@ -38,6 +39,7 @@ internal class ClassifiedPadLongPress(
         val next = Press(PadGestureRecognizer.Event(PadGestureRecognizer.Key.HELD_CONTACT,
             PadGestureRecognizer.Phase.DOWN, at, at, position = point.copy()), current)
         press = next
+        admission++
         val accepted = heldOwner.accept(next.owner, next.down)
         if (!accepted || press !== next || !current()) {
             if (press === next) press = null
@@ -56,11 +58,18 @@ internal class ClassifiedPadLongPress(
         return true
     }
 
-    fun cancel() {
-        val old = press ?: return
+    fun prepareCancel(): InputRetirement {
+        val old = press
         press = null
-        old.unschedule?.invoke()
-        // Token-specific cancellation cannot cancel a newer native or HID contact.
-        heldOwner.cancel(old.owner, now())
+        val unschedule = old?.unschedule
+        if (old != null) old.unschedule = null
+        val baseline = admission
+        val at = now()
+        return InputRetirement({ InputRetirement.finishAll(listOf(
+            { unschedule?.invoke() },
+            { if (old != null) heldOwner.cancel(old.owner, at) },
+        )) }, { admission != baseline })
     }
+
+    fun cancel() = prepareCancel().finishOriginal()
 }

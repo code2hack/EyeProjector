@@ -19,6 +19,8 @@ internal class FunctionGestureRecognizer(
     private val edgeOnly: Boolean = false,
     private val capture: (Any) -> Any? = { it },
     private val identity: Identity = Identity(),
+    private val captureOriginal: ((Any, Long, Long?) -> Any?)? = null,
+    private val retireOriginal: ((Long, Any) -> Unit)? = null,
 ) {
     /** Source adapters retain this across Activity recreation within the Receiver incarnation. */
     class Identity {
@@ -46,6 +48,9 @@ internal class FunctionGestureRecognizer(
     private var ownershipGeneration = 0L
     private var retiredUntil = Long.MIN_VALUE
     private var retiredHeld = false
+
+    /** Read-only existing ownership/schedule identity, including sequences which already finished. */
+    internal fun retirementState(): Any = Triple(sequence, ownershipGeneration, timerGeneration)
 
     fun accept(report: Report, at: Long = now()) {
         val owner = context()
@@ -84,7 +89,7 @@ internal class FunctionGestureRecognizer(
                 // A completed summary closes a missing/reordered UP for the same original.
                 s.held = null
                 val count = when (report) { Report.TRIPLE -> 3; Report.DOUBLE -> 2; else -> 1 }
-                while (s.originals.size < count) if (original(s) == null) return
+                while (s.originals.size < count) if (original(s,s.originals.firstOrNull()?.id) == null) return
                 s.releasedAt = at
             }
             Report.LONG -> {
@@ -96,9 +101,12 @@ internal class FunctionGestureRecognizer(
         arm(s)
     }
 
-    private fun original(s: Sequence): Original? {
-        val captured = capture(s.owner) ?: run { cancel(); return null }
-        return Original(identity.gesture(), captured).also { s.originals.add(it) }
+    private fun original(s: Sequence, summaryOriginal: Long? = null): Original? {
+        val id=identity.gesture()
+        val captured = (captureOriginal?.invoke(s.owner,id,summaryOriginal) ?: if(captureOriginal==null)capture(s.owner) else null)
+            ?: run { cancel(); return null }
+        if(sequence!==s||context()!=s.owner){retireOriginal?.invoke(id,captured);return null}
+        return Original(id, captured).also { s.originals.add(it) }
     }
 
     /** A fresh DOWN can acquire ownership after cancellation, even if the old UP never arrives. */
@@ -106,20 +114,23 @@ internal class FunctionGestureRecognizer(
         ownershipGeneration++
         retiredHeld = false
         if (sequence != null) retiredUntil = now() + timing.quietMs
+        val originals=sequence?.originals?.toList().orEmpty()
         sequence = null
-        cancelScheduled()
+        InputRetirement.finishAll(listOf<() -> Unit>({cancelScheduled()})+
+            originals.map { original -> {retireOriginal?.invoke(original.id,original.captured);Unit} })
     }
 
     private fun cancelScheduled() {
         timerGeneration++
-        cancelTimer?.invoke(); cancelTimer = null
+        val original=cancelTimer;cancelTimer=null;original?.invoke()
     }
 
     private fun arm(s: Sequence) {
         cancelScheduled()
+        if(sequence!==s)return
         val generation = timerGeneration
         val deadline = if (s.held != null) s.downAt + timing.longMs else s.releasedAt + timing.quietMs
-        cancelTimer = schedule(deadline) {
+        val cancel = schedule(deadline) {
             if (generation == timerGeneration && sequence === s) {
                 if (context() != s.owner) cancel()
                 else if (now() < deadline) arm(s)
@@ -129,6 +140,7 @@ internal class FunctionGestureRecognizer(
                 }
             }
         }
+        if(timerGeneration==generation&&sequence===s)cancelTimer=cancel else cancel()
     }
 
     private fun finish(s: Sequence) {
@@ -138,9 +150,14 @@ internal class FunctionGestureRecognizer(
         cancelScheduled()
         val generation = ownershipGeneration
         // Retire before callbacks. They can synchronously cancel or replace this input context.
-        for (original in s.originals) {
+        var next=0
+        try { for (original in s.originals) {
             if (generation != ownershipGeneration || context() != s.owner) return
-            dispatch(Gesture(original.kind, original.id, identity.delivery(), original.captured))
+            dispatch(Gesture(original.kind, original.id, identity.delivery(), original.captured));next++
+        } } finally {
+            InputRetirement.finishAll(s.originals.drop(next).map { original ->
+                {retireOriginal?.invoke(original.id,original.captured);Unit}
+            })
         }
     }
 }

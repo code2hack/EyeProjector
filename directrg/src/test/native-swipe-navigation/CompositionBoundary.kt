@@ -118,6 +118,12 @@ internal class HeldActivityWiring(val feature: ReceiverActivationStore, director
     fun active() = registrationActive()
     fun snapshot(value: ReceiverSessionOwner.Snapshot) = showSnapshot(value)
     fun move(x: Float, y: Float) { pointer.position = PointerPosition(x, y, true); publishHeadPointer() }
+    fun cancelFunction() { grammar.cancel() }
+    fun rawFunction(report: FunctionGestureRecognizer.Report, at: Long) { clock=at;grammar.accept(report,clock) }
+    fun confirmFunction(at: Long) {
+        clock=at
+        while(scheduled?.first?.let{it<=clock}==true){val task=scheduled!!;scheduled=null;task.second()}
+    }
     fun short(at: Long) {
         clock = at; grammar.accept(FunctionGestureRecognizer.Report.DOWN, clock)
         clock = at + 40; grammar.accept(FunctionGestureRecognizer.Report.UP, clock)

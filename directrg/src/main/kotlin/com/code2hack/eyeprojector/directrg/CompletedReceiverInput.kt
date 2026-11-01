@@ -59,8 +59,13 @@ internal class CompletedReceiverInput(
         }
     }
 
-    fun cancel() {
+    fun prepareCancel(releaseOriginal: () -> Unit = release): InputRetirement {
         generation++
-        if (held != null) { held = null; release() }
+        val old = held
+        held = null
+        val baseline = generation
+        return InputRetirement({ if (old != null) releaseOriginal() }, { generation != baseline })
     }
+
+    fun cancel() = prepareCancel().finishOriginal()
 }

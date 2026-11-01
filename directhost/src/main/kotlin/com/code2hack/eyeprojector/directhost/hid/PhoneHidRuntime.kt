@@ -73,12 +73,18 @@ internal class PhoneHidRuntime private constructor(context: Context) {
                 }
             }
         },
+        userControl = { sessions.userControl() },
+        recognizeInput = ::recognizeInput,
     )
 
     val pin = PhoneHidPinRuntime(app, controller, { connected ->
         nativeConnected = connected
         updateConnection()
-    }, ::publish)
+    }, ::publish, { sessions.userControl() }, ::recognizeInput)
+
+    fun userControl(): Boolean = sessions.userControl()
+
+    fun recognizeInput(): Boolean = sessions.bootstrap.userControl(kind = com.code2hack.eyeprojector.directhost.UserControls.RECOGNITION)
 
     fun accessibilityConnection(connected: Boolean) {
         accessibilityConnected = connected
@@ -172,12 +178,15 @@ internal class PhoneHidRuntime private constructor(context: Context) {
         }
     }
 
-    fun openSettings(): Boolean = try {
+    fun openSettings(): Boolean {
+        if (!sessions.userControl()) return false
+        return try {
         app.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
             .putExtra(Intent.EXTRA_COMPONENT_NAME, ComponentName(app, PhoneHidKeyService::class.java))
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         true
-    } catch (_: Exception) { false }
+        } catch (_: Exception) { false }
+    }
 
     fun refresh() { serviceEnabled = readEnabled(); pin.refresh(); publish() }
     private fun publish() {

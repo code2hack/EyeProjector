@@ -17,6 +17,9 @@ import android.widget.TextView
 @SuppressLint("ViewConstructor")
 internal class AnchorRegistrationOverlay(context: Context, choose: (AnchorRegistrationAction) -> Unit) : FrameLayout(context) {
     private var highlight: AnchorRegistrationHighlight? = null
+    private class Presentation { var hideAttempted = false }
+    private var presentation: Presentation? = null
+    private var admission = 0L
     private val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.YELLOW; style = Paint.Style.STROKE; strokeWidth = 3f }
     val buttons = listOf("Click" to AnchorRegistrationAction.CLICK, "Hold" to AnchorRegistrationAction.HOLD,
         "Cancel" to AnchorRegistrationAction.CANCEL).map { (label, action) ->
@@ -42,14 +45,40 @@ internal class AnchorRegistrationOverlay(context: Context, choose: (AnchorRegist
     }
 
     fun show(bounds: AnchorRegistrationHighlight) {
+        val original = Presentation()
+        presentation = original
+        val revision = ++admission
         highlight = bounds
-        buttons.forEach { it.isEnabled = true }
+        for (button in buttons) {
+            if (presentation !== original || admission != revision) return
+            button.isEnabled = true
+        }
+        if (presentation !== original || admission != revision) return
         visibility = View.VISIBLE
-        invalidate()
+        if (presentation === original && admission == revision) invalidate()
     }
 
-    fun waiting() { buttons.take(2).forEach { it.isEnabled = false } }
-    fun dismiss() { visibility = View.GONE; highlight = null }
+    fun waiting() {
+        val original = presentation
+        val revision = if (original != null) ++admission else admission
+        for (button in buttons.take(2)) {
+            if (presentation !== original || admission != revision) return
+            button.isEnabled = false
+        }
+    }
+    fun prepareDismiss(): InputRetirement {
+        val old = presentation
+        presentation = null
+        highlight = null
+        val baseline = admission
+        return InputRetirement({
+            if (old != null && !old.hideAttempted) {
+                old.hideAttempted = true
+                if (presentation == null && admission == baseline) visibility = View.GONE
+            }
+        }, { admission != baseline })
+    }
+    fun dismiss() = prepareDismiss().finishOriginal()
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)

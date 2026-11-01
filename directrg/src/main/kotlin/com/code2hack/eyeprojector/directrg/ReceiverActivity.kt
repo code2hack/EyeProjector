@@ -38,6 +38,9 @@ import com.code2hack.eyeprojector.protocol.ReceiverUsabilityMode
 import com.code2hack.eyeprojector.protocol.Touch
 import com.code2hack.eyeprojector.protocol.CapturedFunctionIntent
 import com.code2hack.eyeprojector.protocol.FunctionIntent
+import com.code2hack.eyeprojector.protocol.FunctionOriginal
+import com.code2hack.eyeprojector.protocol.ReceiverControlSource
+import com.code2hack.eyeprojector.protocol.ReceiverControlDisposition
 import com.code2hack.eyeprojector.protocol.FunctionIntentContext
 import com.code2hack.eyeprojector.protocol.FunctionSource
 import com.code2hack.eyeprojector.protocol.HeadPointerState
@@ -292,7 +295,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
                 AnchorRegistrationAction.CANCEL -> AnchorChoice.CANCEL
             })
         }
-        localInput = LocalPointerDispatcher(root)
+        localInput = LocalPointerDispatcher(root) { complete -> admitLocalControl(ReceiverControlSource.LOCAL_UI, complete) }
         screen = ProjectorSurface(this,
             { x, y -> remoteTap(x + screen.left, y + screen.top) },
             { x, y, pixels -> remoteScroll(x + screen.left, y + screen.top, pixels) },
@@ -304,24 +307,26 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         status = TextView(this).apply { setTextColor(Color.WHITE); textSize = 18f; gravity = Gravity.CENTER }
         connectButton = Button(this).apply {
             text = getString(R.string.connect)
-            setOnClickListener { if (session != null || connectRequested) disconnect() else connect() }
+            setOnClickListener { localControl(ReceiverControlSource.LOCAL_UI) {
+                if (session != null || connectRequested) disconnect() else connect()
+            } }
         }
         localButtons.add(connectButton)
         pairingPanel = PairingPanel(this, PeerRole.GLASSES, { paired ->
             connectButton.visibility = if (paired) View.VISIBLE else View.GONE
         }, { complete ->
-            cancelInput()
+            if (!cancelInput()) return@PairingPanel
             val source = owner
             if (source == null) pendingForget = complete else source.disconnect(complete = complete, scope = launchScope, activationId = visibleActivation)
-        }, ReceiverPairingOwner.get(this).pairing)
+        }, ReceiverPairingOwner.get(this).pairing, { action -> localControl(ReceiverControlSource.LOCAL_UI, action) })
         pairingPanel.addView(connectButton, 2)
         localButtons.add(pairingPanel.forgetButton)
-        val settingsPanel = LocalInputSettingsPanel(this, settings, ::showHidBindings) {
+        val settingsPanel = LocalInputSettingsPanel(this, settings, ::showHidBindings, changed = {
             pointer.sensitivity(settings.pointerXGain, settings.pointerYGain)
             edgeMotion.enabled = settings.headScrollEnabled
             updateEdgeScroll()
             showStatus(connectionStatus)
-        }
+        }, userAction = { action -> localControl(ReceiverControlSource.LOCAL_UI, action) })
         localButtons.addAll(settingsPanel.buttons)
         edgeMotion.enabled = settings.headScrollEnabled
         connectionView = ScrollView(this).apply {
@@ -359,6 +364,8 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             ViewConfiguration.getDoubleTapTimeout().toLong().coerceIn(100, 600),
             ViewConfiguration.getLongPressTimeout().toLong().coerceIn(200, 2000),
             ::dispatchPadAction,
+            admit = { complete -> admitLocalControl(ReceiverControlSource.PAD, complete) },
+            current = { inputGeneration to navigationContext() },
         )
         // Admission and position notifications already refresh the model; observing must not publish again.
         heldInput = HeldPointerDispatcher({ pointer.position }) {
@@ -398,7 +405,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         shellPadContact = NativePadShellContact(heldOwner,
             { if (usable() && !padContact.holding) Triple(inputGeneration, session,
                 Pair(currentGeometry, localInputVisible())) else null },
-            { pointer.inputPosition() },
+            { pointer.inputSnapshot() },
             {
                 // The raw long-key source omits short taps: retire this ambiguity without
                 // enabling the recognizer's global continuous-contact report mode.
@@ -406,11 +413,11 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
                 schedulePadConfirmation()
                 classifiedPadLongPress.cancel()
                 completedInput.cancel()
-            }, ::updateEdgeScroll)
+            }, ::updateEdgeScroll, { complete -> admitLocalControl(ReceiverControlSource.PAD, complete) })
         padContact = NativePadContact(this, { pointer.inputPosition() }, { event ->
             if (usable()) gestures.accept(event, SystemClock.uptimeMillis()) else cancelInput()
             schedulePadConfirmation()
-        }, ::cancelInput)
+        }, { cancelInput(); Unit })
         longTouch = NativePadLongTouch(this) { at ->
             observeNativeInput { it.stage(System.identityHashCode(this), "ai_callback", null, at, null, null,
                 inputGeneration, SystemClock.uptimeMillis(), SystemClock.elapsedRealtimeNanos()) }
@@ -421,9 +428,11 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             ::functionContext,
             { gesture -> dispatchFunction(FunctionSource.GLASSES_NATIVE, gesture) },
             capture = ::captureFunction,
+            captureOriginal = { expected, id, parent -> captureFunctionOriginal(expected,id,FunctionSource.GLASSES_NATIVE,parent) },
+            retireOriginal = { id, original -> retireFunctionOriginal(id,original,FunctionSource.GLASSES_NATIVE) },
         )
         nativeSwipeInput = NativeSwipeNavigationInput(this) { action ->
-            if (usable()) dispatchNavigation(action)
+            if (usable()) dispatchNavigation(action, ReceiverControlSource.NATIVE_SWIPE)
         }
         hidInput = HidKeyInput(hidBindings, SystemClock::uptimeMillis,
             ::functionContext,
@@ -435,27 +444,38 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
                 cancel
             }, { pointer.inputPosition() },
             { owner, event ->
+                val originalEdge = edgeTick
+                val originalRevision = inputGeneration
                 if (event.phase == PadGestureRecognizer.Phase.DOWN) {
                     gestures.cancel(event.timeMs)
                     schedulePadConfirmation()
                 }
-                if (event.phase != PadGestureRecognizer.Phase.DOWN || hidInput.owns(owner))
+                val accepted = (event.phase != PadGestureRecognizer.Phase.DOWN || hidInput.owns(owner)) &&
                     heldOwner.accept(owner, event)
-                updateEdgeScroll()
+                if (accepted && edgeTick === originalEdge && inputGeneration == originalRevision) updateEdgeScroll()
             },
-            { owner, at -> heldOwner.cancel(owner, at); updateEdgeScroll() },
+            { owner, at ->
+                val originalEdge = edgeTick
+                val originalRevision = inputGeneration
+                if (heldOwner.cancel(owner, at) && edgeTick === originalEdge && inputGeneration == originalRevision)
+                    updateEdgeScroll()
+            },
             { pixels, point, at -> dispatchPadAction(PadGestureRecognizer.Action.Scroll(pixels, point, at)) },
             { gesture -> dispatchFunction(FunctionSource.GLASSES_HID, gesture) },
             { if (::hidPanel.isInitialized) hidPanel.refresh() },
             ::hoveredHidAction,
             functionCapture = ::captureFunction,
-            navigation = ::dispatchNavigation,
+            navigation = { action -> dispatchNavigation(action, ReceiverControlSource.GLASSES_HID) },
+            functionCaptureOriginal = { expected, id, parent -> captureFunctionOriginal(expected,id,FunctionSource.GLASSES_HID,parent) },
+            functionRetireOriginal = { id, original -> retireFunctionOriginal(id,original,FunctionSource.GLASSES_HID) },
         )
-        hidDevices = AndroidHidInput(this, hidInput) { event ->
+        hidDevices = AndroidHidInput(this, hidInput, learning = ::hidLearningPage,
+            admit = ::admitHidLearning, unhandled = ::unhandledHid, current = ::hidLearningContext) { event ->
             if (::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE && connectionView.visibility == View.VISIBLE)
                 hidPanel.received(event)
         }
-        hidPanel = HidBindingsPanel(this, hidBindings, hidInput, ::showControlPanel).apply { visibility = View.GONE }
+        hidPanel = HidBindingsPanel(this, hidBindings, hidInput,
+            { action -> localControl(ReceiverControlSource.LOCAL_UI, action) }, ::showControlPanel).apply { visibility = View.GONE }
         localButtons.addAll(hidPanel.buttons)
         (connectionView.getChildAt(0) as LinearLayout).addView(hidPanel)
         root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> resize() }
@@ -486,18 +506,20 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
 
     private fun resize() {
         if (root.width <= 0 || root.height <= 0) return
-        cancelInput()
+        val retirement = cancelInputOperation()?.second ?: return
         val geometry = currentGeometry
         val fit = geometry?.let { Fit.inside(root.width, root.height, it) }
         if (fit != null) {
             File(filesDir, "display.json").writeText(JSONObject().put("drawableWidth", root.width).put("drawableHeight", root.height)
                 .put("rotation", display?.rotation).put("videoWidth", geometry.width).put("videoHeight", geometry.height)
                 .put("fitLeft", fit.left).put("fitTop", fit.top).put("fitWidth", fit.width).put("fitHeight", fit.height).toString())
+            if (retirement.superseded()) return
             val old = screen.layoutParams
             if (old.width != fit.width || old.height != fit.height) screen.layoutParams = FrameLayout.LayoutParams(fit.width, fit.height, Gravity.CENTER)
         }
+        if (retirement.superseded()) return
         updatePointerBounds()
-        publishHeadPointer()
+        if (!retirement.superseded()) publishHeadPointer()
     }
 
     private fun updatePointerBounds() {
@@ -552,6 +574,16 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         return FunctionCapture(source, captured)
     }
 
+    private fun captureFunctionOriginal(expected: Any, id: Long, source: FunctionSource, summaryOriginal: Long? = null): FunctionCapture? {
+        val captured = captureFunction(expected) ?: return null
+        return captured.takeIf { captured.source.beginFunction(FunctionOriginal(source,id,captured.context,summaryOriginal)) }
+    }
+
+    private fun retireFunctionOriginal(id: Long, original: Any, source: FunctionSource) {
+        val captured=original as FunctionCapture
+        captured.source.retireFunction(FunctionOriginal(source,id,captured.context,retired=true))
+    }
+
     private fun dispatchFunction(source: FunctionSource, gesture: FunctionGestureRecognizer.Gesture) {
         val captured = gesture.original as FunctionCapture
         if (!usable() || session !== captured.source || inputGeneration != captured.context.pointer.revision) return
@@ -588,32 +620,41 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
                 val bounds = message.highlight
                 if (!anchorRegistration.show(source, message.transactionId, message.intent.context,
                         AnchorRegistrationHighlight(bounds.left, bounds.top, bounds.right, bounds.bottom))) {
-                    anchorOffer = null
+                    if (anchorOffer === message) anchorOffer = null
                     source.chooseAnchorRegistration(message, AnchorChoice.CANCEL)
                     return true
                 }
                 // Reserve before cancellation; advanceInputRevision allocates without publication.
-                cancelInputState(publish = false)
+                val operation = cancelInputOperation(dismissChooser = false, publish = false)
+                if (operation == null) {
+                    retireRegistration(source, message)
+                    return true
+                }
                 val incarnation = serviceBinder?.feature?.incarnation
                 if (!usable() || session !== source || incarnation == null ||
                     !anchorRegistration.enteredChooser(source, incarnation, currentGeometry, inputGeneration) ||
                     owner?.openAnchorRegistration(source, message, inputGeneration) != true) {
-                    cancelInput()
+                    retireRegistration(source, message)
                     return true
                 }
+                if (operation.second.superseded() || anchorOffer !== message) return true
                 anchorRegistration.offer?.let { anchorOverlay.show(it.highlight) }
                 // OPEN is registered before bounds callbacks can publish the exact new local mode.
+                if (operation.second.superseded() || anchorOffer !== message) return true
                 updatePointerBounds()
-                publishHeadPointer()
+                if (!operation.second.superseded() && anchorOffer === message) publishHeadPointer()
                 return true
             }
             is AnchorMessage.Result -> {
                 val offer = anchorOffer
                 if (offer?.intent == message.intent && anchorRegistration.completed(source, message.transactionId)) {
                     anchorOffer = null
-                    anchorOverlay.dismiss()
-                    cancelInputState()
+                    val overlay = anchorOverlay.prepareDismiss()
+                    val operation = try { cancelInputOperation(dismissChooser = false) }
+                        finally { overlay.finishOriginal() }
+                    if (operation == null || operation.second.superseded() || overlay.superseded()) return true
                     updatePointerBounds()
+                    if (operation.second.superseded() || overlay.superseded()) return true
                     when (message.result) {
                         AnchorRegistrationResult.SAVED_CLICK -> Toast.makeText(this, "Anchor saved: Click", Toast.LENGTH_SHORT).show()
                         AnchorRegistrationResult.SAVED_HOLD -> Toast.makeText(this, "Anchor saved: Hold", Toast.LENGTH_SHORT).show()
@@ -631,15 +672,29 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun chooseAnchorRegistration(action: AnchorRegistrationAction) {
-        if (!registrationActive()) return
+        val original = anchorRegistration.offer ?: return
+        val message = anchorOffer
+        val revision = inputGeneration
         anchorRegistration.choose(action)
-        if (registrationActive()) anchorOverlay.waiting()
+        if (inputGeneration != revision || session !== original.source || anchorOffer !== message) return
+        if (anchorRegistration.offer === original) anchorOverlay.waiting()
         else {
+            if (anchorRegistration.offer != null) return
             anchorOffer = null
-            anchorOverlay.dismiss()
-            cancelInputState()
+            val overlay = anchorOverlay.prepareDismiss()
+            val operation = try { cancelInputOperation(dismissChooser = false) }
+                finally { overlay.finishOriginal() }
+            if (operation == null || operation.second.superseded() || overlay.superseded()) return
             updatePointerBounds()
         }
+    }
+
+    private fun retireRegistration(source: ProjectionSession, message: AnchorMessage.Offer) {
+        if (!anchorRegistration.completed(source, message.transactionId)) return
+        if (anchorOffer === message) anchorOffer = null
+        val overlay = anchorOverlay.prepareDismiss()
+        InputRetirement.finishAll(listOf(overlay.finishOriginal,
+            { source.chooseAnchorRegistration(message, AnchorChoice.CANCEL); Unit }))
     }
 
     private fun cancelAnchorRegistration(): Boolean {
@@ -650,13 +705,30 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         return active
     }
 
-    /** Dedicated destinations shared by native and HID source adapters. */
-    internal fun dispatchNavigation(action: ContextualNavigationAction) {
-        when (action) {
-            ContextualNavigationAction.BACK -> contextualBack()
-            ContextualNavigationAction.HOME -> contextualHome()
-            ContextualNavigationAction.LOCK -> sleepGlasses()
+    /** Every user navigation reaches the original Phone gate before its destination runs. */
+    internal fun dispatchNavigation(action: ContextualNavigationAction, source: ReceiverControlSource = ReceiverControlSource.LOCAL_UI) {
+        localControl(source) {
+            when (action) {
+                ContextualNavigationAction.BACK -> contextualBackAdmitted()
+                ContextualNavigationAction.HOME -> contextualHomeAdmitted()
+                ContextualNavigationAction.LOCK -> sleepGlassesAdmitted()
+            }
         }
+    }
+
+    private fun localControl(source: ReceiverControlSource, action: () -> Unit) {
+        admitLocalControl(source) { normal -> if (normal) action() }
+    }
+
+    private fun admitLocalControl(source: ReceiverControlSource, complete: (Boolean) -> Unit) {
+        val original = navigationContext()
+        val revision = inputGeneration
+        val phone = original.source
+        if (phone == null) { complete(true); return }
+        phone.localControl(source) { disposition -> runOnUiThread {
+            complete(disposition == ReceiverControlDisposition.NORMAL && usable() && inputGeneration == revision &&
+                navigationContext() == original)
+        } }
     }
 
     private fun completedNavigation(kind: ReceiverInputKind) {
@@ -673,13 +745,21 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
 
     internal val projectionContext: Boolean get() = session != null && !presentation.panelVisible
     internal fun showControlPanel() {
-        cancelInput()
+        localControl(ReceiverControlSource.LOCAL_UI) { showControlPanelAdmitted() }
+    }
+
+    private fun showControlPanelAdmitted() {
+        val retirement = cancelInputOperation()?.second ?: return
         presentation.showPanel()
+        if (retirement.superseded()) return
         if (::hidPanel.isInitialized) hidPanel.visibility = View.GONE
+        if (retirement.superseded()) return
         mainControls.visibility = View.VISIBLE
+        if (retirement.superseded()) return
         connectionView.visibility = View.VISIBLE
+        if (retirement.superseded()) return
         connectionView.scrollTo(0, 0)
-        resize()
+        if (!retirement.superseded()) resize()
     }
     private fun hoveredHidAction(trace: HidDecisionTrace.Event? = null): HidAction? {
         if (!HidDecisionTrace.observed(trace, HidDecisionTrace.Step.HOVER_USABLE_BEFORE, usable()) ||
@@ -704,12 +784,19 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun showHidBindings() {
-        cancelInput()
+        localControl(ReceiverControlSource.LOCAL_UI) { showHidBindingsAdmitted() }
+    }
+
+    private fun showHidBindingsAdmitted() {
+        val retirement = cancelInputOperation()?.second ?: return
         mainControls.visibility = View.GONE
+        if (retirement.superseded()) return
         hidPanel.visibility = View.VISIBLE
+        if (retirement.superseded()) return
         hidPanel.refresh()
+        if (retirement.superseded()) return
         connectionView.scrollTo(0, 0)
-        resize()
+        if (!retirement.superseded()) resize()
     }
     private data class NavigationContext(
         val source: ProjectionSession?, val sourceOwner: ReceiverSessionOwner?, val geometry: Geometry?,
@@ -733,6 +820,10 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     }
 
     internal fun contextualHome() {
+        localControl(ReceiverControlSource.LOCAL_UI) { contextualHomeAdmitted() }
+    }
+
+    private fun contextualHomeAdmitted() {
         if (!usable()) { if (registrationActive()) cancelInput(); return }
         if (projectionContext && !projectedInput() && !registrationActive()) return
         val original = navigationContext()
@@ -742,50 +833,67 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             if (!projectedInput()) return
             original.source?.navigate(Navigation.CONTEXTUAL_HOME)
         } else if (::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE) {
-            showControlPanel()
-        } else exitToLauncher()
+            showControlPanelAdmitted()
+        } else exitToLauncherAdmitted()
     }
     private fun sleepGlasses() {
+        localControl(ReceiverControlSource.LOCAL_UI) { sleepGlassesAdmitted() }
+    }
+
+    private fun sleepGlassesAdmitted() {
         if (!usable()) return
-        cancelInput()
+        if (!cancelInput()) return
         // The existing shell reader owns power injection; Activity pause retains the session.
         if (!shellPadContact.sleep()) Log.w("EyeProjectorPad", "Glasses sleep needs the local shell reader")
     }
     internal fun contextualBack() {
+        localControl(ReceiverControlSource.LOCAL_UI) { contextualBackAdmitted() }
+    }
+
+    private fun contextualBackAdmitted() {
         if (registrationActive()) { cancelInput(); return }
         val original = navigationContext()
         val canceledRevision = cancelInputRevision()
         if (!currentNavigation(original, canceledRevision)) return
-        if (presentation.panelVisible && ::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE) { showControlPanel(); return }
+        if (presentation.panelVisible && ::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE) { showControlPanelAdmitted(); return }
         if (presentation.panelVisible) {
             if (presentation.back()) { connectionView.visibility = View.GONE; resize() }
             else { finishProjection() }
         } else remoteBack(original, canceledRevision)
     }
     private fun finishProjection() {
-        val original = visibleActivation
+        val activation = visibleActivation
         val scope = launchScope
-        resumed = false; bindingValid = false; cancelInput()
-        cancelOriginalOnExit(scope, original)
-        finish()
+        val originalOwner = owner
+        val originalSession = session
+        cancelInputOperation() ?: return
+        resumed = false; bindingValid = false
+        cancelOriginalOnExit(scope, activation, originalOwner)
+        if (owner === originalOwner && (session === originalSession || session == null)) finish()
     }
     internal fun exitToLauncher() {
-        // End local interception and invalidate peer callbacks before leaving this Activity.
-        resumed = false
-        cancelInput()
-        hidDevices.stop(); functionInput.stop(); nativeSwipeInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
-        val original = visibleActivation
+        localControl(ReceiverControlSource.LOCAL_UI) { exitToLauncherAdmitted() }
+    }
+
+    private fun exitToLauncherAdmitted() {
+        val activation = visibleActivation
         val scope = launchScope
+        val originalOwner = owner
+        val originalSession = session
+        cancelInputOperation() ?: return
+        resumed = false
         bindingValid = false
-        cancelOriginalOnExit(scope, original)
+        hidDevices.stop(); functionInput.stop(); nativeSwipeInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
+        if (owner !== originalOwner || (session !== originalSession && session != null)) return
+        cancelOriginalOnExit(scope, activation, originalOwner)
+        if (owner !== originalOwner || (session !== originalSession && session != null)) return
         startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         finish()
     }
 
-    private fun cancelOriginalOnExit(scope: ReceiverLaunchScope, activation: String?) {
+    private fun cancelOriginalOnExit(scope: ReceiverLaunchScope, activation: String?, originalOwner: ReceiverSessionOwner?) {
         pendingExit = scope to activation
-        val source = owner
-        if (source != null) source.disconnect(scope = scope, activationId = activation)
+        if (originalOwner != null) originalOwner.disconnect(scope = scope, activationId = activation)
         else {
             // Delivery survives unbinding/Activity destruction and carries only this original scope.
             startForegroundService(ReceiverSessionService.cancelIntent(this, scope, activation))
@@ -809,7 +917,46 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         return session?.scroll(Scroll(target, pixels), eventTimeMs, headMotion) == true
     }
 
+    private var nativePadMotionAdmitted = false
+    private val nativePadMotionInput by lazy {
+        NativePadMotionInput({ event ->
+            val previous = nativePadMotionAdmitted
+            nativePadMotionAdmitted = true
+            try { if (::padContact.isInitialized) padContact.accept(event) }
+            finally { nativePadMotionAdmitted = previous }
+        }, { complete -> admitLocalControl(ReceiverControlSource.PAD, complete) },
+            { inputGeneration to navigationContext() })
+    }
+
+    private fun acceptNativePadMotion(event: MotionEvent): Boolean {
+        return nativePadMotionInput.accept(event)
+    }
+
+    private val padControlInput by lazy {
+        ReceiverContactInput<PadGestureRecognizer.Event>({ it.downTimeMs }, { Touch.Phase.valueOf(it.phase.name) },
+            { complete -> admitLocalControl(ReceiverControlSource.PAD, complete) },
+            { event -> dispatchPadActionAdmitted(PadGestureRecognizer.Action.Contact(event)) })
+    }
+
     private fun dispatchPadAction(action: PadGestureRecognizer.Action) {
+        if (action.original != null) {
+            dispatchPadActionAdmitted(action)
+            return
+        }
+        if (action is PadGestureRecognizer.Action.Contact) {
+            if (nativePadMotionAdmitted && action.event.key == PadGestureRecognizer.Key.HELD_CONTACT) {
+                dispatchPadActionAdmitted(action)
+                return
+            }
+            if (!padControlInput.accept(action.event) && action.event.phase == PadGestureRecognizer.Phase.CANCEL)
+                dispatchPadActionAdmitted(action) // A captured original output still owes its release.
+        } else if (action is PadGestureRecognizer.Action.LongPress && (padContact.holding || shellPadContact.holding)) {
+            // This is a classification tail of the raw contact already sent to the gate.
+            nativeInputStage("dispatch_result", action, outcome = "sustained-contact")
+        } else localControl(ReceiverControlSource.PAD) { dispatchPadActionAdmitted(action) }
+    }
+
+    private fun dispatchPadActionAdmitted(action: PadGestureRecognizer.Action) {
         nativeInputStage("dispatch_enter", action)
         when (action) {
             is PadGestureRecognizer.Action.LongPress -> {
@@ -906,22 +1053,33 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             session?.cancelHeadScroll()
         } else if (!edgeScheduled) { edgeScheduled = true; root.post(edgeTick) }
     }
-    private val edgeTick = object : Runnable {
+    private var edgeTick: Runnable = newEdgeTick()
+    private fun newEdgeTick(): Runnable = object : Runnable {
         override fun run() {
+            if (edgeTick !== this) return
             edgeScheduled = false
             val point = pointer.inputPosition()
+            if (edgeTick !== this) return
             if (!usable() || !projectedInput() || (::heldInput.isInitialized && heldInput.holding)) { edgeMotion.stop(); return }
             val now = SystemClock.elapsedRealtimeNanos()
             val bounds = pointer.visibleBounds
             if (edgeMotion.direction(point, bounds, pointer.expiresAtNs, now) == 0) { edgeMotion.stop(); return }
             val pixels = edgeMotion.step(point, bounds, pointer.expiresAtNs, now, settings.scrollSpeed)
             if (pixels != 0) remoteScroll(point.x, (bounds.top + bounds.bottom) / 2, pixels, headMotion = true)
-            root.removeCallbacks(this); edgeScheduled = true; root.postDelayed(this, 50)
+            if (edgeTick !== this) return
+            root.removeCallbacks(this)
+            if (edgeTick !== this) return
+            edgeScheduled = true
+            root.postDelayed(this, 50)
         }
     }
-    private val confirmTap = Runnable {
-        if (usable()) gestures.confirm(SystemClock.uptimeMillis()) else gestures.cancel()
-        schedulePadConfirmation()
+    private var confirmTap: Runnable = newConfirmTap()
+    private fun newConfirmTap(): Runnable = object : Runnable {
+        override fun run() {
+            if (confirmTap !== this) return
+            if (usable()) gestures.confirm(SystemClock.uptimeMillis()) else gestures.cancel()
+            if (confirmTap === this) schedulePadConfirmation()
+        }
     }
     private fun schedulePadConfirmation() {
         root.removeCallbacks(confirmTap)
@@ -929,53 +1087,113 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         nativeInputStage("deadline", due = deadline)
         deadline?.let { root.postDelayed(confirmTap, (it - SystemClock.uptimeMillis()).coerceAtLeast(0)) }
     }
-    private fun cancelInput() {
-        cancelInputRevision()
+    private fun cancelInput(): Boolean {
+        return cancelInputRevision() != null
     }
 
     private fun cancelInputRevision(): Long? {
-        val originalSession = session
-        val originalOwner = owner
-        val beforeChooser = inputGeneration
-        val dismissed = cancelAnchorRegistration()
-        val chooserUnchanged = inputGeneration == beforeChooser && session === originalSession && owner === originalOwner
-        if (!chooserUnchanged) {
-            // The callback's replacement/nested retirement owns all current local state.
-            // A distinct old Session still needs cleanup; same-Session retirement already did it.
-            if (session !== originalSession) originalSession?.cancelPendingInput()
-            return null
-        }
-        val canceledRevision = cancelInputState(originalSession = originalSession, originalOwner = originalOwner)
-        if (dismissed && inputGeneration == canceledRevision &&
-            session === originalSession && owner === originalOwner && root.width > 0 && root.height > 0) updatePointerBounds()
-        return canceledRevision
+        return cancelInputOperation()?.first
     }
 
     /** Opening uses this body before its correlated OPEN, without publishing the new revision. */
     private fun cancelInputState(publish: Boolean = true, originalSession: ProjectionSession? = session,
-                                 originalOwner: ReceiverSessionOwner? = owner): Long {
-        val canceledRevision = originalOwner?.advanceInputRevision() ?: (inputGeneration + 1)
-        inputGeneration = canceledRevision
-        anchorHeldIndicator.clear()
-        nativeInputStage("cancel")
-        if (::hidInput.isInitialized) hidInput.cancel()
-        if (::functionInput.isInitialized) functionInput.cancel()
-        if (::classifiedPadLongPress.isInitialized) classifiedPadLongPress.cancel()
-        if (::shellPadContact.isInitialized) shellPadContact.cancel()
-        if (::gestures.isInitialized) gestures.cancel(SystemClock.uptimeMillis())
-        if (::heldOwner.isInitialized) heldOwner.cancel(SystemClock.uptimeMillis())
-        else if (::heldInput.isInitialized) heldInput.cancel(SystemClock.uptimeMillis())
-        if (::padContact.isInitialized) padContact.clear()
-        if (::screen.isInitialized) screen.cancelTouch()
-        if (::localInput.isInitialized) localInput.cancel()
-        if (::completedInput.isInitialized) completedInput.cancel()
-        // A nested retirement already canceled this Session's old work. Do not cancel work
-        // admitted after it; a replaced Session still needs its own original cleanup.
-        if (inputGeneration == canceledRevision || session !== originalSession) originalSession?.cancelPendingInput()
-        root.removeCallbacks(confirmTap); root.removeCallbacks(edgeTick); edgeScheduled = false; edgeMotion.stop()
-        if (publish && inputGeneration == canceledRevision && session === originalSession && owner === originalOwner)
-            publishHeadPointer()
-        return canceledRevision
+                                 originalOwner: ReceiverSessionOwner? = owner): Long? {
+        return cancelInputOperation(false, publish, originalSession, originalOwner)?.first
+    }
+
+    private fun cancelInputOperation(dismissChooser: Boolean = true, publish: Boolean = true,
+        originalSession: ProjectionSession? = session, originalOwner: ReceiverSessionOwner? = owner): Pair<Long, InputRetirement>? {
+        val dismissed = dismissChooser && registrationActive()
+        val result = prepareInputCancellation(originalSession, originalOwner, dismissChooser)
+        val retirement = result.second
+        retirement.finishOriginal()
+        if (retirement.superseded()) return null
+        if (dismissed && root.width > 0 && root.height > 0) updatePointerBounds()
+        if (retirement.superseded()) return null
+        if (publish) publishHeadPointer()
+        return result.takeUnless { retirement.superseded() }
+    }
+
+    /** All original metadata/obligations are secured before the first queue, scheduler or UI effect. */
+    private fun prepareInputCancellation(originalSession: ProjectionSession?, originalOwner: ReceiverSessionOwner?,
+                                         dismissChooser: Boolean): Pair<Long, InputRetirement> {
+        val at = SystemClock.uptimeMillis()
+        val revision = originalOwner?.advanceInputRevision() ?: (inputGeneration + 1)
+        inputGeneration = revision // Exactly once, before any callback can install a successor.
+        nativePadMotionInput.retire()
+        val motionAdmission = nativePadMotionInput.admission
+        padControlInput.retire()
+        val padAdmission = padControlInput.admission
+        val receipts = mutableListOf<InputRetirement>()
+        var preparationFailure: Throwable? = null
+        fun acquire(prepare: () -> InputRetirement): InputRetirement? = try {
+            prepare().also { receipts.add(it) }
+        } catch (error: Throwable) {
+            val first = preparationFailure
+            if (first == null) preparationFailure = error else if (first !== error) first.addSuppressed(error)
+            null
+        }
+        val oldRoot = root
+        val oldConfirm = confirmTap
+        val oldEdge = edgeTick
+        val nextConfirm = newConfirmTap()
+        val nextEdge = newEdgeTick()
+        confirmTap = nextConfirm; edgeTick = nextEdge
+        edgeScheduled = false; edgeMotion.stop()
+        if (::padContact.isInitialized) padContact.clear() // Plain physical-source metadata only.
+
+        // Shared output releases finish first; producer finishes below then encounter retired tokens.
+        val local = if (::localInput.isInitialized) acquire { localInput.captureCancellation() } else null
+        val held = if (::heldOwner.isInitialized) acquire {
+            heldOwner.captureCancellation(at) { local?.finishOriginal?.invoke() }
+        } else null
+        // heldInput has no route/contact before the immediately following HeldInputOwner construction.
+        // Projected cleanup belongs to the captured Session effect; local cleanup to its epoch receipt.
+        val completed = if (::completedInput.isInitialized) acquire {
+            completedInput.prepareCancel { local?.finishOriginal?.invoke() }
+        } else null
+        val detector = if (::screen.isInitialized) acquire { screen.prepareCancel() } else null
+        val hid = if (::hidInput.isInitialized) acquire { hidInput.prepareCancel() } else null
+        val nativeFunction = if (::functionInput.isInitialized) acquire { functionInput.prepareCancel() } else null
+        val classified = if (::classifiedPadLongPress.isInitialized) acquire { classifiedPadLongPress.prepareCancel() } else null
+        val shell = if (::shellPadContact.isInitialized) acquire { shellPadContact.prepareCancel() } else null
+        val pad = if (::gestures.isInitialized) acquire { gestures.prepareCancel(at) } else null
+        val indicator = acquire { anchorHeldIndicator.prepareClear() }
+        val originalChooser = if (dismissChooser) anchorRegistration.offer else null
+        val originalOffer = if (dismissChooser) anchorOffer else null
+        val overlay = if (dismissChooser && ::anchorOverlay.isInitialized) acquire { anchorOverlay.prepareDismiss() } else null
+        if (originalChooser != null) anchorRegistration.completed(originalChooser.source, originalChooser.id)
+        if (dismissChooser) anchorOffer = null
+
+        val finish = listOf<() -> Unit>(
+            { preparationFailure?.let { throw it } },
+            // Effectful transport retirement occurs once, before later callbacks can queue new work.
+            { originalSession?.cancelPendingInput() },
+            { oldRoot.removeCallbacks(oldConfirm) },
+            { oldRoot.removeCallbacks(oldEdge) },
+            { held?.finishOriginal?.invoke() },
+            { local?.finishOriginal?.invoke() },
+            { completed?.finishOriginal?.invoke() },
+            { detector?.finishOriginal?.invoke() },
+            { hid?.finishOriginal?.invoke() },
+            { nativeFunction?.finishOriginal?.invoke() },
+            { classified?.finishOriginal?.invoke() },
+            { shell?.finishOriginal?.invoke() },
+            { pad?.finishOriginal?.invoke() },
+            { indicator?.finishOriginal?.invoke() },
+            { overlay?.finishOriginal?.invoke() },
+            {
+                if (originalChooser != null && originalOffer != null && originalChooser.id == originalOffer.transactionId)
+                    originalChooser.source.chooseAnchorRegistration(originalOffer, AnchorChoice.CANCEL)
+            },
+            { nativeInputStage("cancel") },
+        )
+        return revision to InputRetirement({ InputRetirement.finishAll(finish) }, {
+            session !== originalSession || owner !== originalOwner || inputGeneration != revision ||
+                originalOwner?.inputRevision?.let { it != revision } == true ||
+                nativePadMotionInput.admission != motionAdmission || padControlInput.admission != padAdmission ||
+                confirmTap !== nextConfirm || edgeTick !== nextEdge || receipts.any { it.superseded() }
+        })
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
@@ -987,7 +1205,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
         observeNativeInput { it.motion(System.identityHashCode(this), "generic_motion", event,
             SystemClock.uptimeMillis(), SystemClock.elapsedRealtimeNanos()) }
-        if (::padContact.isInitialized && padContact.accept(event)) return true
+        if (::padContact.isInitialized && acceptNativePadMotion(event)) return true
         return super.dispatchGenericMotionEvent(event)
     }
 
@@ -1001,7 +1219,24 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             else null
         }
         if (::hidDevices.isInitialized && hidDevices.accept(event, trace)) return true
-        val padKey = nativePadKey(event.device?.name, event.source, event.keyCode)
+        return dispatchNativeKeyEvent(event,event.device?.name)
+    }
+
+    private fun hidLearningPage(): Boolean = ::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE &&
+        connectionView.visibility == View.VISIBLE
+
+    private fun hidLearningContext(): Any = inputGeneration to navigationContext()
+
+    private fun admitHidLearning(complete: (Boolean) -> Unit) {
+        admitLocalControl(ReceiverControlSource.GLASSES_HID, complete)
+    }
+
+    private fun unhandledHid(event: KeyEvent, deviceName: String) {
+        dispatchNativeKeyEvent(event,deviceName)
+    }
+
+    private fun dispatchNativeKeyEvent(event: KeyEvent, deviceName: String?): Boolean {
+        val padKey = nativePadKey(deviceName, event.source, event.keyCode)
         // Retired pad summaries must be consumed even after Disconnect. Only an
         // ordinary non-pad Back falls through to the disconnected Activity.
         if (event.keyCode == KeyEvent.KEYCODE_BACK && !streaming && padKey == null) return super.dispatchKeyEvent(event)
@@ -1022,7 +1257,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             if (padKey != null && padUps <= 64) Log.d("EyeProjectorPad", "key=${event.keyCode} up=${event.eventTime} down=${event.downTime}")
         }
         gestures.accept(PadGestureRecognizer.Event(key, phase, event.eventTime, event.downTime, event.repeatCount,
-            if (phase == PadGestureRecognizer.Phase.DOWN) pointer.inputPosition() else null), SystemClock.uptimeMillis())
+            if (phase == PadGestureRecognizer.Phase.DOWN) pointer.inputSnapshot() else null), SystemClock.uptimeMillis())
         schedulePadConfirmation()
         return true
     }
@@ -1247,28 +1482,55 @@ private class ProjectorSurface(
 ) : SurfaceView(context) {
     private var clickX: Float? = null
     private var clickY: Float? = null
-    private val gestures = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
-        override fun onDown(e: MotionEvent) = true
+    private var admission = 0L
+    private var detectorGeneration = 0L
+    private fun newDetector(generation: Long) = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
+        override fun onDown(e: MotionEvent) = generation == detectorGeneration
         override fun onSingleTapUp(e: MotionEvent): Boolean {
+            if (generation != detectorGeneration) return false
             clickX = e.x; clickY = e.y
             try { performClick() } finally { clickX = null; clickY = null }
             return true
         }
         override fun onScroll(e1: MotionEvent?, e2: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
+            if (generation != detectorGeneration) return false
             scroll(e2.x, e2.y, distanceY.toInt().coerceIn(-1200, 1200))
             return true
         }
     })
+    private var gestures: GestureDetector? = newDetector(detectorGeneration)
     @SuppressLint("ClickableViewAccessibility") // The detector calls performClick only for confirmed short taps.
-    override fun onTouchEvent(event: MotionEvent): Boolean = gestures.onTouchEvent(event)
-    fun cancelTouch() {
-        val now = SystemClock.uptimeMillis()
-        val event = MotionEvent.obtain(now, now, MotionEvent.ACTION_CANCEL, 0f, 0f, 0)
-        try { gestures.onTouchEvent(event) } finally { event.recycle() }
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (event.action == MotionEvent.ACTION_DOWN) admission++
+        val current = gestures ?: newDetector(detectorGeneration).also { gestures = it }
+        return current.onTouchEvent(event)
     }
+    fun prepareCancel(): InputRetirement {
+        val old = gestures
+        val replacementGeneration = ++detectorGeneration
+        gestures = null // Retire old callbacks even if replacement allocation fails.
+        var allocationFailure: Throwable? = null
+        try { gestures = newDetector(replacementGeneration) } catch (error: Throwable) { allocationFailure = error }
+        val baseline = admission
+        return InputRetirement({ InputRetirement.finishAll(listOf(
+            {
+                if (old != null) {
+                    val now = SystemClock.uptimeMillis()
+                    val event = MotionEvent.obtain(now, now, MotionEvent.ACTION_CANCEL, 0f, 0f, 0)
+                    try { old.onTouchEvent(event) } finally { event.recycle() }
+                }
+            },
+            { allocationFailure?.let { throw it } },
+        )) }, { detectorGeneration != replacementGeneration || admission != baseline })
+    }
+    fun cancelTouch() = prepareCancel().finishOriginal()
     override fun performClick(): Boolean {
+        val original = detectorGeneration
+        val originalAdmission = admission
+        val x = clickX ?: width / 2f
+        val y = clickY ?: height / 2f
         super.performClick()
-        tap(clickX ?: width / 2f, clickY ?: height / 2f)
+        if (detectorGeneration == original && admission == originalAdmission) tap(x, y)
         return true
     }
 }

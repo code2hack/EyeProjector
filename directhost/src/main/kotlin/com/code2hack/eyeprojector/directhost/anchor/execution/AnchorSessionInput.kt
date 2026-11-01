@@ -19,8 +19,22 @@ internal class AnchorSessionInput(private val lock: Any, write: (ByteArray) -> U
     private var geometry: Geometry? = null
     val holding: Boolean get() = output.holding
 
-    fun consumeHeldControl(admission: AnchorControlAdmission): AnchorControlDisposition =
-        anchor.consumeHeldControl(admission)
+    init { cancellation({ it() }, { throw it }) }
+    fun cancellation(schedule: (() -> Unit) -> Unit, failure: (Throwable) -> Unit) {
+        anchor.releaseOutput(output::prepareRelease)
+        anchor.cancellationOutput({
+            val finish = output.prepareCancel(retirementGeometry)
+            val original: () -> Unit = {
+                if (!finish()) throw java.io.IOException("Original Anchor cancellation was rejected")
+            }
+            original
+        }, schedule, failure)
+    }
+
+    fun consumeHeldControl(admission: AnchorControlAdmission): AnchorControlDisposition {
+        anchor.receiveControl(admission)
+        return if (admission.terminal) admission.disposition else anchor.consumeHeldControl(admission)
+    }
 
     /** Passive pointer loss may retire ordinary pointer work, not a stationary Anchor Hold. */
     fun cancelOrdinary() = synchronized(lock) {

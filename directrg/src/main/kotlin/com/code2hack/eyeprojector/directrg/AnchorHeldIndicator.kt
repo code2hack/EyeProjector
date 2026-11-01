@@ -11,6 +11,9 @@ internal class AnchorHeldIndicator(private val render: (Boolean) -> Unit) {
     private var revision = -1L
     var visible = false
         private set
+    private class Rendering(var value: Boolean?) { var clearAttempted = false }
+    private var rendering = Rendering(false)
+    private var admission = 0L
 
     fun bind(source: Any?, current: ReceiverUsability?) {
         val next = current?.takeIf { source != null && it.mode == ReceiverUsabilityMode.PROJECTED }
@@ -27,20 +30,43 @@ internal class AnchorHeldIndicator(private val render: (Boolean) -> Unit) {
     fun accept(source: Any, intent: FunctionIntent, stateRevision: Long, held: Boolean): Boolean {
         if (source !== original || !sameContext(context, intent.context.usability) || context == null) return false
         if (stateRevision <= revision) return true
+        admission++
         revision = stateRevision
         show(held)
         return true
     }
 
-    fun clear() {
+    fun prepareClear(): InputRetirement {
+        val old = rendering
         context = null
-        show(false)
+        visible = false
+        val baseline = admission
+        val source = original
+        val stateRevision = revision
+        return InputRetirement({
+            if (!old.clearAttempted) {
+                old.clearAttempted = true
+                if (!visible && rendering === old && old.value != false) renderValue(false)
+            }
+        }, { admission != baseline || original !== source || revision != stateRevision })
     }
 
+    fun clear() = prepareClear().finishOriginal()
+
     private fun show(value: Boolean) {
-        if (visible == value) return
+        if (visible == value && rendering.value == value) return
         visible = value
-        render(value)
+        renderValue(value)
+    }
+
+    private fun renderValue(value: Boolean) {
+        val next = Rendering(value)
+        rendering = next // Publish before arbitrary rendering callbacks.
+        try { render(value) }
+        catch (error: Throwable) {
+            if (rendering === next) next.value = null // A later genuine render may reconcile unknown output.
+            throw error
+        }
     }
 
     private fun sameContext(a: ReceiverUsability?, b: ReceiverUsability?): Boolean =

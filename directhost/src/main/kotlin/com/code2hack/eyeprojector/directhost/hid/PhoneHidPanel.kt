@@ -57,7 +57,7 @@ internal class PhoneHidPanel(context: Context, private val runtime: PhoneHidRunt
     fun open() {
         subscription?.close()
         subscription = runtime.observe(::refresh)
-        input.openPage()
+        input.resumePage()
         runtime.refresh()
         refresh()
     }
@@ -133,7 +133,7 @@ internal class PhoneHidPanel(context: Context, private val runtime: PhoneHidRunt
     private fun button(text: String, action: () -> Unit) = Button(context).apply {
         isAllCaps = false; this.text = text; setTextColor(Color.WHITE)
         minimumHeight = (48 * resources.displayMetrics.density).toInt()
-        setOnClickListener { action() }
+        setOnClickListener { if (runtime.userControl()) action() }
     }
     private fun label(action: PhoneHidAction) = when (action) {
         PhoneHidAction.TAP -> "Tap"

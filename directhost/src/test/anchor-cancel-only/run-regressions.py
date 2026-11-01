@@ -40,8 +40,9 @@ else:
 cp = os.pathsep.join(map(str, jars))
 java = str(Path(os.environ['JAVA_HOME']) / 'bin/java') if os.environ.get('JAVA_HOME') else shutil.which('java')
 sources = [protocol / (n + '.kt') for n in ['Wire', 'Touch', 'PhoneInput', 'ReceiverUsability', 'CameraFeed',
-           'ActivationControl', 'FunctionIntent', 'AnchorMessage', 'BackHomeGestureRecognizer']]
-sources += [root / 'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/AnchorHeldIndicator.kt',
+           'ActivationControl', 'FunctionIntent', 'AnchorMessage', 'BackHomeGestureRecognizer', 'ReceiverControlIntent']]
+sources += [root / 'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/InputRetirement.kt',
+            root / 'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/AnchorHeldIndicator.kt',
             root / 'directrg/src/test/anchor-hold/AnchorHeldIndicatorTest.kt']
 tests = ['com.code2hack.eyeprojector.directrg.AnchorHeldIndicatorTest']
 if not a.indicator_only:
@@ -51,14 +52,21 @@ if not a.indicator_only:
     sources += [host / 'anchor/preferences' / (n + '.kt') for n in ['AppAnchor', 'AppAnchorStore']]
     sources += [host / 'uiaccess' / (n + '.kt') for n in
                 ['UiTargetSnapshot', 'UiSourceGeometry', 'UiTargetReader', 'UiTargetSnapshotProvider']]
-    sources += [host / (n + '.kt') for n in ['ProjectionContext', 'PhoneTouchDispatcher']]
+    sources += [host / (n + '.kt') for n in ['ProjectionContext', 'PhoneTouchDispatcher', 'PhoneInputTrace', 'PhoneInputTraceConfig']]
     sources += [host / 'input/PhoneInputMerger.kt', host / 'input/FunctionWork.kt', suite.parent / 'uiaccess/doubles/ProjectionDependencies.kt',
                 suite.parent / 'uiaccess/doubles/SnapshotDescriptor.kt', suite / 'AnchorHoldTest.kt', suite / 'AnchorHoldWireTest.kt',
                 suite.parent / 'kotlin/com/code2hack/eyeprojector/directhost/anchor/execution/AnchorExecutionTest.kt']
+    sources += [suite / 'doubles/Json.kt']
     tests += ['com.code2hack.eyeprojector.directhost.anchor.execution.AnchorHoldTest',
               'com.code2hack.eyeprojector.directhost.anchor.execution.AnchorHoldWireTest',
               'com.code2hack.eyeprojector.directhost.anchor.execution.AnchorExecutionTest']
+rgmain=root/'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg'
+rgtests=root/'directrg/src/test/kotlin/com/code2hack/eyeprojector/directrg'
+sources += [rgmain/(name+'.kt') for name in ['PadGestureRecognizer','FunctionGestureRecognizer','HeadPointerModel','HeadOrientation']]
+for name in ['PadGestureRecognizerTest','ContinuousContactRecognizerTest','FunctionGestureRecognizerTest']:
+    sources.append(rgtests/(name+'.kt'));tests.append('com.code2hack.eyeprojector.directrg.'+name)
 out = a.output_dir.resolve()
+if (out/'result.json').exists(): p.error('Refusing to overwrite frozen regression result')
 out.mkdir(parents=True, exist_ok=True)
 snapshots = []
 for i, source in enumerate(sources):
@@ -70,7 +78,8 @@ jar = out / 'anchor-hold-checks.jar'
 compile_cmd = [java, '-cp', cp, 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', '-jvm-target', '17',
                '-no-stdlib', '-no-reflect', '-classpath', cp, '-d', str(jar)] + list(map(str, snapshots))
 test_cmd = [java, '-cp', str(jar) + os.pathsep + cp, 'org.junit.runner.JUnitCore'] + tests
-record = {'scope': 'Exact production source with cached compiler; no Gradle/SDK/device or app-effect proof',
+(out/'runner-source.py').write_bytes(Path(__file__).read_bytes())
+record = {'runnerSnapshot':str(out/'runner-source.py'),'runnerSha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'scope': 'Exact production source with cached compiler; no Gradle/SDK/device or app-effect proof',
           'compileCommand': compile_cmd, 'testCommand': test_cmd,
           'sources': [{'path': str(s), 'snapshot': str(c), 'sha256': hashlib.sha256(c.read_bytes()).hexdigest()}
                       for s, c in zip(sources, snapshots)],

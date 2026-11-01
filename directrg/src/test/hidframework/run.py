@@ -56,10 +56,11 @@ def kotlin_block(source, marker):
 
 def receiver_key_fixture(receiver_source, native_source):
     dispatch = kotlin_block(receiver_source, r'^    override fun dispatchKeyEvent\(')
+    native_dispatch = kotlin_block(receiver_source,r'^    private fun dispatchNativeKeyEvent\(')
     observe = kotlin_block(receiver_source, r'^    private inline fun observeNativeInput\(')
     hovered = kotlin_block(receiver_source, r'^    private fun hoveredHidAction\(')
-    received_initializer = kotlin_block(receiver_source, r'^        hidDevices = AndroidHidInput\(this, hidInput\)')
-    received_match = re.fullmatch(r'        hidDevices = AndroidHidInput\(this, hidInput\) \{ event ->(?P<body>[\s\S]*)\}', received_initializer)
+    received_initializer = kotlin_block(receiver_source, r'^        hidDevices = AndroidHidInput\(this, hidInput,')
+    received_match = re.fullmatch(r'        hidDevices = AndroidHidInput\([\s\S]*?\) \{ event ->(?P<body>[\s\S]*)\}', received_initializer)
     if not received_match:
         raise ValueError('Expected the exact production received callback signature')
     received_body = received_match.group('body')
@@ -82,6 +83,7 @@ internal class ReceiverKeyPointer {
     var position = PointerPosition(100f, 200f, true)
     var reads = 0
     fun inputPosition(): PointerPosition { reads++; return position }
+    fun inputSnapshot(): PointerPosition = position
 }
 internal class ExtractedReceiverKeyIngress(private val input: HidKeyInput, adapter: AndroidHidInput) : ReceiverKeyBoundary() {
     // Only the optional key-observer interface is doubled; its invocation/helper are extracted.
@@ -110,7 +112,8 @@ internal class ExtractedReceiverKeyIngress(private val input: HidKeyInput, adapt
     private fun schedulePadConfirmation() { scheduled.add(gestures.deadline) }
     private fun cancelInput() { cancellations++; input.cancel(); gestures.cancel(SystemClock.uptimeMillis()) }
 '''
-    return boundary + observe + '\n' + received_method + dispatch + '\n' + hovered + '\n}\n\n' + normalize + '\n', {
+    return boundary + observe + '\n' + received_method + dispatch + '\n' + native_dispatch + '\n' + hovered + '\n}\n\n' + normalize + '\n', {
+        'dispatchNativeKeyEvent': {'source':'ReceiverActivity.kt','sha256':hashlib.sha256(native_dispatch.encode()).hexdigest()},
         'dispatchKeyEvent': {'source': 'ReceiverActivity.kt', 'sha256': hashlib.sha256(dispatch.encode()).hexdigest()},
         'observeNativeInput': {'source': 'ReceiverActivity.kt', 'sha256': hashlib.sha256(observe.encode()).hexdigest()},
         'hoveredHidAction': {'source': 'ReceiverActivity.kt', 'sha256': hashlib.sha256(hovered.encode()).hexdigest()},
@@ -124,6 +127,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source-dir', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path, required=True)
+    parser.add_argument('--dependency-manifest',type=Path)
     args = parser.parse_args()
     root, out = args.source_dir.resolve(), args.output_dir.resolve()
     if out.exists() and any(out.iterdir()):
@@ -134,11 +138,11 @@ def main():
     production_paths = [production / name for name in (
         'AndroidHidInput.kt', 'HidBindingsPanel.kt', 'HidKeyInput.kt', 'HidBindings.kt', 'HidDecisionTrace.kt',
         'FunctionGestureRecognizer.kt', 'ContextualNavigation.kt', 'PadGestureRecognizer.kt', 'HeadPointerModel.kt', 'HeadOrientation.kt',
-        'LocalInputSettings.kt', 'LocalInputSettingsPanel.kt',
+        'LocalInputSettings.kt', 'LocalInputSettingsPanel.kt', 'InputRetirement.kt', 'ReceiverContactInput.kt',
     )]
     protocol = root / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
     production_paths += [protocol / n for n in ('Wire.kt', 'Touch.kt', 'PhoneInput.kt', 'ReceiverUsability.kt',
-        'ActivationControl.kt', 'CameraFeed.kt', 'FunctionIntent.kt', 'BackHomeGestureRecognizer.kt')]
+        'ActivationControl.kt', 'CameraFeed.kt', 'FunctionIntent.kt', 'BackHomeGestureRecognizer.kt', 'AnchorMessage.kt', 'ReceiverControlIntent.kt')]
     suite_paths = sorted((suite / 'doubles').glob('*.kt')) + [suite / 'Scenarios.kt']
     extraction_paths = [production / 'ReceiverActivity.kt', production / 'NativePadInput.kt']
     metadata_paths = [suite / 'run.py', suite / 'README.md']
@@ -176,22 +180,28 @@ def main():
         'compiled': True, 'sha256': digest(generated), 'bytes': generated.stat().st_size,
     })
 
-    cache = Path(os.environ.get('GRADLE_USER_HOME', Path.home() / '.gradle')) / 'caches/modules-2/files-2.1'
-    dependencies = (
-        ('org.jetbrains.kotlin', 'kotlin-compiler-embeddable', '2.2.21'),
-        ('org.jetbrains.kotlin', 'kotlin-stdlib', '2.2.21'),
-        ('org.jetbrains.kotlin', 'kotlin-script-runtime', '2.2.21'),
-        ('org.jetbrains.kotlin', 'kotlin-reflect', '1.6.10'),
-        ('org.jetbrains.intellij.deps', 'trove4j', '1.0.20200330'),
-        ('org.jetbrains.kotlinx', 'kotlinx-coroutines-core-jvm', '1.8.0'),
-        ('org.jetbrains', 'annotations', '13.0'),
-    )
-    jars = []
-    for group, artifact, version in dependencies:
-        found = sorted((cache / group / artifact / version).glob(f'*/{artifact}-{version}.jar'))
-        if len(found) != 1:
-            parser.error(f'Missing/ambiguous cached compiler dependency {artifact}:{version}; no download attempted')
-        jars.append(found[0])
+    if args.dependency_manifest:
+        frozen=json.loads(args.dependency_manifest.read_text())
+        for dep in frozen['jars']:
+            if digest(Path(dep['path'])) != dep['sha256']: parser.error('Frozen dependency mismatch: '+dep['path'])
+        jars=[Path(dep['path']) for dep in frozen['jars'] if dep['kind']=='compiler-dependency']
+    else:
+        cache = Path(os.environ.get('GRADLE_USER_HOME', Path.home() / '.gradle')) / 'caches/modules-2/files-2.1'
+        dependencies = (
+            ('org.jetbrains.kotlin', 'kotlin-compiler-embeddable', '2.2.21'),
+            ('org.jetbrains.kotlin', 'kotlin-stdlib', '2.2.21'),
+            ('org.jetbrains.kotlin', 'kotlin-script-runtime', '2.2.21'),
+            ('org.jetbrains.kotlin', 'kotlin-reflect', '1.6.10'),
+            ('org.jetbrains.intellij.deps', 'trove4j', '1.0.20200330'),
+            ('org.jetbrains.kotlinx', 'kotlinx-coroutines-core-jvm', '1.8.0'),
+            ('org.jetbrains', 'annotations', '13.0'),
+        )
+        jars = []
+        for group, artifact, version in dependencies:
+            found = sorted((cache / group / artifact / version).glob(f'*/{artifact}-{version}.jar'))
+            if len(found) != 1:
+                parser.error(f'Missing/ambiguous cached compiler dependency {artifact}:{version}; no download attempted')
+            jars.append(found[0])
 
     java_home = os.environ.get('JAVA_HOME')
     java = str(Path(java_home) / 'bin/java') if java_home else shutil.which('java')
@@ -212,6 +222,7 @@ def main():
     run_command = [java, '-Xmx512m', '-cp', str(jar) + os.pathsep + classpath,
                    'com.code2hack.eyeprojector.directrg.ScenariosKt']
     manifest = {
+        'dependencyManifest': None if not args.dependency_manifest else {'path':str(args.dependency_manifest),'sha256':digest(args.dependency_manifest)},
         'sourceRoot': str(root),
         'sourceIdentity': 'Complete production/test bytes retained below; no Git command invoked',
         'sources': snapshot_entries,

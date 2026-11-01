@@ -1585,8 +1585,136 @@ private fun dedicatedCapturePreservesFunctionAndCanceledLockNeverDispatches() {
     equal(emptyList<ContextualNavigationAction>(), r.navigation, "canceled Lock produces no operation")
 }
 
+private fun localWidgetEffectsWaitForOriginalAdmission() {
+    for(index in 0..6) {
+        val values=mutableMapOf<String,String>();var writes=0;var changed=0
+        val settings=LocalInputSettings(values::get){key,value->values[key]=value;writes++;true}
+        val pending=mutableListOf<()->Unit>()
+        val panel=LocalInputSettingsPanel(Context(),settings,{}, {changed++}, {pending.add(it)})
+        val before=values.toMap();val baseline=writes
+        panel.buttons[index].performClick()
+        check(pending.size==1&&writes==baseline&&changed==0&&values==before)
+        // Consumed original callback is never run. A distinct admitted click remains normal.
+        panel.buttons[index].performClick();pending[1]()
+        check(writes==baseline+1&&changed==1&&values!=before)
+    }
+    val r=Rig();r.assign(HidAction.TAP)
+    val before=r.record;val writes=r.writes.size;val pending=mutableListOf<()->Unit>()
+    val panel=HidBindingsPanel(r.android,r.bindings,r.input,{pending.add(it)}){}
+    val reset=panel.buttons.single{it.text=="Reset all HID bindings"}
+    reset.performClick();check(r.record==before&&r.writes.size==writes)
+    reset.performClick();pending[1]()
+    check(HidAction.entries.all{r.bindings.binding(it)==null}&&r.writes.size==writes+1)
+}
+
+private fun actualLearningIngressBeforeTargetFeedbackAndStore() {
+    for(normal in listOf(false,true)) {
+        val r=Rig();r.showPanel();r.hover(HidAction.TAP)
+        val replies=mutableListOf<(Boolean)->Unit>();var feedback=0;var fallback=0
+        val adapter=AndroidHidInput(r.android,r.input,{true},{replies.add(it)},{_,_->fallback++}){feedback++}
+        val down=KeyEvent(r.device,KeyEvent.ACTION_DOWN,200,800,1000,1000)
+        val up=KeyEvent(r.device,KeyEvent.ACTION_UP,200,800,1000,1010)
+        check(adapter.accept(down));check(adapter.accept(up))
+        check(replies.size==1&&feedback==0&&r.targetReads==0&&r.writes.isEmpty()&&r.input.selected==null){"Learning entered target/feedback/store before central decision"}
+        replies.single()(normal)
+        check(feedback==if(normal)1 else 0)
+        check(r.writes.size==if(normal)1 else 0)
+        check(r.targetReads==if(normal)1 else 0)
+        check(fallback==0&&r.input.selected==null)
+    }
+}
+
+private fun admittedUnboundLearningKeyKeepsOriginalFallthrough() {
+    val r=Rig();r.showPanel();r.leaveRows()
+    val replies=mutableListOf<(Boolean)->Unit>();val fallback=mutableListOf<KeyEvent>()
+    val names=mutableListOf<String>()
+    val adapter=AndroidHidInput(r.android,r.input,{true},{replies.add(it)},{event,name->fallback.add(event);names.add(name)}){}
+    val down=KeyEvent(r.device,KeyEvent.ACTION_DOWN,200,800,1000,1000)
+    val up=KeyEvent(r.device,KeyEvent.ACTION_UP,200,800,1000,1010)
+    check(adapter.accept(down));check(adapter.accept(up));check(fallback.isEmpty())
+    replies.single()(true)
+    check(fallback.map{it.action}==listOf(KeyEvent.ACTION_DOWN,KeyEvent.ACTION_UP))
+    check(fallback.all{it!==down&&it!==up&&it.deviceId==41&&it.keyCode==200&&it.scanCode==800&&it.downTime==1000L})
+    check(names==listOf(r.device.name,r.device.name)&&r.writes.isEmpty())
+}
+
+private fun learningOriginalStopsAfterFeedbackContextReplacement() {
+    val r=Rig();r.showPanel();r.hover(HidAction.TAP)
+    val replies=mutableListOf<(Boolean)->Unit>();var fallback=0
+    val adapter=AndroidHidInput(r.android,r.input,{true},{replies.add(it)},{_,_->fallback++},current={r.context}){
+        r.context="successor-view"
+    }
+    val down=KeyEvent(r.device,KeyEvent.ACTION_DOWN,200,800,1000,1000)
+    val up=KeyEvent(r.device,KeyEvent.ACTION_UP,200,800,1000,1010)
+    adapter.accept(down);adapter.accept(up);replies.single()(true)
+    check(r.targetReads==0&&r.writes.isEmpty()&&r.input.selected==null&&fallback==0){"Old admitted feedback continued into successor context"}
+}
+
+private fun pendingLearningLossAndChangedFactsDoNotReplayOrSave() {
+    for(loss in listOf("stop","descriptor")) {
+        val r=Rig();r.showPanel();r.hover(HidAction.TAP)
+        val replies=mutableListOf<(Boolean)->Unit>();var feedback=0;var fallback=0
+        val adapter=AndroidHidInput(r.android,r.input,{true},{replies.add(it)},{_,_->fallback++}){feedback++}
+        val down=KeyEvent(r.device,KeyEvent.ACTION_DOWN,200,800,1000,1000)
+        adapter.accept(down)
+        if(loss=="stop")adapter.stop()
+        val up=KeyEvent(if(loss=="descriptor")r.device.copy(descriptor="changed")else r.device,KeyEvent.ACTION_UP,200,800,1000,1010)
+        check(adapter.accept(up));replies.single()(true)
+        check(r.writes.isEmpty()&&r.input.selected==null&&fallback==0)
+        check(feedback==if(loss=="stop")0 else 1)
+    }
+}
+
+private fun operationalHidBeforeLocalEffects(role:HidAction) {
+    for(normal in listOf(false,true)) {
+        val r=Rig();r.assign(role);r.context="projected-operational";r.captureTarget={null}
+        val pending=mutableListOf<(Boolean)->Unit>();var feedback=0
+        val adapter=AndroidHidInput(r.android,r.input,{false},{pending.add(it)},{_,_->error("bound key must not fall through")},current={r.context}){feedback++}
+        val down=KeyEvent(r.device,KeyEvent.ACTION_DOWN,195,700,1000,1000)
+        val up=KeyEvent(r.device,KeyEvent.ACTION_UP,195,700,1000,1010)
+        check(adapter.accept(down));check(adapter.accept(up))
+        check(pending.size==1&&feedback==0&&r.targetReads==0&&r.positionReads==0&&r.contacts.isEmpty()&&r.cancels.isEmpty()&&r.scrolls.isEmpty()&&r.navigation.isEmpty()) {"operational $role entered local feedback/target/position/handler before Phone decision"}
+        pending.single()(normal)
+        if(!normal)r.noOutput() else when(role){
+            HidAction.TAP->check(r.contacts.map{it.event.phase}==listOf(PadGestureRecognizer.Phase.DOWN,PadGestureRecognizer.Phase.UP))
+            HidAction.SCROLL_DOWN,HidAction.SCROLL_UP->check(r.scrolls.size==1)
+            HidAction.LOCK->check(r.navigation==listOf(ContextualNavigationAction.LOCK))
+            else->error("Separate raw grammar coverage")
+        }
+        check(feedback==if(normal)1 else 0)
+    }
+}
+
+private fun operationalBackHomeConsumedSequenceAndFreshFunction() {
+    val r=Rig();r.assign(HidAction.BACK_HOME);r.context="operational";r.captureTarget={null}
+    val pending=mutableListOf<(Boolean)->Unit>();var feedback=0
+    val adapter=AndroidHidInput(r.android,r.input,{false},{pending.add(it)},{_,_->error("bound BackHome fallthrough")},current={r.context}){feedback++}
+    fun edge(phase:Int,down:Long,at:Long) {r.now=at;SystemClock.now=at;check(adapter.accept(KeyEvent(r.device,phase,195,700,down,at)))}
+    edge(KeyEvent.ACTION_DOWN,1000,1000);edge(KeyEvent.ACTION_UP,1000,1010);check(pending.size==1);pending[0](false)
+    edge(KeyEvent.ACTION_DOWN,1100,1100);edge(KeyEvent.ACTION_UP,1100,1110);r.advance(2000)
+    check(pending.size==1&&feedback==0&&r.targetReads==0&&r.navigation.isEmpty()) {"consumed BackHome tail re-admitted or entered handler"}
+    edge(KeyEvent.ACTION_DOWN,3000,3000);edge(KeyEvent.ACTION_UP,3000,3010);check(pending.size==2);pending[1](true);r.advance(4000)
+    check(r.navigation==listOf(ContextualNavigationAction.BACK))
+    val f=Rig();f.assign(HidAction.FUNCTION);f.captureTarget={null}
+    var gateCalls=0
+    val function=AndroidHidInput(f.android,f.input,{false},{gateCalls++;it(false)}){}
+    f.now=5000;function.accept(KeyEvent(f.device,KeyEvent.ACTION_DOWN,195,700,5000,5000))
+    f.now=5010;function.accept(KeyEvent(f.device,KeyEvent.ACTION_UP,195,700,5000,5010));f.advance(6000)
+    check(gateCalls==0&&f.functions==listOf(com.code2hack.eyeprojector.protocol.FunctionIntentKind.ACTIVATE)) {"raw Function Short was sent through ordinary cancel-only admission"}
+}
+
 fun main() {
     val scenarios = linkedMapOf<String, () -> Unit>(
+        "operational consumed BackHome sequence and distinct fresh Function Short" to ::operationalBackHomeConsumedSequenceAndFreshFunction,
+        "operational TAP gates before local effects" to {operationalHidBeforeLocalEffects(HidAction.TAP)},
+        "operational SCROLL_DOWN gates before local effects" to {operationalHidBeforeLocalEffects(HidAction.SCROLL_DOWN)},
+        "operational SCROLL_UP gates before local effects" to {operationalHidBeforeLocalEffects(HidAction.SCROLL_UP)},
+        "operational LOCK gates before local effects" to {operationalHidBeforeLocalEffects(HidAction.LOCK)},
+        "old admitted learning feedback cannot continue into replacement context" to ::learningOriginalStopsAfterFeedbackContextReplacement,
+        "pending learning stop and changed facts preserve no-replay/save" to ::pendingLearningLossAndChangedFactsDoNotReplayOrSave,
+        "actual learning ingress gates before target feedback and persistence" to ::actualLearningIngressBeforeTargetFeedbackAndStore,
+        "normal unbound learning input retains original fallthrough" to ::admittedUnboundLearningKeyKeepsOriginalFallthrough,
+        "actual settings/reset listeners gate before persistence and feedback" to ::localWidgetEffectsWaitForOriginalAdmission,
         "actual Android device/button facts and complete capture ownership" to ::capturesActualFactsAndConsumesWholeGesture,
         "repeat and long flags retain one actual held contact" to ::repeatsAndLongFlagStayOneHeldContact,
         "Android canceled and unsupported events retire the owned contact" to ::canceledAndUnsupportedAndroidEventsDoNotReleaseIntoTargets,

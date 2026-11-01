@@ -91,6 +91,26 @@ class AppAnchorStore(
         return changeContext
     }
 
+    /** Conditional complete-value replacement/clear of one original setting. Null means not applied.
+     * Matching absent->absent preserves clear's no-op semantics; revisions are never rolled back. */
+    fun compareAndSet(expected: AppAnchorSetting, replacement: AppAnchor?): AnchorSettingContext? {
+        val packageName = expected.context.packageName
+        val (changeContext, drain) = synchronized(state) {
+            if (expected.context != context(packageName) ||
+                replacement != null && replacement.packageName != packageName) return null
+            val previous = storage.read(packageName)
+            if (previous != expected.anchor) return null
+            if (previous == null && replacement == null) return context(packageName)
+            storage.write(packageName, replacement)
+            val next = advance(packageName)
+            val change = if (replacement != null) AppAnchorChange.Replaced(previous, replacement, next)
+                else AppAnchorChange.Cleared(checkNotNull(previous), next)
+            next to enqueue(change)
+        }
+        if (drain) deliver()
+        return changeContext
+    }
+
     fun observe(packageName: String, changed: (AppAnchorChange) -> Unit): Closeable {
         val observer = Observer(packageName, changed)
         synchronized(state) { observers.add(observer) }

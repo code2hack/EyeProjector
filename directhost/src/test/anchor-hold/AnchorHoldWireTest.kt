@@ -26,14 +26,17 @@ class AnchorHoldWireTest {
         }
         val input = DataInputStream(bytes.toByteArray().inputStream())
         Wire.readWelcome(input)
-        assertEquals(11, Wire.VERSION)
+        assertEquals(12, Wire.VERSION)
         assertEquals(messages, messages.map { AnchorMessage.from(Wire.readFrame(input).payload) })
         assertEquals(0, input.available())
     }
 
-    @Test fun wire10HandshakeCannotAdmitWire11HeldState() {
-        val bytes = ByteArrayOutputStream()
-        DataOutputStream(bytes).also { out -> out.writeInt(Wire.MAGIC); out.writeInt(10); out.writeByte(Wire.STREAM) }
-        assertThrows(IllegalArgumentException::class.java) { Wire.readRequest(DataInputStream(bytes.toByteArray().inputStream())) }
+    @Test fun wire10And11HandshakesCannotAdmitWire12HeldAndControlFrames() {
+        for (prior in listOf(10, 11)) {
+            val bytes = ByteArrayOutputStream()
+            DataOutputStream(bytes).also { out -> out.writeInt(Wire.MAGIC); out.writeInt(prior); out.writeByte(Wire.STREAM) }
+            assertThrows(IllegalArgumentException::class.java) { Wire.readRequest(DataInputStream(bytes.toByteArray().inputStream())) }
+            assertThrows(IllegalArgumentException::class.java) { Wire.readWelcome(DataInputStream(bytes.toByteArray().inputStream())) }
+        }
     }
 }

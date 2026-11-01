@@ -10,28 +10,76 @@ internal class PadGestureRecognizer(
     val doubleTapMs: Long,
     private val longPressMs: Long,
     private val emit: (Action) -> Unit,
+    private val admit: (((Boolean) -> Unit) -> Unit)? = null,
+    private val current: () -> Any? = { Unit },
 ) {
+    constructor(doubleTapMs: Long, longPressMs: Long, emit: (Action) -> Unit) :
+        this(doubleTapMs, longPressMs, emit, null, { Unit })
+
     enum class Key { CONTACT, TAP, DOUBLE, BACK, FORWARD, BACKWARD, FORWARD_ALIAS, BACKWARD_ALIAS, FORWARD_TAIL, BACKWARD_TAIL, HELD_CONTACT }
     enum class Phase { DOWN, MOVE, UP, CANCEL }
     enum class Timing { CONTACT_MARKER, INFERRED_SUMMARY }
     data class Event(
         val key: Key, val phase: Phase, val timeMs: Long, val downTimeMs: Long,
         val repeat: Int = 0, val position: PointerPosition? = null,
-    )
+    ) { internal var original: Original? = null }
+    internal class Original(var epoch: Long, val context: Any?) {
+        private var normal: Boolean? = null
+        private val pending = ArrayDeque<() -> Unit>()
+        fun complete(result: Boolean) {
+            if (normal != null) return
+            normal = result
+            val original = pending.toList(); pending.clear()
+            if (result) original.forEach { it() }
+        }
+        fun dispatch(action: () -> Unit) {
+            when (normal) { true -> action(); false -> Unit; null -> pending.addLast(action) }
+        }
+    }
     sealed interface Action {
+        var original: Original?
+
         val timeMs: Long
         data class Tap(
             val downTimeMs: Long, val upTimeMs: Long, val position: PointerPosition?, val timing: Timing,
             override val timeMs: Long,
-        ) : Action
-        data class Scroll(val pixels: Int, val position: PointerPosition?, override val timeMs: Long) : Action
+        ) : Action { override var original: Original? = null }
+        data class Scroll(val pixels: Int, val position: PointerPosition?, override val timeMs: Long) : Action { override var original: Original? = null }
         /** Only a source with real sustained DOWN/release may supply these events. */
-        data class Contact(val event: Event) : Action { override val timeMs = event.timeMs }
+        data class Contact(val event: Event) : Action { override val timeMs = event.timeMs; override var original: Original? = event.original }
         /** Classification and marker target only; neither physical release nor drag duration. */
         data class LongPress(val markerDownTimeMs: Long?, override val timeMs: Long,
-                             val position: PointerPosition? = null) : Action
-        data class Back(override val timeMs: Long) : Action
+                             val position: PointerPosition? = null) : Action { override var original: Original? = null }
+        data class Back(override val timeMs: Long) : Action { override var original: Original? = null }
     }
+    private fun publish(action: Action) {
+        val original = action.original
+        if (original == null) emit(action)
+        else original.dispatch {
+            if (original.epoch == epoch && original.context == current()) emit(action)
+        }
+    }
+
+    /** Reuse only membership already established by marker/summary/swipe normalization. */
+    private fun receiveOriginal(event: Event): Original? {
+        val receiver = admit ?: return null
+        if (event.key in listOf(Key.FORWARD, Key.BACKWARD, Key.FORWARD_ALIAS, Key.BACKWARD_ALIAS)) {
+            val marker = pending.lastOrNull { it.action is Action.Tap &&
+                it.action.timing == Timing.CONTACT_MARKER && event.timeMs - it.origin in 0..CLASSIFICATION_MS }
+            val heldMarker = presses[Key.CONTACT]?.event?.takeIf { event.timeMs - it.timeMs in 0..CLASSIFICATION_MS }
+            (heldMarker?.original ?: marker?.action?.original)?.let { return it }
+        }
+        if (event.key == Key.DOUBLE) summarySingles.lastOrNull {
+            !it.matched && event.timeMs - it.up.timeMs in 0..CLASSIFICATION_MS
+        }?.up?.original?.let { return it }
+        if (event.key in listOf(Key.FORWARD, Key.BACKWARD, Key.FORWARD_ALIAS, Key.BACKWARD_ALIAS)) {
+            lastSwipe?.takeIf { old -> old.key != event.key && event.timeMs - old.timeMs in 0..500 &&
+                (old.key in listOf(Key.FORWARD, Key.FORWARD_ALIAS)) == (event.key in listOf(Key.FORWARD, Key.FORWARD_ALIAS))
+            }?.original?.let { return it }
+        }
+        return Original(epoch, current()).also { receiver(it::complete) }
+    }
+
     private data class Press(val event: Event)
     private data class Pending(val origin: Long, val due: Long, val action: Action)
     private data class SummarySingle(val up: Event, var matched: Boolean = false)
@@ -52,13 +100,15 @@ internal class PadGestureRecognizer(
     private var held: Event? = null
     private var lastSwipe: Event? = null
     private var swipeFirst: Event? = null
+    private var admission = 0L // Existing logical admission bookkeeping only, never an acceptance predicate.
     val deadline: Long? get() = (pending.map { it.due } + presses.values
         .map { pressDeadline(it.event) }).minOrNull()
     val hasWork get() = pending.isNotEmpty() || presses.isNotEmpty() || held != null
 
     init { require(doubleTapMs in 100..600 && longPressMs in 200..2_000) }
 
-    fun accept(event: Event, receiptUptimeMs: Long) {
+    fun accept(received: Event, receiptUptimeMs: Long) {
+        var event = received
         // Related summaries can arrive after a UI transition or with an earlier timestamp.
         if (continuousReports && event.key in listOf(Key.CONTACT, Key.TAP, Key.DOUBLE)) return
         if (contactReports && event.key in listOf(Key.TAP, Key.DOUBLE)) {
@@ -98,33 +148,42 @@ internal class PadGestureRecognizer(
         if (event.key == Key.CONTACT) { contactReports = true; summarySingles.clear() }
         if (event.phase == Phase.DOWN) {
             if (presses[event.key]?.event?.downTimeMs == event.downTimeMs) return
+            event = event.copy().also { it.original = receiveOriginal(event) }
             swipeFirst?.let { retireUnclassifiedSwipe(it, event.timeMs) }
             swipeFirst = if (event.key == Key.FORWARD || event.key == Key.BACKWARD) event else null
             presses.remove(event.key) // A missing UP cannot be completed by another DOWN.
             presses[event.key] = Press(event)
+            admission++
             return
         }
         val press = presses.remove(event.key)?.event ?: return
         if (press.downTimeMs != event.downTimeMs) return
+        event.original = press.original
         completed[event.key] = event.downTimeMs
         when (event.key) {
             Key.CONTACT -> {
                 // The duration describes the marker pulse, not the user's hold duration.
                 if (event.timeMs - event.downTimeMs >= longPressMs) return
                 val action = Action.Tap(press.timeMs, event.timeMs, press.position,
-                    Timing.CONTACT_MARKER, event.timeMs + CLASSIFICATION_MS)
+                    Timing.CONTACT_MARKER, event.timeMs + CLASSIFICATION_MS).also { it.original = press.original }
                 pending.add(Pending(press.timeMs, action.timeMs, action))
             }
             Key.TAP -> if (event.timeMs - event.downTimeMs < longPressMs) {
                 val action = Action.Tap(press.timeMs, event.timeMs, press.position,
-                    Timing.INFERRED_SUMMARY, event.timeMs + doubleTapMs)
+                    Timing.INFERRED_SUMMARY, event.timeMs + doubleTapMs).also { it.original = press.original }
                 pending.add(Pending(press.timeMs, action.timeMs, action))
                 summarySingles.removeAll { event.timeMs - it.up.timeMs > CLASSIFICATION_MS }
                 summarySingles.add(SummarySingle(event))
             }
             Key.DOUBLE -> summaryPair(press, event)
             Key.FORWARD, Key.BACKWARD, Key.FORWARD_ALIAS, Key.BACKWARD_ALIAS -> swipe(press, event)
-            Key.BACK -> { cancel(event.timeMs); emit(Action.Back(event.timeMs)) }
+            Key.BACK -> {
+                val before = epoch
+                val retirement = prepareCancel(event.timeMs)
+                retirement.finishOriginal()
+                if (!retirement.superseded() && press.original?.epoch == before) press.original?.epoch = epoch
+                publish(Action.Back(event.timeMs).also { it.original = press.original })
+            }
             else -> Unit
         }
         confirm(receiptUptimeMs)
@@ -169,7 +228,7 @@ internal class PadGestureRecognizer(
         pending.remove(captured.marker) // Retire before callbacks can cancel or replace context.
         // Preserve the actual marker's position and physical interval. The dispatcher admits
         // it now; do not retain the fallback's future timestamp and add another pacing delay.
-        emit(tap.copy(timeMs = tap.upTimeMs))
+        publish(tap.copy(timeMs = tap.upTimeMs).also { it.original = tap.original })
     }
 
     private fun blockMarkerSummaries(at: Long) {
@@ -188,7 +247,7 @@ internal class PadGestureRecognizer(
         val starts = if (singles.size == 1) listOf(down.timeMs) else listOf(down.timeMs - gap, down.timeMs)
         for (start in starts) {
             val action = Action.Tap(start, start + minOf(20L, up.timeMs - down.timeMs), down.position,
-                Timing.INFERRED_SUMMARY, start + 20 + doubleTapMs)
+                Timing.INFERRED_SUMMARY, start + 20 + doubleTapMs).also { it.original = down.original }
             pending.add(Pending(start, action.timeMs, action))
         }
     }
@@ -197,7 +256,7 @@ internal class PadGestureRecognizer(
         val contact = held
         if (contact != null) {
             held = null
-            emit(Action.Contact(contact.copy(phase = Phase.CANCEL, timeMs = up.timeMs)))
+            publish(Action.Contact(contact.copy(phase = Phase.CANCEL, timeMs = up.timeMs)))
         }
         val pixels = if (down.key in listOf(Key.FORWARD, Key.FORWARD_ALIAS)) 160 else -160
         val old = lastSwipe
@@ -210,7 +269,8 @@ internal class PadGestureRecognizer(
             up.timeMs - old.timeMs in 0..500 &&
             (old.key in listOf(Key.FORWARD, Key.FORWARD_ALIAS)) == (pixels > 0)) return
         val marker = freshMarker ?: takeMarker(up.timeMs, old?.timeMs ?: -1)
-        lastSwipe = down.copy(timeMs = up.timeMs)
+        val original = marker?.action?.original ?: down.original
+        lastSwipe = down.copy(timeMs = up.timeMs).also { it.original = original }
         val origin = marker?.origin ?: down.timeMs
         // Classification has already replaced this swipe's ambiguous marker. With no earlier
         // queued input there is nothing left to disambiguate or wait for. Keep the existing
@@ -218,7 +278,7 @@ internal class PadGestureRecognizer(
         val due = if (pending.isEmpty()) up.timeMs
             else marker?.due ?: up.timeMs + if (contactReports) CLASSIFICATION_MS else doubleTapMs
         pending.add(Pending(origin, due, Action.Scroll(pixels,
-            (marker?.action as? Action.Tap)?.position ?: down.position, due)))
+            (marker?.action as? Action.Tap)?.position ?: down.position, due).also { it.original = original }))
     }
 
     private fun takeMarker(at: Long, after: Long = -1): Pending? {
@@ -230,7 +290,7 @@ internal class PadGestureRecognizer(
                 presses.remove(Key.CONTACT); completed[Key.CONTACT] = it.downTimeMs
                 blockMarkerSummaries(at)
                 return Pending(it.timeMs, at + CLASSIFICATION_MS,
-                    Action.Tap(it.timeMs, at, it.position, Timing.CONTACT_MARKER, at + CLASSIFICATION_MS))
+                    Action.Tap(it.timeMs, at, it.position, Timing.CONTACT_MARKER, at + CLASSIFICATION_MS).also { action -> action.original = it.original })
             }
         }
         if (marker != null) {
@@ -242,7 +302,7 @@ internal class PadGestureRecognizer(
 
     fun classifyLongPress(receiptUptimeMs: Long) {
         val marker = takeMarker(receiptUptimeMs)
-        emit(Action.LongPress(marker?.origin, receiptUptimeMs, (marker?.action as? Action.Tap)?.position))
+        publish(Action.LongPress(marker?.origin, receiptUptimeMs, (marker?.action as? Action.Tap)?.position).also { it.original = marker?.action?.original })
     }
 
     private fun contact(event: Event) {
@@ -254,11 +314,12 @@ internal class PadGestureRecognizer(
                 pending.removeAll { it.action is Action.Tap }
                 summarySingles.clear()
                 held = event
+                admission++
             }
             Phase.MOVE, Phase.UP, Phase.CANCEL -> if (held?.downTimeMs != event.downTimeMs) return
         }
         if (event.phase == Phase.UP || event.phase == Phase.CANCEL) held = null
-        emit(Action.Contact(event))
+        publish(Action.Contact(event))
     }
 
     fun confirm(nowUptimeMs: Long) {
@@ -279,11 +340,11 @@ internal class PadGestureRecognizer(
             pending.remove(next) // Callbacks may synchronously cancel or change context.
             if (next.action is Action.Tap && next.action.timing == Timing.CONTACT_MARKER)
                 blockMarkerSummaries(nowUptimeMs)
-            emit(next.action)
+            publish(next.action)
         }
     }
 
-    fun cancel(nowUptimeMs: Long = lastEventMs) {
+    fun prepareCancel(nowUptimeMs: Long = lastEventMs): InputRetirement {
         if (presses[Key.CONTACT] != null || pending.any {
                 it.action is Action.Tap && it.action.timing == Timing.CONTACT_MARKER })
             blockMarkerSummaries(nowUptimeMs)
@@ -293,8 +354,14 @@ internal class PadGestureRecognizer(
         // Like completed key identities, retain swipe provenance: a dispatch callback may
         // change context before this already-classified gesture's companion reports arrive.
         canceledThrough = maxOf(canceledThrough, nowUptimeMs); epoch++
-        if (old != null) emit(Action.Contact(old.copy(phase = Phase.CANCEL, timeMs = nowUptimeMs)))
+        val baseline = admission
+        val canceledEpoch = epoch
+        return InputRetirement({
+            if (old != null) publish(Action.Contact(old.copy(phase = Phase.CANCEL, timeMs = nowUptimeMs)))
+        }, { admission != baseline || epoch != canceledEpoch })
     }
+
+    fun cancel(nowUptimeMs: Long = lastEventMs) = prepareCancel(nowUptimeMs).finishOriginal()
 
     companion object {
         const val MAX_EVENT_AGE_MS = 250L

@@ -27,12 +27,14 @@ class PairingPanel(
     private val pairedChanged: (Boolean) -> Unit,
     private val beforeForget: (complete: () -> Unit) -> Unit = { it() },
     private val sharedPairing: LanPairing? = null,
+    private val userAction: ((() -> Unit) -> Unit) = { it() },
 ) : LinearLayout(activity), Closeable {
     val store = PeerStore(File(activity.filesDir, "session"))
     private val caption = TextView(activity).apply { setTextColor(Color.WHITE); textSize = 22f; gravity = Gravity.CENTER }
     private val information = TextView(activity).apply { setTextColor(Color.WHITE); gravity = Gravity.CENTER }
-    val pairButton = Button(activity).apply { text = "Pair with display device"; setOnClickListener { showCodePrompt() } }
-    val forgetButton = Button(activity).apply { text = "Forget"; setOnClickListener {
+    val pairButton = Button(activity).apply { text = "Pair with display device"; setOnClickListener { userAction { if (!closed) showCodePrompt() } } }
+    val forgetButton = Button(activity).apply { text = "Forget"; setOnClickListener { userAction {
+        if (closed) return@userAction
         forgetting = true
         refresh()
         beforeForget {
@@ -41,7 +43,7 @@ class PairingPanel(
             try { pairing.forget() } catch (_: Exception) { panelError = "Could not remove pairing. Try Forget again." }
             if (!closed) refresh()
         }
-    } }
+    } } }
     private val pairing = sharedPairing ?: LanPairing(store, role, { activity.runOnUiThread { if (!closed) refresh() } })
     private var dialog: AlertDialog? = null
     private var choices: Spinner? = null
@@ -140,10 +142,14 @@ class PairingPanel(
                     if (!closed) refresh()
                 }
                 prompt.show()
-                prompt.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                prompt.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener { userAction {
+                    if (!closed && dialog === prompt) prompt.dismiss()
+                } }
+                prompt.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener { userAction attemptPair@{
+                    if (closed || dismissed || dialog !== prompt) return@attemptPair
                     val code = input.text.toString()
-                    if (!code.matches(Regex("[0-9]{4}"))) { input.error = "Enter four digits"; return@setOnClickListener }
-                    val candidate = displayedPeers.getOrNull(choices?.selectedItemPosition ?: -1) ?: return@setOnClickListener
+                    if (!code.matches(Regex("[0-9]{4}"))) { input.error = "Enter four digits"; return@attemptPair }
+                    val candidate = displayedPeers.getOrNull(choices?.selectedItemPosition ?: -1) ?: return@attemptPair
                     prompt.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
                     var submitted: PairingAttempt? = null
                     submitted = pairing.pair(code, candidate) { success -> activity.runOnUiThread {
@@ -153,7 +159,7 @@ class PairingPanel(
                         }
                     } }
                     attempt = submitted
-                }
+                } }
             }
         updateChoices()
     }

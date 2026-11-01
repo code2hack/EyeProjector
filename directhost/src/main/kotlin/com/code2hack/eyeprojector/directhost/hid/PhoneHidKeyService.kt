@@ -47,6 +47,7 @@ class PhoneHidKeyService : AccessibilityService(), InputManager.InputDeviceListe
             event.action == KeyEvent.ACTION_UP -> PhoneHidPhase.UP
             else -> return false
         }
+        if (!source.recognizeInput()) return input.discardRaw(event.deviceId,event.keyCode,event.scanCode,event.downTime,phase)
         if (input.consumeRetired(event.deviceId, event.keyCode, event.scanCode, event.downTime, phase)) return true
         if (input.consumeWake(event.deviceId, event.keyCode, event.scanCode, event.downTime, phase)) return true
         if (input.consumePassed(event.deviceId, event.keyCode, event.scanCode, event.downTime, phase)) return false

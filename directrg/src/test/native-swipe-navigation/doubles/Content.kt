@@ -2,12 +2,26 @@ package android.content
 
 /** Android registration/delivery boundary; no firmware, user routing or brightness simulation. */
 class ApplicationInfo(val uid: Int = 424242, val sourceDir: String = "unused-by-host-checks")
-class Assets { fun open(name: String): java.io.InputStream = error("No asset provisioning in host checks") }
+class Assets {
+    companion object { var openForTest: ((String) -> java.io.InputStream)? = null }
+    fun open(name: String): java.io.InputStream = openForTest?.invoke(name) ?: error("No asset provisioning in host checks")
+}
+class SharedPreferences {
+    private val booleans=mutableMapOf<String,Boolean>()
+    fun getBoolean(key:String,fallback:Boolean)=booleans[key]?:fallback
+    fun edit()=Editor()
+    inner class Editor {
+        fun putBoolean(key:String,value:Boolean):Editor {booleans[key]=value;return this}
+        fun apply()=Unit
+    }
+}
 open class Context(private val directory: java.io.File = java.io.File("unused-context-directory")) {
     val applicationContext: Context get() = this
     val filesDir: java.io.File get() = directory
     val packageName = "example.host.routing.fixture"
-    val applicationInfo = ApplicationInfo()
+    var applicationInfo = ApplicationInfo()
+    private val preferences=SharedPreferences()
+    fun getSharedPreferences(name:String,mode:Int)=preferences
     val assets = Assets()
     val receivers = mutableListOf<BroadcastReceiver>()
     val attempts = mutableListOf<BroadcastReceiver>()
@@ -36,7 +50,7 @@ open class Context(private val directory: java.io.File = java.io.File("unused-co
         unregisterFailure?.let { throw it }
         if (!receivers.remove(receiver)) throw IllegalArgumentException("Receiver not registered")
     }
-    companion object { const val RECEIVER_EXPORTED = 2 }
+    companion object { const val RECEIVER_EXPORTED = 2; const val MODE_PRIVATE = 0 }
 }
 
 abstract class BroadcastReceiver {

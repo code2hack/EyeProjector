@@ -24,6 +24,20 @@ internal class AnchorAppRuntime(context: Context, registrationProviderName: Stri
     val appContext: Context = context.applicationContext
     val store = AppAnchorPreferences.open(appContext)
     private val bindingGeneration = AtomicLong()
+    private class ControlSource(val original: IAnchorControlSession,
+        val context: com.code2hack.eyeprojector.directhost.ProjectionContext, val generation: Long)
+    private val controlSource = java.util.concurrent.atomic.AtomicReference<ControlSource?>()
+
+    /** Synchronous cheap original Phone gate, before app FIFO, preferences or UI handlers. */
+    fun userControl(expected: com.code2hack.eyeprojector.directhost.ProjectionContext? = null, recognitionOnly: Boolean = false): Boolean {
+        val captured = controlSource.get() ?: return expected?.available != true
+        if (expected != null && expected != captured.context) return false
+        val disposition = try { AnchorControlDisposition.entries[captured.original.admitUserControl(recognitionOnly)] }
+        catch (_: Exception) { return false }
+        if (disposition == AnchorControlDisposition.RETIRED) controlSource.compareAndSet(captured, null)
+        return disposition == AnchorControlDisposition.NORMAL && controlSource.get() === captured &&
+            bindingGeneration.get() == captured.generation
+    }
     private val lane = Executors.newSingleThreadExecutor { Thread(it, "eyeprojector-app-anchor").apply { isDaemon = true } }
     val coordinator = AnchorAppCoordinator(store, UiTargetAccess::reader,
         SystemClock::uptimeMillis) { lane.execute(it) }
@@ -57,11 +71,21 @@ internal class AnchorAppRuntime(context: Context, registrationProviderName: Stri
             }
         }
     }
-    fun invalidateBinding() { bindingGeneration.incrementAndGet(); coordinator.contextRetired() }
+    fun invalidateBinding() { bindingGeneration.incrementAndGet(); controlSource.set(null); coordinator.contextRetired() }
     fun bind(): IAnchorAppBridge {
         invalidateBinding()
         val generation = bindingGeneration.get()
         return object : IAnchorAppBridge.Stub() {
+            override fun onSession(ownerEpoch: String, projectionToken: String, original: IAnchorControlSession) {
+                if (bindingGeneration.get() == generation) controlSource.set(ControlSource(original,
+                    com.code2hack.eyeprojector.directhost.ProjectionContext(ownerEpoch, projectionToken), generation))
+            }
+            override fun onControl(original: IAnchorUserControl) {
+                // Joins the same original app FIFO as Function; no handler/target/store lookup.
+                if (bindingGeneration.get() == generation) onLane {
+                    if (bindingGeneration.get() == generation) original.apply()
+                }
+            }
             override fun onIntent(transactionId: Long, functionIntent: ByteArray, original: IAnchorSession) {
                 val intent = FunctionIntent.from(functionIntent)
                 coordinator.accept(Route(transactionId, intent, original) { bindingGeneration.get() == generation })
