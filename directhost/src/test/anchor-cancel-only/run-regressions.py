@@ -65,6 +65,10 @@ rgtests=root/'directrg/src/test/kotlin/com/code2hack/eyeprojector/directrg'
 sources += [rgmain/(name+'.kt') for name in ['PadGestureRecognizer','FunctionGestureRecognizer','HeadPointerModel','HeadOrientation']]
 for name in ['PadGestureRecognizerTest','ContinuousContactRecognizerTest','FunctionGestureRecognizerTest']:
     sources.append(rgtests/(name+'.kt'));tests.append('com.code2hack.eyeprojector.directrg.'+name)
+for name in ['AnchorMessageTest','FunctionIntentTest','PhoneInputTest','TouchTest','WireTest']:
+    sources.append(root/'protocol/src/test/kotlin/com/code2hack/eyeprojector/protocol'/(name+'.kt'))
+    tests.append('com.code2hack.eyeprojector.protocol.'+name)
+sources += [protocol/'LayoutScale.kt',protocol/'OriginalContact.kt']
 out = a.output_dir.resolve()
 if (out/'result.json').exists(): p.error('Refusing to overwrite frozen regression result')
 out.mkdir(parents=True, exist_ok=True)

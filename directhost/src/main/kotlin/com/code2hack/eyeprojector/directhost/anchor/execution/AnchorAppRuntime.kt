@@ -38,6 +38,18 @@ internal class AnchorAppRuntime(context: Context, registrationProviderName: Stri
         return disposition == AnchorControlDisposition.NORMAL && controlSource.get() === captured &&
             bindingGeneration.get() == captured.generation
     }
+    /** Capture synchronously at the raw callback, before native lane or Android main delivery. */
+    fun capturePhoneHidOriginal(): com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal {
+        val captured = controlSource.get()
+        val generation = bindingGeneration.get()
+        val disposition = intArrayOf(if (captured == null) AnchorControlDisposition.NORMAL.ordinal else AnchorControlDisposition.RETIRED.ordinal)
+        val remote = captured?.let { runCatching { it.original.captureRawControl(disposition) }.getOrNull() }
+        return com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal(remote,
+            captured?.context ?: com.code2hack.eyeprojector.directhost.ProjectionContext(), disposition[0]) {
+            controlSource.get() === captured && bindingGeneration.get() == generation &&
+                (captured == null || captured.generation == generation)
+        }
+    }
     private val lane = Executors.newSingleThreadExecutor { Thread(it, "eyeprojector-app-anchor").apply { isDaemon = true } }
     val coordinator = AnchorAppCoordinator(store, UiTargetAccess::reader,
         SystemClock::uptimeMillis) { lane.execute(it) }

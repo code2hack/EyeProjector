@@ -17,9 +17,31 @@ internal class AnchorShellSession(
     private val stateWork: FunctionWork,
     private val failure: (Exception) -> Unit,
     private val send: (AnchorMessage) -> Unit,
+    private val rawEdge: (AnchorControlAdmission, Long, PhoneHidEdge, String, Long) -> Unit = { _, _, _, _, _ -> },
 ) : Closeable {
     private var controlContext = com.code2hack.eyeprojector.directhost.ProjectionContext()
     private val controlPort = object : IAnchorControlSession.Stub() {
+        override fun captureRawControl(disposition: IntArray): IAnchorRawControl? {
+            if (closed) { disposition[0] = AnchorControlDisposition.RETIRED.ordinal; return null }
+            val original = AnchorControlAdmission()
+            input.anchor.receiveControl(original, function = true)
+            disposition[0] = original.disposition.ordinal // Same original result; never query a later Hold.
+            original.sourceBinding = binding to binding.get()
+            original.sourceRevision = sourceRevision to sourceRevision.get()
+            return object : IAnchorRawControl.Stub() {
+                override fun admitUserControl(): Int {
+                    if (closed) return AnchorControlDisposition.RETIRED.ordinal
+                    original.ordinary()
+                    return input.consumeHeldControl(original).ordinal
+                }
+                override fun edge(routeId: Long, typedEdge: ByteArray, regionId: String, word: Long) {
+                    val edge = runCatching { PhoneHidEdge.from(typedEdge) }.getOrNull() ?: return
+                    if (closed) return
+                    if (edge.action != PhoneHidAction.FUNCTION) original.ordinary()
+                    rawEdge(original, routeId, edge, regionId, word)
+                }
+            }
+        }
         override fun admitUserControl(recognitionOnly: Boolean): Int {
             if (closed) return AnchorControlDisposition.RETIRED.ordinal
             val original = AnchorControlAdmission()

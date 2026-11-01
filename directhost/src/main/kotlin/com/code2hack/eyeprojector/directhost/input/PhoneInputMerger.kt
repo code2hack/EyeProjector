@@ -154,6 +154,12 @@ internal class PhoneInputMerger(
     fun stampedEdge(routeId: Long, edge: PhoneHidEdge,
         qualifiesContext: (HeadPointerState, ReceiverUsability?) -> Boolean,
         qualifies: (HeadPointerState, ReceiverUsability?) -> Boolean) {
+        stampedEdgeOriginal(routeId, edge, null, qualifiesContext, qualifies)
+    }
+
+    fun stampedEdgeOriginal(routeId: Long, edge: PhoneHidEdge, originalReceipt: AnchorControlAdmission?,
+        qualifiesContext: (HeadPointerState, ReceiverUsability?) -> Boolean,
+        qualifies: (HeadPointerState, ReceiverUsability?) -> Boolean) {
         // Correlate the represented physical press before stamping/removing any current receipt.
         // Reads are lock-free; a fresh receipt observes CANCELING before its first map/merger wait.
         val existing = receivedPresses[routeId]
@@ -163,7 +169,7 @@ internal class PhoneInputMerger(
             existing
         } else {
             if (edge.phase != PhoneHidPhase.DOWN || edge.repeatCount != 0) return
-            val fresh = ReceivedPress(edge)
+            val fresh = ReceivedPress(edge, originalReceipt ?: AnchorControlAdmission())
             receiveControl(fresh.control, edge.action == PhoneHidAction.FUNCTION)
             if (edge.action == PhoneHidAction.BACK_HOME) {
                 val prior = backHomeReceipts.down(navigationToken(routeId, edge),
@@ -411,6 +417,7 @@ internal class PhoneInputMerger(
     private fun finishFunction(current: FunctionPress, kind: FunctionIntentKind, out: Output) {
         if (function !== current) return
         cancelFunction() // A long's eventual physical UP cannot become an activation.
+        if (kind == FunctionIntentKind.REGISTER) current.press.control.ordinary()
         if (kind == FunctionIntentKind.REGISTER && currentNavigation(current.press) &&
             anchorControl(current.press.control) != AnchorControlDisposition.NORMAL) return
         val position = point?.takeIf { it.available && it.revision == current.context.pointer.revision } ?: return

@@ -6,6 +6,43 @@ import android.view.MotionEvent
 import com.code2hack.eyeprojector.protocol.*
 
 internal fun retirementReceiptScenarios(run:(String,()->Unit)->Unit) {
+    for(kind in listOf("Tap","Scroll","Long","Contact")) for(stage in (if(kind=="Contact")listOf("CANCEL")else listOf("pointer","CANCEL"))) for(completed in listOf(false,true))
+        run("R187-1-actual-pad-$kind-$stage-keeps-later-contact-completed-$completed") {
+            SystemClock.time=500;val a=ActivityNavigationWiring();a.showControlPanel();SystemClock.time=1000
+            val point=a.pointer.position
+            check(a.classifiedPadLongPress.start(PadGestureRecognizer.Action.LongPress(900,1000,point)){true})
+            val events=mutableListOf<Pair<Int,Long>>();var admitted=false
+            val binding=HidBinding(HidButton(HidDeviceIdentity("review-C",2,3),195,700),"C","C")
+            check(a.hidBindings.assign(HidAction.TAP,binding))
+            fun later(){if(!admitted){admitted=true;a.pointer.onPosition=null;SystemClock.time=2000
+                a.hidEdge(binding,HidKeyInput.Phase.DOWN,2000)
+                if(completed)a.hidEdge(binding,HidKeyInput.Phase.UP,2000,2010)
+            }}
+            a.root.onMotion={event->events.add(event.action to event.downTime);if(stage=="CANCEL"&&event.action==MotionEvent.ACTION_CANCEL)later()}
+            if(stage=="pointer")a.pointer.onPosition={later()}
+            val action=when(kind){"Tap"->PadGestureRecognizer.Action.Tap(1500,1520,point,PadGestureRecognizer.Timing.CONTACT_MARKER,1800)
+                "Scroll"->PadGestureRecognizer.Action.Scroll(160,point,1800)
+                "Contact"->PadGestureRecognizer.Action.Contact(PadGestureRecognizer.Event(PadGestureRecognizer.Key.HELD_CONTACT,PadGestureRecognizer.Phase.DOWN,1800,1500,position=point))
+                else->PadGestureRecognizer.Action.LongPress(1500,1800,point)}
+            val submitted=a.nativeActionsSubmitted;val rejected=a.nativeActionsRejected
+            a.javaClass.getDeclaredMethod("dispatchPadAction",PadGestureRecognizer.Action::class.java).apply{isAccessible=true}.invoke(a,action)
+            check(admitted)
+            val expected=listOf(MotionEvent.ACTION_CANCEL to 1000L,MotionEvent.ACTION_DOWN to 2000L)+(if(completed)listOf(MotionEvent.ACTION_UP to 2000L)else emptyList())
+            check(events==expected&&a.heldOwner.holding==!completed&&a.nativeActionsSubmitted==submitted&&a.nativeActionsRejected==rejected) {"old B killed/replayed after C: $events held=${a.heldOwner.holding} submitted=${a.nativeActionsSubmitted-submitted}"}
+            if(!completed){a.hidEdge(binding,HidKeyInput.Phase.UP,2000,2200);check(events.last()==MotionEvent.ACTION_UP to 2000L&&!a.heldOwner.holding)}
+            a.session!!.controls.close()
+        }
+    for(kind in listOf("Tap","Scroll","Long")) run("R187-1-normal-original-pad-cleanup-and-$kind-effect") {
+        SystemClock.time=500;val a=ActivityNavigationWiring();a.showControlPanel();SystemClock.time=1000
+        val point=a.pointer.position;check(a.classifiedPadLongPress.start(PadGestureRecognizer.Action.LongPress(900,1000,point)){true})
+        val events=mutableListOf<Int>();a.root.onMotion={events.add(it.action)};SystemClock.time=1800
+        val action=when(kind){"Tap"->PadGestureRecognizer.Action.Tap(1500,1520,point,PadGestureRecognizer.Timing.CONTACT_MARKER,1800)
+            "Scroll"->PadGestureRecognizer.Action.Scroll(160,point,1800);else->PadGestureRecognizer.Action.LongPress(1500,1800,point)}
+        val before=a.nativeActionsSubmitted+a.nativeActionsRejected
+        a.javaClass.getDeclaredMethod("dispatchPadAction",PadGestureRecognizer.Action::class.java).apply{isAccessible=true}.invoke(a,action)
+        check(events.first()==MotionEvent.ACTION_CANCEL&&events.count{it==MotionEvent.ACTION_CANCEL}==1&&(a.nativeActionsSubmitted+a.nativeActionsRejected)==before+1)
+        a.session!!.controls.close()
+    }
     for(normal in listOf(false,true)) run("actual-Activity-native-marker-decision-before-handler-and-single-original-admission-$normal") {
         SystemClock.time=500;val a=ActivityNavigationWiring();a.showControlPanel()
         val pending=mutableListOf<(ReceiverControlDisposition)->Unit>();val events=mutableListOf<Int>()

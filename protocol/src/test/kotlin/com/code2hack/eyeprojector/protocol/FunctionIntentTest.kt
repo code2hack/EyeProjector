@@ -51,8 +51,8 @@ class FunctionIntentTest {
         assertTrue(intents[0].sequence < intents[1].sequence)
     }
 
-    @Test fun matchedWireNineCarriesOriginalIntentionsOnChannelTwentyThree() {
-        assertEquals(11, Wire.VERSION); assertEquals(23, Wire.FUNCTION_INTENT)
+    @Test fun matchedWireTwelveCarriesOriginalIntentionsOnChannelTwentyThree() {
+        assertEquals(12, Wire.VERSION); assertEquals(23, Wire.FUNCTION_INTENT)
         val output = ByteArrayOutputStream()
         val expected = listOf(FunctionIntentKind.ACTIVATE, FunctionIntentKind.ACTIVATE, FunctionIntentKind.REGISTER)
             .mapIndexed { n, kind -> FunctionIntent(kind, FunctionSource.GLASSES_NATIVE, n.toLong(), n.toLong(), context) }

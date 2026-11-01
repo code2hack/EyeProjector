@@ -34,6 +34,7 @@ internal class PhoneHidPinRuntime(
     private val changed: () -> Unit,
     private val userControl: () -> Boolean = { true },
     private val recognizeInput: () -> Boolean = { true },
+    private val captureOriginal: () -> com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal? = { null },
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val lane = Executors.newSingleThreadExecutor()
@@ -72,6 +73,30 @@ internal class PhoneHidPinRuntime(
     private val attachments = mutableMapOf<Int, Int>()
     // Main-lane IDs are retired before the next generation's input callback.
     private val deliveredAttachments = mutableSetOf<Int>()
+    private data class RawOriginal(val epoch: Long, val command: Long, val key: String, val generation: Long,
+        val source: Int, val collection: String, val code: Int, val down: Long, val press: Long)
+    private class Received(val original: com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal?,
+        val discarded: Boolean, val command: Long, val key: RawOriginal)
+    private val originals = java.util.concurrent.ConcurrentHashMap<RawOriginal, Received>()
+
+    private fun receiveInput(value: String, epoch: Long): Received {
+        // The first authoritative result includes both original lifetime and arrival disposition.
+        // A preliminary Boolean followed by another capture could silently bind a later Hold.
+        val token = command // Preserve the native command lifetime across that first Binder call too.
+        val captured = captureOriginal()
+        val discarded = captured?.discarded ?: !recognizeInput()
+        val json = JSONObject(value)
+        val key = RawOriginal(epoch, token, json.getString("deviceKey"), json.getLong("generation"),
+            json.getInt("sourceId"), json.getString("collectionKey"), json.getInt("code"), json.getLong("downTimeMs"), json.getLong("pressId"))
+        val phase = PhoneHidPhase.valueOf(json.getString("phase"))
+        val existing = originals[key]
+        val received = existing ?: if (phase == PhoneHidPhase.DOWN && json.getInt("repeatCount") == 0) {
+            val fresh = Received(captured, discarded, token, key)
+            originals.putIfAbsent(key, fresh) ?: fresh
+        } else Received(null, true, token, key)
+        if (phase != PhoneHidPhase.DOWN || token != command || epoch != bindingEpoch) originals.remove(key, received)
+        return if (discarded && !received.discarded) Received(received.original, true, received.command, key) else received
+    }
     private val args by lazy {
         val revision = app.packageManager.getPackageInfo(app.packageName, 0).lastUpdateTime.let {
             (it xor (it ushr 32)).toInt()
@@ -124,6 +149,7 @@ internal class PhoneHidPinRuntime(
         val device = state.devices.firstOrNull { it.key == key }
         val name = device?.name ?: desiredName ?: state.savedName ?: "Pinned device"
         val token = ++command
+        originals.clear()
         selectedKey = key
         desiredKey = key; desiredName = name
         controller.cancelInput()
@@ -150,6 +176,7 @@ internal class PhoneHidPinRuntime(
     fun unpinAndReset() {
         if (!userControl()) return
         val token = ++command
+        originals.clear()
         val hadPin = desiredKey != null || state.intercepted || releasePending
         desiredKey = null; desiredName = null; selectedKey = null
         releasePending = true
@@ -246,9 +273,10 @@ internal class PhoneHidPinRuntime(
                                         .onFailure { lost("The capture service returned an unreadable state.") }
                                 } }
                                 override fun onInput(inputJson: String) {
-                                    val discarded = !recognizeInput() // Before the original oneway callback queues.
+                                    val received = runCatching { receiveInput(inputJson, epoch) }.getOrNull() ?: return
                                     lane.execute {
-                                        if (epoch == bindingEpoch) runCatching { acceptInput(inputJson, discarded) }
+                                        if (epoch == bindingEpoch && received.command == command)
+                                            runCatching { acceptInput(inputJson, received) }
                                     }
                                 }
                             })
@@ -308,6 +336,11 @@ internal class PhoneHidPinRuntime(
             (generation != nextGeneration || activeKey != key || !intercepted)
         if (generation != nextGeneration || activeKey != key || intercepted != actual) {
             attachments.clear()
+            // The state callback can be queued ahead of a new generation's already-received DOWN.
+            // Retire only the prior observed source, preserving that successor's original receipt.
+            val previousGeneration = generation
+            val previousKey = activeKey
+            originals.keys.removeAll { it.epoch == bindingEpoch && it.generation == previousGeneration && it.key == previousKey }
             main.post { retireDelivered() }
         }
         generation = nextGeneration; activeKey = key; intercepted = actual
@@ -330,10 +363,13 @@ internal class PhoneHidPinRuntime(
         }
     }
 
-    private fun acceptInput(value: String, discarded: Boolean = false) {
+    private fun acceptInput(value: String, received: Received) {
         val json = JSONObject(value)
         val key = json.getString("deviceKey")
-        if (!ownerActive || !intercepted || key != activeKey || key != desiredKey || json.getLong("generation") != generation) return
+        if (!ownerActive || !intercepted || key != activeKey || key != desiredKey || json.getLong("generation") != generation) {
+            originals.remove(received.key)
+            return
+        }
         val source = json.getInt("sourceId")
         val attachment = attachments.getOrPut(source) { nextAttachment-- }
         val collection = json.getString("collectionKey")
@@ -343,11 +379,14 @@ internal class PhoneHidPinRuntime(
             PhoneHidBinding(PhoneHidButton(identity, json.getInt("code"), 0),
                 json.getString("deviceName"), json.getString("label")),
             PhoneHidPhase.valueOf(json.getString("phase")), json.getLong("downTimeMs"),
-            json.getLong("eventTimeMs"), json.getInt("repeatCount"), json.getLong("pressId"), discarded)
+            json.getLong("eventTimeMs"), json.getInt("repeatCount"), json.getLong("pressId"), received.discarded, received.original)
         val token = command
         val epoch = bindingEpoch
         main.post {
-            if (!ownerActive || token != command || epoch != bindingEpoch || desiredKey != key) return@post
+            if (!ownerActive || token != command || epoch != bindingEpoch || desiredKey != key) {
+                originals.remove(received.key)
+                return@post
+            }
             deliveredAttachments.add(attachment)
             controller.accept(event)
         }
@@ -357,7 +396,7 @@ internal class PhoneHidPinRuntime(
         val old = binding
         val oldRemote = remote
         binding = null; remote = null; bindingEpoch++
-        generation = null; activeKey = null; intercepted = false; attachments.clear()
+        generation = null; activeKey = null; intercepted = false; attachments.clear(); originals.clear()
         main.post { retireDelivered() }
         runCatching { oldRemote?.unpin() }
         if (old != null) runCatching { Shizuku.unbindUserService(args, old, false) }

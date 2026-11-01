@@ -301,6 +301,11 @@ class HostBootstrap private constructor(private val context: Context) {
                 if (!matches()) { prepared.close(); return null }
                 return prepared
             }
+            override fun route(down: PhoneHidEdge, regionId: String, word: Long,
+                original: com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal): PhoneHidRoute? {
+                if (down.phase != PhoneHidPhase.DOWN || down.repeatCount != 0 || !matches() || original.context != expected) return null
+                return original.route(down, regionId, word, binding, inputRoutes.incrementAndGet())
+            }
             override fun route(down: PhoneHidEdge, regionId: String, word: Long): PhoneHidRoute? {
                 if (down.phase != PhoneHidPhase.DOWN || down.repeatCount != 0 || !matches()) return null
                 val id = inputRoutes.incrementAndGet()

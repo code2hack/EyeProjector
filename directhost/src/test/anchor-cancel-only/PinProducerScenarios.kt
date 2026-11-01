@@ -1,0 +1,141 @@
+package com.code2hack.eyeprojector.directhost
+
+import com.code2hack.eyeprojector.directhost.hid.*
+import com.code2hack.eyeprojector.directhost.activation.*
+import com.code2hack.eyeprojector.directhost.input.PhoneHidRoute
+import com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal
+import com.code2hack.eyeprojector.protocol.*
+import java.util.concurrent.*
+import java.util.concurrent.atomic.AtomicLong
+import org.json.*
+
+/** Full actual native listener/connect/queue/controller/route -> real original Phone Binder/merger.
+ * Android service transport and JSON registry are named boundaries; publication uses actual region/word. */
+internal fun pinProducerScenarios(run:(String,(Joined)->Unit)->Unit) {
+    val modes=if(System.getenv("EYEPROJECTOR_C206_NATIVE_ONLY")=="1")listOf("first-observation")else listOf("H1-Long-H2","first-observation","canceling-first-result","empty-Long-H2","normal-Short","normal-Long","two-Shorts","learning-H1-H2","learning-UP-H2","learning-persist-H2","learning-normal","binding-retired","state-before-DOWN","routed-binding-retired")
+    for(queue in listOf("lane","main")) for(mode in modes)
+        run("R187-3-actual-native-$queue-$mode") { j ->
+        var listener:IHidCaptureListener?=null
+        val state=JSONObject().put("generation",1).put("deviceKey","pin").put("intercepted",true).put("phase","ACTIVE").retain("state")
+        val inventory=JSONObject().put("devices",JSONArray()).retain("inventory")
+        val remote=object:IHidCapture.Stub(){override fun attach(l:IHidCaptureListener){listener=l};override fun state()=state;override fun inventory()=inventory;override fun pin(key:String)=state;override fun unpin()=state}
+        rikka.shizuku.Shizuku.capture=remote
+        val binding=PhoneHidBinding(PhoneHidButton(PhoneHidDeviceIdentity(PhoneHidPinRuntime.NATIVE_PREFIX+JSONArray().put("pin").put("keys").toString(),2,3),195,0),"Pin","Function")
+        var writes=0
+        val bindings=PhoneHidBindings({null},{writes++;true});check(bindings.assign(PhoneHidAction.FUNCTION,binding))
+        val usability=j.phone.get("receiverUsability") as SessionUsability
+        usability.prepareRegion();val snapshot=usability.snapshot();check(snapshot.regionId!=null)
+        val ids=AtomicLong(700)
+        val routes=object:PhoneHidRoutes {
+            override fun capture(down:PhoneHidEdge):PhoneHidRoute?=error("native path lost original")
+            override fun capture(down:PhoneHidEdge,admission:PhoneHidCapture,original:PhoneHidOriginal?):PhoneHidRoute? =
+                checkNotNull(original).route(down,checkNotNull(snapshot.regionId),snapshot.word,1,ids.incrementAndGet())
+            override fun submit(route:PhoneHidRoute,edge:PhoneHidEdge)=route.submit(edge)
+            override fun cancel(route:PhoneHidRoute,eventTimeMs:Long)=route.cancel(eventTimeMs)
+        }
+        val pendingPersist=mutableListOf<Pair<()->Unit,()->Unit>>()
+        val controller=PhoneHidController(bindings,routes,{operation,complete->
+            if(mode=="learning-persist-H2")pendingPersist.add(operation to complete)else {operation();complete()}
+        },{android.os.SystemClock.uptimeMillis()},
+            userControl={j.runtime.userControl()})
+        controller.connection(true)
+        if(mode.startsWith("learning")){controller.openPage();controller.select(PhoneHidAction.FUNCTION)}
+        val firstObserved=CountDownLatch(1);val finishObservation=CountDownLatch(1)
+        val firstPhase=java.util.concurrent.atomic.AtomicReference<String>()
+        fun observeFirst(phase:String) {
+            if(mode in listOf("first-observation","canceling-first-result")&&firstPhase.compareAndSet(null,phase)) {
+                firstObserved.countDown();check(finishObservation.await(4,TimeUnit.SECONDS))
+            }
+        }
+        val pin=PhoneHidPinRuntime(j.runtime.appContext,controller,{}, {}, {j.runtime.userControl()},
+            {val normal=j.runtime.userControl(recognitionOnly=true);observeFirst("recognition-result");normal},
+            {val original=j.runtime.capturePhoneHidOriginal();observeFirst("original-result");original})
+        fun field(name:String)=pin.javaClass.getDeclaredField(name).apply{isAccessible=true}
+        field("desiredKey").set(pin,"pin");field("ownerActive").set(pin,true)
+        val lane=field("lane").get(pin) as ExecutorService
+        fun flush(){val done=CountDownLatch(1);lane.execute{done.countDown()};check(done.await(3,TimeUnit.SECONDS))}
+        val main=LinkedBlockingQueue<Runnable>()
+        fun drain(){flush();while(true)(main.poll()?:break).run()}
+        try {
+            pin.javaClass.getDeclaredMethod("connect").apply{isAccessible=true}.invoke(pin);flush();flush();check(listener!=null)
+            field("main").set(pin,android.os.Handler(android.os.Looper(main)))
+            if(mode.startsWith("H1")||mode in listOf("first-observation","canceling-first-result")||mode=="learning-H1-H2"||mode=="binding-retired")j.hold()
+            val entered=CountDownLatch(1);val release=CountDownLatch(1)
+            if(queue=="lane"){lane.execute{entered.countDown();check(release.await(4,TimeUnit.SECONDS))};check(entered.await(2,TimeUnit.SECONDS))}
+            if(mode=="normal-Long"){j.wiring.move(320f,420f);j.pump()}
+            var inputGeneration=1
+            val at=android.os.SystemClock.uptimeMillis()
+            fun event(phase:String,down:Long=at,time:Long=down,press:Long=81)=JSONObject().put("deviceKey","pin").put("generation",inputGeneration).put("sourceId",3).put("collectionKey","keys").put("vendorId",2).put("productId",3).put("code",195).put("deviceName","Pin").put("label","Function").put("phase",phase).put("downTimeMs",down).put("eventTimeMs",time).put("repeatCount",0).put("pressId",press).retain("event-$queue-$mode-$phase-$press")
+            val saved=writes
+            try {
+                if(mode=="state-before-DOWN"){
+                    inputGeneration=2
+                    listener!!.onState(JSONObject().put("generation",2).put("deviceKey","pin").put("intercepted",true).put("phase","ACTIVE").retain("state-2"))
+                }
+                if(mode in listOf("first-observation","canceling-first-result")) {
+                    val cancelEntered=CountDownLatch(1);val finishCancel=CountDownLatch(1)
+                    if(mode=="canceling-first-result") {
+                        j.cancelBehavior={cancelEntered.countDown();check(finishCancel.await(4,TimeUnit.SECONDS));true}
+                        j.phone.receive(Frame(Wire.TAP,payload=Tap(20,30,Geometry(480,640)).bytes()))
+                        check(cancelEntered.await(2,TimeUnit.SECONDS))
+                    }
+                    val error=java.util.concurrent.atomic.AtomicReference<Throwable>()
+                    val ingress=Thread{try{listener!!.onInput(event("DOWN"))}catch(t:Throwable){error.set(t)}}
+                    ingress.start()
+                    try {
+                        check(firstObserved.await(2,TimeUnit.SECONDS))
+                        if(mode=="canceling-first-result"){finishCancel.countDown();j.pump();j.press()}
+                        else {j.press();j.press()}
+                    }finally {finishCancel.countDown();finishObservation.countDown();ingress.join(3000)}
+                    check(!ingress.isAlive&&error.get()==null)
+                    println("PHASE native first authoritative ${firstPhase.get()} retained before independent H1-UP/H2-DOWN")
+                }else listener!!.onInput(event("DOWN"))
+                if(queue=="main")flush()
+                when(mode){
+                    "H1-Long-H2","learning-H1-H2"->{j.press();j.press()}
+                    "empty-Long-H2"->j.hold()
+                    "binding-retired"->{j.phone.holdInstall(j.runtime.bind());j.pump();j.press()}
+                    "normal-Short"->listener!!.onInput(event("UP",time=at+100))
+                    "two-Shorts"->{listener!!.onInput(event("UP",time=at+100));listener!!.onInput(event("DOWN",down=at+200,press=82));listener!!.onInput(event("UP",down=at+200,time=at+300,press=82))}
+                }
+            }finally{release.countDown()}
+            drain()
+            if(mode in listOf("learning-UP-H2","learning-persist-H2","learning-normal")) {
+                check(controller.capturing)
+                if(mode=="learning-UP-H2")j.hold()
+                listener!!.onInput(event("UP",time=at+100));drain()
+                if(mode=="learning-persist-H2") {
+                    check(pendingPersist.size==1&&controller.saving==1);j.hold()
+                    pendingPersist.single().let{it.first();it.second()}
+                }
+            }
+            if(mode=="state-before-DOWN") {
+                check((field("originals").get(pin) as Map<*,*>).size==1){"queued state erased successor DOWN original"}
+                listener!!.onInput(event("UP",time=at+100));drain()
+            }
+            if(mode=="routed-binding-retired"){
+                val merger=j.phone.get("phoneInput")!!
+                fun count()=(merger.javaClass.getDeclaredField("receivedPresses").apply{isAccessible=true}.get(merger) as Map<*,*>).size
+                check(count()==1)
+                j.phone.holdInstall(j.runtime.bind());j.pump();j.press()
+                listener!!.onInput(event("UP",time=at+100));drain();j.pump()
+                check(count()==0){"retired native original lost terminal metadata disposal"}
+            }else if(mode !in listOf("normal-Short","two-Shorts","state-before-DOWN","learning-UP-H2","learning-persist-H2","learning-normal")){listener!!.onInput(event("UP",time=at+900));drain()}
+            j.pump()
+            when(mode){
+                "normal-Long"->check(j.wiring.active()&&!j.input.anchor.holding&&j.messages.any{it is AnchorMessage.Offer}) {"current original Long lost registration"}
+                "normal-Short","state-before-DOWN"->{check(j.input.anchor.holding&&j.events.map{it.phase}==listOf(Touch.Phase.DOWN));j.press();check(j.events.last().phase==Touch.Phase.UP)}
+                "two-Shorts"->check(!j.input.anchor.holding&&j.events.map{it.phase}==listOf(Touch.Phase.DOWN,Touch.Phase.UP)){"raw distinct Shorts lost FIFO toggle: ${j.events}"}
+                "empty-Long-H2"->check(j.input.anchor.holding&&j.events.map{it.phase}==listOf(Touch.Phase.DOWN)){"empty-born Long adopted H2: ${j.events}"}
+                "canceling-first-result"->check(j.input.anchor.holding&&j.events.map{it.phase}==listOf(Touch.Phase.DOWN,Touch.Phase.CANCEL,Touch.Phase.DOWN)){"CANCELING result refreshed after retirement: ${j.events}"}
+                "learning-normal"->check(writes==saved+1&&!controller.capturing&&controller.saving==0&&!j.input.anchor.holding)
+                "learning-UP-H2","learning-persist-H2"->check(j.input.anchor.holding&&writes==saved&&!controller.capturing&&controller.saving==0&&j.events.map{it.phase}==listOf(Touch.Phase.DOWN)){"old learning command saved or canceled successor: ${j.events}"}
+                "routed-binding-retired"->check(j.input.anchor.holding&&j.events.map{it.phase}==listOf(Touch.Phase.DOWN)){"old routed ending killed H2: ${j.events}"}
+                "binding-retired"->check(j.input.anchor.holding&&j.events.map{it.phase}==listOf(Touch.Phase.DOWN,Touch.Phase.CANCEL,Touch.Phase.DOWN)){"old binding adopted new context: ${j.events}"}
+                else->check(j.input.anchor.holding&&j.events.map{it.phase}==listOf(Touch.Phase.DOWN,Touch.Phase.UP,Touch.Phase.DOWN)){"native original adopted H2 after $queue/$mode: ${j.events}"}
+            }
+            if(mode=="learning-H1-H2")check(writes==saved&&!controller.capturing)
+            check((field("originals").get(pin) as Map<*,*>).isEmpty()){"raw metadata survived matching original end"}
+        }finally{lane.shutdownNow();check(lane.awaitTermination(3,TimeUnit.SECONDS));rikka.shizuku.Shizuku.capture=null}
+    }
+}

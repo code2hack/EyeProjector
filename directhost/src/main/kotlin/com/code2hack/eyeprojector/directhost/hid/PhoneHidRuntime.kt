@@ -45,6 +45,13 @@ internal class PhoneHidRuntime private constructor(context: Context) {
                 if (!sessions.isHidAuthorityCurrent(original)) return null
                 return admission.route?.invoke(down)
             }
+            override fun capture(down: PhoneHidEdge, admission: PhoneHidCapture,
+                original: com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal?): PhoneHidRoute? {
+                if (original == null) return capture(down, admission)
+                val authority = admission.wake?.authority ?: return null
+                if (!sessions.isHidAuthorityCurrent(authority)) return null
+                return admission.routeOriginal?.invoke(down, original)
+            }
             override fun submit(route: PhoneHidRoute, edge: PhoneHidEdge) = sessions.submitPhoneHid(route, edge)
             override fun cancel(route: PhoneHidRoute, eventTimeMs: Long) = sessions.cancelPhoneHid(route, eventTimeMs)
         },
@@ -80,7 +87,7 @@ internal class PhoneHidRuntime private constructor(context: Context) {
     val pin = PhoneHidPinRuntime(app, controller, { connected ->
         nativeConnected = connected
         updateConnection()
-    }, ::publish, { sessions.userControl() }, ::recognizeInput)
+    }, ::publish, { sessions.userControl() }, ::recognizeInput, { sessions.bootstrap.anchorRuntime.capturePhoneHidOriginal() })
 
     fun userControl(): Boolean = sessions.userControl()
 

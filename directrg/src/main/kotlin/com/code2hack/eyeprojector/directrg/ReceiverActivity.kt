@@ -974,8 +974,11 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             }
             is PadGestureRecognizer.Action.Contact -> {
                 if (action.event.phase == PadGestureRecognizer.Phase.DOWN && usable()) {
-                    classifiedPadLongPress.cancel()
-                    shellPadContact.cancel()
+                    val original = navigationContext()
+                    val revision = inputGeneration
+                    val cleanup = preparePadCleanup(action.timeMs, includeShell = true)
+                    cleanup.finishOriginal()
+                    if (cleanup.superseded() || inputGeneration != revision || navigationContext() != original) return
                 }
                 val accepted = if (action.event.phase == PadGestureRecognizer.Phase.CANCEL || usable())
                     heldOwner.acceptNative(action.event) else false
@@ -999,17 +1002,10 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         val admittedSession = session
         val admittedGeometry = currentGeometry
         val admittedLocal = localInputVisible()
-        // Pointer publication and old-target CANCEL may synchronously replace the view/session.
-        pointer.inputPosition()
-        if (inputGeneration != admittedGeneration || !usable() || session !== admittedSession ||
-            currentGeometry != admittedGeometry || localInputVisible() != admittedLocal) {
-            nativeInputStage("dispatch_result", action, outcome = "canceled-context-change", local = admittedLocal)
-            return
-        }
-        if (::completedInput.isInitialized) completedInput.cancel()
-        classifiedPadLongPress.cancel()
-        heldOwner.cancel(action.timeMs)
-        if (inputGeneration != admittedGeneration || !usable() || session !== admittedSession ||
+        // Detach every original before pointer publication or a target CANCEL can admit a successor.
+        val cleanup = preparePadCleanup(action.timeMs)
+        InputRetirement.finishAll(listOf({ pointer.inputPosition(); Unit }, cleanup.finishOriginal))
+        if (cleanup.superseded() || inputGeneration != admittedGeneration || !usable() || session !== admittedSession ||
             currentGeometry != admittedGeometry || localInputVisible() != admittedLocal) {
             nativeInputStage("dispatch_result", action, outcome = "canceled-context-change", local = admittedLocal)
             return
@@ -1044,6 +1040,17 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         }
         nativeInputStage("dispatch_result", action, outcome = if (submitted) "submitted" else "rejected", local = admittedLocal)
         if (action is PadGestureRecognizer.Action.LongPress) updateEdgeScroll()
+    }
+
+    private fun preparePadCleanup(at: Long, includeShell: Boolean = false): InputRetirement {
+        val local = localInput.captureCancellation()
+        val held = heldOwner.captureCancellation(at, local.finishOriginal)
+        val completed = if (::completedInput.isInitialized) completedInput.prepareCancel(local.finishOriginal) else null
+        val classified = classifiedPadLongPress.prepareCancel()
+        val shell = if (includeShell) shellPadContact.prepareCancel() else null
+        val originals = listOfNotNull(held, local, completed, classified, shell)
+        return InputRetirement({ InputRetirement.finishAll(originals.map { it.finishOriginal }) },
+            { originals.any { it.superseded() } })
     }
 
     private fun updateEdgeScroll() {

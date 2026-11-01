@@ -16,7 +16,7 @@ class AnchorMessageTest {
         val buffer = ByteArrayOutputStream(); val out = DataOutputStream(buffer)
         Wire.writeWelcome(out); values.forEach { Wire.writeFrame(out, Frame(Wire.ANCHOR, payload = it.bytes())) }
         val input = DataInputStream(buffer.toByteArray().inputStream()); Wire.readWelcome(input)
-        assertEquals(11, Wire.VERSION)
+        assertEquals(12, Wire.VERSION)
         assertEquals(values, values.map { AnchorMessage.from(Wire.readFrame(input).payload) })
         assertEquals(0, input.available())
     }

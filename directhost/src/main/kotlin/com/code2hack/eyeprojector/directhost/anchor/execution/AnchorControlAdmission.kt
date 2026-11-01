@@ -7,6 +7,7 @@ internal enum class AnchorControlDisposition { NORMAL, CONSUMED, RETIRED }
 internal class AnchorControlAdmission {
     internal var owner: Any? = null
     internal var normalSequence: Long? = null
+    internal var receivedSequence: Long? = null
     internal var capturedHold = false
     internal var functionGeneration: Long? = null
     internal var receivedDuringRetirement = false
@@ -28,6 +29,9 @@ internal class AnchorControlAdmission {
             (revision == null || revision.first.get() == revision.second)
     }
 
+    /** Long/ordinary uses birth lifetime; Short deliberately retains its authoritative FIFO mode. */
+    internal fun ordinary() { if (normalSequence == null) normalSequence = receivedSequence }
+
     /** Existing grammar membership, not timestamps, associates a second Back/Home press. */
     internal fun inherit(original: AnchorControlAdmission) {
         if (original.terminal) {
@@ -42,7 +46,7 @@ internal class AnchorControlAdmission {
     /** A summary-added grammar member retains that sequence's original receipt, not latest Hold. */
     internal fun inheritLifetime(original: AnchorControlAdmission) {
         if (terminal) return
-        owner=original.owner;normalSequence=original.normalSequence;capturedHold=original.capturedHold
+        owner=original.owner;normalSequence=original.normalSequence;receivedSequence=original.receivedSequence;capturedHold=original.capturedHold
         functionGeneration=original.functionGeneration;receivedDuringRetirement=original.receivedDuringRetirement
         sourceBinding=original.sourceBinding;sourceRevision=original.sourceRevision
         disposition=original.disposition

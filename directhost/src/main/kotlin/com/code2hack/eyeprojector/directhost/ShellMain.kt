@@ -250,12 +250,13 @@ internal class Bridge(
     /** A user Stop is a control; internal/fatal close remains unconditional. */
     fun stopFromUser(): Boolean {
         val received = active.get()
-        if (received != null && !received.consumeUserControl()) return false
+        val receipt = received?.receiveUserControl()
+        if (received != null && !received.consumeUserControl(receipt!!)) return false
         val accepted = synchronized(admission) {
             if (!running.get()) return@synchronized false
             val original = active.get()
             if (original !== received) return@synchronized false
-            if (original != null && !original.consumeUserControl()) return@synchronized false
+            if (original != null && !original.consumeUserControl(receipt!!)) return@synchronized false
             running.set(false) // Claim this original Host before another STREAM can be admitted.
             true
         }
@@ -267,14 +268,15 @@ internal class Bridge(
 
     fun consumeUserControl(expected: ProjectionContext): Boolean {
         val received = active.get()
-        if (received != null && (received.projectionContext() != expected || !received.consumeUserControl())) return false
+        val receipt = received?.receiveUserControl()
+        if (received != null && (received.projectionContext() != expected || !received.consumeUserControl(receipt!!))) return false
         return synchronized(admission) {
         if (!running.get() || !launchOperationsAccepted) return@synchronized false
         val original = active.get()
         if (original !== received) return@synchronized false
         if (original == null) return@synchronized !expected.available
         if (original.projectionContext() != expected) return@synchronized false
-        original.consumeUserControl()
+        original.consumeUserControl(receipt!!)
         }
     }
 
@@ -737,7 +739,8 @@ private class Session(
                     mapping.displayUniqueId == source.displayUniqueId && mapping.geometry == source.geometry } == true },
             phoneInput::nativeAction, functionWork, { error -> closeSafely(sessionFailureReason(error, control = true), error) },
             { message -> if (running.get()) try { send(Frame(Wire.ANCHOR, payload = message.bytes())) }
-                catch (error: Exception) { closeSafely(sessionFailureReason(error, control = true), error) } }).also {
+                catch (error: Exception) { closeSafely(sessionFailureReason(error, control = true), error) } },
+            { original, route, edge, region, word -> phoneHidStampedOriginal(original, route, edge, region, word) }).also {
                     it.controlContext(context)
                 }
     }
@@ -885,21 +888,50 @@ private class Session(
 
     fun requestScale(id: Long, value: Double, streamRequest: Boolean = false): ScaleState {
         if (!running.get()) return LiveScale.unavailable(id, value)
-        if (!consumeUserControl()) return LiveScale.unavailable(id, value)
-        return try { scale.request(id, value, publishUnavailable = streamRequest) }
+        val original = receiveUserControl()
+        if (!consumeUserControl(original)) return LiveScale.unavailable(id, value)
+        val source = receiverUsability.snapshot().fact
+        return try { scale.request(id, value, publishUnavailable = streamRequest, effects = LiveScale.RequestEffects(
+            current = { currentUserControl(original, source) },
+            beforePublish = { commitUserControl(original, source) },
+            publish = { state -> sendScaleOriginal(state, original, source) },
+            resize = { size, requested -> resizeOriginal(size, requested, original, source) },
+        )) }
         catch (error: Exception) {
             closeSafely(sessionFailureReason(error, control = true), error)
             LiveScale.unavailable(id, value)
         }
     }
+    @Synchronized private fun sendScaleOriginal(value: ScaleState,
+        original: com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission,
+        source: ReceiverUsability?): Boolean {
+        if (!currentUserControl(original, source)) return false
+        lastScaleReportAttempt = value
+        send(Frame(Wire.SCALE_STATE, value.requestId, value.bytes()))
+        return true
+    }
+
+    private fun resizeOriginal(size: Geometry, requested: Double,
+        original: com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission,
+        source: ReceiverUsability?) {
+        val display = if (managedDisplayFactory == null) null else synchronized(managedDisplayGate) { managedDisplay }
+        synchronized(controlLock) {
+            if (!currentUserControl(original, source)) return
+            if (managedDisplayFactory == null) control!!.outputStream.write(Scrcpy.resize(size))
+            else checkNotNull(display) { "Managed projection display is unavailable" }.resize(requested)
+        }
+    }
+
     fun scaleState(): ScaleState = if (running.get()) scale.state() else LiveScale.unavailable()
 
     fun projectionContext(): ProjectionContext = if (running.get()) context else ProjectionContext()
     fun recognizeUserInput(): Boolean = running.get() && !inputControls.anchor.discardingControls
-    override fun consumeUserControl(): Boolean {
+    fun receiveUserControl(): com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission =
+        com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission().also { inputControls.anchor.receiveControl(it) }
+
+    override fun consumeUserControl(): Boolean = consumeUserControl(receiveUserControl())
+    fun consumeUserControl(original: com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission): Boolean {
         if (!running.get()) return false
-        val original = com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission()
-        inputControls.anchor.receiveControl(original)
         return !original.terminal && inputControls.consumeHeldControl(original) ==
             com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.NORMAL
     }
@@ -956,6 +988,15 @@ private class Session(
             }
         } catch (error: Exception) { closeSafely(sessionFailureReason(error, control = true), error) }
     }
+    private fun phoneHidStampedOriginal(original: com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission,
+        routeId: Long, edge: PhoneHidEdge, region: String, word: Long) {
+        try {
+            if (running.get()) phoneInput.stampedEdgeOriginal(routeId, edge, original,
+                { point, source -> receiverUsability.acceptsContext(region, word, point, source) },
+                { point, source -> if (edge.action == PhoneHidAction.BACK_HOME || edge.action == PhoneHidAction.LOCK)
+                    receiverUsability.acceptsContext(region, word, point, source) else receiverUsability.accepts(region, word, point, source) })
+        } catch (error: Exception) { closeSafely(sessionFailureReason(error, control = true), error) }
+    }
     private fun prepareHidRegion() {
         // Normal producer is package-loaded ShizukuHostService(Context) -> inline Bridge -> Session.
         // Standalone app_process loading is not assumed to have the APK native-library route.
@@ -991,8 +1032,9 @@ private class Session(
     }
 
     fun requestPanelOff(id: Long): PanelPowerState {
-        if (!consumeUserControl()) return PanelPowerState.unavailable(id, panelContext)
-        val result = panelPower.requestOff(id)
+        val original = receiveUserControl()
+        if (!consumeUserControl(original)) return PanelPowerState.unavailable(id, panelContext)
+        val result = panelPower.requestOff(id) { consumeUserControl(original) }
         if (result.off == PanelSubmission.FAILED) {
             close(SessionStopReason.CONTROL_IO)
             return panelPower.state()

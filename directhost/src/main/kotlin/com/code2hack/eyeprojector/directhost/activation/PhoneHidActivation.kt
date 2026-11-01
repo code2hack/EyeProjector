@@ -8,6 +8,7 @@ internal data class PhoneHidCapture(
     val disposition: PhoneHidDisposition,
     val wake: HidWakeRequest? = null,
     val route: ((PhoneHidEdge) -> PhoneHidRoute?)? = null,
+    val routeOriginal: ((PhoneHidEdge, com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal) -> PhoneHidRoute?)? = null,
 )
 
 /** Local injection seam; a capture is not a platform wake or injection result. */

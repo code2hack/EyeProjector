@@ -22,6 +22,19 @@ fun main() {
     fun frame(j: Joined, channel: Int, bytes: ByteArray) { j.phone.receive(Frame(channel, payload = bytes)); j.pump() }
     val geometry = Geometry(480, 640)
     try {
+        if (System.getenv("EYEPROJECTOR_C206_NATIVE_ONLY")=="1") {
+            pinProducerScenarios(::scenario)
+            println("RESULT native-first $passed passed; ${failures.size} failed")
+            check(failures.isEmpty()){failures.joinToString()};return
+        }
+        if (System.getenv("EYEPROJECTOR_R187_PANEL_ONLY")=="1") {
+            scenario("C206-2-actual-panel-final-writer-after-first-NORMAL",::panelFinalReceiptScenario)
+            scenario("C206-2-actual-panel-final-writer-wait-and-FIFO-H2",::panelFinalWaitScenario)
+            println("RESULT panel-final $passed passed; ${failures.size} failed")
+            check(failures.isEmpty()){failures.joinToString()};return
+        }
+        scenario("C206-2-actual-panel-final-writer-after-first-NORMAL",::panelFinalReceiptScenario)
+        scenario("C206-2-actual-panel-final-writer-wait-and-FIFO-H2",::panelFinalWaitScenario)
         if (System.getenv("EYEPROJECTOR_PENDING_LAUNCH") == "1") {
             scenario("PENDING-queued-normal-Home-must-not-cancel-or-launch-after-successor-Hold") { j ->
                 queuedHomeBefore(j)
@@ -30,6 +43,8 @@ fun main() {
             check(failures.isEmpty()) { failures.joinToString() }
             return
         }
+        bridgeReceiptScenarios(::scenario)
+        pinProducerScenarios(::scenario)
         scenario("held-wire-tap-cancels-only-and-distinct-tap-recovers") { j ->
             j.hold(); val setting = runtime.store.snapshot("app")
             frame(j, Wire.TAP, Tap(200, 100, geometry).bytes()); j.canceled()

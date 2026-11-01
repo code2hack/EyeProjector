@@ -60,8 +60,8 @@ internal class SessionPanelPower(
     // Never wait behind a blocked control writer just to report pending/unverified evidence.
     fun state(): PanelPowerState = value.copy(sessionActive = !closed && active())
 
-    fun requestOff(id: Long): PanelPowerState = synchronized(lock) {
-        if (closed || !active()) return@synchronized state().copy(requestId = id, off = PanelSubmission.UNAVAILABLE)
+    fun requestOff(id: Long, admit: () -> Boolean = { true }): PanelPowerState = synchronized(lock) {
+        if (closed || !active() || !admit()) return@synchronized state().copy(requestId = id, off = PanelSubmission.UNAVAILABLE)
         // A write can fail after some bytes reached stock. Restoration is owed from the attempt.
         value = value.copy(requestId = id, off = PanelSubmission.PENDING, restoration = PanelRestoration.PENDING)
         value = try {

@@ -14,6 +14,8 @@ p.add_argument('--output-dir', type=Path, required=True)
 p.add_argument('--dependency-manifest', type=Path, required=True)
 p.add_argument('--queued-launch-before', action='store_true')
 p.add_argument('--phone-before-result', type=Path)
+p.add_argument('--panel-before-result', type=Path, help='Own frozen ShellMain/PanelPower only; final panel case')
+p.add_argument('--native-before-result', type=Path, help='Own frozen PinRuntime only; first authoritative observation cases')
 
 a = p.parse_args()
 suite = Path(__file__).resolve().parent
@@ -55,7 +57,13 @@ binder.write_text(binder_origin.read_text().replace('    fun heldSetting(): Byte
 }
 interface IAnchorControlSession {
     fun admitUserControl(recognitionOnly: Boolean): Int
+    fun captureRawControl(disposition:IntArray): IAnchorRawControl? = null
     abstract class Stub: android.os.Binder(), IAnchorControlSession
+}
+interface IAnchorRawControl {
+    fun admitUserControl():Int
+    fun edge(routeId:Long,typedEdge:ByteArray,regionId:String,word:Long)
+    abstract class Stub:android.os.Binder(), IAnchorRawControl
 }
 ''')
 sources += [binder, shared.parent / 'adapter/doubles/AtomicFile.kt']
@@ -132,7 +140,7 @@ activity_record = {'path': str(activity_path), 'snapshot': str(snapshot), 'sha25
                    'predicates': predicates, 'functionCapture': capture, 'nativeInitializer': native,
                    'scope': 'Actual Activity destination/cancellation/Function/registration source on named widgets/service boundaries; padControlInput field callback is explicitly Unit here because this closure does not exercise native pad normalization/delivery. Actual full pad callback/body is compiled by run-retirement.py; full Activity SDK compile separately required', 'adaptations': {'padControlInputDelivery': 'Unit: native pad delivery is not included in this Phone/Function closure', 'nativePadMotionDelivery': 'Unit: new original Motion queue metadata is compiled but raw delivery exercised by full retirement runner' }}
 sources += [root / 'directrg/src/test/anchor-integration/ToastBoundary.kt', generated, shared.parent / 'anchor-hold/doubles/Json.kt', root / 'directrg/src/test/anchor-integration/ReceiverRig.kt',
-            rg_suite / 'CompositionRig.kt', suite / 'CoreScenarios.kt', suite / 'CoreUnitScenarios.kt', suite / 'QueuedHomeBefore.kt', suite / 'CentralGateScenarios.kt', suite / 'PhoneIngressScenarios.kt', suite / 'LocalGateScenarios.kt', suite / 'TraceScenarios.kt', suite / 'RawGlassesScenarios.kt', suite / 'ScopedLaunchScenarios.kt']
+            rg_suite / 'CompositionRig.kt', suite / 'CoreScenarios.kt', suite / 'CoreUnitScenarios.kt', suite / 'QueuedHomeBefore.kt', suite / 'CentralGateScenarios.kt', suite / 'PhoneIngressScenarios.kt', suite / 'LocalGateScenarios.kt', suite / 'TraceScenarios.kt', suite / 'RawGlassesScenarios.kt', suite / 'ScopedLaunchScenarios.kt', suite / 'BridgeReceiptScenarios.kt']
 sources += [rgmain / (n + '.kt') for n in ['NativePadMotionInput', 'ReceiverContactInput', 'InputRetirement', 'AnchorRegistrationController', 'FunctionGestureRecognizer',
                                          'CompletedReceiverInput', 'SessionPresentation', 'ContextualNavigation', 'NativeSwipeNavigationInput', 'PadGestureRecognizer', 'HeldInputOwner', 'HeldPointerDispatcher', 'OrderedControlDispatcher']]
 mapping = out / 'NativePadMapping.kt'
@@ -160,6 +168,20 @@ bootstrap_generated = out / 'BootstrapTraceWiring.kt'
 bootstrap_generated.write_text(bootstrap_boundary.read_text().replace('// ACTUAL_FIELDS_AND_METHODS', '\n'.join(bootstrap_blocks)).replace('JSONObject(result)', 'BootstrapStatusBoundary(result)'))
 sources += [bootstrap_generated, suite / 'BootstrapTraceScenarios.kt', suite / 'BootstrapAudioBoundary.kt']
 
+# Full native producer with explicit Android/Shizuku/JSON registry boundaries.
+sources += [host/'hid/PhoneHidPinRuntime.kt', host/'input/PhoneHidRoute.kt', host/'input/PhoneHidOriginal.kt', host/'activation/PhoneHidActivation.kt', suite/'PinProducerScenarios.kt']
+sources += sorted((suite/'pinboundary').glob('*.kt'))
+for index,file in enumerate(sources):
+    if file == rg_suite/'doubles/Content.kt':
+        text=file.read_text().replace('    private val booleans=', '    private val strings=mutableMapOf<String,String>()\n    fun getString(key:String,fallback:String?)=strings[key]?:fallback\n    private val booleans=')
+        text=text.replace('        fun apply()=Unit','        fun putString(key:String,value:String):Editor {strings[key]=value;return this}\n        fun remove(key:String):Editor {strings.remove(key);return this}\n        fun commit()=true\n        fun apply()=Unit')
+        text=text.replace('    val assets = Assets()', '    val packageManager=android.content.pm.PackageManager()\n    fun startForegroundService(intent:Intent)=Unit\n    val assets = Assets()').replace('class Intent(val action: String?) {','class Intent(val action: String?) {\n    constructor(context:Context,type:Class<*>):this(type.name)')
+        copy=out/'PinContent.kt';copy.write_text(text);sources[index]=copy
+    if file == shared.parent/'anchor-hold/doubles/Json.kt':
+        text=file.read_text().replace('class JSONObject {','class JSONObject() {\n    constructor(text:String):this(){values.putAll(checkNotNull(registry[text]))}\n    fun getString(key:String)=values[key] as String\n    fun getLong(key:String)=(values[key] as Number).toLong()\n    fun getInt(key:String)=(values[key] as Number).toInt()\n    fun getBoolean(key:String)=values[key] as Boolean\n    fun opt(key:String)=values[key]\n    fun optString(key:String)=(values[key] as? String)?:""\n    fun optInt(key:String,fallback:Int)= (values[key] as? Number)?.toInt()?:fallback\n    fun optBoolean(key:String)=(values[key] as? Boolean)?:false\n    fun optJSONArray(key:String)=values[key] as? JSONArray\n    fun retain(key:String):String {registry[key]=values.toMap();return key}')
+        text=text.replace('companion object { @JvmField val NULL = Any() }','companion object { private val registry=java.util.concurrent.ConcurrentHashMap<String,Map<String,Any?>>() ; @JvmField val NULL = Any() }')
+        text=text.replace('class JSONArray {','class JSONArray() {\n    constructor(text:String):this(){error("array parser not used by controlled Pin ingress")}\n    fun length()=values.size\n    fun getJSONObject(i:Int)=values[i] as JSONObject\n    fun getString(i:Int)=values[i] as String')
+        copy=out/'PinJson.kt';copy.write_text(text);sources[index]=copy
 sources = list(dict.fromkeys(sources))
 before_sources = {}
 if a.phone_before_result:
@@ -171,6 +193,9 @@ for i, source in enumerate(sources):
     copy = out / 'sources' / str(i) / source.name
     copy.parent.mkdir(parents=True, exist_ok=True)
     old = before_sources.get(str(source)) if source.is_relative_to(host) else None
+    override = a.panel_before_result if source in [host/'ShellMain.kt',host/'PanelPower.kt'] else a.native_before_result if source == host/'hid/PhoneHidPinRuntime.kt' else None
+    if override:
+        old=next(e for e in json.loads(override.read_text())['sources'] if e['path']==str(source))
     if old:
         original = Path(old['snapshot'])
         if sha(original) != old['sha256']: p.error('Changed frozen before source: ' + str(original))
@@ -192,6 +217,12 @@ record['activityExtraction'] = activity_record
 bootstrap_frozen=out/'HostBootstrap-source.kt';bootstrap_frozen.write_bytes(bootstrap.read_bytes())
 record['bootstrapExtraction']={'source':str(bootstrap),'snapshot':str(bootstrap_frozen),'sha256':sha(bootstrap_frozen),'blocks':bootstrap_blocks,'boundary':str(bootstrap_boundary),'boundarySha256':sha(bootstrap_boundary),'scope':'Actual START/config/performPending bodies, already-connected remote forwarding to real Shizuku service; setup/executor/binding/status publication boundary. Unused STOP JSONObject parser explicitly substituted.'}
 
+record['nativeProducerBoundaryAdapters'] = []
+for name, original in [('PinContent.kt',rg_suite/'doubles/Content.kt'),('PinJson.kt',shared.parent/'anchor-hold/doubles/Json.kt')]:
+    frozen=out/('original-'+original.name);frozen.write_bytes(original.read_bytes())
+    record['nativeProducerBoundaryAdapters'].append({'originalPath':str(original),'originalSnapshot':str(frozen),'originalSha256':sha(frozen),'compiledSnapshot':str(out/name),'compiledSha256':sha(out/name),'scope':'Android preferences/package/service APIs and controlled JSON-object registry only; full actual PinRuntime callback/connect/lane/main/controller/root-gate source remains unchanged'})
+record['panelBeforeResult'] = str(a.panel_before_result) if a.panel_before_result else None
+record['nativeBeforeResult'] = str(a.native_before_result) if a.native_before_result else None
 record['phoneBeforeResult'] = str(a.phone_before_result) if a.phone_before_result else None
 for label, path in [('runner', Path(__file__)), ('parser', shared.parent / 'hid/run.py')]:
     frozen = out / (label + '-source.py')
@@ -199,7 +230,7 @@ for label, path in [('runner', Path(__file__)), ('parser', shared.parent / 'hid/
     record[label + 'Snapshot'] = {'path': str(path), 'snapshot': str(frozen), 'sha256': sha(frozen)}
 record['aidlSources'] = []
 for path in sorted((root / 'directhost/src/main/aidl').rglob('*.aidl')):
-    if path.name not in ['IAnchorControlSession.aidl', 'IAnchorAppBridge.aidl', 'IAnchorUserControl.aidl', 'IHostBootstrap.aidl']: continue
+    if path.name not in ['IAnchorControlSession.aidl', 'IAnchorRawControl.aidl', 'IAnchorAppBridge.aidl', 'IAnchorUserControl.aidl', 'IHostBootstrap.aidl']: continue
     frozen = out / path.name
     frozen.write_bytes(path.read_bytes())
     record['aidlSources'].append({'path': str(path), 'snapshot': str(frozen), 'sha256': sha(frozen)})
@@ -212,6 +243,8 @@ record['binderBoundary'] = {'source': str(binder_origin), 'sourceSha256': sha(bi
     'aidl': str(root / 'directhost/src/main/aidl/com/code2hack/eyeprojector/directhost/anchor/execution/IAnchorSession.aidl'),
     'qualification': 'Generated Binder boundary adapted with new consumeHeldControl method; default NORMAL only for existing stateless host fixture Stubs. Actual production Operation/Runtime methods override and load from new source.'}
 env = os.environ.copy()
+if a.panel_before_result: env['EYEPROJECTOR_R187_PANEL_ONLY']='1'
+if a.native_before_result: env['EYEPROJECTOR_C206_NATIVE_ONLY']='1'
 env['EYEPROJECTOR_HOLD_EVIDENCE'] = str(out)
 fixture_dir=out/'trace-fixtures';fixture_dir.mkdir()
 keytool=str(Path(java).parent/'keytool')
@@ -265,6 +298,9 @@ if r.returncode == 0:
         'com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission',
         'com.code2hack.eyeprojector.directhost.PhoneTouchDispatcher',
         'com.code2hack.eyeprojector.directhost.Session',
+        'com.code2hack.eyeprojector.directhost.Bridge',
+        'com.code2hack.eyeprojector.directhost.hid.PhoneHidPinRuntime',
+        'com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal',
         'com.code2hack.eyeprojector.directhost.input.PhoneInputMerger',
         'com.code2hack.eyeprojector.directhost.anchor.execution.AnchorContactOwner',
         'com.code2hack.eyeprojector.directhost.anchor.execution.AnchorSessionInput',
@@ -274,6 +310,10 @@ if r.returncode == 0:
         'com.code2hack.eyeprojector.directrg.ProjectionSession',
         'com.code2hack.eyeprojector.directrg.ReceiverSessionOwner',
     ]
+    if a.panel_before_result:
+        required=['com.code2hack.eyeprojector.directhost.'+n for n in ['Session','SessionPanelPower','anchor.execution.AnchorContactOwner','anchor.execution.AnchorSessionInput','input.PhoneInputMerger']]
+    elif a.native_before_result:
+        required=['com.code2hack.eyeprojector.directhost.'+n for n in ['Session','hid.PhoneHidPinRuntime','hid.PhoneHidController','input.PhoneHidOriginal','input.PhoneInputMerger','anchor.execution.AnchorAppRuntime','anchor.execution.AnchorShellSession','anchor.execution.AnchorContactOwner']]
     loaded = (out / 'class-load.log').read_text().splitlines()
     record['sourceClassLoads'] = {name: [line for line in loaded if '] ' + name + ' source:' in line] for name in required}
     record['sourceClassesVerified'] = all(

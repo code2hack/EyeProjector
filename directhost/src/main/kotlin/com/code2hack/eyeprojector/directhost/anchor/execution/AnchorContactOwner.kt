@@ -105,6 +105,7 @@ internal class AnchorContactOwner(
         }
         if (control.owner == null) {
             control.owner = this
+            control.receivedSequence = sequence
             if (function) control.functionGeneration = generation
             val held = contact?.let { it.hold && it.downSubmitted } == true
             control.capturedHold = held
@@ -154,6 +155,7 @@ internal class AnchorContactOwner(
         }
         if (closed) return@synchronized
         control.owner = this
+        control.receivedSequence = sequence
         control.functionGeneration = generation // Lifetime only; FIFO still chooses Short mode.
         if (contact?.let { it.hold && it.downSubmitted } == true) {
             control.normalSequence = sequence
