@@ -246,6 +246,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var classifiedPadLongPress: ClassifiedPadLongPress
     private lateinit var completedInput: CompletedReceiverInput
     private lateinit var functionInput: NativeFunctionInput
+    private lateinit var nativeSwipeInput: NativeSwipeNavigationInput
     private var nativeActionsSubmitted = 0L
     private var nativeActionsRejected = 0L
     private var longClassifications = 0L
@@ -421,6 +422,9 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             { gesture -> dispatchFunction(FunctionSource.GLASSES_NATIVE, gesture) },
             capture = ::captureFunction,
         )
+        nativeSwipeInput = NativeSwipeNavigationInput(this) { action ->
+            if (usable()) dispatchNavigation(action)
+        }
         hidInput = HidKeyInput(hidBindings, SystemClock::uptimeMillis,
             ::functionContext,
             { deadline, action ->
@@ -475,10 +479,9 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         status.text = listOfNotNull(value, settings.error).joinToString("\n")
     }
 
-    private fun remoteBack() {
-        if (!usable() || !projectedInput()) return
-        cancelInput()
-        session?.navigate(Navigation.BACK)
+    private fun remoteBack(original: NavigationContext, canceledRevision: Long?) {
+        if (!currentNavigation(original, canceledRevision) || !projectedInput()) return
+        original.source?.navigate(Navigation.BACK)
     }
 
     private fun resize() {
@@ -708,13 +711,36 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         connectionView.scrollTo(0, 0)
         resize()
     }
+    private data class NavigationContext(
+        val source: ProjectionSession?, val sourceOwner: ReceiverSessionOwner?, val geometry: Geometry?,
+        val panel: Boolean, val settings: Boolean, val streaming: Boolean,
+        val width: Int, val height: Int, val chooser: Any?,
+    ) {}
+
+    private fun navigationContext() = NavigationContext(session, owner, currentGeometry,
+        presentation.panelVisible, ::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE,
+        streaming, root.width, root.height, anchorRegistration.offer)
+
+    /** Own retirement may advance the revision and dismiss this chooser, never adopt another context. */
+    private fun currentNavigation(original: NavigationContext, canceledRevision: Long?, dismissedChooser: Boolean = false): Boolean {
+        return canceledRevision != null && usable() && inputGeneration == canceledRevision &&
+            session === original.source && owner === original.sourceOwner &&
+            (owner == null || owner?.inputRevision == canceledRevision) && currentGeometry == original.geometry &&
+            presentation.panelVisible == original.panel &&
+            (::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE) == original.settings &&
+            streaming == original.streaming && root.width == original.width && root.height == original.height &&
+            anchorRegistration.offer === (if (dismissedChooser) null else original.chooser)
+    }
+
     internal fun contextualHome() {
-        if (registrationActive()) cancelInput()
-        if (!usable()) return
+        if (!usable()) { if (registrationActive()) cancelInput(); return }
+        if (projectionContext && !projectedInput() && !registrationActive()) return
+        val original = navigationContext()
+        val canceledRevision = cancelInputRevision()
+        if (!currentNavigation(original, canceledRevision, dismissedChooser = original.chooser != null)) return
         if (projectionContext) {
             if (!projectedInput()) return
-            cancelInput()
-            session?.navigate(Navigation.CONTEXTUAL_HOME)
+            original.source?.navigate(Navigation.CONTEXTUAL_HOME)
         } else if (::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE) {
             showControlPanel()
         } else exitToLauncher()
@@ -727,12 +753,14 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     }
     internal fun contextualBack() {
         if (registrationActive()) { cancelInput(); return }
-        cancelInput()
+        val original = navigationContext()
+        val canceledRevision = cancelInputRevision()
+        if (!currentNavigation(original, canceledRevision)) return
         if (presentation.panelVisible && ::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE) { showControlPanel(); return }
         if (presentation.panelVisible) {
             if (presentation.back()) { connectionView.visibility = View.GONE; resize() }
             else { finishProjection() }
-        } else remoteBack()
+        } else remoteBack(original, canceledRevision)
     }
     private fun finishProjection() {
         val original = visibleActivation
@@ -745,7 +773,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         // End local interception and invalidate peer callbacks before leaving this Activity.
         resumed = false
         cancelInput()
-        hidDevices.stop(); functionInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
+        hidDevices.stop(); functionInput.stop(); nativeSwipeInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
         val original = visibleActivation
         val scope = launchScope
         bindingValid = false
@@ -902,16 +930,34 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         deadline?.let { root.postDelayed(confirmTap, (it - SystemClock.uptimeMillis()).coerceAtLeast(0)) }
     }
     private fun cancelInput() {
+        cancelInputRevision()
+    }
+
+    private fun cancelInputRevision(): Long? {
+        val originalSession = session
+        val originalOwner = owner
+        val beforeChooser = inputGeneration
         val dismissed = cancelAnchorRegistration()
-        cancelInputState()
-        if (dismissed && root.width > 0 && root.height > 0) updatePointerBounds()
+        val chooserUnchanged = inputGeneration == beforeChooser && session === originalSession && owner === originalOwner
+        if (!chooserUnchanged) {
+            // The callback's replacement/nested retirement owns all current local state.
+            // A distinct old Session still needs cleanup; same-Session retirement already did it.
+            if (session !== originalSession) originalSession?.cancelPendingInput()
+            return null
+        }
+        val canceledRevision = cancelInputState(originalSession = originalSession, originalOwner = originalOwner)
+        if (dismissed && inputGeneration == canceledRevision &&
+            session === originalSession && owner === originalOwner && root.width > 0 && root.height > 0) updatePointerBounds()
+        return canceledRevision
     }
 
     /** Opening uses this body before its correlated OPEN, without publishing the new revision. */
-    private fun cancelInputState(publish: Boolean = true) {
+    private fun cancelInputState(publish: Boolean = true, originalSession: ProjectionSession? = session,
+                                 originalOwner: ReceiverSessionOwner? = owner): Long {
+        val canceledRevision = originalOwner?.advanceInputRevision() ?: (inputGeneration + 1)
+        inputGeneration = canceledRevision
         anchorHeldIndicator.clear()
         nativeInputStage("cancel")
-        inputGeneration = owner?.advanceInputRevision() ?: (inputGeneration + 1)
         if (::hidInput.isInitialized) hidInput.cancel()
         if (::functionInput.isInitialized) functionInput.cancel()
         if (::classifiedPadLongPress.isInitialized) classifiedPadLongPress.cancel()
@@ -923,9 +969,13 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         if (::screen.isInitialized) screen.cancelTouch()
         if (::localInput.isInitialized) localInput.cancel()
         if (::completedInput.isInitialized) completedInput.cancel()
-        session?.cancelPendingInput()
+        // A nested retirement already canceled this Session's old work. Do not cancel work
+        // admitted after it; a replaced Session still needs its own original cleanup.
+        if (inputGeneration == canceledRevision || session !== originalSession) originalSession?.cancelPendingInput()
         root.removeCallbacks(confirmTap); root.removeCallbacks(edgeTick); edgeScheduled = false; edgeMotion.stop()
-        if (publish) publishHeadPointer()
+        if (publish && inputGeneration == canceledRevision && session === originalSession && owner === originalOwner)
+            publishHeadPointer()
+        return canceledRevision
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
@@ -1147,22 +1197,22 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     override fun onResume() {
         super.onResume(); resumed = true; pointer.start(); longTouch.start(); padContact.start()
         hidDevices.start()
-        if (hasWindowFocus()) functionInput.start()
+        if (hasWindowFocus()) { functionInput.start(); nativeSwipeInput.start() }
         attachCameraPermissionHost()
         attachPresentation()
     }
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (::root.isInitialized) {
-            if (!hasFocus) { cancelInput(); pointer.stop(); if (::longTouch.isInitialized) longTouch.stop(); if (::padContact.isInitialized) padContact.stop(); if (::functionInput.isInitialized) functionInput.stop() }
-            else if (resumed) { pointer.start(); longTouch.start(); padContact.start(); functionInput.start(); attachPresentation() }
+            if (!hasFocus) { cancelInput(); pointer.stop(); if (::longTouch.isInitialized) longTouch.stop(); if (::padContact.isInitialized) padContact.stop(); if (::functionInput.isInitialized) functionInput.stop(); if (::nativeSwipeInput.isInitialized) nativeSwipeInput.stop() }
+            else if (resumed) { pointer.start(); longTouch.start(); padContact.start(); functionInput.start(); nativeSwipeInput.start(); attachPresentation() }
             owner?.presentation(sessionView, usable(), localInputVisible())
         }
     }
     override fun onPause() {
         resumed = false; cancelInput()
         serviceBinder?.detachCameraPermissionHost(cameraPermissionHost)
-        hidDevices.stop(); functionInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
+        hidDevices.stop(); functionInput.stop(); nativeSwipeInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
         owner?.detach(sessionView)
         super.onPause()
     }
@@ -1171,7 +1221,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         shellPadContact.stop()
         serviceBinder?.detachCameraPermissionHost(cameraPermissionHost)
         cameraPermissionRequests.clear()
-        hidDevices.stop(); functionInput.stop(); longTouch.stop(); padContact.stop()
+        hidDevices.stop(); functionInput.stop(); nativeSwipeInput.stop(); longTouch.stop(); padContact.stop()
         owner?.detach(sessionView)
         if (isFinishing && bindingValid) {
             // Original view/task scope only. A delayed destructor never resolves a newer singleton H.
