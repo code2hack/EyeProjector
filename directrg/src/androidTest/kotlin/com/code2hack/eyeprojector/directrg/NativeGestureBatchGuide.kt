@@ -12,7 +12,8 @@ import android.widget.TextView
 import java.lang.ref.WeakReference
 
 /** Main-thread test UI. Uses only an owned label in the existing decor drawing overlay. */
-internal class NativeGestureBatchGuide private constructor(private val queue: NativeInputObservationQueue) {
+internal class NativeGestureBatchGuide private constructor(private val queue: NativeInputObservationQueue,
+                                                         private val manualRepeat: Boolean) {
     private class Label(activity: Activity) : TextView(activity) {
         var promptId = ""
         var drawAttemptPromptId: String? = null
@@ -36,8 +37,9 @@ internal class NativeGestureBatchGuide private constructor(private val queue: Na
     private var firstFailure: Throwable? = null
     var failureCount = 0; private set
     var uiShown = false; private set
-    val completed get() = plan.snapshot.complete
-    val promptId get() = plan.snapshot.prompt.id
+    val mode get() = if (manualRepeat) "manual_repeat" else "automatic_six_steps"
+    val completed get() = !manualRepeat && plan.snapshot.complete
+    val promptId get() = if (manualRepeat) "two_single_repeat" else plan.snapshot.prompt.id
     val released get() = surface == null
 
     fun onResumed(receiver: Activity) = contained {
@@ -105,8 +107,8 @@ internal class NativeGestureBatchGuide private constructor(private val queue: Na
         }
         render()
         val label = surface!!.label
-        setVisible(labelVisible(label) && drawnPromptId == plan.snapshot.prompt.id)
-        plan.update(SystemClock.uptimeMillis(), visible).forEach { record(it.name, it.snapshot) }
+        setVisible(labelVisible(label) && drawnPromptId == promptId)
+        if (!manualRepeat) plan.update(SystemClock.uptimeMillis(), visible).forEach { record(it.name, it.snapshot) }
         render()
     }
 
@@ -128,14 +130,15 @@ internal class NativeGestureBatchGuide private constructor(private val queue: Na
         val owned = surface ?: return
         val snapshot = plan.snapshot
         val text = when {
+            manualRepeat -> "TWO FINGERS: ONE TAP\nRepeat 10–15 times\nAbout 3 seconds apart\nThen stop."
             snapshot.complete -> snapshot.prompt.instruction
             snapshot.step == 0 -> "${snapshot.prompt.instruction}\n${snapshot.countdownSeconds}s"
             else -> "STEP ${snapshot.step} / ${NativeGestureBatchGuidePlan.STEP_COUNT}  ·  ${snapshot.countdownSeconds}s\n" +
                 "${snapshot.prompt.instruction}\nDo it once, then wait."
         }
-        if (owned.label.promptId != snapshot.prompt.id) {
+        if (owned.label.promptId != promptId) {
             drawnPromptId = null
-            owned.label.promptId = snapshot.prompt.id
+            owned.label.promptId = promptId
             setVisible(false)
         }
         if (owned.label.text.toString() != text) owned.label.text = text
@@ -150,13 +153,15 @@ internal class NativeGestureBatchGuide private constructor(private val queue: Na
     }
 
     private fun setVisible(value: Boolean) {
+        val changed = visible != value
         visible = value
         if (reportedVisible != value) { reportedVisible = value; record("visibility") }
+        if (manualRepeat && changed) record(if (value) "resume" else "pause")
     }
 
     private fun pause() {
         setVisible(false)
-        plan.update(SystemClock.uptimeMillis(), false).forEach { record(it.name, it.snapshot) }
+        if (!manualRepeat) plan.update(SystemClock.uptimeMillis(), false).forEach { record(it.name, it.snapshot) }
     }
 
     private fun removeSurface(event: String) {
@@ -175,10 +180,14 @@ internal class NativeGestureBatchGuide private constructor(private val queue: Na
         val root = surface?.root
         queue.capture("guide", activity?.get()?.let(System::identityHashCode),
             SystemClock.uptimeMillis(), SystemClock.elapsedRealtimeNanos()) {
-            mapOf("guideEvent" to event, "promptId" to snapshot.prompt.id,
-                "stepNumber" to snapshot.step, "stepCount" to NativeGestureBatchGuidePlan.STEP_COUNT,
-                "countdownSeconds" to snapshot.countdownSeconds, "remainingMs" to snapshot.remainingMs,
-                "promptElapsedMs" to snapshot.promptElapsedMs, "activeElapsedMs" to snapshot.activeElapsedMs,
+            mapOf("guideEvent" to event, "guideMode" to mode,
+                "promptId" to if (manualRepeat) promptId else snapshot.prompt.id,
+                "stepNumber" to if (manualRepeat) null else snapshot.step,
+                "stepCount" to if (manualRepeat) null else NativeGestureBatchGuidePlan.STEP_COUNT,
+                "countdownSeconds" to if (manualRepeat) null else snapshot.countdownSeconds,
+                "remainingMs" to if (manualRepeat) null else snapshot.remainingMs,
+                "promptElapsedMs" to if (manualRepeat) null else snapshot.promptElapsedMs,
+                "activeElapsedMs" to if (manualRepeat) null else snapshot.activeElapsedMs,
                 "guideVisible" to visible, "guideResumed" to resumed, "guideFocused" to focused,
                 "guideInteractive" to interactive, "observationActive" to observationActive,
                 "interactiveSampleElapsedNs" to interactiveSampleElapsedNs,
@@ -232,7 +241,8 @@ internal class NativeGestureBatchGuide private constructor(private val queue: Na
     }
 
     companion object {
-        fun create(argument: String?, queue: NativeInputObservationQueue): NativeGestureBatchGuide? =
-            if (argument == "true") NativeGestureBatchGuide(queue) else null
+        fun create(argument: String?, queue: NativeInputObservationQueue,
+                   guideCase: String? = null): NativeGestureBatchGuide? =
+            if (argument == "true") NativeGestureBatchGuide(queue, guideCase == "two-single-repeat") else null
     }
 }

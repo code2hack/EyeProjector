@@ -161,6 +161,8 @@ fun main() {
     check(NativeGestureBatchGuide.create(null,offQueue)==null)
     check(NativeGestureBatchGuide.create("false",offQueue)==null)
     check(NativeGestureBatchGuide.create("True",offQueue)==null)
+    check(NativeGestureBatchGuide.create(null,offQueue,"two-single-repeat")==null)
+    check(NativeGestureBatchGuide.create("false",offQueue,"two-single-repeat")==null)
     check(rows(offQueue).isEmpty())
 
     SystemClock.now=0
@@ -245,6 +247,57 @@ fun main() {
     tick(visibilityGuide,100100,active=false); check(visibilityGuide.released)
     visibilityGuide.stop()
 
+    val repeatQueue=NativeInputObservationQueue()
+    val repeat=NativeGestureBatchGuide.create("true",repeatQueue,"two-single-repeat")!!
+    val repeatActivity=Activity(); val repeatRoot=repeatActivity.window.decorView
+    val preservedOverlay=View(); repeatRoot.overlay.add(preservedOverlay)
+    repeat.onResumed(repeatActivity); tick(repeat,0)
+    check(repeat.mode=="manual_repeat" && repeat.promptId=="two_single_repeat" && !repeat.uiShown)
+    val repeatLabel=repeatRoot.overlay.views.last() as TextView
+    val repeatText="TWO FINGERS: ONE TAP\\nRepeat 10–15 times\\nAbout 3 seconds apart\\nThen stop."
+    check(repeatLabel.text==repeatText && !repeatLabel.isFocusable && !repeatLabel.isClickable && !repeatLabel.selectable)
+    repeatRoot.overlay.draw(); check(repeat.uiShown)
+    tick(repeat,900000); check(repeatLabel.text==repeatText && !repeat.completed)
+    repeatRoot.visibility=View.INVISIBLE; tick(repeat,900100); check(repeat.released)
+    repeatRoot.visibility=View.VISIBLE; tick(repeat,1900000); repeatRoot.overlay.draw()
+    check(repeat.promptId=="two_single_repeat" && !repeat.completed)
+    repeat.onUnavailable(repeatActivity,"paused"); check(repeat.released)
+    repeat.onResumed(repeatActivity); tick(repeat,2900000); repeatRoot.overlay.draw()
+    repeat.stop(); check(repeat.released && repeatRoot.overlay.views==listOf(preservedOverlay))
+    val repeatRows=rows(repeatQueue)
+    check(repeatRows.any { it.fields["guideEvent"]=="shown" })
+    check(repeatRows.any { it.fields["guideEvent"]=="pause" } && repeatRows.any { it.fields["guideEvent"]=="resume" })
+    check(repeatRows.all { it.fields["guideMode"]=="manual_repeat" && it.fields["promptId"]=="two_single_repeat" &&
+        listOf("stepNumber","stepCount","countdownSeconds","remainingMs","promptElapsedMs","activeElapsedMs").all { key->it.fields[key]==null } })
+    check(repeatRows.none { it.fields["guideEvent"] in listOf("countdown","countdown_start","step_start","step_end","complete") })
+    check(repeatRows.all { row-> row.fields.values.all { it==null || it is String || it is Number || it is Boolean } })
+    tick(repeat,3900000); repeatRoot.overlay.draw(); check(rows(repeatQueue).isEmpty())
+
+    val stopDirectory=java.nio.file.Files.createTempDirectory("native-owner-stop-host-").toFile()
+    try {
+        val stop=NativeInputObservationOwnerStop(stopDirectory,"run_a")
+        val otherStop=NativeInputObservationOwnerStop(stopDirectory,"run_b")
+        stop.prepare(); otherStop.prepare()
+        check(stop.requestFile.name=="probe-run_a-native-stop.request" && !stop.requested() && !otherStop.requested())
+        stop.requestFile.writeText("OWNER_DONE")
+        check(stop.requested() && !otherStop.requested())
+        check(runCatching { stop.prepare() }.isFailure && stop.requested()) // Prior exact request remains untouched.
+        fun stoppedState()=NativeInputObservationRunState(300000).apply {
+            windowStartMs=100; windowEndMs=2100; sinkInstalled=true; exactSinkDetached=true
+            cleanupComplete=true; exportComplete=true; rowsRecorded=3; rowsWritten=3
+        }
+        check(!stoppedState().captureComplete) // Early closure must not pretend the full window elapsed.
+        check(nativeInputObservationOwnerStopComplete(stoppedState(),true))
+        check(!nativeInputObservationOwnerStopComplete(stoppedState(),false))
+        check(!nativeInputObservationOwnerStopComplete(stoppedState().apply { cleanupComplete=false },true))
+        check(!nativeInputObservationOwnerStopComplete(stoppedState().apply { exportComplete=false },true))
+        check(!nativeInputObservationOwnerStopComplete(stoppedState().apply { observerFailures=1 },true))
+        check(!nativeInputObservationOwnerStopComplete(stoppedState().apply { exportFailures=1 },true))
+        check(!nativeInputObservationOwnerStopComplete(stoppedState().apply { rowsWritten=2 },true))
+        check(!nativeInputObservationOwnerStopComplete(stoppedState().apply { windowEndMs=99 },true))
+        check(!nativeInputObservationOwnerStopComplete(stoppedState().apply { failed(IllegalStateException("failure")) },true))
+    } finally { stopDirectory.deleteRecursively() }
+
     val batchQueue=NativeInputObservationQueue(); val batch=NativeGestureBatchGuide.create("true",batchQueue)!!
     val batchActivity=Activity(); var batchTime=0L
     batch.onResumed(batchActivity); tick(batch,batchTime)
@@ -264,6 +317,7 @@ fun main() {
     batch.stop(); val batchRows=rows(batchQueue)
     check(batchRows.filter { it.fields["guideEvent"]=="step_start" }.map { it.fields["promptId"] }==ids.drop(1))
     check(batchRows.filter { it.fields["guideEvent"]=="step_end" }.map { it.fields["promptId"] }==ids.drop(1))
+    check(batchRows.all { it.fields["guideMode"]=="automatic_six_steps" })
     check(batchRows.all { row -> row.fields.values.all { it==null || it is String || it is Number || it is Boolean } })
 
     val failureQueue=NativeInputObservationQueue(); val failed=NativeGestureBatchGuide.create("true",failureQueue)!!
@@ -278,6 +332,11 @@ fun main() {
     check(runCatching { removal.stop() }.isFailure && !removal.released)
     host.window.decorView.overlay.failRemoval=false
     check(runCatching { removal.stop() }.isFailure && removal.released) // Original error is retained.
-    println("PASS: actual guide plan/UI adapter; nonhierarchical overlay draw regression, one draw-attempt per prompt/surface, hidden host/window and own bounds/attachment, automatic six slots, draw/visibility/sink gating, pause/resume, default-off, noninteractive unchanged root geometry, stale/late callbacks, exact cleanup and partial failures. Host doubles only.")
+    val repeatFailure=NativeGestureBatchGuide.create("true",NativeInputObservationQueue(),"two-single-repeat")!!
+    val repeatBadHost=Activity(); repeatBadHost.window.decorView.overlay.failAddAfterSideEffect=true
+    repeatFailure.onResumed(repeatBadHost); tick(repeatFailure,0)
+    check(repeatFailure.failureCount>0 && repeatFailure.released && repeatBadHost.window.decorView.overlay.views.isEmpty())
+    check(runCatching { repeatFailure.stop() }.isFailure)
+    println("PASS: actual guide plan/UI adapter; static manual-repeat draw/pause/resume/cleanup, exact per-run Owner-stop control and early closure integrity, default six slots, nonhierarchical overlay draw regression, one draw-attempt per prompt/surface, hidden host/window and own bounds/attachment, draw/visibility/sink gating, default-off, noninteractive unchanged root geometry, stale/late callbacks, exact cleanup and partial failures. Host doubles only.")
 }
 '''

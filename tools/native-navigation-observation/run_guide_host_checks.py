@@ -19,7 +19,15 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     source = root / "directrg/src/androidTest/kotlin/com/code2hack/eyeprojector/directrg"
     inputs = [source / name for name in ("NativeGestureBatchGuidePlan.kt", "NativeGestureBatchGuide.kt",
-                                        "NativeInputObservationQueue.kt")]
+                                        "NativeInputObservationQueue.kt", "NativeInputObservationRunState.kt")]
+    # Compile the exact Android-independent stop control from the actual instrumentation source.
+    helper_text = (source / "NativeInputObservation.kt").read_text()
+    start, end = "// BEGIN NATIVE_OBSERVATION_OWNER_STOP", "// END NATIVE_OBSERVATION_OWNER_STOP"
+    assert helper_text.count(start) == helper_text.count(end) == 1
+    stop_source = output / "OwnerStop.kt"
+    stop_source.write_text("package com.code2hack.eyeprojector.directrg\nimport java.io.File\n" +
+                           helper_text.split(start, 1)[1].split(end, 1)[0])
+    inputs.append(stop_source)
     for name, content in {**DOUBLES, "GuideChecks.kt": CHECKS}.items():
         path = output / name
         path.write_text(content)
@@ -51,7 +59,7 @@ def main():
     digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
     recorded = inputs + [source / "NativeInputObservation.kt", Path(__file__),
                          Path(__file__).with_name("guide_host_doubles.py")]
-    result = {"scope": "Actual guide plan/UI adapter and primitive queue with host doubles only; no SDK/device",
+    result = {"scope": "Actual guide plan/UI adapter, queue/run-state and extracted exact stop control with host doubles only; no SDK/device",
               "inputs": [{"path": str(path), "sha256": digest(path)} for path in recorded],
               "dependencies": [{"path": str(path), "sha256": digest(path)} for path in jars],
               "commands": commands}
