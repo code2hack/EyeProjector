@@ -3,6 +3,7 @@ package com.code2hack.eyeprojector.directhost.anchor.registration
 import com.code2hack.eyeprojector.directhost.ProjectionContext
 import com.code2hack.eyeprojector.directhost.anchor.preferences.*
 import com.code2hack.eyeprojector.directhost.anchor.target.AnchorTargetDescriptor
+import com.code2hack.eyeprojector.directhost.anchor.target.AnchorTargetResolver
 import com.code2hack.eyeprojector.directhost.anchor.target.AnchorTargetResolution
 import com.code2hack.eyeprojector.directhost.anchor.target.AnchorTargetUnavailableReason
 import com.code2hack.eyeprojector.directhost.anchor.target.AnchorTargetAmbiguity
@@ -220,6 +221,55 @@ class AnchorRegistrationTest {
         assertEquals(AnchorRegistrationCompletion.Canceled, coordinator.choose("old", AnchorMode.HOLD))
         assertEquals(0, storage.writes)
         assertTrue(coordinator.choose("new", AnchorMode.CLICK) is AnchorRegistrationCompletion.Saved)
+    }
+
+    @Test fun successiveRegistrationsReplaceSameAppTargetAndCancelPreservesLatestCompleteSetting() {
+        val storage = Storage(old.copy(mode = AnchorMode.HOLD))
+        val store = AppAnchorStore(storage)
+        val changes = mutableListOf<AppAnchorChange>()
+        store.observe(app, changes::add)
+        val coordinator = AnchorRegistrationCoordinator<Long>(store)
+        assertTrue(coordinator.begin(1L, intent(), snapshot()) is AnchorRegistrationCapture.Selected)
+        val first = coordinator.choose(1L, AnchorMode.HOLD) as AnchorRegistrationCompletion.Saved
+        val other = target.copy(ordinal = 2, resourceId = "$app:id/other", bounds = UiBounds(200, 300, 240, 340))
+        val secondIntent = intent(selection = other.bounds).copy(gestureId = 2, sequence = 2)
+        assertTrue(coordinator.begin(2L, secondIntent, snapshot(targets = listOf(target, other))) is AnchorRegistrationCapture.Selected)
+        assertEquals(first.anchor, store.read(app))
+        assertEquals(AnchorRegistrationCompletion.Canceled, coordinator.choose(1L, AnchorMode.CLICK))
+        assertFalse(coordinator.cancel(1L))
+        val second = coordinator.choose(2L, AnchorMode.CLICK) as AnchorRegistrationCompletion.Saved
+        assertEquals(other.resourceId, second.anchor.descriptor.resourceId)
+        assertEquals(AnchorMode.CLICK, second.anchor.mode)
+        val saved = store.snapshot(app)
+        assertEquals(second.anchor, saved.anchor)
+        val movedOther = other.copy(bounds = UiBounds(100, 100, 140, 140))
+        val resolved = AnchorTargetResolver.resolve(saved.anchor!!.descriptor, snapshot(targets = listOf(target, movedOther)))
+            as AnchorTargetResolution.Unique
+        assertEquals(movedOther, resolved.current.target)
+        assertTrue(coordinator.begin(3L, intent().copy(gestureId = 3, sequence = 3), snapshot()) is AnchorRegistrationCapture.Selected)
+        assertTrue(coordinator.cancel(3L))
+        assertEquals(AnchorRegistrationCompletion.Canceled, coordinator.choose(3L, AnchorMode.HOLD))
+        assertEquals(saved, store.snapshot(app))
+        assertEquals(2, storage.writes)
+        assertEquals(2, changes.size)
+        assertEquals(first.anchor, (changes[1] as AppAnchorChange.Replaced).previous)
+        assertEquals(second.anchor, (changes[1] as AppAnchorChange.Replaced).current)
+    }
+
+    @Test fun fourRepeatedContentIdentitiesRemainAmbiguousAndPreserveSavedHold() {
+        val saved = old.copy(mode = AnchorMode.HOLD)
+        val storage = Storage(saved)
+        val store = AppAnchorStore(storage)
+        val coordinator = AnchorRegistrationCoordinator<Long>(store)
+        val repeated = (0..3).map { index -> target.copy(ordinal = index + 1, resourceId = "$app:id/content_view",
+            bounds = if (index == 0) bounds else UiBounds(100, 100 + index * 50, 200, 140 + index * 50)) }
+        val result = coordinator.beginDetailed(1L, intent(), snapshot(targets = repeated))
+        assertEquals(AnchorRegistrationCapture.Rejected(AnchorRegistrationFailure.TARGET_UNAVAILABLE), result.capture)
+        assertEquals(4, result.identityMatchCount)
+        assertEquals(AnchorTargetAmbiguity.TARGET_IDENTITY, (result.resolution as AnchorTargetResolution.Ambiguous).kind)
+        assertEquals(AnchorRegistrationCompletion.Canceled, coordinator.choose(1L, AnchorMode.CLICK))
+        assertEquals(saved, store.read(app))
+        assertEquals(0, storage.writes)
     }
 
     @Test fun capturedSelectionSurvivesPassiveWindowAndGeometryObservations() {
