@@ -2,6 +2,39 @@
 
 Worker: Worker-EyeProjector-v0.3-112.
 
+## Existing-process registration diagnostic (299)
+
+The separate opt-in `operation=anchor-registration-diagnostic` reads the existing Phone process
+without staging any Activity, starting/stopping a Session, configuring a trace, writing preferences,
+requesting permission, accessing UiAutomation or injecting any input. Use `am instrument --no-restart -w`
+with the existing runner, a fresh `runId`, and optional `observeSeconds` (default10, range0..30).
+It returns `DIAGNOSTIC_COMPLETE`, `DIAGNOSTIC_UNAVAILABLE` or `DIAGNOSTIC_ERROR`, never feature PASS.
+The private output is `files/probe-<runId>-registration-diagnostic.jsonl`.
+
+The diagnostic reads Main9cd's existing private `HostBootstrap.instance` field; it deliberately avoids
+`get(context)`, which could construct a missing runtime/provider. Missing instance is unavailable.
+It records actual provider installation state/failure, coordinator lastFailure and reader presence,
+then queries the actual current source through `uiTargetContext` and actual metadata through `uiTargets`.
+Only source/window/target IDs, classes, bounds, actionable flags and typed failures are copied;
+no UI text/content is exported. A fresh snapshot alone is not the original failed-request witness.
+The public source callback can return null without exposing its internally caught exception; this
+limit is explicit in the output. Callback or FIFO completion not observed within the finite test wait
+is recorded, without repairing setup or substituting stale bootstrap-file data.
+
+For a nonzero passive window, only an existing nonnull registration handler is wrapped on its same
+app FIFO. An actual incoming `CapturedAnchorRequest` is copied with its original intent/snapshot and
+the pure `AnchorRegistrationTargets.capture` outcome, then the exact original handler receives the
+exact request once. Original exceptions are copied and rethrown as the same object. JSON serialization
+and file writes occur on the instrumentation worker, outside the original FIFO. No registration is
+dispatched by the diagnostic. Snapshot reads and future actual request observations remain separate.
+
+Finally, pending installation is canceled under the install lock and only the diagnostic's own wrapper
+can restore its exact prior handler, on that same FIFO. A replaced handler is preserved. Actual restore
+completion is reported; `PENDING_ORIGINAL_FIFO` means retirement is unconfirmed, never silently restored.
+No Activity/main synchronous staging is involved. This source allocation authorizes no invocation or
+APK install. Root builds the two Phone AndroidTest tasks on immutable Main9cd plus the exact test overlay;
+later reserved diagnostics must preserve existing consent, connection and all original evidence/APK duties.
+
 `operation=anchor-adb-phone-control` is an opt-in branch of the existing `ChosenAppsInstrumentation`. It returns its own DIAGNOSTIC_COMPLETE/DIAGNOSTIC_ERROR result before the existing default PASS path. Existing UI, notification, snapshot, scale, projected-home and fixture persistence operations keep their original dispatch and preference namespaces. No manifest, runner declaration, build file, permission or production source changes are made here. The branch never accesses UiAutomation, requests consent, repairs a helper or sends human prompts/audio.
 
 This is test-only preparation. The original3bfb/SDK169 and Phone176/SDK175 preparation records remain historical. Helper correction257 targets unchanged Main9cd and requires a new matched AndroidTest build, review and runtime allocation; earlier APKs and closed237/254 observations do not qualify this changed helper. Preserve the original4aa test APK as the restoration target after later temporary installs. No device command in this document is authorized by source preparation.

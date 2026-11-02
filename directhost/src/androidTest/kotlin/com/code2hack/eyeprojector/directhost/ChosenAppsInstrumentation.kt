@@ -36,6 +36,15 @@ class ChosenAppsInstrumentation : Instrumentation() {
         val result = Bundle()
         try {
             when (arguments.getString("operation", "ui")) {
+                "anchor-registration-diagnostic" -> {
+                    try { AnchorRegistrationDiagnostic(targetContext, arguments, result).run() }
+                    catch (error: Throwable) {
+                        result.putString("result", "DIAGNOSTIC_ERROR")
+                        result.putString("failure", error.stackTraceToString())
+                    }
+                    finish(if (result.getString("result") == "DIAGNOSTIC_ERROR") Activity.RESULT_CANCELED else Activity.RESULT_OK, result)
+                    return
+                }
                 "anchor-adb-phone-control" -> {
                     AnchorAdbPhoneDriver(this, targetContext, arguments, result).run()
                     finish(if (result.getString("result") == "DIAGNOSTIC_ERROR") Activity.RESULT_CANCELED else Activity.RESULT_OK, result)
