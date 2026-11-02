@@ -69,7 +69,7 @@ class PhoneSessionController private constructor(context: Context) {
     @Volatile private var published = SessionState("", SessionPhase.UNKNOWN)
     @Volatile private var featureDetail = "Reconciling projection ownership"
     private lateinit var controller: SessionController
-    private lateinit var activation: PhoneActivationEngine
+    @Volatile private lateinit var activation: PhoneActivationEngine
     val pairing = LanPairing(store, PeerRole.PHONE, ::invalidateState, { socket ->
         SessionControl.serve(store.directory, socket, ::command)
     })
@@ -611,10 +611,17 @@ class PhoneSessionController private constructor(context: Context) {
     fun cancelPhoneHid(route: PhoneHidRoute, eventTimeMs: Long) = route.cancel(eventTimeMs)
 
     private fun command(request: SessionControl.Request): SessionState {
-        val userTransition = request.operation in setOf(SessionControl.Operation.START, SessionControl.Operation.STOP) ||
-            request.intent != null || request.cancelTrigger != null || request.cancelActivation != null
-        // Polling, presentation and genuine failure reports remain live. Embedded STATUS commands
-        // are user input and must not wait behind the feature writer before this decision.
+        // The paired client repeats its persistent T on ordinary STATUS polls, including after
+        // that T was mapped. The feature engine already treats that known T as observation.
+        // Read its immutable published journal before invoking any user-control cancellation.
+        val knownTrigger = request.intent?.triggerId?.let { id ->
+            ::activation.isInitialized && id in activation.journal.triggers
+        } == true
+        val userTransition = request.operation == SessionControl.Operation.STOP ||
+            request.operation == SessionControl.Operation.START && request.intent == null ||
+            request.intent != null && !knownTrigger || request.cancelTrigger != null || request.cancelActivation != null
+        // Fresh embedded intents and explicit commands retain the original before-wait gate.
+        // A repeated accepted/canceled T, presentation or status observation owns no input action.
         if (userTransition && !userControl()) return state()
         return featureLane.submit<SessionState> {
             drain(request) ?: state().copy(detail = "ACTIVATION_STORAGE_PENDING")

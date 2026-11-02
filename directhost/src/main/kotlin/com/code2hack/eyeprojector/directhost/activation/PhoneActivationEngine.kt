@@ -16,7 +16,7 @@ internal class PhoneActivationEngine(
     private val contextRevision: () -> Long = { 0L },
 ) {
     val local = PhoneActivationOwner<ProjectionContext>()
-    var journal = read(); private set
+    @Volatile var journal = read(); private set
     var handle: ActivationHandle? = journal.current?.takeIf { it.desired }?.let { local.restoreActivation(it.id, ActivationCause.GLASSES_LAUNCH) }; private set
     private var localAttempt: ActivationAttempt? = null
     private val canceledLocalAttempts = mutableMapOf<String, ActivationAttempt>()
