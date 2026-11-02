@@ -14,7 +14,7 @@ private class Glasses(val activity: ActivityNavigationWiring) {
     private val adapter = AndroidHidInput(Context(), activity.hidInput)
     private val device = InputDevice(41, "original peripheral", 1, 2, "Remote")
     init {
-        for (role in listOf(HidAction.NAVIGATION, HidAction.LOCK)) {
+        for (role in listOf(HidAction.NAVIGATION)) {
             activity.hidBindings.assign(role, HidBinding(HidButton(HidDeviceIdentity(device.descriptor, 1, 2),
                 100 + role.ordinal, 200 + role.ordinal), "Remote", role.name))
         }
@@ -30,6 +30,7 @@ private class Glasses(val activity: ActivityNavigationWiring) {
             deviceId = device.id, downTime = down, eventTime = android.os.SystemClock.time)))
     }
     fun double() { press(); Handler.advance(100); press() }
+    fun triple() { double(); Handler.advance(100); press() }
 }
 
 private class Phone(private val activity: ActivityNavigationWiring) {
@@ -81,6 +82,7 @@ private class Phone(private val activity: ActivityNavigationWiring) {
         check(controller.accept(PhoneHidController.Event(7, bindings.getValue(role), PhoneHidPhase.UP, down, android.os.SystemClock.time)))
     }
     fun double() { press(); Handler.advance(100); press() }
+    fun triple() { double(); Handler.advance(100); press() }
 }
 
 fun main() {
@@ -98,10 +100,10 @@ fun main() {
             check(Calls.events.indexOf("session-cancel") < Calls.events.indexOf("navigate"))
         } finally { session.transport.close() }
     }
-    scenario("Glasses HID double uses contextual Home wire operation and retains projection") {
+    scenario("Glasses HID triple uses contextual Home wire operation and retains projection") {
         val a = ActivityNavigationWiring(); val session = a.session!!; val decoder = session.decoder
         try {
-            Glasses(a).double()
+            Glasses(a).triple()
             check(session.transport.awaitNavigation() == Navigation.CONTEXTUAL_HOME)
             check(a.session === session && session.decoder === decoder && !session.closed && !a.finished)
             check(a.pointer.positionReads == 0)
@@ -111,9 +113,9 @@ fun main() {
         val a = ActivityNavigationWiring(); val session = a.session!!
         try {
             a.showControlPanel(); a.mainControls.visibility = View.GONE; a.hidPanel.visibility = View.VISIBLE
-            val source = Glasses(a); source.double()
+            val source = Glasses(a); source.triple()
             check(a.hidPanel.visibility == View.GONE && a.mainControls.visibility == View.VISIBLE && !a.finished)
-            Handler.advance(100); source.double()
+            Handler.advance(100); source.triple()
             check(a.finished && a.owner!!.canceled == listOf(a.launchScope to a.visibleActivation))
             check(session.navigations.isEmpty() && a.pointer.positionReads == 0)
         } finally { session.transport.close() }
@@ -121,7 +123,7 @@ fun main() {
     scenario("Glasses HID Lock cancels pending Back then requests existing sleep while retaining session") {
         val a = ActivityNavigationWiring(); val session = a.session!!
         try {
-            val source = Glasses(a); source.press(); Handler.advance(100); source.press(HidAction.LOCK); Handler.advance(600)
+            val source = Glasses(a); source.press(); Handler.advance(100); source.press(); Handler.advance(600)
             check(a.shellPadContact.requests == 1 && session.navigations.isEmpty())
             check(session.transport.frames.isEmpty() && !session.closed && !a.finished && a.owner!!.canceled.isEmpty())
             check(Calls.events.indexOf("session-cancel") < Calls.events.indexOf("sleep-request"))
@@ -139,11 +141,11 @@ fun main() {
         val a = ActivityNavigationWiring(); val session = a.session!!
         try {
             a.showControlPanel(); a.mainControls.visibility = View.GONE; a.hidPanel.visibility = View.VISIBLE
-            val first = Phone(a); first.double()
+            val first = Phone(a); first.triple()
             check(first.frames.map { ReceiverInput.from(it.payload).kind } == listOf(ReceiverInputKind.HOME))
             check(a.hidPanel.visibility == View.GONE && !a.finished && a.session === session)
             Handler.advance(100)
-            val second = Phone(a); second.double()
+            val second = Phone(a); second.triple()
             check(a.finished && a.pendingExit == a.launchScope to a.visibleActivation)
             check(a.owner!!.canceled == listOf(a.launchScope to a.visibleActivation))
         } finally { session.transport.close() }
@@ -153,7 +155,7 @@ fun main() {
             val a = ActivityNavigationWiring(); val session = a.session!!
             try {
                 if (local) a.showControlPanel()
-                val source = Phone(a); source.press(PhoneHidAction.LOCK)
+                val source = Phone(a); source.double(); Handler.advance(600)
                 check(source.frames.map { ReceiverInput.from(it.payload).kind } == listOf(ReceiverInputKind.LOCK))
                 check(a.shellPadContact.requests == 1 && !a.finished && !session.closed && session.navigations.isEmpty())
             } finally { session.transport.close() }

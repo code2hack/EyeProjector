@@ -45,7 +45,7 @@ fun main(args: Array<String>) {
     val merged = args.single() == "merged"
     val paired = merged || args.single() == "paired"
     val label = if (merged) "ACTUAL MERGED116+117" else if (paired) "PAIRED117+116 SOURCE JOIN" else "STANDALONE117 BASELINE"
-    for (projected in listOf(false, true)) for (action in listOf(PhoneHidAction.NAVIGATION, PhoneHidAction.LOCK)) {
+    for (projected in listOf(false, true)) for (action in listOf(PhoneHidAction.NAVIGATION)) {
         Fixture().use { f ->
             val context = f.noPoint(projected)
             val at = android.os.SystemClock.uptimeMillis()
@@ -61,7 +61,6 @@ fun main(args: Array<String>) {
             val stock = (f.control.sink as ByteArrayOutputStream).size()
             val received = f.events().map { it.kind }
             if (!paired) check(stock == 0 && received.isEmpty())
-            else if (action == PhoneHidAction.LOCK) check(received == listOf(ReceiverInputKind.LOCK) && stock == 0)
             else if (projected) check(stock > 0 && received.isEmpty())
             else check(received == listOf(ReceiverInputKind.BACK) && stock == 0)
             println("PASS $label actual stamped Session $action no-position projected=$projected ${if (paired) "admitted/completed" else "retains inherited merger rejection"}")
@@ -94,7 +93,7 @@ fun main(args: Array<String>) {
                 mode = if (wrong == "NONE") ReceiverUsabilityMode.NONE else fact.mode).bytes()))
             if (wrong == "retired") f.closeSession()
             val at = android.os.SystemClock.uptimeMillis()
-            for ((index, action) in listOf(PhoneHidAction.NAVIGATION, PhoneHidAction.LOCK).withIndex()) {
+            for ((index, action) in listOf(PhoneHidAction.NAVIGATION).withIndex()) {
                 f.edge(index.toLong(), action, original, at = at,
                     region = if (wrong == "region") "unrelated-original" else original.regionId!!,
                     word = when (wrong) { "stamp" -> original.word + 4; "zero-stamp" -> original.word and 3; else -> original.word })
@@ -107,7 +106,7 @@ fun main(args: Array<String>) {
     Fixture("owner").use { old -> Fixture("owner").use { fresh ->
         val wrong = old.noPoint()
         fresh.noPoint()
-        fresh.edge(1, PhoneHidAction.LOCK, wrong)
+        fresh.edge(1, PhoneHidAction.NAVIGATION, wrong)
         check(fresh.presses() == 0 && fresh.events().isEmpty())
         println("PASS $label same-owner successor Session rejects the original region/word identity")
     } }
@@ -127,23 +126,25 @@ private fun mergedNavigationCompletionScenarios(label: String) {
         }
         val launches = f.adapter(adapter)
         launches.initialize(47); launches.snapshot(true)
-        fun double(firstRoute: Long) {
+        fun triple(firstRoute: Long) {
             val context = f.noPoint(projected = true)
             val at = android.os.SystemClock.uptimeMillis()
             f.edge(firstRoute, PhoneHidAction.NAVIGATION, context, at = at)
             f.edge(firstRoute, PhoneHidAction.NAVIGATION, context, PhoneHidPhase.UP, at + 1, at)
             f.edge(firstRoute + 1, PhoneHidAction.NAVIGATION, context, at = at + 100)
             f.edge(firstRoute + 1, PhoneHidAction.NAVIGATION, context, PhoneHidPhase.UP, at + 101, at + 100)
+            f.edge(firstRoute + 2, PhoneHidAction.NAVIGATION, context, at = at + 200)
+            f.edge(firstRoute + 2, PhoneHidAction.NAVIGATION, context, PhoneHidPhase.UP, at + 201, at + 200)
             launches.snapshot(true)
             check(!f.peer.released && !f.control.released && !f.video.released && f.child.alive)
         }
-        double(20)
+        triple(20)
         check(adapter.calls == listOf(47, 47) && f.events().isEmpty())
         component = ProjectionLaunchCommands.HOME_COMPONENT
-        double(30)
+        triple(30)
         check(adapter.calls == listOf(47, 47))
         check(f.events().map { it.kind } == listOf(ReceiverInputKind.PANEL))
-        println("PASS $label unavailable-pointer stamped double Home actual Session app->grid->PANEL; transport/workspace retained")
+        println("PASS $label unavailable-pointer stamped triple Home actual Session app->grid->PANEL; transport/workspace retained")
     }
     for (heldDouble in listOf(false, true)) Fixture().use { f ->
         val context = f.noPoint()

@@ -300,6 +300,16 @@ internal fun coreUnitScenarios(run:(String,()->Unit)->Unit) {
         r.time=3000;r.input.anchor.retire();val fresh=r.down(803,PhoneHidAction.NAVIGATION);r.up(803,fresh);r.advance(4000)
         check(r.ordinary==listOf("navigation"))
     }}
+    for (count in 1..3) run("Owner323-consumed-navigation-$count-clicks-cannot-cancel-H2-or-emit-partial-action") {CoreRig().use {r->
+        r.hold();val first=r.down(901,PhoneHidAction.NAVIGATION);r.up(901,first)
+        r.hold();val successor=r.events.last()
+        repeat(count-1){ index->r.time+=100;val next=r.down(902L+index,PhoneHidAction.NAVIGATION);r.up(902L+index,next)}
+        r.advance(2000)
+        check(r.input.anchor.holding&&r.events.last()===successor&&r.controls.isEmpty()&&r.ordinary.isEmpty())
+        r.time=3000;r.input.anchor.retire()
+        val fresh=r.down(910,PhoneHidAction.NAVIGATION);r.up(910,fresh);r.advance(4000)
+        check(r.ordinary==listOf("navigation"))
+    }}
     run("consumed-backhome-second-press-cannot-cancel-successor-Hold") {CoreRig().use {r->
         r.hold();val first=r.down(1,PhoneHidAction.NAVIGATION);r.up(1,first)
         r.hold();val successor=r.events.last();r.time+=100

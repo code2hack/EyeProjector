@@ -38,6 +38,7 @@ import com.code2hack.eyeprojector.protocol.ReceiverUsabilityMode
 import com.code2hack.eyeprojector.protocol.Touch
 import com.code2hack.eyeprojector.protocol.CapturedFunctionIntent
 import com.code2hack.eyeprojector.protocol.FunctionIntent
+import com.code2hack.eyeprojector.protocol.FunctionIntentKind
 import com.code2hack.eyeprojector.protocol.FunctionOriginal
 import com.code2hack.eyeprojector.protocol.ReceiverControlSource
 import com.code2hack.eyeprojector.protocol.ReceiverControlDisposition
@@ -341,7 +342,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             })
         }
         root.addView(connectionView, FrameLayout.LayoutParams(-1, -1))
-        anchorOverlay = AnchorRegistrationOverlay(this, anchorRegistration::highlight)
+        anchorOverlay = AnchorRegistrationOverlay(this, anchorRegistration::highlight, anchorRegistration::presented)
         root.addView(anchorOverlay, FrameLayout.LayoutParams(-1, -1))
         pointer = PointerOverlay(this).apply {
             sensitivity(settings.pointerXGain, settings.pointerYGain)
@@ -670,7 +671,6 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
                     anchorOverlay.show(it.highlight)
                     val current = pointer.position
                     anchorOverlay.pointer(current.x, current.y, current.available)
-                    anchorRegistration.presented()
                 }
                 // OPEN is registered before bounds callbacks can publish the exact new local mode.
                 if (operation.second.superseded() || anchorOffer !== message) return true

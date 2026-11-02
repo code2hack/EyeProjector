@@ -56,7 +56,7 @@ retirement during a foreground query, transitions/geometry changes and the actua
 composition. Metadata observers acquire Session/input locks on an independent lane to establish
 those locks are released; tree traversal checks its caller also owns none of those locks.
 
-The delegated #116 `acceptsContext` helper permits a missing pointer position for Back/Home and Lock
+The delegated #116 `acceptsContext` helper permits a missing pointer position for Back/Lock/Home and Lock
 while retaining the original region/word/stamp, owner/incarnation/input revision/mode and pointer
 context checks. The existing spatial predicate keeps its availability requirement. Its direct host
 checks cover both local/projected modes and mismatched/stale/retired contexts; the complete stamped

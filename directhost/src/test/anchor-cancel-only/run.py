@@ -199,6 +199,8 @@ raw_generated.write_text(raw_generated.read_text().replace('RawVoiceNode(0,null,
 sources += [raw_generated,host/'uiaccess/AndroidUiAccess.kt',root/'directhost/src/test/uiaccess/RegistrationScenarios.kt',suite/'RawRegistrationScenarios.kt']
 sources += [root/'directhost/src/test/uiaccess/doubles'/(n+'.kt') for n in ['AndroidAccessibility','AndroidService','AndroidSparseArray','AndroidRect']]
 (out/'raw-fixture.json').write_bytes(raw_fixture.read_bytes())
+canonical_phone_tests=['PhoneInputMergerTest','hid.PhoneHidBindingsTest','hid.PhoneHidFunctionCompositionTest','hid.PhoneHidNavigationCompositionTest','hid.PhoneHidBackHomeOwnershipTest']
+sources += [root/'directhost/src/test/kotlin/com/code2hack/eyeprojector/directhost'/(n.replace('.','/')+'.kt') for n in canonical_phone_tests]
 sources = list(dict.fromkeys(sources))
 before_sources = {}
 if a.phone_before_result:
@@ -294,6 +296,7 @@ if r.returncode == 0:
     with (out / 'scenarios.log').open('w') as log:
         r = subprocess.run(run_cmd, stdout=log, stderr=subprocess.STDOUT, timeout=60, env=env)
     record['testExit'] = r.returncode
+    record['scenarioExit'] = r.returncode
     record['artifactSha256'] = sha(jar)
     record['loadedClasses'] = str(out / 'class-load.log')
     # Verify the critical closure actually loaded from the newly compiled source artifact.
@@ -345,6 +348,13 @@ if r.returncode == 0:
     if not record['sourceClassesVerified']:
         record['testExit'] = record['testExit'] or 1
         print('FAIL source-class loading provenance; see result.json')
+    canonical_cmd=[java,'-cp',str(jar)+os.pathsep+cp,'org.junit.runner.JUnitCore']+['com.code2hack.eyeprojector.directhost.'+n for n in canonical_phone_tests]
+    record['canonicalCommand']=canonical_cmd
+    with (out/'canonical-phone.log').open('w') as log:
+        canonical=subprocess.run(canonical_cmd,stdout=log,stderr=subprocess.STDOUT,timeout=60)
+    record['canonicalExit']=canonical.returncode
+    record['testExit']=record['testExit'] or canonical.returncode
+    print((out/'canonical-phone.log').read_text())
     log_text = (out / 'scenarios.log').read_text()
     print('\n'.join(line for line in log_text.splitlines() if not line.startswith('{"audio"')))
 else:

@@ -81,7 +81,7 @@ internal class HeldActivityWiring(val feature: ReceiverActivationStore, director
         dispatchFunction(FunctionSource.GLASSES_NATIVE, gesture)
     }, capture = ::captureFunction)
     init {
-        root = HeldNode(); pointer = HeldNode(); anchorOverlay = HeldNode(); hidInput = HeldNode(); functionInput = HeldNode(); longTouch = HeldNode()
+        root = HeldNode(); pointer = HeldNode(); anchorOverlay = HeldNode().apply { onShow = { anchorRegistration.presented() } }; hidInput = HeldNode(); functionInput = HeldNode(); longTouch = HeldNode()
         classifiedPadLongPress = HeldNode(); shellPadContact = HeldNode(); gestures = HeldNode()
         // Android output route is a boundary; actual held ownership/retirement is production source.
         heldInput = HeldPointerDispatcher({ pointer.position }, { val original = onHeldEvent; { e -> original(e) } })
@@ -194,7 +194,8 @@ internal open class HeldNode {
     fun stop() = Unit
     fun close() = Unit
     fun bounds(left: Float, top: Float, right: Float, bottom: Float, rotation: Int) = Unit
-    fun show(highlight: AnchorRegistrationHighlight) { visibility = View.VISIBLE }
+    var onShow: () -> Unit = {}
+    fun show(highlight: AnchorRegistrationHighlight) { visibility = View.VISIBLE; onShow() }
     fun waiting() = Unit
     var onDismiss: (() -> Unit)? = null
     fun dismiss() { visibility = View.GONE; val callback = onDismiss; onDismiss = null; callback?.invoke() }

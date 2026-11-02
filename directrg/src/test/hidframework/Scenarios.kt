@@ -23,7 +23,7 @@ private fun equal(expected: Any?, actual: Any?, reason: String) {
 
 private val visibleHidRoles = HidAction.entries
 private val displayedHidRoles = listOf(HidAction.TAP, HidAction.SCROLL_DOWN, HidAction.SCROLL_UP,
-    HidAction.NAVIGATION, HidAction.LOCK, HidAction.ANCHOR)
+    HidAction.NAVIGATION, HidAction.ANCHOR)
 private fun rowIndex(action: HidAction) = displayedHidRoles.indexOf(action)
 
 private class Rig(initialRecord: String? = null, save: Boolean = true) {
@@ -1513,7 +1513,7 @@ private fun throwingReceivedStatusSinkLeavesOriginalHeldRoutingAndCountsUntouche
 }
 
 private fun dedicatedNavigationUsesActualAndroidEdgesWithoutSpatialReads() {
-    for (count in 1..2) {
+    for (count in 1..3) {
         val r = Rig()
         r.assign(HidAction.NAVIGATION)
         r.point = PointerPosition(-500f, 10000f, false)
@@ -1525,19 +1525,21 @@ private fun dedicatedNavigationUsesActualAndroidEdgesWithoutSpatialReads() {
             check(r.edge(KeyEvent.ACTION_UP, at = down + 10, down = down))
         }
         r.advance(2000)
-        equal(listOf(if (count == 1) ContextualNavigationAction.BACK else ContextualNavigationAction.HOME), r.navigation,
+        equal(listOf(if (count == 1) ContextualNavigationAction.BACK else if(count==2) ContextualNavigationAction.LOCK else ContextualNavigationAction.HOME), r.navigation,
             "single/double dedicated destination")
         equal(0, r.positionReads, "dedicated Back/Home never queries spatial aim")
         check(r.contacts.isEmpty() && r.scrolls.isEmpty() && r.functions.isEmpty())
     }
     val lock = Rig()
-    lock.assign(HidAction.LOCK)
+    lock.assign(HidAction.NAVIGATION)
     lock.point = PointerPosition(-500f, 10000f, false)
     check(lock.edge(KeyEvent.ACTION_DOWN))
     check(lock.edge(KeyEvent.ACTION_UP, at = 1010, down = 1000))
     // Replayed reports of the same physical press keep their original association.
     check(lock.edge(KeyEvent.ACTION_DOWN, at = 1000))
     check(lock.edge(KeyEvent.ACTION_UP, at = 1010, down = 1000))
+    check(lock.edge(KeyEvent.ACTION_DOWN, at = 1100))
+    check(lock.edge(KeyEvent.ACTION_UP, at = 1110, down = 1100))
     lock.advance(2000)
     equal(listOf(ContextualNavigationAction.LOCK), lock.navigation, "dedicated Lock occurs once")
     equal(0, lock.positionReads, "Lock never queries aim")
@@ -1570,7 +1572,7 @@ private fun dedicatedCapturePreservesFunctionAndCanceledLockNeverDispatches() {
     r.assign(HidAction.ANCHOR, key = 196, scan = 701)
     val original = r.bindings.binding(HidAction.ANCHOR)
     r.showPanel()
-    for (role in listOf(HidAction.NAVIGATION, HidAction.LOCK)) {
+    for (role in listOf(HidAction.NAVIGATION)) {
         r.hover(role)
         val down = 1000L + role.ordinal * 100
         check(r.edge(KeyEvent.ACTION_DOWN, at = down, key = 200 + role.ordinal, scan = 800 + role.ordinal))
@@ -1678,7 +1680,7 @@ private fun operationalHidBeforeLocalEffects(role:HidAction) {
         if(!normal)r.noOutput() else when(role){
             HidAction.TAP->check(r.contacts.map{it.event.phase}==listOf(PadGestureRecognizer.Phase.DOWN,PadGestureRecognizer.Phase.UP))
             HidAction.SCROLL_DOWN,HidAction.SCROLL_UP->check(r.scrolls.size==1)
-            HidAction.LOCK->check(r.navigation==listOf(ContextualNavigationAction.LOCK))
+            HidAction.NAVIGATION->{r.advance(2000);check(r.navigation==listOf(ContextualNavigationAction.BACK))}
             else->error("Separate raw grammar coverage")
         }
         check(feedback==if(normal)1 else 0)
@@ -1709,7 +1711,7 @@ fun main() {
         "operational TAP gates before local effects" to {operationalHidBeforeLocalEffects(HidAction.TAP)},
         "operational SCROLL_DOWN gates before local effects" to {operationalHidBeforeLocalEffects(HidAction.SCROLL_DOWN)},
         "operational SCROLL_UP gates before local effects" to {operationalHidBeforeLocalEffects(HidAction.SCROLL_UP)},
-        "operational LOCK gates before local effects" to {operationalHidBeforeLocalEffects(HidAction.LOCK)},
+        "operational NAVIGATION gates before local effects" to {operationalHidBeforeLocalEffects(HidAction.NAVIGATION)},
         "old admitted learning feedback cannot continue into replacement context" to ::learningOriginalStopsAfterFeedbackContextReplacement,
         "pending learning stop and changed facts preserve no-replay/save" to ::pendingLearningLossAndChangedFactsDoNotReplayOrSave,
         "actual learning ingress gates before target feedback and persistence" to ::actualLearningIngressBeforeTargetFeedbackAndStore,

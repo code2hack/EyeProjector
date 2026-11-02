@@ -1,4 +1,4 @@
-# Back/Home and binding migration host checks
+# Back/Lock/Home and semantic binding host checks
 
 From the repository root, using the existing cached Kotlin 2.2.21 compiler and JDK 17:
 
@@ -6,7 +6,7 @@ From the repository root, using the existing cached Kotlin 2.2.21 compiler and J
 python3 protocol/src/test/hidnavigation/run.py --output-dir /absolute/new/evidence/directory
 ```
 
-This runs the actual shared Back/Home recognizer, both production binding stores and
+This runs the actual shared Back/Lock/Home recognizer, both production binding stores and
 their canonical JUnit suites, plus the complete Phone binding panel. Inputs are copied
 and hashed before compilation; dependencies, commands, output and results are retained.
 It does not invoke Gradle, an Android SDK, a network download or a device.

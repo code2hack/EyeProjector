@@ -129,4 +129,31 @@ class HidNavigationGestureRecognizerTest {
         assertSame(old, r.actions[0].second)
         assertNotSame(old, r.actions[1].second)
     }
+    @Test fun retirementBetweenAnyClicksAndLateTimersNeverPublishesPartialActions() {
+        for (completed in 1..2) for (heldNext in listOf(false,true)) for (changedContext in listOf(false,true)) {
+            val r=Rig()
+            repeat(completed){r.click(it+1,it*100L)}
+            val callbacks=r.clock.timers.toList()
+            if(heldNext){r.clock.at=completed*100L;r.down(completed+1)}
+            if(changedContext)r.context=Any() else r.input.cancel(1)
+            r.clock.advance(2000);callbacks.forEach{it.callback()}
+            if(heldNext)r.up(completed+1,2010)
+            r.clock.advance(2600)
+            assertTrue(r.actions.isEmpty())
+            r.input.cancel();r.click(99,3000);r.clock.advance(3510)
+            assertEquals(listOf(HidNavigationGestureRecognizer.Action.BACK),r.actions.map{it.first})
+        }
+    }
+    @Test fun allThreeOriginalMembersAndEarlyDiscardReceiptsShareOneLifetime() {
+        val r=Rig();r.click(1,0);r.click(2,100);r.clock.at=200;r.down(3)
+        assertSame(r.context,r.input.capturedSequence(2))
+        r.input.cancel(2);r.up(3,210);r.clock.advance(1000);assertTrue(r.actions.isEmpty())
+        val receipts=HidNavigationGestureRecognizer.Receipts<String>()
+        assertEquals("consumed",receipts.down(1,"key","consumed",0));receipts.up(1,10)
+        assertEquals("consumed",receipts.down(2,"key","normal",100));receipts.up(2,110)
+        assertEquals("consumed",receipts.down(3,"key","normal",200));receipts.up(3,210)
+        assertEquals("fresh",receipts.down(4,"key","fresh",300));receipts.cancel(1)
+        assertEquals("fresh",receipts.down(4,"key","other",300))
+    }
+
 }

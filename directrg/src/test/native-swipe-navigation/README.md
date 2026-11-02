@@ -43,5 +43,5 @@ dependencies retain the manifest's historical qualification (23 changed and 6 ex
 relative to historical Session05); they do not stand in for changed behavior. Android registration,
 widgets, TLS, rendering, accessibility observations and target input are boundaries. The ordinary
 key mapping and pad recognizer feed the actual Activity remote-scroll method through an explicit
-test callback. Phone/Glasses held Anchor cleanup, chooser Back/Home, lifecycle and a second actual
+test callback. Phone/Glasses held Anchor cleanup, chooser Back/Lock/Home, lifecycle and a second actual
 Session are composed; locally queued navigation is still not a target-app acknowledgment.
