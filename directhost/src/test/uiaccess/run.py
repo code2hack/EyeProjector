@@ -21,7 +21,7 @@ else:
 assert jars
 actual=root/'directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost';protocol=root/'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
 sources=sorted((actual/'uiaccess').glob('*.kt'))+[actual/'ProjectionContext.kt',actual/'hid/PhoneHidKeyService.kt']
-sources += [protocol/(n+'.kt') for n in ['Wire','Touch','PhoneInput','ReceiverUsability','CameraFeed','ActivationControl','FunctionIntent','AnchorMessage']]
+sources += [protocol/(n+'.kt') for n in ['Wire','Touch','PhoneInput','ReceiverUsability','CameraFeed','ActivationControl','AnchorIntent','AnchorMessage','OriginalContact']]
 sources += [actual/(s+'.kt') for s in ['anchor/target/AnchorTargetDescriptor','anchor/target/AnchorTargetResolver','anchor/preferences/AppAnchor','anchor/preferences/AppAnchorStore','anchor/registration/AnchorRegistrationTarget','anchor/registration/AnchorRegistrationCoordinator']]
 sources += sorted((suite/'doubles').glob('*.kt'))+[suite/'RegistrationScenarios.kt',suite/'Scenarios.kt']
 inputs=[]; frozen=[]

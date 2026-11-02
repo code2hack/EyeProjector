@@ -43,14 +43,25 @@ class UiTargetReader internal constructor(private val access: UiAccess, private 
     private fun readWindow(window: UiAccessWindow, request: UiTargetRequest): UiWindowSnapshot {
         val metadata = window.metadata
         if (metadata.displayId != request.source.displayId) return UiWindowSnapshot(metadata, UiWindowReadStatus.WINDOW_MISMATCH)
+        val counts = TraversalCounts()
         return try {
             val root = window.root() ?: return UiWindowSnapshot(metadata, UiWindowReadStatus.NO_ROOT)
             val targets = ArrayList<UiTargetObservation>()
-            val status = collect(root, request.selectedPackage, metadata.windowId, targets)
-            UiWindowSnapshot(metadata, status, targets.toList())
+            val status = collect(root, request.selectedPackage, metadata.windowId, targets, counts)
+            UiWindowSnapshot(metadata, status, targets.toList(), traversal = counts.snapshot())
         } catch (error: Exception) {
-            UiWindowSnapshot(metadata, UiWindowReadStatus.FAILED, failureClass = error.javaClass.name, failure = error)
+            UiWindowSnapshot(metadata, UiWindowReadStatus.FAILED, failureClass = error.javaClass.name,
+                failure = error, traversal = counts.snapshot())
         }
+    }
+
+    private class TraversalCounts {
+        var visited = 0; var selected = 0; var invisible = 0; var disabled = 0; var nonPositiveBounds = 0
+        var rootPackageName: String? = null
+        var root: UiTargetObservation? = null
+        var rootChildCount: Int? = null
+        fun snapshot() = UiWindowTraversal(visited, selected, invisible, disabled, nonPositiveBounds,
+            rootPackageName, root, rootChildCount)
     }
 
     /** Immutable shared ancestry links keep even very deep snapshots linear in storage. */
@@ -80,7 +91,7 @@ class UiTargetReader internal constructor(private val access: UiAccess, private 
 
     /** Iterative traversal owns root/children even after a stale-node exception; no depth/count cap. */
     private fun collect(root: UiAccessNode, packageName: String, windowId: Int,
-        targets: MutableList<UiTargetObservation>): UiWindowReadStatus {
+        targets: MutableList<UiTargetObservation>, counts: TraversalCounts): UiWindowReadStatus {
         val pending = java.util.ArrayDeque<Frame>()
         pending.push(Frame(root, emptyList()))
         var ordinal = 0
@@ -90,18 +101,26 @@ class UiTargetReader internal constructor(private val access: UiAccess, private 
                 val frame = pending.element()
                 if (!frame.entered) {
                     frame.entered = true
-                    if (frame.node.packageName != packageName) {
+                    val nodePackage = frame.node.packageName
+                    if (++counts.visited == 1) counts.rootPackageName = nodePackage
+                    if (nodePackage != packageName) {
                         pending.pop().node.close()
                         continue
                     }
                     selectedRoot = true
+                    counts.selected++
                     if (frame.node.windowId != windowId) return UiWindowReadStatus.WINDOW_MISMATCH.also { targets.clear() }
                     frame.ordinal = ++ordinal
                     frame.node.observation(frame.ordinal)?.let { item ->
+                        if (counts.visited == 1) counts.root = item
+                        if (!item.visible) counts.invisible++
+                        if (!item.enabled) counts.disabled++
+                        if (!item.bounds.hasArea) counts.nonPositiveBounds++
                         if (item.visible && item.enabled && item.bounds.hasArea)
                             targets.add(item.copy(ancestorOrdinals = frame.ancestors))
                     }
                     frame.children = frame.node.childCount
+                    if (counts.visited == 1) counts.rootChildCount = frame.children
                 }
                 if (frame.nextChild == frame.children) pending.pop().node.close()
                 else frame.node.child(frame.nextChild++)?.let {

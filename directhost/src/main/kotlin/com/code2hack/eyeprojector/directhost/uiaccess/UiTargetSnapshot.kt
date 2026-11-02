@@ -86,12 +86,24 @@ data class UiTargetObservation(
 )
 
 enum class UiWindowReadStatus { READ, OTHER_PACKAGE, NO_ROOT, WINDOW_MISMATCH, FAILED }
+/** Counts from this traversal, before target filtering; a pruned subtree is not an empty tree. */
+data class UiWindowTraversal(
+    val visitedNodes: Int,
+    val selectedPackageNodes: Int,
+    val invisibleNodes: Int,
+    val disabledNodes: Int,
+    val nonPositiveBoundsNodes: Int,
+    val rootPackageName: String?,
+    val root: UiTargetObservation?,
+    val rootChildCount: Int?,
+)
 data class UiWindowSnapshot(
     val window: UiWindowMetadata,
     val status: UiWindowReadStatus,
     val targets: List<UiTargetObservation> = emptyList(),
     val failureClass: String? = null,
     internal val failure: Exception? = null,
+    val traversal: UiWindowTraversal? = null,
 )
 
 enum class UiTargetReadStatus { READ, ACCESS_REQUIRED, SOURCE_UNAVAILABLE, SOURCE_CHANGED, DISPLAY_ABSENT, WINDOW_ABSENT, FAILED }

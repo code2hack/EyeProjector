@@ -50,6 +50,13 @@ private fun readerScenarios() {
     check(listOf(defaultWindow, targetWindow, otherWindow).all { it.closed == 1 })
     check(root.closed == 1 && children.filterNotNull().all { it.closed == 1 })
     check(snapshot.windows[0].targets.all { it.visible && it.enabled && it.bounds.hasArea })
+    val traversal = checkNotNull(snapshot.windows[0].traversal)
+    check(traversal.visitedNodes == 11 && traversal.selectedPackageNodes == 10)
+    check(traversal.invisibleNodes == 1 && traversal.disabledNodes == 1 && traversal.nonPositiveBoundsNodes == 2)
+    check(traversal.rootPackageName == "selected.app" && traversal.rootChildCount == children.size)
+    check(traversal.root?.bounds == UiBounds(24, 95, 1224, 221))
+    check(snapshot.windows[1].traversal?.rootPackageName == "other.app")
+    check(snapshot.windows[1].traversal?.let { it.visitedNodes == 1 && it.selectedPackageNodes == 0 } == true)
 
     check(read(mapOf(0 to listOf(Window(displayId = 0)))).status == UiTargetReadStatus.DISPLAY_ABSENT)
     check(read(mapOf(34 to emptyList()), UiTargetRequest(source(), "selected.app", 99)).status == UiTargetReadStatus.WINDOW_ABSENT)
@@ -68,6 +75,7 @@ private fun readerScenarios() {
     val failure = read(mapOf(34 to listOf(Window(node = parent)))).windows.single()
     check(failure.status == UiWindowReadStatus.FAILED && failure.targets.isEmpty())
     check(failure.failureClass == "java.lang.IllegalStateException" && parent.closed == 1 && throwing.closed == 1)
+    check(failure.traversal?.let { it.visitedNodes == 2 && it.selectedPackageNodes == 2 } == true)
     val unavailable = AccessibilityService(AccessibilityServiceInfo(flags = 0))
     check(UiTargetReader(AndroidUiAccess(unavailable), { 1 }).read(UiTargetRequest(source(), "selected.app")).status == UiTargetReadStatus.ACCESS_REQUIRED)
     unavailable.serviceInfo = AccessibilityServiceInfo(capabilities = 0)
@@ -79,6 +87,33 @@ private fun readerScenarios() {
     check(read(mapOf(34 to listOf(Window(node = deep)))).windows.single().targets.size == 12001)
     check(nodes.all { it.closed == 1 })
     println("PASS actual reader + Android adapter: exact display/window, static properties, usable bounds, null/repeated IDs, deep tree, stale failure and owned-handle cleanup")
+}
+
+private fun crossAppReadScenarios() {
+    val service = AccessibilityService()
+    val reader = UiTargetReader(AndroidUiAccess(service)) { 100L }
+    // Reuse the actual connection/reader while both current app and window change, then return.
+    for ((index, app) in listOf("first.app", "second.app", "first.app").withIndex()) {
+        val id = 20 + index
+        val child = Node(packageName = app, windowId = id, viewIdResourceName = "$app:id/target")
+        val root = Node(packageName = app, windowId = id, children = listOf(child), isVisibleToUser = false)
+        val window = Window(id = id, node = root)
+        service.windowsOnAllDisplays = SparseArray(mapOf(34 to listOf(window)))
+        val request = UiTargetRequest(source().copy(foregroundPackage = app), app)
+        val current = reader.read(request).windows.single()
+        check(current.targets.single().resourceId == "$app:id/target")
+        check(current.traversal?.let { it.visitedNodes == 2 && it.invisibleNodes == 1 && it.rootChildCount == 1 } == true)
+        check(root.closed == 1 && child.closed == 1 && window.closed == 1)
+    }
+    val hiddenChild = Node(isVisibleToUser = false)
+    val hiddenRoot = Node(isVisibleToUser = false, children = listOf(hiddenChild))
+    val filtered = read(mapOf(34 to listOf(Window(node = hiddenRoot)))).windows.single()
+    check(filtered.status == UiWindowReadStatus.READ && filtered.targets.isEmpty())
+    check(filtered.traversal?.let { it.visitedNodes == 2 && it.selectedPackageNodes == 2 && it.invisibleNodes == 2 } == true)
+    check(hiddenRoot.closed == 1 && hiddenChild.closed == 1)
+    val absent = read(mapOf(34 to listOf(Window()))).windows.single()
+    check(absent.status == UiWindowReadStatus.NO_ROOT && absent.traversal == null)
+    println("PASS reused production reader A -> B -> A: current package/window, single-traversal raw counts distinguish filtered nodes, package pruning, NO_ROOT and partial failure")
 }
 
 private fun geometryScenarios() {
@@ -195,4 +230,4 @@ private fun serviceScenarios() {
     println("PASS actual HID service: retrieval/view-ID/key flags, modeled key result/pin coexistence, interrupt/unbind/destroy/replacement lifecycle")
 }
 
-fun main() { readerScenarios(); geometryScenarios(); providerScenarios(); connectionScenarios(); serviceScenarios() }
+fun main() { readerScenarios(); crossAppReadScenarios(); geometryScenarios(); providerScenarios(); connectionScenarios(); serviceScenarios() }

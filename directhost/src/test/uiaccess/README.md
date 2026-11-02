@@ -66,3 +66,10 @@ These host checks establish source behavior against modeled platform responses. 
 actual user accessibility enablement, managed-display production access, screen/encoder landmarks,
 IME/rotation/scale on devices and physical-Phone-off/locked behavior require separate scheduled
 validation. The raw registration cases cover represented matching/save behavior, not physical input delivery.
+
+The same reader connection is exercised across app A -> B -> A with changing window IDs. Each
+window snapshot retains counts from its one traversal before visible/enabled/bounds filtering,
+plus the selected root's metadata/child count and any pruned root package. The existing app
+registration logger emits these values with the original transaction/display/window. A READ with
+zero exported targets can therefore be distinguished from NO_ROOT, package pruning or failure.
+Counts describe visited handles; they do not claim to enumerate descendants of a pruned package.
