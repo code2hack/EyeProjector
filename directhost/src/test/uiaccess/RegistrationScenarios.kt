@@ -22,8 +22,8 @@ internal object RegistrationFixtureChecks {
     private val source = ManagedUiSource(ProjectionContext("fixture-owner", "fixture-session"), "fixture-display",
         57, "fixture-display-id", app, null, UiSourceGeometry(Geometry(1248, 1663), size, 420, 0, false, size))
     private val metadata = UiWindowMetadata(57, 4160, 1, 0, true, true, UiBounds(0, 0, 1248, 1663))
-    private val intent = FunctionIntent(FunctionIntentKind.REGISTER, FunctionSource.GLASSES_NATIVE, 13, 13,
-        FunctionIntentContext(ReceiverUsability("fixture-owner", ReceiverIncarnation("fixture-receiver", 57),
+    private val intent = AnchorIntent(AnchorIntentKind.REGISTER, AnchorSource.GLASSES_NATIVE, 13, 13,
+        AnchorIntentContext(ReceiverUsability("fixture-owner", ReceiverIncarnation("fixture-receiver", 57),
             835, 107, ReceiverUsabilityMode.PROJECTED), HeadPointerState(107, 0, true, true,
             201.89757f, 609.461f, Fit(0, 0, 480, 640), size)))
 
@@ -84,7 +84,7 @@ internal object RegistrationFixtureChecks {
                 val coordinator = AnchorRegistrationCoordinator<String>(store)
                 check(coordinator.begin("original", intent, snapshot) is AnchorRegistrationCapture.Selected)
                 check(storage.writes == 0) { "Registration begin wrote a preference" }
-                check(coordinator.choose("original", mode, snapshot) is AnchorRegistrationCompletion.Saved)
+                check(coordinator.choose("original", mode) is AnchorRegistrationCompletion.Saved)
                 check(storage.value == AppAnchor(actual.descriptor, mode) && storage.writes == 1)
             }
         }
