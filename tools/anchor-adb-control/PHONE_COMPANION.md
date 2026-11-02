@@ -12,6 +12,16 @@ The parent accepts a fresh `runId` and finite `seconds` (default180, range1..660
 
 Its first `ready` row names `files/probe-<run>-phone-inbox.json` and append-only `probe-<run>-phone-events.jsonl`. A host coordinator atomically replaces only that run's inbox with `{runId,commands:[{id,op,...}]}`. Commands are claimed once before execution; completed, unavailable and failed IDs are never replayed. Append a fresh command ID for a later observed state. Unknown/invalid input is diagnostic evidence, not permission or admission. The parent closes on its finite bound or `finish_parent`; neither path injects Stop/CANCEL, finishes the normal Host UI or writes an Anchor.
 
+For a reviewed already-running app with Owner-enabled and actually bound service, the Phone invocation must preserve that process:
+
+```sh
+adb -s "$PHONE" shell am instrument --no-restart -w \
+  -e operation anchor-adb-phone-control -e runId "$RUN_ID" -e seconds 660 \
+  com.code2hack.eyeprojector.directhost.test/com.code2hack.eyeprojector.directhost.ChosenAppsInstrumentation
+```
+
+Retain the complete argv, actual pre-parent app/service PID, in-parent `ready.pid` and reader status, then post-parent PID and Enabled/Bound/Binding/Crashed state. The parser recognizing `--no-restart` alone is not runtime proof. Closed272's default restarting invocation had reader unavailable; current283 concretely observed the same PID14237 before/in the no-restart parent, bound service and actual reader true. Each run still requires its own post-finish observations; no second readiness parent, default-launch fallback, reinstall, regrant or process workaround follows from failure. Keep Owner's permission and the already-running bound app intact when the parent finishes.
+
 `phone_plan.py` prepares the initial host file without making any ADB/product call:
 
 ```sh
@@ -62,6 +72,8 @@ The original API172 store lacked atomic conditional restore; that handoff gap re
 ## Evidence, checks and later build
 
 Original companion rows retain run/sequence, command intent/outcome, actual local source/status/control/Anchor contexts and Android uptime/elapsed receipt clocks. A command's SUBMITTED or own click return is not Phone admission, observer retirement, controlled-app receipt or overall PASS. The original Phone Shell trace and independent controlled-app MotionEvent edges remain separate witnesses.
+
+The Glasses helper's explicit Function `native_receiver_report` operation exercises its actual original registered receiver/recognizer and downstream Phone path without sending protected firmware broadcasts. Closed283's rejected app-UID LONG send did not establish a chooser, saved HOLD or H1 and did not mean Owner accessibility permission was denied. Receiver injection, OS broadcast delivery and physical Function input are separately labeled boundaries. Original exception details are retained before rethrow; there is no automatic fallback or fabricated activation/preferences.
 
 ```sh
 python3 tools/anchor-adb-control/summarize_phone.py --events private/phone-events.jsonl \

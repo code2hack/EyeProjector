@@ -1,6 +1,7 @@
 package com.code2hack.eyeprojector.directrg
 
 import android.app.Instrumentation
+import android.content.BroadcastReceiver
 import android.content.Intent
 import android.os.Bundle
 import android.os.SystemClock
@@ -142,12 +143,40 @@ internal class AnchorAdbControlDriver(private val instrumentation: Instrumentati
                 val command = commands.getValue(step.id)
                 val before = snapshot(activity)
                 if (command.has("sourceSessionIdentity")) check(command.getInt("sourceSessionIdentity") == before["sessionIdentity"])
-                execute(activity, command)
+                executeObserved(activity, command)
                 lastSnapshot = snapshot(activity)
                 record("own_action", mapOf("phase" to step.id, "operation" to step.op,
                     "beforeSource" to before, "afterSource" to lastSnapshot))
             }
         }
+    }
+
+    private fun executeObserved(activity: ReceiverActivity, command: JSONObject) {
+        try { execute(activity, command) }
+        catch (error: Throwable) {
+            try {
+                record("own_action_exception", mapOf("phase" to command.optString("id"),
+                    "operation" to command.optString("op"), "exceptionType" to error.javaClass.name,
+                    "exceptionMessage" to error.message, "exceptionStack" to error.stackTraceToString(),
+                    "causeType" to error.cause?.javaClass?.name, "causeMessage" to error.cause?.message,
+                    "causeStack" to error.cause?.stackTraceToString()))
+            } catch (_: Throwable) { /* Optional diagnostics cannot replace the original failure. */ }
+            throw error
+        }
+    }
+
+    private fun reportNativeFunction(activity: ReceiverActivity, command: JSONObject) {
+        val action = command.getString("action")
+        check(action in FUNCTION_REPORT_ACTIONS) { "Unsupported original Function report" }
+        val original = field(activity, "functionInput") ?: error("Original NativeFunctionInput unavailable")
+        check(field(original, "registered") == true) { "Original NativeFunctionInput is not registered" }
+        val receiver = field(original, "receiver") as? BroadcastReceiver ?: error("Original Function receiver unavailable")
+        syntheticInputInjected = true
+        receiver.onReceive(activity, Intent(action).setPackage(activity.packageName))
+        record("receiver_report_submitted", mapOf("injectionKind" to "direct_original_own_receiver_onReceive",
+            "actionName" to action, "functionInputIdentity" to System.identityHashCode(original),
+            "receiverIdentity" to System.identityHashCode(receiver),
+            "scope" to "Synthetic same-process original registered Function receiver entry; no OS broadcast, firmware or target acknowledgment"))
     }
 
     private fun execute(activity: ReceiverActivity, command: JSONObject) {
@@ -211,6 +240,7 @@ internal class AnchorAdbControlDriver(private val instrumentation: Instrumentati
                 instrumentation.targetContext.sendBroadcast(Intent(action).setPackage(instrumentation.targetContext.packageName))
                 record("broadcast_submitted", mapOf("injectionKind" to "injected_native_broadcast", "actionName" to action))
             }
+            "native_receiver_report" -> reportNativeFunction(activity, command)
             "callback" -> {
                 val callback = command.getString("callback")
                 check(callback in listOf("contextualBack", "contextualHome", "showControlPanel", "showHidBindings"))
@@ -305,6 +335,9 @@ internal class AnchorAdbControlDriver(private val instrumentation: Instrumentati
     private fun onMain(operation: () -> Unit) = nativeInputObservationOnMain({ task -> instrumentation.runOnMainSync { task() } }, operation)
 
     companion object {
+        private val FUNCTION_REPORT_ACTIONS = listOf("com.android.action.ACTION_SPRITE_BUTTON_DOWN",
+            "com.android.action.ACTION_SPRITE_BUTTON_UP", "com.android.action.ACTION_SPRITE_BUTTON_CLICK",
+            "com.android.action.ACTION_SPRITE_BUTTON_LONG_PRESS")
         private val BROADCASTS = listOf("com.android.action.ACTION_SPRITE_BUTTON_CLICK", "com.android.action.ACTION_SPRITE_BUTTON_LONG_PRESS",
             "com.android.action.ACTION_SPRITE_BUTTON_DOWN", "com.android.action.ACTION_SPRITE_BUTTON_UP",
             "com.android.action.ACTION_TWO_FINGER_SWIPE_BACK", "com.android.action.ACTION_TWO_FINGER_SWIPE_FORWARD")
