@@ -12,15 +12,15 @@ import com.code2hack.eyeprojector.protocol.Touch
 
 /** Receives the shell reader's real long-key edges, without changing ordinary pad recognition. */
 internal class NativePadShellContact(
-    private val heldOwner: HeldInputOwner,
-    private val context: () -> Any?,
-    private val position: () -> PointerPosition,
-    private val prepareDown: () -> Unit,
-    private val changed: () -> Unit,
-    private val admit: ((Boolean) -> Unit) -> Unit = { it(true) },
-    private val functionSourceAvailable: (Any) -> Unit = {},
-    private val functionSourceLost: (Any) -> Unit = {},
-    private val functionEdge: (Any, Long, Boolean, Long, Boolean) -> Unit = { _, _, _, _, _ -> },
+    private var heldOwner: HeldInputOwner,
+    private var context: () -> Any?,
+    private var position: () -> PointerPosition,
+    private var prepareDown: () -> Unit,
+    private var changed: () -> Unit,
+    private var admit: ((Boolean) -> Unit) -> Unit = { it(true) },
+    private var functionSourceAvailable: (Any) -> Unit = {},
+    private var functionSourceLost: (Any) -> Unit = {},
+    private var functionEdge: (Any, Long, Boolean, Long, Boolean) -> Unit = { _, _, _, _, _ -> },
 ) {
     private class Listener(val server: LocalServerSocket) {
         @Volatile var socket: LocalSocket? = null
@@ -30,18 +30,32 @@ internal class NativePadShellContact(
         var rawPress: Long? = null
         var press: Press? = null
     }
-    private class Press(val id: Long, val down: PadGestureRecognizer.Event, val context: Any) { val owner = Any() }
+    private class Press(val id: Long, val down: PadGestureRecognizer.Event, val context: Any,
+        val targetOwner: HeldInputOwner) { val owner = Any() }
     private data class Received(val source: Source, val id: Long, val phase: PadGestureRecognizer.Phase,
         val revision: Long, val at: Long, val point: PointerPosition?, val context: Any?)
     private val input = ReceiverContactInput<Received>({ it.source to it.id },
-        { Touch.Phase.valueOf(it.phase.name) }, admit, ::acceptAdmitted)
+        { Touch.Phase.valueOf(it.phase.name) }, { admit(it) }, ::acceptAdmitted)
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var listener: Listener? = null
     @Volatile private var contextRevision = 0L
     @Volatile private var powerRequest: Any? = null
     private var source: Source? = null // Main-thread ownership, separate from the reader's physical state.
     private var admission = 0L // A completed raw Press remains observable without retaining its Source/socket.
+    private var viewGeneration = 0L
     val holding: Boolean get() = source?.rawPress != null
+
+    /** Rebind ordinary view callbacks without closing the original native Function connection. */
+    fun attachView(next: NativePadShellContact) {
+        if (next === this) return
+        val binding = ++viewGeneration
+        prepareCancel().finishOriginal()
+        if (viewGeneration != binding) return
+        heldOwner = next.heldOwner; context = next.context; position = next.position
+        prepareDown = next.prepareDown; changed = next.changed; admit = next.admit
+        functionSourceAvailable = next.functionSourceAvailable
+        functionSourceLost = next.functionSourceLost; functionEdge = next.functionEdge
+    }
 
     fun start() {
         if (listener != null) return
@@ -164,22 +178,22 @@ internal class NativePadShellContact(
             prepareDown()
             if (source !== original || context() != admitted || input.admission != baseline) return
             val press = Press(received.id, PadGestureRecognizer.Event(PadGestureRecognizer.Key.HELD_CONTACT,
-                PadGestureRecognizer.Phase.DOWN, received.at, received.at, position = received.point), admitted)
+                PadGestureRecognizer.Phase.DOWN, received.at, received.at, position = received.point), admitted, heldOwner)
             original.press = press
             admission++
-            val accepted = heldOwner.accept(press.owner, press.down)
+            val accepted = press.targetOwner.accept(press.owner, press.down)
             if (!accepted || source !== original || context() != admitted) {
                 if (original.press === press) original.press = null
-                heldOwner.cancel(press.owner, SystemClock.uptimeMillis())
+                press.targetOwner.cancel(press.owner, SystemClock.uptimeMillis())
             }
             Log.i("EyeProjectorPad", "Native raw hold DOWN id=${received.id} accepted=$accepted")
         } else {
             val press = original.press?.takeIf { it.id == received.id }
             if (press != null) {
                 original.press = null
-                if (context() == press.context) heldOwner.accept(press.owner,
+                if (context() == press.context) press.targetOwner.accept(press.owner,
                     press.down.copy(phase = PadGestureRecognizer.Phase.UP, timeMs = received.at.coerceAtLeast(press.down.timeMs)))
-                else heldOwner.cancel(press.owner, received.at)
+                else press.targetOwner.cancel(press.owner, received.at)
             }
             Log.i("EyeProjectorPad", "Native raw hold UP id=${received.id}")
         }
@@ -198,7 +212,7 @@ internal class NativePadShellContact(
         val revision = contextRevision
         val baseline = admission
         val at = SystemClock.uptimeMillis()
-        return InputRetirement({ if (old != null) heldOwner.cancel(old.owner, at) },
+        return InputRetirement({ if (old != null) old.targetOwner.cancel(old.owner, at) },
             { contextRevision != revision || source !== original || admission != baseline || input.admission != inputBaseline })
     }
 
@@ -207,7 +221,7 @@ internal class NativePadShellContact(
     private fun cancel(original: Source) {
         val press = original.press ?: return
         original.press = null
-        heldOwner.cancel(press.owner, SystemClock.uptimeMillis())
+        press.targetOwner.cancel(press.owner, SystemClock.uptimeMillis())
     }
 
     /** Sleep uses the retained shell power owner, independently of this Activity's pad connection. */

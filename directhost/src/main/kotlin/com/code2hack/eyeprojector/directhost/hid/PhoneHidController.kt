@@ -257,7 +257,7 @@ internal class PhoneHidController(
             publish()
             return true
         }
-        if (qualification.disposition != PhoneHidDisposition.USABLE) {
+        if (qualification.disposition != PhoneHidDisposition.USABLE && event.original?.capturedAnchor != true) {
             remember(raw, true)
             waking.add(raw) // Before request/feedback, either of which may reenter with release or Stop.
             val wake = WakeAdmission(event).also(wakeAdmissions::add)
@@ -337,9 +337,9 @@ internal class PhoneHidController(
         return true
     }
 
-    fun presentationLost() { retireInput(preserveCapture = true).forEach(::cancel) }
+    fun presentationLost() { retireInput(preserveCapture = true, preserveAnchor = true).forEach(::cancel) }
 
-    private fun retireInput(preserveCapture: Boolean = false): List<Press> {
+    private fun retireInput(preserveCapture: Boolean = false, preserveAnchor: Boolean = false): List<Press> {
         wakeAdmissions.forEach { it.canceled = true }
         retired.addAll(waking); waking.clear()
         if (!preserveCapture) {
@@ -347,9 +347,10 @@ internal class PhoneHidController(
             capture = null
         }
         val old = (presses.values + constructing + listOfNotNull(releasedFunction, releasedBackHome)).distinct()
-        presses.clear()
-        admissions.clear(); tapAdmission = null
-        releasedFunction = null
+            .filter { !preserveAnchor || it.action != PhoneHidAction.ANCHOR }
+        presses.entries.removeAll { it.value in old }
+        admissions.entries.removeAll { it.value in old }; tapAdmission = null
+        if (!preserveAnchor) releasedFunction = null
         releasedBackHome = null
         old.forEach { retired.add(raw(it.event)); it.canceled = true }
         return old

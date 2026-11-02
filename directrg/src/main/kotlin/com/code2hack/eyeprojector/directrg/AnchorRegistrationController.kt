@@ -99,18 +99,14 @@ internal class AnchorRegistrationController<S : Any>(
     fun enteredChooser(source: S, incarnation: ReceiverIncarnation, geometry: Geometry?, revision: Long): Boolean {
         val pending = offer ?: return false
         if (pending.chooserRevision != null || source !== pending.source ||
-            incarnation != pending.original.usability.incarnation || geometry != pending.geometry) {
-            cancel(); return false
-        }
+            incarnation != pending.original.usability.incarnation) return false
         pending.chooserRevision = revision
         return true
     }
 
     fun current(source: S?, incarnation: ReceiverIncarnation?, geometry: Geometry?, revision: Long, fit: Fit?): Boolean {
         val pending = offer ?: return false
-        return source === pending.source && incarnation == pending.original.usability.incarnation &&
-            geometry == pending.geometry && fit == pending.fit &&
-            revision == (pending.chooserRevision ?: pending.original.usability.inputRevision)
+        return source === pending.source && incarnation == pending.original.usability.incarnation
     }
 
     /** A matching physical release commits the highlighted choice; local taps never invoke this. */
@@ -136,6 +132,15 @@ internal class AnchorRegistrationController<S : Any>(
     fun completed(source: S, id: Long): Boolean {
         val pending = offer ?: return false
         if (source !== pending.source || id != pending.id) return false
+        offer = null; revision++
+        return true
+    }
+
+    /** Loss of the original presentation/input resource is not a user Cancel or a release. */
+    fun lost(source: S, intent: AnchorIntent): Boolean {
+        originals[intent.source]?.takeIf { it.source === source && it.intent == intent }?.held = false
+        val pending = offer ?: return false
+        if (pending.source !== source || pending.intent != intent) return false
         offer = null; revision++
         return true
     }

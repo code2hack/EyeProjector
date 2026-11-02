@@ -83,14 +83,19 @@ internal class OrderedControlDispatcher(private val onFailure: (Exception) -> Un
         return true
     }
 
-    @Synchronized fun cancelPending(category: String? = null) {
-        if (category == null) generation++
-        val removed = jobs.filterValues { category == null || it.category == category }
+    @Synchronized fun cancelPending(category: String? = null) = cancelPending(category, emptySet())
+
+    @Synchronized fun cancelPendingExcept(categories: Set<String>) = cancelPending(null, categories)
+
+    private fun cancelPending(category: String?, preserved: Set<String>) {
+        val all = category == null && preserved.isEmpty()
+        if (all) generation++
+        val removed = jobs.filterValues { (category == null || it.category == category) && it.category !in preserved }
         removed.forEach { (id, job) -> jobs.remove(id); job.future.cancel(true) }
         canceled += removed.size
         val tail = jobs.filterValues { it.preserveTiming }.maxByOrNull { it.key }?.value
         lastEventMs = tail?.timeMs; lastDueNs = tail?.dueNs ?: 0
-        if (category == null) { lastWrittenEventMs = null; lastWriteEndNs = 0 }
+        if (all) { lastWrittenEventMs = null; lastWriteEndNs = 0 }
     }
 
     @Synchronized override fun close() {

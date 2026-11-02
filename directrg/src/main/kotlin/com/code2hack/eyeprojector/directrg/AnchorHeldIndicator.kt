@@ -71,5 +71,5 @@ internal class AnchorHeldIndicator(private val render: (Boolean) -> Unit) {
 
     private fun sameContext(a: ReceiverUsability?, b: ReceiverUsability?): Boolean =
         if (a == null || b == null) a == b else a.ownerEpoch == b.ownerEpoch &&
-            a.incarnation == b.incarnation && a.inputRevision == b.inputRevision && a.mode == b.mode
+            a.incarnation == b.incarnation
 }

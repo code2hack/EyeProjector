@@ -8,6 +8,7 @@ import com.code2hack.eyeprojector.protocol.PhoneHidPhase
 /** The represented native DOWN's original Phone lifetime, including an absent/retired original. */
 internal class PhoneHidOriginal(private val remote: IAnchorRawControl?, val context: ProjectionContext,
     private val receivedDisposition: Int = com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.NORMAL.ordinal,
+    val capturedAnchor: Boolean = false,
     private val current: () -> Boolean) {
     val discarded: Boolean get() = receivedDisposition !=
         com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.NORMAL.ordinal

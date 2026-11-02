@@ -45,7 +45,8 @@ internal class AnchorAppRuntime(context: Context, registrationProviderName: Stri
         val disposition = intArrayOf(if (captured == null) AnchorControlDisposition.NORMAL.ordinal else AnchorControlDisposition.RETIRED.ordinal)
         val remote = captured?.let { runCatching { it.original.captureRawControl(anchorOperation, disposition) }.getOrNull() }
         return com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal(remote,
-            captured?.context ?: com.code2hack.eyeprojector.directhost.ProjectionContext(), disposition[0]) {
+            captured?.context ?: com.code2hack.eyeprojector.directhost.ProjectionContext(), disposition[0],
+            capturedAnchor = anchorOperation && remote != null && disposition[0] == AnchorControlDisposition.NORMAL.ordinal) {
             controlSource.get() === captured && bindingGeneration.get() == generation &&
                 (captured == null || captured.generation == generation)
         }
@@ -61,13 +62,14 @@ internal class AnchorAppRuntime(context: Context, registrationProviderName: Stri
             }
         }
         UiTargetAccess.observe { change ->
-        if (change == null) coordinator.contextRetired()
-        else coordinator.windowChanged(change.displayId, change.windowId, change.currentChanged)
-    } }
+            flow("ui_observation display=${change?.displayId} window=${change?.windowId} currentChanged=${change?.currentChanged} readerAvailable=${UiTargetAccess.reader() != null}")
+        }
+    }
     /** Installs handlers on the same FIFO;121 creates no second worker/store/reader owner. */
     fun installRegistration(begin: (CapturedAnchorRequest) -> Unit,
-        message: (AnchorMessage, AnchorOriginalRoute) -> Unit) = onLane {
-        coordinator.registration = begin; coordinator.registrationMessage = message
+        message: (AnchorMessage, AnchorOriginalRoute) -> Unit,
+        lost: (AnchorOriginalRoute) -> Unit = {}) = onLane {
+        coordinator.registration = begin; coordinator.registrationMessage = message; coordinator.registrationLost = lost
     }
     fun onLane(action: () -> Unit) { lane.execute(action) }
     fun read(original: AnchorOriginalRoute, selectedPackage: String, windowId: Int? = null): UiTargetSnapshot {

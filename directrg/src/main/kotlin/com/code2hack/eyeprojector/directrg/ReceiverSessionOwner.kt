@@ -47,6 +47,7 @@ internal class ReceiverSessionOwner(
         fun input(source: ProjectionSession, event: ReceiverInput)
         fun anchor(source: ProjectionSession, message: AnchorMessage): Boolean = false
         fun anchorHeld(source: ProjectionSession, message: AnchorMessage.HeldState) = Unit
+        fun captureNativeAnchor(expected: Any, gesture: Long?, parent: Long?): Any? = null
     }
     data class Snapshot(val session: ProjectionSession?, val epoch: String?, val peer: SessionState?,
         val requested: Boolean, val state: String, val geometry: Geometry?, val activationId: String? = null)
@@ -110,6 +111,102 @@ internal class ReceiverSessionOwner(
     private var pendingLaunch: ReceiverLaunchScope? = null
     var inputRevision = 0L
         private set
+    var anchorCancellationRevision = 0L
+        private set
+    private var retainedAnchorOffer: Pair<ProjectionSession, AnchorMessage.Offer>? = null
+    private var anchorOfferView: View? = null
+    private val deferredAnchorMessages = ArrayDeque<Pair<ProjectionSession, AnchorMessage>>()
+    private var retainedAnchorState: Pair<ProjectionSession, AnchorMessage.HeldState>? = null
+    private var deliveringAnchor = false
+    private var nativeFunction: NativeFunctionInput? = null
+    private var nativePad: NativePadShellContact? = null
+    internal fun nativeAnchorContext(): Any? = session?.let { anchorCancellationRevision to it }
+    internal fun nativeInputs(pad: NativePadShellContact): Pair<NativeFunctionInput, NativePadShellContact>? {
+        if (closed) return null
+        val appContext = context?.applicationContext ?: context ?: return null
+        val function = nativeFunction ?: NativeFunctionInput(appContext,
+            ::nativeAnchorContext, { gesture ->
+                val original = gesture.original as ReceiverAnchorOriginal
+                if (session === original.source && anchorCancellationRevision == original.userRevision) {
+                    val intent = AnchorIntent(gesture.kind, AnchorSource.GLASSES_NATIVE, gesture.gestureId, gesture.sequence, original.context)
+                    if (gesture.kind == AnchorIntentKind.REGISTER) anchorRegistration.registration(original.source, intent, gesture.physicalHeld)
+                    original.source.anchorIntent(CapturedAnchorIntent(intent, original.source))
+                }
+            }, capture = { listener?.captureNativeAnchor(it, null, null) },
+            captureOriginal = { expected, id, parent -> listener?.captureNativeAnchor(expected, id, parent) },
+            retireOriginal = { id, value ->
+                val original = value as ReceiverAnchorOriginal
+                original.source.retireAnchor(AnchorOriginal(AnchorSource.GLASSES_NATIVE, id, original.context, retired = true))
+            }, registrationRelease = { gesture, canceled ->
+                val original = gesture.original as ReceiverAnchorOriginal
+                val intent = AnchorIntent(gesture.kind, AnchorSource.GLASSES_NATIVE, gesture.gestureId, gesture.sequence, original.context)
+                val offer = anchorRegistration.offer?.takeIf { it.source === original.source && it.intent == intent }
+                if (offer == null || !uiUsable) anchorRegistration.released(original.source, intent, canceled)
+                else receiveAnchor(original.source, AnchorMessage.Release(offer.id, intent, canceled))
+            }, registrationLost = { gesture ->
+                val original = gesture.original as ReceiverAnchorOriginal
+                anchorSourceLost(original.source, AnchorIntent(gesture.kind, AnchorSource.GLASSES_NATIVE,
+                    gesture.gestureId, gesture.sequence, original.context))
+            }).also { nativeFunction = it }
+        val connection = nativePad?.also { it.attachView(pad) } ?: pad.also { nativePad = it }
+        connection.start(); function.start()
+        return function to connection
+    }
+    internal val anchorRegistration = AnchorRegistrationController<ProjectionSession> { source, id, action ->
+        val original = retainedAnchorOffer?.takeIf { it.first === source && it.second.transactionId == id }
+        if (original == null) false else {
+            if (action == AnchorRegistrationAction.CANCEL) retainedAnchorOffer = null
+            source.chooseAnchorRegistration(original.second, when (action) {
+                AnchorRegistrationAction.CLICK -> AnchorChoice.CLICK
+                AnchorRegistrationAction.HOLD -> AnchorChoice.HOLD
+                AnchorRegistrationAction.CANCEL -> AnchorChoice.CANCEL
+            })
+        }
+    }
+    fun anchorSourceLost(source: ProjectionSession, intent: AnchorIntent) {
+        anchorRegistration.lost(source, intent)
+        if (retainedAnchorOffer?.let { it.first === source && it.second.intent == intent } == true) retainedAnchorOffer = null
+        deferredAnchorMessages.removeAll { it.first === source && it.second.intent == intent }
+        ProjectionSession.anchorFlow("anchor_resource_lost source=${intent.source} gesture=${intent.gestureId}")
+    }
+    private fun anchorSessionLost(source: ProjectionSession?) {
+        if (source == null) return
+        nativeFunction?.originalSessionLost()
+        retainedAnchorOffer?.takeIf { it.first === source }?.let { anchorSourceLost(source, it.second.intent) }
+        deferredAnchorMessages.removeAll { it.first === source }
+        if (retainedAnchorState?.first === source) retainedAnchorState = null
+    }
+    private fun receiveAnchor(source: ProjectionSession, message: AnchorMessage) {
+        if (closed || session !== source) return
+        if (message is AnchorMessage.Offer) { retainedAnchorOffer = source to message; anchorOfferView = null }
+        if (message is AnchorMessage.Result && retainedAnchorOffer?.second?.transactionId == message.transactionId)
+            retainedAnchorOffer = null
+        if (message is AnchorMessage.HeldState) retainedAnchorState = source to message
+        else deferredAnchorMessages.addLast(source to message)
+        flushAnchorPresentation()
+    }
+    private fun deliverAnchor(source: ProjectionSession, message: AnchorMessage) {
+        if (closed || session !== source || !uiUsable) return
+        if (message is AnchorMessage.Offer) anchorOfferView = listener
+        if (message is AnchorMessage.HeldState) listener?.anchorHeld(source, message)
+        else if (message !is AnchorMessage.Feedback || currentAnchorFeedback(source, message)) {
+            val consumed = listener?.anchor(source, message) == true
+            if (!consumed && message is AnchorMessage.Feedback) AnchorFeedbackUi.show(context, message.status)
+        }
+    }
+    private fun flushAnchorPresentation() {
+        if (deliveringAnchor || !uiUsable || listener == null) return
+        deliveringAnchor = true
+        try {
+            while (uiUsable && listener != null && deferredAnchorMessages.isNotEmpty()) {
+                val (source, message) = deferredAnchorMessages.removeFirst()
+                deliverAnchor(source, message)
+            }
+            retainedAnchorOffer?.takeIf { anchorOfferView !== listener }?.let { deliverAnchor(it.first, it.second) }
+            retainedAnchorState?.let { deliverAnchor(it.first, it.second) }
+        } finally { deliveringAnchor = false }
+    }
+    fun anchorUserCancellation(revision: Long) { anchorCancellationRevision = maxOf(anchorCancellationRevision, revision) }
     fun advanceInputRevision(): Long = ++inputRevision
     /** The caller has allocated this exact chooser revision and has not published it yet. */
     fun openAnchorRegistration(source: ProjectionSession, offer: AnchorMessage.Offer, chooserRevision: Long): Boolean {
@@ -196,6 +293,7 @@ internal class ReceiverSessionOwner(
         val changedPresentation = uiUsable != usable || localPanel != panel
         uiUsable = usable; localPanel = panel
         publish(notifyView = changedPresentation)
+        flushAnchorPresentation()
     }
     fun launch(scope: ReceiverLaunchScope) {
         if (closed) return
@@ -268,10 +366,9 @@ internal class ReceiverSessionOwner(
     /** Failure feedback belongs to its captured input context, just like the Function itself. */
     private fun currentAnchorFeedback(source: ProjectionSession, message: AnchorMessage.Feedback): Boolean {
         val original = message.intent.context.usability
-        val current = source.captureAnchorContext(message.intent.context.pointer)?.usability ?: return false
-        return inputRevision == original.inputRevision && current.ownerEpoch == original.ownerEpoch &&
-            current.incarnation == original.incarnation && current.inputRevision == original.inputRevision &&
-            current.mode == original.mode
+        val current = source.observationUsability() ?: return false
+        return original.inputRevision >= anchorCancellationRevision && current.ownerEpoch == original.ownerEpoch &&
+            current.incarnation == original.incarnation
     }
 
     private fun startProjection(epoch: String) {
@@ -356,12 +453,7 @@ internal class ReceiverSessionOwner(
             } }, nextUsabilityRevision = usabilityRevision::incrementAndGet, expectedPhoneOwnerEpoch = epoch,
                 onAnchor = { source, message -> deliver {
                     ProjectionSession.anchorFlow("anchor_route type=${message.javaClass.simpleName} transaction=${message.transactionId} closed=$closed sameSession=${session === source} uiUsable=$uiUsable")
-                    if (!closed && session === source && uiUsable &&
-                        (message !is AnchorMessage.Feedback || currentAnchorFeedback(source, message))) {
-                        if (message is AnchorMessage.HeldState) listener?.anchorHeld(source, message)
-                        val consumed = message is AnchorMessage.HeldState || listener?.anchor(source, message) == true
-                        if (!consumed && message is AnchorMessage.Feedback) AnchorFeedbackUi.show(context, message.status)
-                    }
+                    receiveAnchor(source, message)
                 } })
             // This source record exists even with the optional window observer disabled.
             // A synchronous camera callback can retire it before attachProjection returns.
@@ -397,6 +489,7 @@ internal class ReceiverSessionOwner(
         if (cameraOwner != null) { releaseCameraMedia(); return }
         attachment.release()
         val old = session; session = null
+        anchorSessionLost(old)
         val video = output; output = null
         mediaOriginal = null
         displayed = false
@@ -410,6 +503,7 @@ internal class ReceiverSessionOwner(
     private fun releaseCameraMedia() {
         attachment.release()
         val old = session; session = null
+        anchorSessionLost(old)
         val video = output; output = null
         val original = mediaOriginal ?: MediaOriginal(old, video)
         mediaOriginal = null; displayed = false
@@ -550,7 +644,11 @@ internal class ReceiverSessionOwner(
         if (closed) return
         val epoch = attachment.epoch ?: peer?.takeIf { it.phase.active }?.epoch
         closed = true; listener = null; window = null; windowGeneration.incrementAndGet()
-        if (cameraOwner == null) { client.close(epoch); releaseMedia() }
-        else try { client.close(epoch) } finally { releaseMedia() }
+        val pad = nativePad; nativePad = null
+        val function = nativeFunction; nativeFunction = null
+        InputRetirement.finishAll(listOf<() -> Unit>({ pad?.stop(); Unit }, { function?.stop(); Unit }, {
+            if (cameraOwner == null) { client.close(epoch); releaseMedia() }
+            else try { client.close(epoch) } finally { releaseMedia() }
+        }))
     }
 }

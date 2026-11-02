@@ -18,6 +18,8 @@ internal class AnchorShellSession(
     private val failure: (Exception) -> Unit,
     private val send: (AnchorMessage) -> Unit,
     private val rawEdge: (AnchorControlAdmission, Long, PhoneHidEdge, String, Long) -> Unit = { _, _, _, _, _ -> },
+    private val captureOriginal: (AnchorControlAdmission) -> Unit = {},
+    private val originalSource: (AnchorAdmission) -> ManagedUiSource? = { source() },
 ) : Closeable {
     private var controlContext = com.code2hack.eyeprojector.directhost.ProjectionContext()
     private val controlPort by lazy { object : IAnchorControlSession.Stub() {
@@ -25,9 +27,10 @@ internal class AnchorShellSession(
             if (closed) { disposition[0] = AnchorControlDisposition.RETIRED.ordinal; return null }
             val original = AnchorControlAdmission()
             input.anchor.receiveControl(original, anchorOperation = anchorOperation)
-            disposition[0] = original.disposition.ordinal // Same original result; never query a later Hold.
             original.sourceBinding = binding to binding.get()
             original.sourceRevision = sourceRevision to sourceRevision.get()
+            if (anchorOperation && !original.terminal) captureOriginal(original)
+            disposition[0] = original.disposition.ordinal // Same original result, including initial capture availability.
             return object : IAnchorRawControl.Stub() {
                 override fun admitUserControl(): Int {
                     if (closed) return AnchorControlDisposition.RETIRED.ordinal
@@ -67,17 +70,17 @@ internal class AnchorShellSession(
     fun install(client: IAnchorAppBridge?) {
         if (closed || binding.get()?.binder == client?.asBinder()) return
         val fresh = client?.let(::Binding)
-        input.anchor.retire()
+        input.anchor.retireAdmissions()
         val previous = binding.getAndSet(fresh)
         previous?.unlink()
         localControls.filter { it.original === previous }.forEach { it.retire(deferred = true) }
-        cancelRegistration(registration.get()?.takeIf { it.original === previous }, deferred = true)
+        loseRegistration(registration.get()?.takeIf { it.original === previous })
         if (fresh != null) {
             val death = IBinder.DeathRecipient {
                 if (binding.compareAndSet(fresh, null)) {
                     localControls.filter { it.original === fresh }.forEach { it.retire(deferred = true) }
-                    cancelRegistration(registration.get()?.takeIf { it.original === fresh }, deferred = true)
-                    input.anchor.retire()
+                    loseRegistration(registration.get()?.takeIf { it.original === fresh })
+                    input.anchor.retireAdmissions()
                 }
             }
             fresh.death = death
@@ -88,7 +91,7 @@ internal class AnchorShellSession(
             }
             catch (_: Exception) { if (binding.compareAndSet(fresh, null)) {
                 localControls.filter { it.original === fresh }.forEach { it.retire(deferred = true) }
-                input.anchor.retire()
+                input.anchor.retireAdmissions()
             } }
             if (closed || binding.get() !== fresh) { binding.compareAndSet(fresh, null); fresh.unlink() }
         }
@@ -157,6 +160,7 @@ internal class AnchorShellSession(
         @Volatile var chooserObserved = false
         private fun attached() = !closed && binding.get() === original
         private fun alive() = attached() && original.binder.isBinderAlive
+        private var capturedSource: ManagedUiSource? = null
         private val stateOutput = AnchorHoldOutput(stateWork) { revision, state ->
             AnchorAppRuntime.flow("hold_state transaction=$id source=${admission.intent.source} gesture=${admission.intent.gestureId} revision=$revision state=$state")
             if (!closed) try { send.invoke(AnchorMessage.HeldState(id, admission.intent, revision, state)) }
@@ -164,7 +168,11 @@ internal class AnchorShellSession(
         }
         private fun currentControl() = admission.intent.kind != AnchorIntentKind.REGISTER ||
             input.anchor.isCurrent(admission.control)
-        override fun source(): ByteArray? = if (alive() && currentControl()) source.invoke()?.bytes() else null
+        override fun source(): ByteArray? {
+            if (!alive() || !currentControl()) return null
+            val captured = capturedSource ?: originalSource(admission)?.also { capturedSource = it }
+            return captured?.bytes()
+        }
         override fun reconcile(settingContext: ByteArray): Boolean = alive() &&
             input.anchor.reconcile(AnchorExecutionCodec.setting(settingContext),
                 admission.control.takeIf { admission.intent.kind == AnchorIntentKind.REGISTER })
@@ -172,7 +180,7 @@ internal class AnchorShellSession(
             if (!alive()) return AnchorExecutionStatus.RETIRED.ordinal
             val setting = AnchorExecutionCodec.setting(settingContext)
             val target = AnchorExecutionCodec.target(resolvedTarget)
-            val current = source.invoke() // Foreground/source query is outside the owner/control lock.
+            val current = capturedSource ?: originalSource(admission)?.also { capturedSource = it }
             return try { input.click(admission, setting, target, current,
                 { attached() && current != null && accepts(admission.intent, current) }, ordinaryHandoff).ordinal }
             catch (error: Exception) { failure(error); AnchorExecutionStatus.INPUT_REJECTED.ordinal }
@@ -187,28 +195,27 @@ internal class AnchorShellSession(
         override fun releaseHeld(expectedSetting: ByteArray, settingCurrent: Boolean): Int {
             if (!alive()) return AnchorReleaseResult.RETIRED.ordinal
             val expected = expectedSetting.takeIf { it.isNotEmpty() }?.let(AnchorExecutionCodec::setting)
-            val current = if (expected != null && settingCurrent) source.invoke() else null
-            return try { input.anchor.releaseHeld(admission, expected, settingCurrent, current,
-                { attached() && current != null && accepts(admission.intent, current) }).ordinal }
+            return try { input.anchor.releaseHeld(admission, expected, true, null,
+                { attached() }).ordinal }
             catch (error: Exception) { failure(error); AnchorReleaseResult.INPUT_REJECTED.ordinal }
         }
         override fun hold(settingContext: ByteArray, resolvedTarget: ByteArray): Int {
             if (!alive()) return AnchorExecutionStatus.RETIRED.ordinal
             val setting = AnchorExecutionCodec.setting(settingContext)
             val target = AnchorExecutionCodec.target(resolvedTarget)
-            val current = source.invoke()
+            val current = capturedSource ?: originalSource(admission)?.also { capturedSource = it }
             return try { input.hold(admission, setting, target, current,
                 { attached() && current != null && accepts(admission.intent, current) }, ordinaryHandoff, stateOutput).ordinal }
             catch (error: Exception) { failure(error); AnchorExecutionStatus.INPUT_REJECTED.ordinal }
         }
-        override fun retire() { if (alive() && currentControl()) input.anchor.retire(admission) }
+        override fun retire() { if (alive()) input.anchor.lose(admission) }
         override fun send(typedMessage: ByteArray) {
             if (!alive()) return
             val message = AnchorMessage.from(typedMessage)
             require(message.transactionId == id && message.intent == admission.intent)
             when (message) {
                 is AnchorMessage.Offer -> {
-                    val current = source.invoke() ?: return
+                    val current = capturedSource ?: return
                     if (!input.anchor.isCurrent(admission) || !accepts(admission.intent, current)) return
                     if (registration.get() !== this) return
                 }
@@ -239,12 +246,11 @@ internal class AnchorShellSession(
         when (message) {
             is AnchorMessage.Open -> {
                 val original = operation.admission.intent.context.usability
-                val current = source() ?: return
-                if (operation.chooser != null || !accepts(operation.admission.intent, current) ||
+                if (operation.chooser != null ||
                     message.chooser.ownerEpoch != original.ownerEpoch || message.chooser.incarnation != original.incarnation) return
                 operation.chooser = message.chooser
             }
-            is AnchorMessage.Choice -> if (message.choice != AnchorChoice.CANCEL && !operation.chooserObserved) return
+            is AnchorMessage.Choice -> if (message.choice != AnchorChoice.CANCEL && operation.chooser == null) return
             else -> error("Invalid receiver Anchor message")
         }
         operation.original.client.onRegistration(message.bytes(), operation)
@@ -253,13 +259,14 @@ internal class AnchorShellSession(
     fun usability(fact: ReceiverUsability) {
         val operation = registration.get() ?: return
         val expected = operation.chooser ?: operation.admission.intent.context.usability
-        val exactOpening = operation.chooser == null || operation.chooserObserved || fact == expected
-        if (!exactOpening || fact.ownerEpoch != expected.ownerEpoch || fact.incarnation != expected.incarnation ||
-            fact.inputRevision != expected.inputRevision || fact.mode != expected.mode) {
-            cancelRegistration(operation)
-            runCatching { operation.original.client.onRegistration(
-                AnchorMessage.Choice(operation.id, operation.admission.intent, AnchorChoice.CANCEL).bytes(), operation) }
-        } else if (operation.chooser != null) operation.chooserObserved = true
+        if (operation.chooser != null && fact.ownerEpoch == expected.ownerEpoch && fact.incarnation == expected.incarnation &&
+            fact.inputRevision == expected.inputRevision && fact.mode == expected.mode) operation.chooserObserved = true
+    }
+
+    private fun loseRegistration(original: Operation?) {
+        if (original == null || !registration.compareAndSet(original, null)) return
+        stateWork.submit { try { send(AnchorMessage.Result(original.id, original.admission.intent,
+            AnchorRegistrationResult.UNAVAILABLE)) } catch (error: Exception) { failure(error) } }
     }
 
     private fun cancelRegistration(original: Operation?, deferred: Boolean = false) {

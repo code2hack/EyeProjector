@@ -62,6 +62,9 @@ internal class ManagedProjectionDisplay private constructor(
             source.rotation, source.scalingDisabled, video)
     }
 
+    internal class InputDestination internal constructor(val displayId: Int,
+        internal val uniqueId: String, internal val resource: Any)
+
     class Failure(val category: String, cause: Throwable? = null) : Exception(category, cause) {
         // Keep an incomplete original cleanup reachable through its reported failure.
         internal var retainedOwner: ManagedProjectionDisplay? = null
@@ -237,6 +240,26 @@ internal class ManagedProjectionDisplay private constructor(
 
     /** Existing original display observation; no WindowManager query or input admission. */
     fun sourceObservation(): SourceObservation? = synchronized(inputOperations) { observedSource }
+
+    /** Capture the actual original destination independently of mutable layout observations. */
+    fun inputDestination(): InputDestination? = synchronized(inputOperations) {
+        if (closeRequested.get()) return@synchronized null
+        val display = originalDisplay ?: return@synchronized null
+        val id = capturedDisplayId ?: return@synchronized null
+        val unique = originalDisplayUniqueId ?: return@synchronized null
+        InputDestination(id, unique, display)
+    }
+
+    /** An original terminal must never use a successor resource or its current transform. */
+    fun withInputDestination(original: InputDestination, action: (Int) -> Boolean): Boolean {
+        if (closeRequested.get()) return false
+        requireOriginalDisplay()
+        return synchronized(inputOperations) {
+            if (closeRequested.get() || originalDisplay !== original.resource ||
+                capturedDisplayId != original.displayId || originalDisplayUniqueId != original.uniqueId) false
+            else action(original.displayId)
+        }
+    }
 
     /** Same lifetime/transition admission as input; release this lock before any accessibility read. */
     fun uiInputSnapshot(): ManagedUiMapping? = synchronized(inputOperations) {

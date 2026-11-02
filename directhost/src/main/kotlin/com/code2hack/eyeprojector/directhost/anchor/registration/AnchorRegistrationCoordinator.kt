@@ -48,15 +48,11 @@ class AnchorRegistrationCoordinator<T : Any>(private val store: AppAnchorStore) 
     }
 
     /** Called only after the bridge admits this original transaction, never by a raw Function UP. */
-    fun choose(token: T, mode: AnchorMode, snapshot: UiTargetSnapshot): AnchorRegistrationCompletion {
+    fun choose(token: T, mode: AnchorMode): AnchorRegistrationCompletion {
         lastFailure = null
         val original = pending?.takeIf { it.token == token } ?: return AnchorRegistrationCompletion.Canceled
         pending = null
         val selected = original.target
-        val resolved = AnchorTargetResolver.resolve(selected.descriptor, snapshot)
-        if (resolved !is AnchorTargetResolution.Unique || resolved.current.source != selected.current.source ||
-            resolved.current.window.windowId != selected.current.window.windowId ||
-            resolved.current.window.type != selected.current.window.type) return AnchorRegistrationCompletion.ContextChanged
         val anchor = AppAnchor(selected.descriptor, mode)
         return try {
             store.replace(anchor)

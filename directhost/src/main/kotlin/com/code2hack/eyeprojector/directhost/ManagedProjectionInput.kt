@@ -16,8 +16,9 @@ import com.code2hack.eyeprojector.protocol.Touch
 internal class ManagedProjectionInput(
     private val owner: ManagedProjectionDisplay,
 ) : PhoneTouchDispatcher.MotionTarget {
-    private var heldContact: Long? = null
-    private var heldDownTime = 0L
+    private class Contact(val id: Long, val destination: ManagedProjectionDisplay.InputDestination,
+        val downTime: Long, var point: Pair<Float, Float>)
+    private var held: Contact? = null
 
     // InputManagerGlobal is the real framework injector on the VDM-supported Android versions.
     // No permission/settings changes, alternate target, or physical-display fallback.
@@ -34,58 +35,61 @@ internal class ManagedProjectionInput(
         owner.inputGeometry(next)
     }
 
-    @Synchronized override fun touch(event: Touch): Boolean =
-        owner.withInputMapping(event.target.geometry) { displayId, mapping ->
+    @Synchronized override fun touch(event: Touch): Boolean {
+        if (event.phase == Touch.Phase.DOWN) return owner.withInputMapping(event.target.geometry) { _, mapping ->
+            val destination = owner.inputDestination() ?: return@withInputMapping false
             val now = SystemClock.uptimeMillis()
-            if (event.phase != Touch.Phase.DOWN && heldContact != event.contactId) {
-                return@withInputMapping event.phase == Touch.Phase.CANCEL && heldContact == null
+            val original = Contact(event.contactId, destination, now, sourceCoordinates(event.target, mapping))
+            held = original // Own an original terminal even when injection reenters or fails.
+            owner.withInputDestination(destination) { id -> motion(id, original.point, event.phase.action,
+                now, now, InputDevice.SOURCE_TOUCHSCREEN, MotionEvent.TOOL_TYPE_FINGER, 1f) }
+        }
+        val original = held?.takeIf { it.id == event.contactId }
+            ?: return event.phase == Touch.Phase.CANCEL && held == null
+        if (event.phase == Touch.Phase.MOVE) return owner.withInputMapping(event.target.geometry) { _, mapping ->
+            val next = sourceCoordinates(event.target, mapping)
+            val accepted = owner.withInputDestination(original.destination) { id ->
+                motion(id, next, event.phase.action, original.downTime, SystemClock.uptimeMillis(),
+                    InputDevice.SOURCE_TOUCHSCREEN, MotionEvent.TOOL_TYPE_FINGER, 1f)
             }
-            val down = if (event.phase == Touch.Phase.DOWN) now else heldDownTime
-            val accepted = motion(displayId, mapping, event.target,
-                event.phase.action, down, now, InputDevice.SOURCE_TOUCHSCREEN,
-                MotionEvent.TOOL_TYPE_FINGER,
-                if (event.phase == Touch.Phase.DOWN || event.phase == Touch.Phase.MOVE) 1f else 0f)
-            if (accepted) {
-                if (event.phase == Touch.Phase.DOWN) {
-                    heldContact = event.contactId
-                    heldDownTime = down
-                } else if (event.phase == Touch.Phase.UP || event.phase == Touch.Phase.CANCEL) {
-                    heldContact = null
-                    heldDownTime = 0L
-                }
-            }
+            if (accepted && held === original) original.point = next
             accepted
         }
+        val accepted = owner.withInputDestination(original.destination) { id ->
+            motion(id, original.point, event.phase.action, original.downTime, SystemClock.uptimeMillis(),
+                InputDevice.SOURCE_TOUCHSCREEN, MotionEvent.TOOL_TYPE_FINGER, 0f)
+        }
+        if (accepted && held === original) held = null
+        return accepted
+    }
 
     @Synchronized override fun tap(event: Tap): Boolean =
-        owner.withInputMapping(event.geometry) { displayId, mapping ->
+        owner.withInputMapping(event.geometry) { _, mapping ->
             // The dispatcher cancels a held contact before a discrete tap, as on its legacy path.
+            val destination = owner.inputDestination() ?: return@withInputMapping false
+            val point = sourceCoordinates(event, mapping)
             val down = SystemClock.uptimeMillis()
-            if (!motion(displayId, mapping, event, MotionEvent.ACTION_DOWN,
-                    down, down, InputDevice.SOURCE_TOUCHSCREEN, MotionEvent.TOOL_TYPE_FINGER, 1f)) {
+            fun submit(action: Int, time: Long, pressure: Float) = owner.withInputDestination(destination) { id ->
+                motion(id, point, action, down, time, InputDevice.SOURCE_TOUCHSCREEN, MotionEvent.TOOL_TYPE_FINGER, pressure)
+            }
+            if (!submit(MotionEvent.ACTION_DOWN, down, 1f)) {
                 return@withInputMapping false
             }
-            val released = motion(displayId, mapping, event, MotionEvent.ACTION_UP,
-                down, SystemClock.uptimeMillis(), InputDevice.SOURCE_TOUCHSCREEN,
-                MotionEvent.TOOL_TYPE_FINGER, 0f)
-            if (!released) motion(displayId, mapping, event, MotionEvent.ACTION_CANCEL,
-                down, SystemClock.uptimeMillis(), InputDevice.SOURCE_TOUCHSCREEN,
-                MotionEvent.TOOL_TYPE_FINGER, 0f)
+            val released = submit(MotionEvent.ACTION_UP, SystemClock.uptimeMillis(), 0f)
             released
         }
 
     @Synchronized override fun scroll(event: Scroll): Boolean =
         owner.withInputMapping(event.target.geometry) { displayId, mapping ->
             val now = SystemClock.uptimeMillis()
-            motion(displayId, mapping, event.target, MotionEvent.ACTION_SCROLL,
+            motion(displayId, sourceCoordinates(event.target, mapping), MotionEvent.ACTION_SCROLL,
                 now, now, InputDevice.SOURCE_MOUSE, MotionEvent.TOOL_TYPE_MOUSE, 0f,
                 verticalScroll = -event.pixels.toFloat() / 64f)
         }
 
     private fun motion(
         displayId: Int,
-        mapping: ManagedProjectionDisplay.InputMapping,
-        target: Tap,
+        point: Pair<Float, Float>,
         action: Int,
         downTime: Long,
         eventTime: Long,
@@ -98,7 +102,7 @@ internal class ManagedProjectionInput(
             id = 0
             toolType = tool
         }
-        val (mappedX, mappedY) = sourceCoordinates(target, mapping)
+        val (mappedX, mappedY) = point
         val coordinates = MotionEvent.PointerCoords().apply {
             x = mappedX
             y = mappedY

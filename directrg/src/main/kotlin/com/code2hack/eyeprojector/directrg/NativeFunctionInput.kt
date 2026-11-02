@@ -24,8 +24,10 @@ internal class NativeFunctionInput(
     captureOriginal: ((Any, Long, Long?) -> Any?)? = null,
     retireOriginal: ((Long, Any) -> Unit)? = null,
     registrationRelease: (AnchorGesture, Boolean) -> Unit = { _, _ -> },
+    registrationLost: (AnchorGesture) -> Unit = {},
 ) {
     private var registered = false
+    private var losingResource = false
     private var retiring: MutableList<() -> Unit>? = null
     private class RawPress(val source: Any, val id: Long, var retired: Boolean)
     private var rawSource: Any? = null
@@ -41,7 +43,11 @@ internal class NativeFunctionInput(
             val effect: () -> Unit = {retire(id,original)}
             retiring?.add(effect) ?: effect()
         } }, registrationRelease = { gesture, canceled ->
-            val effect: () -> Unit = { registrationRelease(gesture.anchorOperation(), canceled) }
+            val lost = losingResource && canceled
+            val effect: () -> Unit = {
+                if (lost) registrationLost(gesture.anchorOperation())
+                else registrationRelease(gesture.anchorOperation(), canceled)
+            }
             retiring?.add(effect) ?: effect()
         })
     private val receiver = object : BroadcastReceiver() {
@@ -63,7 +69,7 @@ internal class NativeFunctionInput(
         if (rawSource === source) return
         rawSource = source
         rawPress = null
-        cancel()
+        loseResource()
         runCatching { Log.i("EyeProjectorFunction", "raw_source connected=${System.identityHashCode(source)}") }
     }
 
@@ -71,7 +77,7 @@ internal class NativeFunctionInput(
         if (rawSource !== source) return
         rawSource = null
         rawPress = null
-        cancel()
+        loseResource()
         runCatching { Log.i("EyeProjectorFunction", "raw_source lost=${System.identityHashCode(source)}") }
     }
 
@@ -126,8 +132,15 @@ internal class NativeFunctionInput(
 
     fun cancel() = prepareCancel().finishOriginal()
 
+    private fun loseResource() {
+        losingResource = true
+        try { cancel() } finally { losingResource = false }
+    }
+
+    fun originalSessionLost() = loseResource()
+
     fun stop() {
-        cancel()
+        loseResource()
         if (!registered) return
         registered = false
         context.unregisterReceiver(receiver)

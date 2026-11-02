@@ -680,20 +680,8 @@ private class Session(
                     ?: error("Managed projection display is unavailable")
                 synchronized(controlLock) {
                     check(running.get())
-                    // A new contact can arrive while the pending state is being sent.
-                    phoneInput.invalidate()
-                    inputControls.cancel()
                     // Queue only. The stream owner performs the WM change off these locks.
                     original.resize(requestedScale)
-                }
-            }
-        },
-        beforeRequestPublish = {
-            if (managedDisplayFactory != null) {
-                synchronized(controlLock) {
-                    check(running.get())
-                    phoneInput.invalidate()
-                    inputControls.cancel()
                 }
             }
         },
@@ -739,14 +727,13 @@ private class Session(
     private val anchorSession by lazy {
         com.code2hack.eyeprojector.directhost.anchor.execution.AnchorShellSession(inputControls, ::uiTargetContext,
             { intent, source -> running.get() && intent.context.pointer.projected &&
-                receiverUsability.acceptsPointer(intent.context.usability, intent.context.pointer) &&
-                geometry.get() == source.geometry.video &&
-                managedDisplay?.uiInputSnapshot()?.let { mapping -> mapping.displayId == source.displayId &&
-                    mapping.displayUniqueId == source.displayUniqueId && mapping.geometry == source.geometry } == true },
+                source.context == context && managedDisplay?.inputDestination()?.let { original ->
+                    original.displayId == source.displayId && original.uniqueId == source.displayUniqueId } == true },
             phoneInput::nativeAction, anchorWork, { error -> closeSafely(sessionFailureReason(error, control = true), error) },
             { message -> if (running.get()) try { send(Frame(Wire.ANCHOR, payload = message.bytes())) }
                 catch (error: Exception) { closeSafely(sessionFailureReason(error, control = true), error) } },
-            { original, route, edge, region, word -> phoneHidStampedOriginal(original, route, edge, region, word) }).also {
+            { original, route, edge, region, word -> phoneHidStampedOriginal(original, route, edge, region, word) },
+            captureOriginal = ::captureAnchorOriginal, originalSource = ::capturedAnchorSource).also {
                     it.controlContext(context)
                 }
     }
@@ -759,6 +746,38 @@ private class Session(
     }
 
     private fun acceptAnchor(intent: AnchorIntent) = acceptAnchor(intent, null)
+
+    /** Capture before Phone's HID queue or native Anchor FIFO; no app/window traversal here. */
+    private fun captureAnchorOriginal(original: com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission) {
+        if (original.terminal) return
+        if (original.anchorContext == null)
+            original.anchorContext = inputControls.anchor.heldContext() ?: phoneInput.captureAnchorContext()
+        val resource = synchronized(managedDisplayGate) { managedDisplay }
+        if (original.anchorContext == null || resource == null) {
+            original.disposition = com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.RETIRED
+            return
+        }
+        val held = inputControls.anchor.heldSource()
+        original.anchorMapping = held?.let { com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiMapping(
+            it.displayId, it.displayUniqueId, it.geometry) } ?: resource.uiInputSnapshot()
+        original.anchorResource = resource
+        if (original.anchorMapping == null)
+            original.disposition = com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.RETIRED
+    }
+
+    private fun capturedAnchorSource(original: com.code2hack.eyeprojector.directhost.anchor.execution.AnchorAdmission):
+        com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiSource? {
+        val resource = original.resource as? ManagedProjectionDisplay ?: return null
+        val mapping = original.mapping ?: return null
+        if (!running.get() || synchronized(managedDisplayGate) { managedDisplay !== resource }) return null
+        val destination = resource.inputDestination() ?: return null
+        if (destination.displayId != mapping.displayId || destination.uniqueId != mapping.displayUniqueId) return null
+        val foreground = launches.snapshot(observe = true)
+        if (foreground.context != context || foreground.displayId != mapping.displayId ||
+            !running.get() || synchronized(managedDisplayGate) { managedDisplay !== resource }) return null
+        return com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiSource(context, foreground.generation,
+            mapping.displayId, mapping.displayUniqueId, foreground.foregroundPackage, null, mapping.geometry)
+    }
 
     private data class RemoteAnchorKey(val incarnation: ReceiverIncarnation, val source: AnchorSource, val id: Long)
     private val remoteAnchorOriginals = java.util.concurrent.ConcurrentHashMap<RemoteAnchorKey,
@@ -775,10 +794,8 @@ private class Session(
         val captured = CapturedAnchorIntent<CapturedProjection>(intent, this)
         anchorWork.submit {
             try {
-                val context = captured.intent.context
                 val current = captured.original === this && running.get() &&
-                    receiverUsability.acceptsPointer(context.usability, context.pointer) &&
-                    (!context.pointer.projected || context.pointer.geometry == geometry.get())
+                    inputControls.anchor.isCurrent(admission)
                 com.code2hack.eyeprojector.directhost.anchor.execution.AnchorAppRuntime.flow(
                     "root_fifo source=${intent.source} kind=${intent.kind} gesture=${intent.gestureId} current=$current")
                 if (current) {
@@ -835,8 +852,7 @@ private class Session(
     private val launches: ProjectedAppLaunch = ProjectedAppLaunch("$projectionToken:scrcpy-%08x".format(scid), PlatformProjectionLaunch(context = context), context) {
         synchronized(controlLock) {
             check(running.get())
-            phoneInput.invalidate()
-            inputControls.cancel()
+            phoneInput.invalidateOrdinary()
         }
     }
     private var identifiedDisplay = false
@@ -1060,8 +1076,6 @@ private class Session(
 
     private fun writeControl(payload: ByteArray) = synchronized(controlLock) {
         check(running.get())
-        phoneInput.invalidate()
-        inputControls.cancel()
         control!!.outputStream.write(payload)
     }
 
@@ -1199,7 +1213,6 @@ private class Session(
         startupStage.set(StartupStage.VIDEO_STREAM)
         var reason = SessionStopReason.VIDEO_END
         var failure: Exception? = null
-        var managedInputSource = source?.sourceObservation()
         try {
             while (running.get()) {
                 val record = if (source != null) {
@@ -1208,17 +1221,13 @@ private class Session(
                         is ManagedProjectionDisplay.Read.Layout -> {
                             val videoGeometry = geometry.get()
                             if (videoGeometry != null) {
-                                val sourceChanged = managedInputSource != next.source
-                                val changed = scale.observeManagedLayout(next.source.layout, this, sourceChanged) {
+                                scale.observeManagedLayout(next.source.layout, this) {
                                     synchronized(controlLock) {
-                                        phoneInput.invalidate()
-                                        inputControls.cancel()
                                         inputControls.geometry(videoGeometry)
                                     }
                                 }
-                                managedInputSource = next.source
                                 com.code2hack.eyeprojector.directhost.anchor.execution.AnchorAppRuntime.flow(
-                                    "managed_layout changed=$changed sourceChanged=$sourceChanged logical=${next.source.layout} video=$videoGeometry")
+                                    "managed_layout mappingRefreshed=true logical=${next.source.layout} video=$videoGeometry")
                             }
                             runCatching { recordManagedProjection() }
                             continue
@@ -1231,12 +1240,11 @@ private class Session(
                         startup.cancel(false)
                         val layout = source?.layoutGeometry() ?: record.geometry
                         scale.observe(record, this, managedResize = source != null, observedGeometry = layout) {
-                            val changed = synchronized(controlLock) {
-                                if (geometry.get() != record.geometry) phoneInput.invalidate()
+                            synchronized(controlLock) {
                                 inputControls.geometry(record.geometry)
-                                geometry.getAndSet(record.geometry) != record.geometry
+                                geometry.set(record.geometry)
                             }
-                            if (changed) send(Frame(Wire.GEOMETRY, payload = record.geometry.bytes()))
+                            send(Frame(Wire.GEOMETRY, payload = record.geometry.bytes()))
                         }
                         if (source != null) runCatching { recordManagedProjection() }
                         // Creation is logged before this metadata by the pinned capture. Do not
@@ -1346,7 +1354,7 @@ private class Session(
             }
             Wire.PASSIVE_SCROLL -> {
                 val scroll = Scroll.from(frame.payload)
-                if (scroll.target.geometry == geometry.get()) phoneInput.passiveAction { inputControls.scroll(scroll) }
+                if (scroll.target.geometry == geometry.get()) phoneInput.passiveAction { inputControls.passiveScroll(scroll) }
             }
             Wire.NAVIGATE -> {
                 val navigate = Navigate.from(frame.payload)
@@ -1374,9 +1382,7 @@ private class Session(
                 val fact = ReceiverUsability.from(frame.payload)
                 val previous = receiverUsability.snapshot().fact
                 if (receiverUsability.publish(fact)) {
-                    if (previous == null || previous.ownerEpoch != fact.ownerEpoch || previous.incarnation != fact.incarnation ||
-                        previous.inputRevision != fact.inputRevision || previous.mode != fact.mode) {
-                        inputControls.anchor.retire("receiver-usability")
+                    if (previous != null && (previous.ownerEpoch != fact.ownerEpoch || previous.incarnation != fact.incarnation)) {
                         remoteAnchorOriginals.clear()
                         remoteAnchorRetiredBeforeBirth.clear()
                         remoteAnchorSeen.keys.removeAll { it.first != fact.incarnation }
@@ -1415,7 +1421,10 @@ private class Session(
                         remoteAnchorSeen[domain]=key.id
                         val retired=remoteAnchorRetiredBeforeBirth.remove(key)
                         remoteAnchorRetiredBeforeBirth.removeAll { it.incarnation==key.incarnation&&it.source==key.source&&it.id<key.id }
-                        if(!retired&&!control.terminal&&receiverUsability.acceptsPointer(original.context.usability,original.context.pointer)) {
+                        if(!retired&&!control.terminal&&original.context.pointer.available&&
+                            receiverUsability.acceptsAnchorSource(original.context.usability)) {
+                            control.anchorContext = original.context
+                            captureAnchorOriginal(control)
                             original.parentOriginal?.let { parent ->
                                 val captured = remoteAnchorOriginals[RemoteAnchorKey(key.incarnation,key.source,parent)]
                                 if (captured == null) control.disposition = com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.RETIRED
@@ -1485,7 +1494,7 @@ private class Session(
                 val originalObservation = inputTrace?.retain()
                 HeldInputRelease.beforeTransportClose {
                     try {
-                        try { phoneInput.invalidate() }
+                        try { phoneInput.sourceLost() }
                         finally { try { inputControls.close() } finally { panelPower.close() } }
                     } finally { originalObservation?.close() }
                 }

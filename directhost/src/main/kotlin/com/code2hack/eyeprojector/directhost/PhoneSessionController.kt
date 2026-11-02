@@ -605,6 +605,8 @@ class PhoneSessionController private constructor(context: Context) {
 
     /** Fresh DOWN is captured and submitted once. UP/CANCEL retain this exact original route. */
     fun capturePhoneHidRoute(down: PhoneHidEdge): PhoneHidRoute? = bootstrap.capturePhoneHidRoute(down)
+    internal fun captureOriginalAnchorRoute(down: PhoneHidEdge, original: com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal) =
+        bootstrap.captureOriginalAnchorRoute(down, original)
     fun submitPhoneHid(route: PhoneHidRoute, edge: PhoneHidEdge) = route.submit(edge)
     fun cancelPhoneHid(route: PhoneHidRoute, eventTimeMs: Long) = route.cancel(eventTimeMs)
 

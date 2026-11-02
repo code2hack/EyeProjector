@@ -42,7 +42,7 @@ internal class AnchorRegistrationOverlay(context: Context,
         pointerX = x; pointerY = y; pointerAvailable = available
         val bounds = target ?: return
         menu = layout(bounds)
-        selected = if (available) menu?.at(x, y) else null
+        if (available) selected = menu?.at(x, y)
         highlighted(selected); invalidate()
     }
     fun waiting() { choosing = true; invalidate() }
@@ -65,7 +65,7 @@ internal class AnchorRegistrationOverlay(context: Context,
         // A previously GONE overlay is measured only after it becomes visible. Layout/hit
         // testing therefore uses this draw's actual viewport, including a stationary head.
         menu = layout(targetBounds)
-        if (!choosing) {
+        if (!choosing && !original.drawn) {
             selected = if (pointerAvailable) menu?.at(pointerX, pointerY) else null
             highlighted(selected)
         }

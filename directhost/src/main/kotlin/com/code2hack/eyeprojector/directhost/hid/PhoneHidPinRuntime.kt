@@ -88,12 +88,15 @@ internal class PhoneHidPinRuntime(
         // Read the immutable assignment snapshot at arrival. Ordinary controls never acquire
         // Anchor's generation or Short FIFO lifetime, even before the native/main queues.
         val anchorOperation = controller.bindings.action(inputBinding(json).button) == PhoneHidAction.ANCHOR
-        val captured = captureOriginal(anchorOperation)
-        val discarded = captured?.discarded ?: !recognizeInput()
         val key = RawOriginal(epoch, token, json.getString("deviceKey"), json.getLong("generation"),
             json.getInt("sourceId"), json.getString("collectionKey"), json.getInt("code"), json.getLong("downTimeMs"), json.getLong("pressId"))
         val phase = PhoneHidPhase.valueOf(json.getString("phase"))
         val existing = originals[key]
+        // Only the initial DOWN captures a hover/mapping. A terminal still observes the
+        // central CANCELING gate, but cannot replace its original with a new pointer read.
+        val captured = captureOriginal(anchorOperation && existing == null &&
+            phase == PhoneHidPhase.DOWN && json.getInt("repeatCount") == 0)
+        val discarded = captured?.discarded ?: !recognizeInput()
         val received = existing ?: if (phase == PhoneHidPhase.DOWN && json.getInt("repeatCount") == 0) {
             val fresh = Received(captured, discarded, token, key)
             originals.putIfAbsent(key, fresh) ?: fresh

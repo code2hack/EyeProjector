@@ -24,7 +24,7 @@ internal class AnchorRegistrationProvider : AnchorRegistrationInstaller {
     override fun install(runtime: AnchorAppRuntime) {
         this.runtime = runtime
         coordinator = AnchorRegistrationCoordinator(runtime.store)
-        runtime.installRegistration(::begin, ::message)
+        runtime.installRegistration(::begin, ::message, ::lost)
     }
 
     private fun begin(request: CapturedAnchorRequest) {
@@ -47,7 +47,6 @@ internal class AnchorRegistrationProvider : AnchorRegistrationInstaller {
             return
         }
         pending = Pending(token, original, request.source)
-        runtime.coordinator.observeWindow(original, request.source, capture.target.current.window)
         val bounds = capture.target.highlight
         original.send(AnchorMessage.Offer(token.id, token.intent,
             AnchorHighlight(bounds.left, bounds.top, bounds.right, bounds.bottom)))
@@ -60,12 +59,6 @@ internal class AnchorRegistrationProvider : AnchorRegistrationInstaller {
             original.transactionId != selected.token.id || original.intent != selected.token.intent ||
             original.identity != selected.token.route) return
         AnchorAppRuntime.flow("registration_message transaction=${message.transactionId} type=${message.javaClass.simpleName} choice=${(message as? AnchorMessage.Choice)?.choice}")
-        val source = original.source()
-        if (source != selected.source) {
-            // A successor route cannot retire or save the original pending registration.
-            if (selected.route.source() != selected.source) cancelPending()
-            return
-        }
         when (message) {
             is AnchorMessage.Open -> {
                 val chooser = message.chooser
@@ -82,24 +75,14 @@ internal class AnchorRegistrationProvider : AnchorRegistrationInstaller {
             is AnchorMessage.Choice -> {
                 if (message.choice == AnchorChoice.CANCEL) { cancelPending(); return }
                 if (selected.chooser == null) { cancelPending(); return }
-                val snapshot = runtime.read(selected.route, selected.source.foregroundPackage ?: return,
-                    windowId = null)
-                if (selected.route.source() != selected.source) {
-                    coordinator.cancel(selected.token)
-                    pending = null
-                    runtime.coordinator.reportRegistration(selected.route, AnchorRegistrationDiagnostic.Stage.SOURCE_CHANGED,
-                        selected.source, snapshot, detail = "CHOICE_SOURCE_CHANGED")
-                    result(selected.route, AnchorRegistrationResult.UNAVAILABLE)
-                    return
-                }
                 pending = null
                 val outcome = coordinator.choose(selected.token, when (message.choice) {
                     AnchorChoice.CLICK -> AnchorMode.CLICK
                     AnchorChoice.HOLD -> AnchorMode.HOLD
                     AnchorChoice.CANCEL -> error("Cancel already handled")
-                }, snapshot)
+                })
                 runtime.coordinator.reportRegistration(selected.route, AnchorRegistrationDiagnostic.Stage.COMPLETION,
-                    selected.source, snapshot, detail = outcome.javaClass.simpleName, failure = coordinator.lastFailure)
+                    selected.source, detail = outcome.javaClass.simpleName, failure = coordinator.lastFailure)
                 result(selected.route, when (outcome) {
                     is AnchorRegistrationCompletion.Saved -> when (outcome.anchor.mode) {
                         AnchorMode.CLICK -> AnchorRegistrationResult.SAVED_CLICK
@@ -120,6 +103,14 @@ internal class AnchorRegistrationProvider : AnchorRegistrationInstaller {
         runtime.coordinator.reportRegistration(selected.route, AnchorRegistrationDiagnostic.Stage.COMPLETION,
             selected.source, detail = "Canceled")
         result(selected.route, AnchorRegistrationResult.CANCELED)
+    }
+
+    private fun lost(original: AnchorOriginalRoute) {
+        val selected = pending?.takeIf { it.token.route == original.identity } ?: return
+        pending = null
+        coordinator.cancel(selected.token)
+        runtime.coordinator.reportRegistration(selected.route, AnchorRegistrationDiagnostic.Stage.SOURCE_CHANGED,
+            selected.source, detail = "ORIGINAL_CALLBACK_RESOURCE_LOST")
     }
 
     private fun result(original: AnchorOriginalRoute, outcome: AnchorRegistrationResult) {

@@ -43,15 +43,12 @@ internal class AnchorSessionInput(private val lock: Any, write: (ByteArray) -> U
 
     fun bindMotionTarget(target: PhoneTouchDispatcher.MotionTarget) = output.bindMotionTarget(target)
     fun geometry(next: Geometry) = synchronized(lock) {
-        if (geometry != next) {
-            retirementGeometry = next
-            try { anchor.retire("geometry") } finally { retirementGeometry = null }
-        }
         geometry = next; output.geometry(next)
     }
     fun touch(event: Touch): Boolean = synchronized(lock) { anchor.retire(); output.touch(event) }
     fun tap(event: Tap): Boolean = synchronized(lock) { anchor.retire(); output.tap(event) }
     fun scroll(event: Scroll): Boolean = synchronized(lock) { anchor.retire(); output.scroll(event) }
+    fun passiveScroll(event: Scroll): Boolean = synchronized(lock) { output.scroll(event) }
     fun navigate(event: Navigate): Boolean = synchronized(lock) { anchor.retire(); output.navigate(event) }
     fun cancel(next: Geometry? = null) = synchronized(lock) {
         retirementGeometry = next

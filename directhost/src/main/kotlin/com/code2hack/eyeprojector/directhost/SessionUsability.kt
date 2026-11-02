@@ -96,6 +96,11 @@ internal class SessionUsability(private val context: ProjectionContext) {
         val now = current.get(); val fact = now.fact ?: return@synchronized false
         !now.retired && original != null && sameInput(fact, original) && (!point.available || compatible(fact, point))
     }
+    /** A captured Anchor belongs to this source; later presentation revisions are not user cancellation. */
+    fun acceptsAnchorSource(original: ReceiverUsability): Boolean = synchronized(gate) {
+        val now = current.get(); val fact = now.fact
+        !now.retired && fact != null && fact.ownerEpoch == original.ownerEpoch && fact.incarnation == original.incarnation
+    }
     private fun compatible(fact: ReceiverUsability, point: HeadPointerState) = point.available && compatibleContext(fact, point)
     private fun compatibleContext(fact: ReceiverUsability, point: HeadPointerState) =
         point.revision == fact.inputRevision && when (fact.mode) {

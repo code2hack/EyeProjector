@@ -8,8 +8,6 @@ import com.code2hack.eyeprojector.protocol.AnchorIntent
 import com.code2hack.eyeprojector.protocol.AnchorIntentKind
 import com.code2hack.eyeprojector.protocol.AnchorMessage
 import java.io.Closeable
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicLong
 
 /** Captured original shell operation, never a lookup of the latest projection or Binder binding. */
 internal interface AnchorOriginalRoute {
@@ -48,15 +46,11 @@ internal class AnchorAppCoordinator(
 ) : Closeable {
     var registration: ((CapturedAnchorRequest) -> Unit)? = null
     var registrationMessage: ((AnchorMessage, AnchorOriginalRoute) -> Unit)? = null
+    var registrationLost: ((AnchorOriginalRoute) -> Unit)? = null
     private class Subscription(var route: AnchorOriginalRoute, val context: ProjectionContext, val displayId: Int,
         val packageName: String, val observer: Closeable)
     private val subscriptions = mutableListOf<Subscription>() // FIFO lane only.
     private var registrationRequest: CapturedAnchorRequest? = null
-    private val accessRevision = AtomicLong()
-    private val displayRevisions = ConcurrentHashMap<Int, AtomicLong>()
-    private data class WindowOwner(val route: AnchorOriginalRoute, val source: ManagedUiSource,
-        val window: UiWindowMetadata)
-    private val windowOwners = mutableMapOf<ProjectionContext, WindowOwner>() // FIFO lane only.
     @Volatile private var closed = false
     @Volatile var lastFailure: Exception? = null
         private set
@@ -102,7 +96,7 @@ internal class AnchorAppCoordinator(
             reportRegistration(original, AnchorRegistrationDiagnostic.Stage.EXCEPTION,
                 pending?.source, pending?.snapshot, failure = error)
             if (registrationRequest?.original?.identity == original.identity) registrationRequest = null
-            try { original.retire() } catch (cleanup: Exception) { error.addSuppressed(cleanup) }
+            registrationLost?.invoke(original)
             if (original.intent.kind == AnchorIntentKind.REGISTER) {
                 try { original.send(AnchorMessage.Result(original.transactionId, original.intent,
                     com.code2hack.eyeprojector.protocol.AnchorRegistrationResult.UNAVAILABLE)) }
@@ -122,9 +116,9 @@ internal class AnchorAppCoordinator(
             }
         }
         if (original.intent.kind == AnchorIntentKind.ACTIVATE) {
-            // Original metadata + in-memory revision check; no saved record/source/target lookup.
+            // A second short completes the original contact, independent of later UI/preferences.
             val held = original.heldSetting()
-            when (original.releaseHeld(held, held == null || store.isCurrent(held))) {
+            when (original.releaseHeld(held, true)) {
                 AnchorReleaseResult.RELEASE_SUBMITTED -> return original.feedback(AnchorExecutionStatus.RELEASE_SUBMITTED)
                 AnchorReleaseResult.RETIRED -> return original.feedback(AnchorExecutionStatus.RETIRED)
                 AnchorReleaseResult.INPUT_REJECTED -> return original.feedback(AnchorExecutionStatus.INPUT_REJECTED)
@@ -135,9 +129,6 @@ internal class AnchorAppCoordinator(
             reportRegistration(original, AnchorRegistrationDiagnostic.Stage.SOURCE_RETIRED)
             return original.feedback(AnchorExecutionStatus.RETIRED)
         }
-        val access = accessRevision.get()
-        val display = displayRevisions.computeIfAbsent(source.displayId) { AtomicLong() }
-        val displayRevision = display.get()
         val packageName = source.foregroundPackage ?: run {
             reportRegistration(original, AnchorRegistrationDiagnostic.Stage.FOREGROUND_UNAVAILABLE, source)
             return original.feedback(AnchorExecutionStatus.UNAVAILABLE)
@@ -161,8 +152,6 @@ internal class AnchorAppCoordinator(
             val snapshot = provider.read(source.context, packageName)
             val retired = when {
                 closed -> "CLOSED"
-                accessRevision.get() != access -> "ACCESS_CHANGED"
-                display.get() != displayRevision -> "DISPLAY_CHANGED"
                 original.source() != source -> "SOURCE_CHANGED"
                 else -> null
             }
@@ -192,11 +181,9 @@ internal class AnchorAppCoordinator(
         val snapshot = provider.read(source.context, packageName)
         val resolved = AnchorTargetResolver.resolve(anchor.descriptor, snapshot)
         if (resolved !is AnchorTargetResolution.Unique) return original.feedback(AnchorExecutionStatus.UNAVAILABLE)
-        observeWindow(original, source, resolved.current.window)
         // A setting read/event alone is not retirement ACK: reconcile above completed on the owner.
         // A concurrent later commit invalidates this read; its queued callback retires original use.
-        if (closed || accessRevision.get() != access || display.get() != displayRevision ||
-            !store.isCurrent(setting.context) || original.source() != resolved.current.source)
+        if (closed || !store.isCurrent(setting.context) || original.source() != resolved.current.source)
             return original.feedback(AnchorExecutionStatus.RETIRED)
         original.feedback(if (anchor.mode == AnchorMode.HOLD) original.hold(setting.context, resolved.current)
             else original.click(setting.context, resolved.current))
@@ -221,68 +208,19 @@ internal class AnchorAppCoordinator(
         subscriptions.add(subscription)
     }
 
-    /** Captured selection identity only; target coordinates remain owned by the original contact. */
-    fun observeWindow(route: AnchorOriginalRoute, source: ManagedUiSource, window: UiWindowMetadata) {
-        windowOwners[source.context] = WindowOwner(route, source, window)
-    }
+    /** Presentation/accessibility observations do not own semantic Anchor cancellation. */
+    fun windowChanged(displayId: Int, windowId: Int, currentChanged: Boolean) = Unit
 
-    /** A state/bounds event can be the application's response to DOWN in the SAME window.
-     * Reconcile actual source/window identity on the app FIFO before retiring that original. */
-    fun windowChanged(displayId: Int, windowId: Int, currentChanged: Boolean) {
-        submit {
-            if (closed) return@submit
-            val originals = windowOwners.values.filter { it.source.displayId == displayId &&
-                (currentChanged || it.window.windowId == windowId) }
-            originals.forEach { original -> protect(original.route) {
-                if (windowOwners[original.source.context] !== original) return@protect
-                val source = original.route.source()
-                // The managed display can briefly be between unchanged layout observations.
-                // A missing read is not source teardown; actual binding/service/Session closure
-                // has its own unconditional retirement, and Choice still revalidates before save.
-                if (source == null) {
-                    AnchorAppRuntime.flow("window_observed transaction=${original.route.transactionId} display=$displayId window=$windowId capturedWindow=${original.window.windowId} sourceObserved=false")
-                    return@protect
-                }
-                val snapshot = if (source == original.source) UiTargetSnapshotProvider(
-                    ManagedUiSourceProvider { expected -> original.route.source()?.takeIf { it.context == expected } },
-                    reader, uptime).read(original.source.context, original.source.foregroundPackage ?: return@protect,
-                    original.window.windowId) else null
-                // A held app may hide/change its target or focus a recording overlay. Neither
-                // moves the original contact. Only actual source/window loss retires it;
-                // a transient node traversal failure is not proof of window destruction.
-                val current = snapshot?.windows?.singleOrNull { it.window.displayId == displayId &&
-                    it.window.windowId == original.window.windowId && it.window.type == original.window.type &&
-                    it.status != UiWindowReadStatus.OTHER_PACKAGE }
-                val windowAbsent = when (snapshot?.status) {
-                    UiTargetReadStatus.READ, UiTargetReadStatus.WINDOW_ABSENT,
-                    UiTargetReadStatus.DISPLAY_ABSENT -> current == null
-                    else -> false
-                }
-                val retained = source == original.source && !windowAbsent &&
-                    original.route.source() == original.source
-                AnchorAppRuntime.flow("window_observed transaction=${original.route.transactionId} display=$displayId window=$windowId capturedWindow=${original.window.windowId} retained=$retained read=${snapshot?.status} sourceCurrent=${source == original.source}")
-                if (!retained && windowOwners[original.source.context] === original) {
-                    windowOwners.remove(original.source.context)
-                    displayRevisions.computeIfAbsent(displayId) { AtomicLong() }.incrementAndGet()
-                    if (registrationRequest?.original?.identity == original.route.identity) cancelRegistration(displayId)
-                    original.route.retire()
-                }
-            } }
+    /** An app Binder replacement loses its original callbacks; it never sends input CANCEL. */
+    fun contextRetired(displayId: Int? = null) = submit {
+        val pending = registrationRequest
+        if (pending != null && (displayId == null || pending.source.displayId == displayId)) {
+            registrationRequest = null
+            registrationLost?.invoke(pending.original)
         }
-    }
-
-    fun contextRetired(displayId: Int? = null) {
-        if (displayId == null) accessRevision.incrementAndGet()
-        else displayRevisions.computeIfAbsent(displayId) { AtomicLong() }.incrementAndGet()
-        submit {
-            cancelRegistration(displayId)
-            val originals = windowOwners.values.filter { displayId == null || it.source.displayId == displayId }
-            originals.forEach { windowOwners.remove(it.source.context) }
-            (originals.map { it.route } + subscriptions.filter { displayId == null || it.displayId == displayId }.map { it.route }).distinct().forEach { route ->
-                protect(route) { route.retire() }
-            }
-            if (displayId == null) { subscriptions.forEach { it.observer.close() }; subscriptions.clear() }
-        }
+        val removed = subscriptions.filter { displayId == null || it.displayId == displayId }
+        removed.forEach { it.observer.close() }
+        subscriptions.removeAll(removed.toSet())
     }
 
     private fun cancelRegistration(displayId: Int?) {
@@ -297,9 +235,9 @@ internal class AnchorAppCoordinator(
     override fun close() {
         closed = true
         submit {
-            cancelRegistration(null)
-            windowOwners.clear()
-            subscriptions.forEach { subscription -> subscription.observer.close(); protect(subscription.route) { subscription.route.retire() } }
+            registrationRequest?.let { registrationLost?.invoke(it.original) }
+            registrationRequest = null
+            subscriptions.forEach { subscription -> subscription.observer.close() }
             subscriptions.clear()
         }
     }

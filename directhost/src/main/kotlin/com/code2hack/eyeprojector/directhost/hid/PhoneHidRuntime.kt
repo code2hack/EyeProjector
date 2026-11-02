@@ -48,6 +48,7 @@ internal class PhoneHidRuntime private constructor(context: Context) {
             override fun capture(down: PhoneHidEdge, admission: PhoneHidCapture,
                 original: com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal?): PhoneHidRoute? {
                 if (original == null) return capture(down, admission)
+                if (original.capturedAnchor) return sessions.captureOriginalAnchorRoute(down, original)
                 val authority = admission.wake?.authority ?: return null
                 if (!sessions.isHidAuthorityCurrent(authority)) return null
                 return admission.routeOriginal?.invoke(down, original)

@@ -15,6 +15,8 @@ internal class AnchorAdmission(val intent: AnchorIntent, internal val generation
     internal var releaseContact: Any? = null
     internal var releaseSequence = -1L
     internal var startedSequence: Long? = null
+    internal var mapping: ManagedUiMapping? = null
+    internal var resource: Any? = null
 }
 
 /** Framework submission only. No value here acknowledges the target application's action. */
@@ -55,9 +57,6 @@ internal class AnchorContactOwner(
         var result = false
         var failure: Throwable? = null
         try { result = touch(down.copy(phase = Touch.Phase.UP)) } catch (error: Throwable) { failure = error }
-        if (!result) try { cancelOutput() } catch (cleanup: Throwable) {
-            failure?.let { it.addSuppressed(cleanup) } ?: run { failure = cleanup }
-        }
         failure?.let { throw it }
         result
     } }
@@ -131,7 +130,13 @@ internal class AnchorContactOwner(
         return synchronized(lock) {
             if (closed || discardingControls || original != null && (original.terminal || original.owner !== this || original.anchorGeneration != generation ||
                 original.capturedHold && (original.normalSequence != sequence || contact?.let { it.hold && it.downSubmitted } != true))) null
-            else AnchorAdmission(intent, generation)
+            else AnchorAdmission(intent, generation).also { captured ->
+                captured.mapping = original?.anchorMapping
+                captured.resource = original?.anchorResource
+                captured.control.sourceBinding = original?.sourceBinding
+                captured.control.sourceRevision = original?.sourceRevision
+                if (original?.capturedHold == true) captured.control.normalSequence = original.normalSequence
+            }
         }
     }
     fun isCurrent(admission: AnchorAdmission): Boolean = synchronized(lock) {
@@ -226,8 +231,7 @@ internal class AnchorContactOwner(
         // A delayed observer/response must never roll the handled revision backwards.
         if (previous != null && previous.instanceId == context.instanceId && previous.revision > context.revision)
             return@synchronized false
-        // A delayed setting event from app A cannot cancel app B's original contact.
-        contact?.takeIf { it.setting.packageName == context.packageName }?.let { cancelContact(it, "setting-revision") }
+        // Preferences select future activations. An observer cannot end an existing contact.
         handled[context.packageName] = context
         true
     }
@@ -270,12 +274,12 @@ internal class AnchorContactOwner(
         try {
             if (!touch(down)) {
                 val retired = contact !== original || admission.generation != generation || closed
-                cancelContact(original)
+                loseContact(original, "down-rejected")
                 return@synchronized if (retired) AnchorExecutionStatus.RETIRED else AnchorExecutionStatus.INPUT_REJECTED
             }
             original.downSubmitted = true
-            if (contact !== original || closed || admission.generation != generation || !accepts()) {
-                cancelContact(original); return@synchronized AnchorExecutionStatus.RETIRED
+            if (contact !== original || closed || admission.generation != generation) {
+                loseContact(original, "original-lost"); return@synchronized AnchorExecutionStatus.RETIRED
             }
             if (hold) {
                 observed("HELD", original)
@@ -283,13 +287,13 @@ internal class AnchorContactOwner(
                 return@synchronized AnchorExecutionStatus.HOLD_SUBMITTED
             }
             val up = down.copy(phase = Touch.Phase.UP)
-            if (!touch(up)) { cancelContact(original); return@synchronized AnchorExecutionStatus.INPUT_REJECTED }
+            if (!touch(up)) { loseContact(original, "up-rejected"); return@synchronized AnchorExecutionStatus.INPUT_REJECTED }
             if (contact !== original || closed || admission.generation != generation)
                 return@synchronized AnchorExecutionStatus.RETIRED
             contact = null
             AnchorExecutionStatus.CLICK_SUBMITTED
         } catch (error: Throwable) {
-            try { cancelContact(original) } catch (cleanup: Throwable) { error.addSuppressed(cleanup) }
+            loseContact(original, "submission-failed")
             throw error
         }
     }
@@ -298,6 +302,8 @@ internal class AnchorContactOwner(
 
     /** Metadata only. A successful retirement call, not this read, acknowledges cancellation. */
     fun heldSetting(): AnchorSettingContext? = synchronized(lock) { contact?.takeIf { it.hold && it.downSubmitted }?.setting }
+    fun heldContext(): AnchorIntentContext? = synchronized(lock) { contact?.takeIf { it.hold && it.downSubmitted }?.intent?.context }
+    fun heldSource(): ManagedUiSource? = synchronized(lock) { contact?.takeIf { it.hold && it.downSubmitted }?.source }
 
     /** FIFO release inspection captures one Contact, not every Short at transport arrival. */
     fun heldSetting(admission: AnchorAdmission): AnchorSettingContext? = synchronized(lock) {
@@ -328,10 +334,8 @@ internal class AnchorContactOwner(
             if (held == null && expected == null) return AnchorReleaseResult.NOT_HELD
             admission.consumed = true
             if (held == null || held.setting != expected) return AnchorReleaseResult.RETIRED
-            if (!settingCurrent || held.source != current || !accepts()) {
-                cancelContact(held)
-                return AnchorReleaseResult.RETIRED
-            }
+            // The stored contact owns its terminal. Latest preferences, head state and
+            // geometry do not change the destination of this explicit second short press.
             original = held
             // The exact original retirement is fixed before a blocking or reentrant UP.
             cancellation = original
@@ -371,6 +375,8 @@ internal class AnchorContactOwner(
     /** Retire pending admissions too; the next press must capture a fresh original context. */
     fun retire() = retire("context")
     fun retire(reason: String) = synchronized(lock) { generation++; cancelContact(reason = reason) }
+    /** A replaced app/control resource invalidates pending admissions, not a submitted Hold. */
+    fun retireAdmissions() = synchronized(lock) { generation++ }
     /** A failed original Binder operation cannot retire a later admitted contact. */
     fun retire(admission: AnchorAdmission) = synchronized(lock) {
         val originalSequence = admission.startedSequence ?: admission.releaseSequence.takeIf { admission.releaseInspected }
@@ -379,7 +385,25 @@ internal class AnchorContactOwner(
             !admission.control.current(this, sequence)) return@synchronized
         generation++; cancelContact()
     }
-    fun close() = synchronized(lock) { if (!closed) { closed = true; generation++; cancelContact() } }
+    fun lose(admission: AnchorAdmission) = synchronized(lock) {
+        val original = contact ?: return@synchronized
+        if (admission.startedSequence == sequence && original.intent == admission.intent)
+            loseContact(original, "original-resource-lost")
+    }
+    fun close() = synchronized(lock) {
+        if (!closed) {
+            closed = true; generation++
+            contact?.let { loseContact(it, "session-resource-lost") }
+            cancellation = null
+        }
+    }
+
+    private fun loseContact(original: Contact, reason: String) {
+        if (contact !== original) return
+        contact = null
+        observed("RESOURCE_LOST", original)
+        AnchorAppRuntime.flow("hold_lost source=${original.intent.source} gesture=${original.intent.gestureId} contact=${original.down.contactId} reason=$reason")
+    }
 
     private fun cancelContact(original: Contact? = contact, reason: String = "original") {
         if (original == null || contact !== original) return

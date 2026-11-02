@@ -24,7 +24,6 @@ internal class PhoneTouchDispatcher(private val lock: Any = Any(), private val w
 
     fun geometry(next: Geometry) = synchronized(lock) {
         if (!closed) {
-            if (geometry != next) cancel(next)
             geometry = next
             motionTarget?.geometry(next)
         }
@@ -34,7 +33,8 @@ internal class PhoneTouchDispatcher(private val lock: Any = Any(), private val w
         if (closed) return@synchronized false
         val old = held
         if (event.phase == Touch.Phase.CANCEL && old == null) return@synchronized true
-        if (event.target.geometry != geometry) return@synchronized false
+        if ((event.phase == Touch.Phase.DOWN || event.phase == Touch.Phase.MOVE) &&
+            event.target.geometry != geometry) return@synchronized false
         when (event.phase) {
             Touch.Phase.DOWN -> {
                 if (old != null) cancel()
@@ -72,19 +72,14 @@ internal class PhoneTouchDispatcher(private val lock: Any = Any(), private val w
     }
 
     fun close() = synchronized(lock) {
-        if (!closed) { closed = true; cancel() }
+        if (!closed) { closed = true; held = null }
     }
 
     /** Detach the exact original before a persistent Anchor cancellation runs off the ingress lane. */
     fun prepareCancel(nextGeometry: Geometry? = null): () -> Boolean = synchronized(lock) {
         val old = held ?: return@synchronized { true }
         held = null
-        val size = nextGeometry ?: geometry ?: old.target.geometry
-        // scrcpy checks current video dimensions even on CANCEL after a resize.
-        val target = if (size == old.target.geometry) old.target else Tap(
-            (old.target.x.toLong() * size.width / old.target.geometry.width).toInt().coerceIn(0, size.width - 1),
-            (old.target.y.toLong() * size.height / old.target.geometry.height).toInt().coerceIn(0, size.height - 1), size)
-        val event = old.copy(phase = Touch.Phase.CANCEL, target = target)
+        val event = old.copy(phase = Touch.Phase.CANCEL)
         val originalTarget = motionTarget
         var finished = false
         var result = false
@@ -121,11 +116,6 @@ internal class PhoneTouchDispatcher(private val lock: Any = Any(), private val w
                 }
                 try { result = output(Touch.Phase.UP) }
                 catch (error: Throwable) { failure = error }
-                if (!result) try {
-                    if (!output(Touch.Phase.CANCEL)) throw java.io.IOException("Original Anchor release cleanup was rejected")
-                } catch (cleanup: Throwable) {
-                    failure?.let { if (it !== cleanup) it.addSuppressed(cleanup) } ?: run { failure = cleanup }
-                }
             }
             failure?.let { throw it }
             result

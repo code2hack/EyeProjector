@@ -316,7 +316,15 @@ class HostBootstrap private constructor(private val context: Context) {
         }
     }
 
-    /** Compatibility route; production HID selects its original stamped snapshot source instead. */
+    /** Anchor's original Phone receipt remains valid across ordinary presentation changes. */
+    internal fun captureOriginalAnchorRoute(down: PhoneHidEdge,
+        original: com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal): PhoneHidRoute? {
+        if (!original.capturedAnchor || down.action != com.code2hack.eyeprojector.protocol.PhoneHidAction.ANCHOR ||
+            down.phase != PhoneHidPhase.DOWN || down.repeatCount != 0) return null
+        return original.route(down, "", 0L, bindingGeneration, inputRoutes.incrementAndGet())
+    }
+
+    /** Compatibility route; ordinary production HID uses its stamped snapshot source. */
     fun capturePhoneHidRoute(down: PhoneHidEdge): PhoneHidRoute? {
         if (down.phase != PhoneHidPhase.DOWN || down.repeatCount != 0) return null
         val snapshot = current

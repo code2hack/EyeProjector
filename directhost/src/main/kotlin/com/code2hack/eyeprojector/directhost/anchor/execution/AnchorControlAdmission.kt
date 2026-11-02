@@ -13,6 +13,9 @@ internal class AnchorControlAdmission {
     internal var receivedDuringRetirement = false
     internal var sourceBinding: Pair<java.util.concurrent.atomic.AtomicReference<*>, Any?>? = null
     internal var sourceRevision: Pair<java.util.concurrent.atomic.AtomicLong, Long>? = null
+    internal var anchorContext: com.code2hack.eyeprojector.protocol.AnchorIntentContext? = null
+    internal var anchorMapping: com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiMapping? = null
+    internal var anchorResource: Any? = null
     @Volatile var disposition = AnchorControlDisposition.NORMAL
         internal set
 
@@ -49,6 +52,7 @@ internal class AnchorControlAdmission {
         owner=original.owner;normalSequence=original.normalSequence;receivedSequence=original.receivedSequence;capturedHold=original.capturedHold
         anchorGeneration=original.anchorGeneration;receivedDuringRetirement=original.receivedDuringRetirement
         sourceBinding=original.sourceBinding;sourceRevision=original.sourceRevision
+        anchorContext=original.anchorContext;anchorMapping=original.anchorMapping;anchorResource=original.anchorResource
         disposition=original.disposition
     }
 }
