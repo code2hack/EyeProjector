@@ -2,7 +2,7 @@ package com.code2hack.eyeprojector.directhost.input
 
 import android.content.Context
 import com.code2hack.eyeprojector.directhost.anchor.position.*
-import com.code2hack.eyeprojector.directhost.IPhoneInputSession
+import com.code2hack.eyeprojector.directhost.*
 import com.code2hack.eyeprojector.protocol.*
 import java.io.File
 import java.io.IOException
@@ -38,12 +38,23 @@ class ModeRoutingTest {
         val taps=mutableListOf<Tap>()
         val scrolls=mutableListOf<Scroll>()
         val navigation=mutableListOf<Navigation>()
-        val router=CoordinateInputRouter(::decide,{ assertFalse(Thread.holdsLock(lock));touches.add(it);true },
-            { assertFalse(Thread.holdsLock(lock));taps.add(it);true },
-            { assertFalse(Thread.holdsLock(lock));scrolls.add(it);true })
+        val stockWrites=mutableListOf<ByteArray>()
+        val dispatcher=PhoneTouchDispatcher(lock) {
+            assertFalse(Thread.holdsLock(lock));stockWrites.add(it)
+        }.apply {
+            geometry(size)
+            bindMotionTarget(object: PhoneTouchDispatcher.MotionTarget {
+                override fun geometry(next: Geometry) { assertFalse(Thread.holdsLock(lock)) }
+                override fun touch(event: Touch): Boolean { assertFalse(Thread.holdsLock(lock));touches.add(event);return true }
+                override fun tap(event: Tap): Boolean { assertFalse(Thread.holdsLock(lock));taps.add(event);return true }
+                override fun scroll(event: Scroll): Boolean { assertFalse(Thread.holdsLock(lock));scrolls.add(event);return true }
+            })
+        }
+        val router=CoordinateInputRouter(::decide,dispatcher::touch,dispatcher::tap,dispatcher::scroll)
         var blockedMode: (() -> Unit)?=null
         val merger=PhoneInputMerger(lock,{now},{_,_->{}},{size},router::touch,{router.scroll(it)},
-            { kind,_->assertFalse(Thread.holdsLock(lock));navigation.add(kind) },{}, {},
+            { kind,size->assertFalse(Thread.holdsLock(lock));navigation.add(kind);dispatcher.navigate(Navigate(kind,size)) },
+            { router.cancel();dispatcher.cancel() }, {},
             hidMode={ blockedMode?.invoke();decide(CoordinateOperation.CYCLE) },
             hidAction={ action,point->
                 val operation=when(action) {
@@ -156,5 +167,34 @@ class ModeRoutingTest {
         assertEquals(AnchorInteractionMode.NORMAL,f.decide(CoordinateOperation.SNAPSHOT).state.mode)
         f.owner.invalidateBinding()
         assertNull(f.owner.decide("owner","projection",f.app,CoordinateOperation.CYCLE.ordinal,0.0,0.0))
+    }
+    @Test fun actualLaunchInvalidationAndDispatcherEffectsReleaseTheStateLock() {
+        val f=Fixture()
+        var foreground=ProjectionLaunchCommands.HOME_COMPONENT
+        val adapter=object: ProjectionLaunchAdapter {
+            override fun launch(displayId:Int,packageName:String,home:Boolean): ProjectionCommandResult {
+                assertFalse(Thread.holdsLock(f.lock));assertFalse(f.dispatcher.holding)
+                foreground=if(home) ProjectionLaunchCommands.HOME_COMPONENT else "$packageName/.Activity"
+                return ProjectionCommandResult(0,"Status: ok\nActivity: $foreground")
+            }
+            override fun foreground(displayId:Int)=foreground.substringBefore('/')
+            override fun foregroundComponent(displayId:Int)=foreground
+            override fun close() {}
+        }
+        val launches=ProjectedAppLaunch("original",adapter,ProjectionContext("owner","projection"),f.merger::invalidateForLaunch)
+        try {
+            launches.initialize(5);assertNull(launches.currentModePackage())
+            f.merger.pointer(HeadPointerState(1,2,true,true,120f,230f,Fit(0,0,480,640),f.size))
+            f.merger.edge(7,f.edge(PhoneHidAction.TAP,PhoneHidPhase.DOWN))
+            assertTrue(f.dispatcher.holding)
+            assertEquals(ProjectionLaunchStatus.STARTED,launches.launch(1,"destination.app").status)
+            assertEquals("destination.app",launches.currentModePackage())
+            assertEquals(listOf(Touch.Phase.DOWN,Touch.Phase.CANCEL),f.touches.map { it.phase })
+            assertFalse(f.dispatcher.holding)
+            assertTrue(f.dispatcher.tap(Tap(20,30,f.size)))
+            assertTrue(f.dispatcher.scroll(Scroll(Tap(20,30,f.size),160)))
+            assertTrue(f.dispatcher.navigate(Navigate(Navigation.BACK,f.size)))
+            assertFalse(f.stockWrites.isEmpty())
+        } finally { launches.close() }
     }
 }

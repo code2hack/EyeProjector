@@ -387,6 +387,7 @@ private class Session(
     private val cleanupFailure = AtomicReference<Throwable?>()
     private val output = DataOutputStream(peer.outputStream)
     private val controlLock = Any()
+    private val controlOutputLock = Any()
     private val projectionToken = UUID.randomUUID().toString()
     val cameraStatusFileName = "camera-media-$projectionToken.json"
     private val context = ProjectionContext(ownerEpoch, projectionToken)
@@ -678,11 +679,8 @@ private class Session(
             else {
                 val original = synchronized(managedDisplayGate) { managedDisplay }
                     ?: error("Managed projection display is unavailable")
-                synchronized(controlLock) {
-                    check(running.get())
-                    // Queue only. The stream owner performs the WM change off these locks.
-                    original.resize(requestedScale)
-                }
+                check(running.get())
+                original.resize(requestedScale)
             }
         },
     )
@@ -699,7 +697,7 @@ private class Session(
         ordinaryWork.whenTerminated { original?.close() }
         trace.whenTerminated { lastInputTraceStatus = trace.status(); if (inputTrace === trace) inputTrace = null }
     }
-    private val inputControls = PhoneTouchDispatcher(controlLock) { control!!.outputStream.write(it) }
+    private val inputControls = PhoneTouchDispatcher(controlLock,controlOutputLock) { control!!.outputStream.write(it) }
     @Volatile private var modeOwner: IPhoneModeOwner? = null
     private var publishedMode: CoordinateModeResult? = null
     private var modePackage: String?=null
@@ -762,7 +760,7 @@ private class Session(
     @Volatile private var streamThread: Thread? = null
     private var watchdog: java.util.concurrent.ScheduledFuture<*>? = null
     private val frames = AtomicLong()
-    private val panelPower = SessionPanelPower(controlLock, { running.get() && frames.get() > 0 }, panelContext) {
+    private val panelPower = SessionPanelPower(controlOutputLock, { running.get() && frames.get() > 0 }, panelContext) {
         control!!.outputStream.write(it)
     }
     private val touches = AtomicLong()
@@ -777,10 +775,7 @@ private class Session(
     private val lastWriteChannel = AtomicLong(-1)
     private val scid = SecureRandom().nextInt(Int.MAX_VALUE)
     private val launches: ProjectedAppLaunch = ProjectedAppLaunch("$projectionToken:scrcpy-%08x".format(scid), PlatformProjectionLaunch(context = context), context) {
-        synchronized(controlLock) {
-            check(running.get())
-            phoneInput.invalidateOrdinary()
-        }
+        phoneInput.invalidateForLaunch()
     }
     private var identifiedDisplay = false
     private fun phoneNavigation(action: Navigation, size: Geometry) {
@@ -870,7 +865,7 @@ private class Session(
         original: SessionInputReceipt,
         source: ReceiverUsability?) {
         val display = if (managedDisplayFactory == null) null else synchronized(managedDisplayGate) { managedDisplay }
-        synchronized(controlLock) {
+        synchronized(controlOutputLock) {
             if (!currentUserControl(original, source)) return
             if (managedDisplayFactory == null) control!!.outputStream.write(Scrcpy.resize(size))
             else checkNotNull(display) { "Managed projection display is unavailable" }.resize(requested)
@@ -963,7 +958,7 @@ private class Session(
 
     fun panelState(): PanelPowerState = panelPower.state()
 
-    private fun writeControl(payload: ByteArray) = synchronized(controlLock) {
+    private fun writeControl(payload: ByteArray) = synchronized(controlOutputLock) {
         check(running.get())
         control!!.outputStream.write(payload)
     }
@@ -1111,9 +1106,7 @@ private class Session(
                             val videoGeometry = geometry.get()
                             if (videoGeometry != null) {
                                 scale.observeManagedLayout(next.source.layout, this) {
-                                    synchronized(controlLock) {
-                                        inputControls.geometry(videoGeometry)
-                                    }
+                                    inputControls.geometry(videoGeometry)
                                 }
                             }
                             runCatching { recordManagedProjection() }
@@ -1127,7 +1120,7 @@ private class Session(
                         startup.cancel(false)
                         val layout = source?.layoutGeometry() ?: record.geometry
                         scale.observe(record, this, managedResize = source != null, observedGeometry = layout) {
-                            synchronized(controlLock) {
+                            synchronized(controlOutputLock) {
                                 inputControls.geometry(record.geometry)
                                 geometry.set(record.geometry)
                             }
@@ -1249,7 +1242,10 @@ private class Session(
                 val original = receiverUsability.snapshot().fact
                 phoneInput.pointer(point, original) { receiverUsability.acceptsPointer(original, point) }
             }
-            Wire.MODE_CYCLE -> { require(frame.payload.isEmpty()); modeDecision(CoordinateOperation.CYCLE) }
+            Wire.MODE_CYCLE -> {
+                require(frame.payload.isEmpty())
+                phoneInput.nativeAction { cancelOrdinaryInput();modeDecision(CoordinateOperation.CYCLE);true }
+            }
             Wire.CAMERA_PROGRESS -> { require(frame.stamp == 0L); cameraRoles.observeProgress(CameraFeed.readProgress(frame.payload)) }
             Wire.END -> return false
             else -> error("Unsupported control")

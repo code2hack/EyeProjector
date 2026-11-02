@@ -14,7 +14,7 @@ out = a.output_dir.resolve()
 out.mkdir(parents=True, exist_ok=False)
 sha = lambda b: hashlib.sha256(b).hexdigest()
 manifest = {'productionRef': a.git_ref or 'worktree', 'scope':
-    'Actual full LiveScale/AnchorSessionInput/AnchorContactOwner/PhoneInputMerger/PhoneTouchDispatcher and protocol/models; '
+    'Actual full LiveScale/PhoneInputMerger/PhoneTouchDispatcher and protocol/models; '
     'exact extracted Session managed-Layout arm and ManagedProjectionDisplay mapping methods. '
     'Actual ManagedProjectionInput geometry/touch/tap/scroll methods; display callback/discovery, '
     'original-display unique-ID lookup, native injection, clock and logging are controlled host boundaries; '
@@ -34,13 +34,10 @@ manifest['parserSha256'] = sha(parser_copy.read_bytes())
 
 host = 'directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost/'
 protocol = 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol/'
-names = ['Wire','Touch','PhoneInput','ReceiverUsability','AnchorIntent','AnchorMessage','ActivationControl',
-         'SessionState','LayoutScale','CameraFeed','ReceiverControlIntent','HidNavigationGestureRecognizer','OriginalContact']
+names = ['Wire','Touch','PhoneInput','ReceiverUsability','ActivationControl','SessionState',
+    'LayoutScale','CameraFeed','ReceiverControlSource','OriginalContact','PhoneHidGestureRecognizer','CoordinateAnchors','CoordinateMode']
 sources = [read(protocol+n+'.kt')[1] for n in names]
-names = ['LiveScale','PhoneTouchDispatcher','input/PhoneInputMerger','input/InputWork',
-    'anchor/execution/AnchorControlAdmission','anchor/execution/AnchorContactOwner','anchor/execution/AnchorSessionInput',
-    'anchor/preferences/AppAnchor','anchor/preferences/AppAnchorStore','anchor/target/AnchorTargetDescriptor',
-    'anchor/target/AnchorTargetResolver','uiaccess/UiTargetSnapshot','uiaccess/UiSourceGeometry']
+names = ['LiveScale','PhoneTouchDispatcher','input/PhoneInputMerger','input/InputWork','ProjectionCoordinates']
 sources += [read(host+n+'.kt')[1] for n in names]
 
 def cut(text, marker, origin):
@@ -53,7 +50,7 @@ display, _ = read(display_path)
 blocks = [cut(display, r'^    internal data class '+n+r'\(', display_path) for n in ['SourceObservation','InputMapping']]
 blocks += [cut(display, r'^    internal sealed interface Read', display_path)]
 blocks += [cut(display, r'^    fun '+n+r'\(', display_path) for n in
-    ['resize','inputGeometry','withInputMapping','layoutGeometry','uiInputSnapshot','inputDestination','withInputDestination']]
+    ['resize','inputGeometry','withInputMapping','layoutGeometry','inputDestination','withInputDestination']]
 destination = re.search(r'^    internal class InputDestination[\s\S]*?\)\n', display, re.M).group()
 blocks.append(destination); manifest['cuts'].append({'origin':display_path,'text':destination,'sha256':sha(destination.encode())})
 # sourceObservation is a one-line actual declaration.
@@ -67,17 +64,14 @@ generated = out/'LayoutBoundary.kt'; generated.write_text(boundary); sources.app
 context_path=host+'ProjectionContext.kt'; context,_=read(context_path)
 context_value=cut(context,r'^data class ProjectionContext\(',context_path)
 context_file=out/'ProjectionContext.kt';context_file.write_text('package com.code2hack.eyeprojector.directhost\n'+context_value+'\n');sources.append(context_file)
-log_file=out/'AnchorLog.kt';log_file.write_text('package com.code2hack.eyeprojector.directhost.anchor.execution\ninternal object AnchorAppRuntime { fun flow(message:String) = Unit }\n');sources.append(log_file)
 adapter_path=host+'ManagedProjectionInput.kt';adapter,_=read(adapter_path)
 contact=adapter[adapter.index('    private class Contact('):adapter.index('    // InputManagerGlobal')]
 manifest['cuts'].append({'origin':adapter_path,'text':contact,'sha256':sha(contact.encode())})
 adapter_blocks=[contact]+[cut(adapter,r'^    (?:@Synchronized )?override fun '+n+r'\(',adapter_path)
-    for n in ['geometry','anchorDown','touch','tap','scroll']]
+    for n in ['geometry','touch','tap','scroll']]
 adapter_blocks.append(cut(adapter,r'^    private fun sourceCoordinates\(',adapter_path))
 adapter_boundary='''package com.code2hack.eyeprojector.directhost
 import com.code2hack.eyeprojector.protocol.*
-import com.code2hack.eyeprojector.directhost.uiaccess.UiPoint
-import com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiSource
 private object SystemClock { fun uptimeMillis() = System.nanoTime()/1_000_000 }
 private object InputDevice { const val SOURCE_TOUCHSCREEN=4098;const val SOURCE_MOUSE=8194 }
 private object MotionEvent { const val ACTION_DOWN=0;const val ACTION_UP=1;const val ACTION_MOVE=2;const val ACTION_CANCEL=3;const val ACTION_SCROLL=8;const val TOOL_TYPE_FINGER=1;const val TOOL_TYPE_MOUSE=3 }
@@ -97,7 +91,7 @@ for name in ['Boundary.kt','Scenarios.kt','run.py']:
     data=(suite/name).read_bytes();(out/name).write_bytes(data)
     manifest.setdefault('harness',[]).append({'name':name,'sha256':sha(data)})
 sources.append(out/'Scenarios.kt')
-manifest['generated']=[{'path':str(f),'sha256':sha(f.read_bytes())} for f in [generated,context_file,log_file,adapter_file]]
+manifest['generated']=[{'path':str(f),'sha256':sha(f.read_bytes())} for f in [generated,context_file,adapter_file]]
 deps=json.loads(a.dependency_result.read_text())['dependencies']
 for d in deps:
     if sha(Path(d['path']).read_bytes())!=d['sha256']: raise RuntimeError('Changed frozen dependency '+d['path'])

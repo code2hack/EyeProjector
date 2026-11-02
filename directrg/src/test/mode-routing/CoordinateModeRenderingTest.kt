@@ -23,7 +23,7 @@ class CoordinateModeRenderingTest {
         input.rawEdge(source,2,false,3000,null)
         assertEquals(1,cycles)
         input.rawEdge(source,3,true,4000,input.captureRawOriginal());input.rawSourceLost(source)
-        input.rawEdge(source,3,false,4050,null);assertEquals(1,cycles)
+        input.rawEdge(source,3,false,4050,null);context.report("com.android.action.ACTION_SPRITE_BUTTON_CLICK");assertEquals(1,cycles)
         input.stop();assertTrue(context.receivers.isEmpty())
     }
     @Test fun rawCaptureCannotActAfterSessionReplacementOrCancellation() {

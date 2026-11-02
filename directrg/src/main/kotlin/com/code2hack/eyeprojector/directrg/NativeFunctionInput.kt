@@ -58,7 +58,7 @@ internal class NativeFunctionInput(
         registered=true
     }
     fun prepareCancel(): InputRetirement {
-        cancellation++;rawPress=null;fallback.cancel()
+        cancellation++;rawPress=null;fallback.retireReports()
         val original=cancellation
         return InputRetirement({}, { cancellation != original })
     }
