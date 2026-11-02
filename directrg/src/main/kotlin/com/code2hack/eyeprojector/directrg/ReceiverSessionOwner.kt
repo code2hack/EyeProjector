@@ -112,16 +112,33 @@ internal class ReceiverSessionOwner(
     private var pendingLaunch: ReceiverLaunchScope? = null
     var inputRevision = 0L
         private set
-    var anchorCancellationRevision = 0L
+    @Volatile var anchorCancellationRevision = 0L
         private set
     private var retainedAnchorOffer: Pair<ProjectionSession, AnchorMessage.Offer>? = null
     private var anchorOfferView: View? = null
     private val deferredAnchorMessages = ArrayDeque<Pair<ProjectionSession, AnchorMessage>>()
-    private var retainedAnchorState: Pair<ProjectionSession, AnchorMessage.HeldState>? = null
+    @Volatile private var retainedAnchorState: Pair<ProjectionSession, AnchorMessage.HeldState>? = null
     private var deliveringAnchor = false
     private var nativeFunction: NativeFunctionInput? = null
     private var nativePad: NativePadShellContact? = null
+    @Volatile private var nativeAnchorSnapshot: ReceiverAnchorOriginal? = null
     internal fun nativeAnchorContext(): Any? = session?.let { anchorCancellationRevision to it }
+    /** Immutable UI observation: the socket reader never accesses a mutable View/pointer. */
+    internal fun nativeAnchorObservation(source: ProjectionSession, point: HeadPointerState?) {
+        if (session !== source) return
+        val original = point?.let(source::captureAnchorContext)
+        nativeAnchorSnapshot = original?.let { ReceiverAnchorOriginal(source, it, anchorCancellationRevision) }
+    }
+    private fun captureNativeOriginal(expected: Any, id: Long, parent: Long?): ReceiverAnchorOriginal? {
+        val held = retainedAnchorState?.takeIf { it.first === session && it.second.state == AnchorHoldState.HELD }
+        val original = held?.let { ReceiverAnchorOriginal(it.first, it.second.intent.context, anchorCancellationRevision) }
+            ?: nativeAnchorSnapshot ?: return null
+        if (expected != nativeAnchorContext() || session !== original.source ||
+            anchorCancellationRevision != original.userRevision) return null
+        val birth = AnchorOriginal(AnchorSource.GLASSES_NATIVE, id, original.context, parent)
+        return original.takeIf { if (held != null) it.source.beginAnchorFromHeld(birth, held.second)
+            else it.source.beginAnchor(birth) }
+    }
     internal fun nativeInputs(pad: NativePadShellContact): Pair<NativeFunctionInput, NativePadShellContact>? {
         if (closed) return null
         val appContext = context?.applicationContext ?: context ?: return null
@@ -133,8 +150,8 @@ internal class ReceiverSessionOwner(
                     if (gesture.kind == AnchorIntentKind.REGISTER) anchorRegistration.registration(original.source, intent, gesture.physicalHeld)
                     original.source.anchorIntent(CapturedAnchorIntent(intent, original.source))
                 }
-            }, capture = { listener?.captureNativeAnchor(it, null, null) },
-            captureOriginal = { expected, id, parent -> listener?.captureNativeAnchor(expected, id, parent) },
+            }, capture = { expected -> nativeAnchorSnapshot?.takeIf { expected == (it.userRevision to it.source) } },
+            captureOriginal = ::captureNativeOriginal,
             retireOriginal = { id, value ->
                 val original = value as ReceiverAnchorOriginal
                 original.source.retireAnchor(AnchorOriginal(AnchorSource.GLASSES_NATIVE, id, original.context, retired = true))
@@ -148,7 +165,8 @@ internal class ReceiverSessionOwner(
                     gesture.gestureId, gesture.sequence, original.context))
             }).also { nativeFunction = it }
         val connection = nativePad?.also { it.attachView(pad) } ?: pad.also { nativePad = it }
-        connection.start(); function.start()
+        connection.bindFunction(function)
+        function.start(); connection.start()
         return function to connection
     }
     internal val anchorRegistration = AnchorRegistrationController<ProjectionSession> { source, id, action ->
@@ -176,6 +194,7 @@ internal class ReceiverSessionOwner(
     }
     private fun anchorSessionLost(source: ProjectionSession?) {
         if (source == null) return
+        if (nativeAnchorSnapshot?.source === source) nativeAnchorSnapshot = null
         nativeFunction?.originalSessionLost()
         retainedAnchorOffer?.takeIf { it.first === source }?.let { anchorSourceLost(source, it.second.intent) }
         deferredAnchorMessages.removeAll { it.first === source }
@@ -186,7 +205,10 @@ internal class ReceiverSessionOwner(
         if (message is AnchorMessage.Offer) { retainedAnchorOffer = source to message; anchorOfferView = null }
         if (message is AnchorMessage.Result && retainedAnchorOffer?.second?.transactionId == message.transactionId)
             retainedAnchorOffer = null
-        if (message is AnchorMessage.HeldState) retainedAnchorState = source to message
+        if (message is AnchorMessage.HeldState) {
+            val previous = retainedAnchorState?.takeIf { it.first === source }?.second
+            if (previous == null || message.revision > previous.revision) retainedAnchorState = source to message
+        }
         else deferredAnchorMessages.addLast(source to message)
         flushAnchorPresentation()
     }
@@ -297,6 +319,7 @@ internal class ReceiverSessionOwner(
         if (uiUsable == usable && localPanel == panel && lastPublishedInputRevision == inputRevision) return
         val changedPresentation = uiUsable != usable || localPanel != panel
         uiUsable = usable; localPanel = panel
+        if (!usable) nativeAnchorSnapshot = null
         publish(notifyView = changedPresentation)
         flushAnchorPresentation()
     }

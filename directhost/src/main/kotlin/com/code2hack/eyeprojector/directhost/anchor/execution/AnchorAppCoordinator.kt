@@ -33,7 +33,7 @@ internal class CapturedAnchorRequest(val original: AnchorOriginalRoute, val sour
 
 /**
  * App-process preferences and public accessibility are composed here. All work and setting
- * retirements use one FIFO lane; submit MUST enqueue, including when invoked by that lane.
+ * observations use one FIFO lane; submit MUST enqueue, including when invoked by that lane.
  * No store, input or projection lock is held during a route call or traversal. A delayed preference
  * callback reconciles the latest snapshot, never its older event value. A fresh activation performs
  * the same reconciliation before use, even if that callback has not yet been delivered.
@@ -182,8 +182,8 @@ internal class AnchorAppCoordinator(
         val snapshot = provider.read(source.context, packageName)
         val resolved = AnchorTargetResolver.resolve(anchor.descriptor, snapshot)
         if (resolved !is AnchorTargetResolution.Unique) return original.feedback(AnchorExecutionStatus.UNAVAILABLE)
-        // A setting read/event alone is not retirement ACK: reconcile above completed on the owner.
-        // A concurrent later commit invalidates this read; its queued callback retires original use.
+        // Before first submission, use the selected setting and source from this read.
+        // Observer delivery updates future reads without canceling a submitted original contact.
         if (closed || !store.isCurrent(setting.context) || original.source() != resolved.current.source)
             return original.feedback(AnchorExecutionStatus.RETIRED)
         original.feedback(if (anchor.mode == AnchorMode.HOLD) original.hold(setting.context, resolved.current)

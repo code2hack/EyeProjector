@@ -87,6 +87,107 @@ class RetainedReceiverSessionTest {
 
     private fun mode(session: ProjectionSession): ReceiverUsability = session.javaClass.getDeclaredField("sourceUsability").apply { isAccessible = true }.get(session) as ReceiverUsability
 
+    private fun drainControls(session: ProjectionSession) {
+        for(name in listOf("controls","scaleControls")) {
+            val lane=session.javaClass.getDeclaredField(name).apply{isAccessible=true}.get(session) as OrderedControlDispatcher
+            val until=System.nanoTime()+TimeUnit.SECONDS.toNanos(3)
+            while(lane.snapshot().let{it.pending>0||it.inFlight>0}&&System.nanoTime()<until)Thread.yield()
+            assertEquals(0L,lane.snapshot().pending);assertEquals(0L,lane.snapshot().inFlight)
+        }
+    }
+    private fun outputFrames(bytes: ByteArrayOutputStream)=DataInputStream(bytes.toByteArray().inputStream()).use { input ->
+        buildList{while(input.available()>0)add(Wire.readFrame(input))}
+    }
+
+    @Test fun publishedNativeCaptureSurvivesQueuedWriterDetachAndNewViewHover() {
+        Fixture(withFeature=true).use { f ->
+            f.streaming();f.owner.presentation(f.view,true,false)
+            val session=f.owner.session!!;val fact=mode(session)
+            val point=HeadPointerState(fact.inputRevision,1,true,true,120f,230f,Fit(0,0,480,640),size)
+            f.owner.nativeAnchorObservation(session,point)
+            val capture=f.owner.javaClass.getDeclaredMethod("captureNativeOriginal",Any::class.java,
+                Long::class.javaPrimitiveType,java.lang.Long::class.java).apply{isAccessible=true}
+            val outputLock=session.javaClass.getDeclaredField("outputLock").apply{isAccessible=true}.get(session)
+            val original: ReceiverAnchorOriginal
+            synchronized(outputLock) {
+                original=capture.invoke(f.owner,f.owner.nativeAnchorContext(),88L,null) as ReceiverAnchorOriginal
+                f.owner.detach(f.view)
+                f.owner.advanceInputRevision()
+                val next=View();f.owner.attach(next,Surface());f.owner.presentation(next,true,true)
+                val latest=mode(session)
+                f.owner.nativeAnchorObservation(session,point.copy(revision=latest.inputRevision,projected=false,x=350f))
+                session.receive(Frame(Wire.GEOMETRY,payload=Geometry(640,480).bytes()))
+                assertTrue(session.anchorIntent(CapturedAnchorIntent(AnchorIntent(AnchorIntentKind.REGISTER,
+                    AnchorSource.GLASSES_NATIVE,88,0,original.context),session)))
+            }
+            drainControls(session)
+            val frames=outputFrames(f.bytes)
+            val sent=frames.filter{it.channel==Wire.ANCHOR_INTENT}.map{AnchorIntent.from(it.payload)}.single()
+            assertEquals(point,sent.context.pointer);assertSame(session,original.source)
+            assertEquals(88L,sent.gestureId)
+            assertTrue(frames.indexOfFirst{it.channel==Wire.ANCHOR_ORIGINAL}<frames.indexOfFirst{it.channel==Wire.ANCHOR_INTENT})
+        }
+    }
+
+    @Test fun nativeSecondShortKeepsReportedHoldContextWhenPresentationAndMappingChange() {
+        Fixture(withFeature=true).use { f ->
+            f.streaming();f.owner.presentation(f.view,true,false)
+            val session=f.owner.session!!;val fact=mode(session)
+            val context=AnchorIntentContext(fact,HeadPointerState(fact.inputRevision,1,true,true,120f,230f,
+                Fit(0,0,480,640),size))
+            val first=AnchorIntent(AnchorIntentKind.ACTIVATE,AnchorSource.PHONE_HID,1,1,context)
+            session.receive(Frame(Wire.ANCHOR,payload=AnchorMessage.HeldState(5,first,1,AnchorHoldState.HELD).bytes()));f.pump()
+            f.owner.detach(f.view);session.receive(Frame(Wire.GEOMETRY,payload=Geometry(640,480).bytes()))
+            val capture=f.owner.javaClass.getDeclaredMethod("captureNativeOriginal",Any::class.java,
+                Long::class.javaPrimitiveType,java.lang.Long::class.java).apply{isAccessible=true}
+            val original=capture.invoke(f.owner,f.owner.nativeAnchorContext(),92L,null) as ReceiverAnchorOriginal
+            assertEquals(context,original.context)
+            val second=AnchorIntent(AnchorIntentKind.ACTIVATE,AnchorSource.GLASSES_NATIVE,92,2,original.context)
+            assertTrue(session.anchorIntent(CapturedAnchorIntent(second,session)));drainControls(session)
+            assertEquals(listOf(second),outputFrames(f.bytes).filter{it.channel==Wire.ANCHOR_INTENT}.map{AnchorIntent.from(it.payload)})
+            session.receive(Frame(Wire.ANCHOR,payload=AnchorMessage.HeldState(6,second,2,AnchorHoldState.RELEASED).bytes()));f.pump()
+            assertNull(capture.invoke(f.owner,f.owner.nativeAnchorContext(),93L,null))
+        }
+    }
+
+    @Test fun nativeReleaseUsesLocalRetainedChooserAcrossViewDetachWithoutPhoneWireRelease() {
+        for(detach in listOf(false,true)) Fixture(withFeature=true).use { f ->
+            f.streaming();val session=f.owner.session!!
+            lateinit var original: AnchorIntent
+            var localReleases=0
+            val view=object:ReceiverSessionOwner.View {
+                override fun state(snapshot:ReceiverSessionOwner.Snapshot)=Unit
+                override fun input(source:ProjectionSession,event:ReceiverInput)=Unit
+                override fun anchor(source:ProjectionSession,message:AnchorMessage):Boolean {
+                    if(message is AnchorMessage.Offer){
+                        f.owner.anchorRegistration.registration(source,message.intent,true)
+                        assertTrue(f.owner.anchorRegistration.show(source,message.transactionId,message.intent.context,
+                            AnchorRegistrationHighlight(message.highlight.left,message.highlight.top,message.highlight.right,message.highlight.bottom),message.intent))
+                        f.owner.anchorRegistration.presented();f.owner.anchorRegistration.highlight(AnchorRegistrationAction.HOLD)
+                    }
+                    return true
+                }
+                override fun anchorReleased(source:ProjectionSession,intent:AnchorIntent,canceled:Boolean):Boolean {
+                    localReleases++;return f.owner.anchorRegistration.released(source,intent,canceled)
+                }
+            }
+            f.owner.attach(view,Surface());f.owner.presentation(view,true,true)
+            val fact=mode(session)
+            val context=AnchorIntentContext(fact,HeadPointerState(fact.inputRevision,1,true,false,100f,200f,
+                Fit(0,0,480,640),size))
+            original=AnchorIntent(AnchorIntentKind.REGISTER,AnchorSource.GLASSES_NATIVE,33,4,context)
+            session.receive(Frame(Wire.ANCHOR,payload=AnchorMessage.Offer(7,original,AnchorHighlight(90.0,190.0,130.0,230.0)).bytes()))
+            f.pump();assertTrue(f.owner.anchorRegistration.active)
+            if(detach)f.owner.detach(view)
+            f.owner.nativeRegistrationReleased(session,original,false)
+            f.owner.nativeRegistrationReleased(session,original,false)
+            drainControls(session)
+            val choices=outputFrames(f.bytes).filter{it.channel==Wire.ANCHOR}.map{AnchorMessage.from(it.payload)}.filterIsInstance<AnchorMessage.Choice>()
+            assertEquals(listOf(AnchorMessage.Choice(7,original,AnchorChoice.HOLD)),choices)
+            if(detach)assertEquals(0,localReleases)else assertEquals(2,localReleases)
+        }
+    }
+
     @Test fun revisionOnlyPublicationDoesNotRecursivelyRedeliverUiSnapshot() {
         Fixture(withFeature=true).use { f ->
             var calls=0

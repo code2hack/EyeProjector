@@ -428,7 +428,8 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             }, ::updateEdgeScroll, { complete -> admitLocalControl(ReceiverControlSource.PAD, complete) },
             functionSourceAvailable = { source -> functionInput.rawSourceAvailable(source) },
             functionSourceLost = { source -> functionInput.rawSourceLost(source) },
-            functionEdge = { source, id, down, at, current -> functionInput.rawEdge(source, id, down, at, current) })
+            functionEdge = { source, id, down, at, original -> functionInput.rawEdge(source, id, down, at, original) },
+            functionCapture = { functionInput.captureRawOriginal() })
         padContact = NativePadContact(this, { pointer.inputPosition() }, { event ->
             if (usable()) gestures.accept(event, SystemClock.uptimeMillis()) else cancelInput()
             schedulePadConfirmation()
@@ -521,6 +522,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         if (!::pointer.isInitialized || root.width <= 0 || root.height <= 0) return
         val position = pointer.position
         if (registrationActive()) {
+            owner?.nativeAnchorObservation(source, null)
             // Menu highlighting is live head input; the original selected target is not.
             anchorOverlay.pointer(position.x, position.y, position.available)
             val original = anchorRegistration.offer?.original?.pointer ?: return
@@ -533,8 +535,10 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         val fit = size?.let { Fit.inside(root.width, root.height, it) }
         val projected = !localInputVisible()
         val available = usable() && position.available && (!projected || projectedInput())
-        source.headPointer(HeadPointerState(inputGeneration, 0, available, projected,
-            position.x, position.y, fit, size), pointer.expiresAtNs)
+        val point = HeadPointerState(inputGeneration, 0, available, projected,
+            position.x, position.y, fit, size)
+        owner?.nativeAnchorObservation(source, point)
+        source.headPointer(point, pointer.expiresAtNs)
     }
 
     private fun anchorOwnsPointer(): Boolean = registrationActive() || anchorHeldIndicator.visible ||

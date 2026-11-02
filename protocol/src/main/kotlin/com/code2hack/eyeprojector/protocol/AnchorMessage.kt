@@ -31,7 +31,7 @@ sealed class AnchorMessage(open val transactionId: Long, open val intent: Anchor
     }
 
     /** Physical Phone HID Anchor terminal, correlated to its original registration transaction.
-     * Canceled includes release before the original chooser OPEN was observed. */
+     * Canceled denotes actual original cancellation; the Receiver decides menu readiness on release. */
     data class Release(override val transactionId: Long, override val intent: AnchorIntent,
         val canceled: Boolean) : AnchorMessage(transactionId, intent) {
         init { require(intent.kind == AnchorIntentKind.REGISTER && intent.source == AnchorSource.PHONE_HID) }

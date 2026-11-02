@@ -20,13 +20,19 @@ internal class NativeFunctionInput(
     now: () -> Long = SystemClock::uptimeMillis,
     schedule: (Long, () -> Unit) -> (() -> Unit) = handlerSchedule(),
     timing: FunctionGestureRecognizer.Timing = FunctionGestureRecognizer.Timing(),
-    capture: (Any) -> Any? = { it },
-    captureOriginal: ((Any, Long, Long?) -> Any?)? = null,
-    retireOriginal: ((Long, Any) -> Unit)? = null,
+    private val capture: (Any) -> Any? = { it },
+    private val captureOriginal: ((Any, Long, Long?) -> Any?)? = null,
+    private val retireOriginal: ((Long, Any) -> Unit)? = null,
     registrationRelease: (AnchorGesture, Boolean) -> Unit = { _, _ -> },
     registrationLost: (AnchorGesture) -> Unit = {},
 ) {
-    private var registered = false
+    @Volatile private var registered = false
+    @Volatile private var userCancellation = 0L
+    internal class RawOriginal(val owner: Any, val captured: FunctionGestureRecognizer.CapturedOriginal,
+        val cancellation: Long, private val retire: () -> Unit) {
+        private val retired = java.util.concurrent.atomic.AtomicBoolean()
+        fun discard() { if (retired.compareAndSet(false, true)) retire() }
+    }
     private var losingResource = false
     private var retiring: MutableList<() -> Unit>? = null
     private class RawPress(val source: Any, val id: Long, var retired: Boolean)
@@ -82,23 +88,42 @@ internal class NativeFunctionInput(
     }
 
     /** Original socket/press membership, not an OEM summary or a later input context. */
-    fun rawEdge(source: Any, id: Long, down: Boolean, at: Long, originalContextCurrent: Boolean) {
-        if (rawSource !== source) return
+    /** Runs on the socket reader: copy the published original before any main-queue wait. */
+    fun captureRawOriginal(): RawOriginal? {
+        val owner = if (registered) currentContext() else null
+        if (owner == null) return null
+        val cancellation = userCancellation
+        val id = identities.gesture()
+        val value = captureOriginal?.invoke(owner, id, null) ?: if (captureOriginal == null) capture(owner) else null
+        if (value == null) return null
+        val original = RawOriginal(owner, FunctionGestureRecognizer.CapturedOriginal(id, value), cancellation) {
+            retireOriginal?.invoke(id, value)
+        }
+        if (!registered || currentContext() != owner || userCancellation != cancellation) {
+            original.discard(); return null
+        }
+        return original
+    }
+
+    fun rawEdge(source: Any, id: Long, down: Boolean, at: Long, received: RawOriginal?) {
+        if (rawSource !== source) { received?.discard(); return }
         if (down) {
-            if (rawPress?.let { it.source === source && it.id == id } == true) return
+            if (rawPress?.let { it.source === source && it.id == id } == true) { received?.discard(); return }
             val previous = rawPress
             val cancelsRegistration = recognizer.awaitingRegistrationRelease
-            val originalContext = if (registered && originalContextCurrent) currentContext() else null
+            val originalContext = received?.owner?.takeIf { registered &&
+                received.cancellation == userCancellation && currentContext() == it }
             rawPress = null
             if (previous != null && !cancelsRegistration) cancel()
-            if (rawSource !== source) return
+            if (rawSource !== source) { received?.discard(); return }
             val press = RawPress(source, id, cancelsRegistration || originalContext == null || currentContext() != originalContext)
             rawPress = press
             runCatching { Log.i("EyeProjectorFunction", "raw_down source=${System.identityHashCode(source)} press=$id uptimeMs=$at retired=${press.retired}") }
             // A new physical press cancels an old chooser and is consumed in full. Let the
             // recognizer retire that original lease before considering any new context.
             if (!press.retired || registered && cancelsRegistration)
-                recognizer.accept(FunctionGestureRecognizer.Report.DOWN, at)
+                recognizer.accept(FunctionGestureRecognizer.Report.DOWN, at, received?.captured)
+            if (press.retired) received?.discard()
         } else {
             val press = rawPress?.takeIf { it.source === source && it.id == id } ?: return
             rawPress = null
@@ -120,6 +145,7 @@ internal class NativeFunctionInput(
     }
 
     fun prepareCancel(preserveRegistration: Boolean = false): InputRetirement {
+        if (!losingResource) userCancellation++
         if (!preserveRegistration || !recognizer.awaitingRegistrationRelease) rawPress?.retired = true
         val effects = mutableListOf<() -> Unit>()
         retiring = effects

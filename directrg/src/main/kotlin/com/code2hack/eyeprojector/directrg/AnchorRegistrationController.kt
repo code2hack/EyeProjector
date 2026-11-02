@@ -18,8 +18,8 @@ internal data class AnchorRegistrationHighlight(val left: Double, val top: Doubl
 
 /**
  * Main-thread chooser state, bound to the original media Session and Receiver incarnation. The
- * Activity explicitly binds the revision produced by entering this chooser; later invalidation
- * cannot extend that permission to an arbitrary next revision or replacement Session.
+ * Activity records the revision produced by entering this chooser. Passive presentation changes
+ * keep the original selection; no later Session can adopt its release or transaction.
  */
 internal class AnchorRegistrationController<S : Any>(
     private val send: (S, Long, AnchorRegistrationAction) -> Boolean,
@@ -119,7 +119,7 @@ internal class AnchorRegistrationController<S : Any>(
         return true
     }
 
-    /** Back and genuine lifecycle/context loss discard only this original registration. */
+    /** Explicit user Cancel discards only this original registration. */
     fun cancel(): Boolean {
         val pending = offer ?: return false
         offer = null; revision++

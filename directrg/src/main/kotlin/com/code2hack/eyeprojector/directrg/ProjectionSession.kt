@@ -523,6 +523,18 @@ class ProjectionSession(
             anchorFlow("original_rejected source=${original.source} gesture=${original.gestureId}")
             return false
         }
+        queueAnchorOriginal(original)
+    }
+
+    /** A new semantic press can end the reported original Hold without a live head position.
+     * The Phone still chooses Short/Long disposition on its own FIFO. */
+    internal fun beginAnchorFromHeld(original: AnchorOriginal, held: AnchorMessage.HeldState): Boolean = synchronized(inputLock) {
+        if (held.state != AnchorHoldState.HELD || original.context != held.intent.context ||
+            !retainedAnchorSource(original.context)) return@synchronized false
+        queueAnchorOriginal(original)
+    }
+
+    private fun queueAnchorOriginal(original: AnchorOriginal): Boolean {
         val key = anchorKey(original.source, original.gestureId, original.context)
         val previous = anchorOriginals.putIfAbsent(key, original)
         if (previous != null) return previous == original
@@ -539,7 +551,7 @@ class ProjectionSession(
         }
         anchorFlow("original_queued source=${original.source} gesture=${original.gestureId} accepted=$queued")
         if (!queued) anchorOriginals.remove(key, original)
-        queued
+        return queued
     }
 
     fun retireAnchor(original: AnchorOriginal): Boolean {

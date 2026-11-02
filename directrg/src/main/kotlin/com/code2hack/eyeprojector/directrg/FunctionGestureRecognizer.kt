@@ -33,6 +33,8 @@ internal class FunctionGestureRecognizer(
     enum class Report { DOWN, UP, CLICK, DOUBLE, TRIPLE, LONG }
     data class Timing(val quietMs: Long = 500, val longMs: Long = 800)
     data class Gesture(val kind: AnchorIntentKind, val gestureId: Long, val sequence: Long, val original: Any, val physicalHeld: Boolean = false)
+    /** Original captured by a physical reader before its main-thread delivery. */
+    data class CapturedOriginal(val id: Long, val value: Any)
     private class Original(val id: Long, val captured: Any) {
         var kind = AnchorIntentKind.ACTIVATE
         var hasEdge = false
@@ -55,7 +57,7 @@ internal class FunctionGestureRecognizer(
     /** Read-only existing ownership/schedule identity, including sequences which already finished. */
     internal fun retirementState(): Any = listOf(sequence, ownershipGeneration, timerGeneration, registrationHold)
 
-    fun accept(report: Report, at: Long = now()) {
+    fun accept(report: Report, at: Long = now(), received: CapturedOriginal? = null) {
         // This original terminal edge survives only the intentional chooser transition.
         // Summaries are never evidence that the physical button was released.
         registrationHold?.let { original ->
@@ -86,7 +88,7 @@ internal class FunctionGestureRecognizer(
         val s = sequence ?: Sequence(owner).also { sequence = it }
         when (report) {
             Report.DOWN -> if (s.held == null) {
-                val original = s.originals.firstOrNull { !it.hasEdge } ?: original(s) ?: return
+                val original = s.originals.firstOrNull { !it.hasEdge } ?: original(s, received = received) ?: return
                 original.hasEdge = true
                 s.held = original; s.downAt = at
             }
@@ -118,9 +120,9 @@ internal class FunctionGestureRecognizer(
         arm(s)
     }
 
-    private fun original(s: Sequence, summaryOriginal: Long? = null): Original? {
-        val id=identity.gesture()
-        val captured = (captureOriginal?.invoke(s.owner,id,summaryOriginal) ?: if(captureOriginal==null)capture(s.owner) else null)
+    private fun original(s: Sequence, summaryOriginal: Long? = null, received: CapturedOriginal? = null): Original? {
+        val id=received?.id ?: identity.gesture()
+        val captured = (received?.value ?: captureOriginal?.invoke(s.owner,id,summaryOriginal) ?: if(captureOriginal==null)capture(s.owner) else null)
             ?: run { cancel(); return null }
         if(sequence!==s||context()!=s.owner){retireOriginal?.invoke(id,captured);return null}
         return Original(id, captured).also { s.originals.add(it) }

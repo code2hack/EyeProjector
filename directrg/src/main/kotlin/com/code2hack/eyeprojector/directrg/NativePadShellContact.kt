@@ -20,7 +20,8 @@ internal class NativePadShellContact(
     private var admit: ((Boolean) -> Unit) -> Unit = { it(true) },
     private var functionSourceAvailable: (Any) -> Unit = {},
     private var functionSourceLost: (Any) -> Unit = {},
-    private var functionEdge: (Any, Long, Boolean, Long, Boolean) -> Unit = { _, _, _, _, _ -> },
+    private var functionEdge: (Any, Long, Boolean, Long, NativeFunctionInput.RawOriginal?) -> Unit = { _, _, _, _, _ -> },
+    @Volatile private var functionCapture: () -> NativeFunctionInput.RawOriginal? = { null },
 ) {
     private class Listener(val server: LocalServerSocket) {
         @Volatile var socket: LocalSocket? = null
@@ -53,8 +54,14 @@ internal class NativePadShellContact(
         if (viewGeneration != binding) return
         heldOwner = next.heldOwner; context = next.context; position = next.position
         prepareDown = next.prepareDown; changed = next.changed; admit = next.admit
-        functionSourceAvailable = next.functionSourceAvailable
-        functionSourceLost = next.functionSourceLost; functionEdge = next.functionEdge
+    }
+
+    /** Function belongs to the retained owner, independently of replaceable ordinary pad views. */
+    fun bindFunction(function: NativeFunctionInput) {
+        functionSourceAvailable = function::rawSourceAvailable
+        functionSourceLost = function::rawSourceLost
+        functionEdge = function::rawEdge
+        functionCapture = function::captureRawOriginal
     }
 
     fun start() {
@@ -110,10 +117,11 @@ internal class NativePadShellContact(
                             val id = fields.getOrNull(1)?.toLongOrNull() ?: continue
                             if (report == "FUNCTION_DOWN" || report == "FUNCTION_UP") {
                                 val at = fields.getOrNull(2)?.toLongOrNull() ?: continue
-                                val revision = contextRevision
+                                val received = if (report == "FUNCTION_DOWN") functionCapture() else null
                                 main.post {
                                     if (listener === run && source === original && original.functionConnected)
-                                        functionEdge(original, id, report == "FUNCTION_DOWN", at, revision == contextRevision)
+                                        functionEdge(original, id, report == "FUNCTION_DOWN", at, received)
+                                    else received?.discard()
                                 }
                                 continue
                             }
