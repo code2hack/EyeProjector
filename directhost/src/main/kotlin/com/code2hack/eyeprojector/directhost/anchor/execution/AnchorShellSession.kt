@@ -158,6 +158,7 @@ internal class AnchorShellSession(
         private fun attached() = !closed && binding.get() === original
         private fun alive() = attached() && original.binder.isBinderAlive
         private val stateOutput = AnchorHoldOutput(stateWork) { revision, state ->
+            AnchorAppRuntime.flow("hold_state transaction=$id source=${admission.intent.source} gesture=${admission.intent.gestureId} revision=$revision state=$state")
             if (!closed) try { send.invoke(AnchorMessage.HeldState(id, admission.intent, revision, state)) }
             catch (error: Exception) { failure(error) }
         }

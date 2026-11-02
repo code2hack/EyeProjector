@@ -1199,6 +1199,7 @@ private class Session(
         startupStage.set(StartupStage.VIDEO_STREAM)
         var reason = SessionStopReason.VIDEO_END
         var failure: Exception? = null
+        var managedInputSource = source?.sourceObservation()
         try {
             while (running.get()) {
                 val record = if (source != null) {
@@ -1207,13 +1208,17 @@ private class Session(
                         is ManagedProjectionDisplay.Read.Layout -> {
                             val videoGeometry = geometry.get()
                             if (videoGeometry != null) {
-                                scale.observeManagedLayout(next.source.layout, this) {
+                                val sourceChanged = managedInputSource != next.source
+                                val changed = scale.observeManagedLayout(next.source.layout, this, sourceChanged) {
                                     synchronized(controlLock) {
                                         phoneInput.invalidate()
                                         inputControls.cancel()
                                         inputControls.geometry(videoGeometry)
                                     }
                                 }
+                                managedInputSource = next.source
+                                com.code2hack.eyeprojector.directhost.anchor.execution.AnchorAppRuntime.flow(
+                                    "managed_layout changed=$changed sourceChanged=$sourceChanged logical=${next.source.layout} video=$videoGeometry")
                             }
                             runCatching { recordManagedProjection() }
                             continue
@@ -1226,12 +1231,12 @@ private class Session(
                         startup.cancel(false)
                         val layout = source?.layoutGeometry() ?: record.geometry
                         scale.observe(record, this, managedResize = source != null, observedGeometry = layout) {
-                            synchronized(controlLock) {
-                                phoneInput.invalidate()
+                            val changed = synchronized(controlLock) {
+                                if (geometry.get() != record.geometry) phoneInput.invalidate()
                                 inputControls.geometry(record.geometry)
-                                geometry.set(record.geometry)
+                                geometry.getAndSet(record.geometry) != record.geometry
                             }
-                            send(Frame(Wire.GEOMETRY, payload = record.geometry.bytes()))
+                            if (changed) send(Frame(Wire.GEOMETRY, payload = record.geometry.bytes()))
                         }
                         if (source != null) runCatching { recordManagedProjection() }
                         // Creation is logged before this metadata by the pinned capture. Do not
@@ -1371,7 +1376,7 @@ private class Session(
                 if (receiverUsability.publish(fact)) {
                     if (previous == null || previous.ownerEpoch != fact.ownerEpoch || previous.incarnation != fact.incarnation ||
                         previous.inputRevision != fact.inputRevision || previous.mode != fact.mode) {
-                        inputControls.anchor.retire()
+                        inputControls.anchor.retire("receiver-usability")
                         remoteAnchorOriginals.clear()
                         remoteAnchorRetiredBeforeBirth.clear()
                         remoteAnchorSeen.keys.removeAll { it.first != fact.incarnation }

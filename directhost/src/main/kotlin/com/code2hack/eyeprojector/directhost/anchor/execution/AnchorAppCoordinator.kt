@@ -54,7 +54,9 @@ internal class AnchorAppCoordinator(
     private var registrationRequest: CapturedAnchorRequest? = null
     private val accessRevision = AtomicLong()
     private val displayRevisions = ConcurrentHashMap<Int, AtomicLong>()
-    private val observedWindows = ConcurrentHashMap<Int, Int>()
+    private data class WindowOwner(val route: AnchorOriginalRoute, val source: ManagedUiSource,
+        val window: UiWindowMetadata)
+    private val windowOwners = mutableMapOf<ProjectionContext, WindowOwner>() // FIFO lane only.
     @Volatile private var closed = false
     @Volatile var lastFailure: Exception? = null
         private set
@@ -190,7 +192,7 @@ internal class AnchorAppCoordinator(
         val snapshot = provider.read(source.context, packageName)
         val resolved = AnchorTargetResolver.resolve(anchor.descriptor, snapshot)
         if (resolved !is AnchorTargetResolution.Unique) return original.feedback(AnchorExecutionStatus.UNAVAILABLE)
-        observedWindows[source.displayId] = resolved.current.window.windowId
+        observeWindow(original, source, resolved.current.window)
         // A setting read/event alone is not retirement ACK: reconcile above completed on the owner.
         // A concurrent later commit invalidates this read; its queued callback retires original use.
         if (closed || accessRevision.get() != access || display.get() != displayRevision ||
@@ -203,10 +205,8 @@ internal class AnchorAppCoordinator(
     private fun watch(route: AnchorOriginalRoute, context: ProjectionContext, displayId: Int, packageName: String) {
         // A Binder adapter can share a stable Session route while retaining per-press admission.
         subscriptions.firstOrNull { it.context == context && it.packageName == packageName }?.let {
-            // REGISTER has an operation-scoped normal lease. A later real ACTIVATE owns the
-            // continuing setting observation; do not retain the completed chooser's lease.
-            if (it.route.intent.kind == AnchorIntentKind.REGISTER &&
-                route.intent.kind == AnchorIntentKind.ACTIVATE) it.route = route
+            // Observe the current original operation, never a completed older chooser/contact.
+            it.route = route
             return
         }
         lateinit var subscription: Subscription
@@ -221,10 +221,54 @@ internal class AnchorAppCoordinator(
         subscriptions.add(subscription)
     }
 
-    /** Called by real UI/accessibility/binding lifecycle observation, not a periodic synthetic read. */
+    /** Captured selection identity only; target coordinates remain owned by the original contact. */
+    fun observeWindow(route: AnchorOriginalRoute, source: ManagedUiSource, window: UiWindowMetadata) {
+        windowOwners[source.context] = WindowOwner(route, source, window)
+    }
+
+    /** A state/bounds event can be the application's response to DOWN in the SAME window.
+     * Reconcile actual source/window identity on the app FIFO before retiring that original. */
     fun windowChanged(displayId: Int, windowId: Int, currentChanged: Boolean) {
-        val originalWindow = observedWindows[displayId]
-        if (currentChanged || originalWindow == null || originalWindow == windowId) contextRetired(displayId)
+        submit {
+            if (closed) return@submit
+            val originals = windowOwners.values.filter { it.source.displayId == displayId &&
+                (currentChanged || it.window.windowId == windowId) }
+            originals.forEach { original -> protect(original.route) {
+                if (windowOwners[original.source.context] !== original) return@protect
+                val source = original.route.source()
+                // The managed display can briefly be between unchanged layout observations.
+                // A missing read is not source teardown; actual binding/service/Session closure
+                // has its own unconditional retirement, and Choice still revalidates before save.
+                if (source == null) {
+                    AnchorAppRuntime.flow("window_observed transaction=${original.route.transactionId} display=$displayId window=$windowId capturedWindow=${original.window.windowId} sourceObserved=false")
+                    return@protect
+                }
+                val snapshot = if (source == original.source) UiTargetSnapshotProvider(
+                    ManagedUiSourceProvider { expected -> original.route.source()?.takeIf { it.context == expected } },
+                    reader, uptime).read(original.source.context, original.source.foregroundPackage ?: return@protect,
+                    original.window.windowId) else null
+                // A held app may hide/change its target or focus a recording overlay. Neither
+                // moves the original contact. Only actual source/window loss retires it;
+                // a transient node traversal failure is not proof of window destruction.
+                val current = snapshot?.windows?.singleOrNull { it.window.displayId == displayId &&
+                    it.window.windowId == original.window.windowId && it.window.type == original.window.type &&
+                    it.status != UiWindowReadStatus.OTHER_PACKAGE }
+                val windowAbsent = when (snapshot?.status) {
+                    UiTargetReadStatus.READ, UiTargetReadStatus.WINDOW_ABSENT,
+                    UiTargetReadStatus.DISPLAY_ABSENT -> current == null
+                    else -> false
+                }
+                val retained = source == original.source && !windowAbsent &&
+                    original.route.source() == original.source
+                AnchorAppRuntime.flow("window_observed transaction=${original.route.transactionId} display=$displayId window=$windowId capturedWindow=${original.window.windowId} retained=$retained read=${snapshot?.status} sourceCurrent=${source == original.source}")
+                if (!retained && windowOwners[original.source.context] === original) {
+                    windowOwners.remove(original.source.context)
+                    displayRevisions.computeIfAbsent(displayId) { AtomicLong() }.incrementAndGet()
+                    if (registrationRequest?.original?.identity == original.route.identity) cancelRegistration(displayId)
+                    original.route.retire()
+                }
+            } }
+        }
     }
 
     fun contextRetired(displayId: Int? = null) {
@@ -232,7 +276,9 @@ internal class AnchorAppCoordinator(
         else displayRevisions.computeIfAbsent(displayId) { AtomicLong() }.incrementAndGet()
         submit {
             cancelRegistration(displayId)
-            subscriptions.filter { displayId == null || it.displayId == displayId }.map { it.route }.distinct().forEach { route ->
+            val originals = windowOwners.values.filter { displayId == null || it.source.displayId == displayId }
+            originals.forEach { windowOwners.remove(it.source.context) }
+            (originals.map { it.route } + subscriptions.filter { displayId == null || it.displayId == displayId }.map { it.route }).distinct().forEach { route ->
                 protect(route) { route.retire() }
             }
             if (displayId == null) { subscriptions.forEach { it.observer.close() }; subscriptions.clear() }
@@ -252,6 +298,7 @@ internal class AnchorAppCoordinator(
         closed = true
         submit {
             cancelRegistration(null)
+            windowOwners.clear()
             subscriptions.forEach { subscription -> subscription.observer.close(); protect(subscription.route) { subscription.route.retire() } }
             subscriptions.clear()
         }

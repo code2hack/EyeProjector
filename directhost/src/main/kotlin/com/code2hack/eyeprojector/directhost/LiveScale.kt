@@ -65,12 +65,17 @@ internal class LiveScale(
         }
     }
 
-    fun observeManagedLayout(
+    @Synchronized fun observeManagedLayout(
         observed: Geometry,
         publicationLock: Any = this,
+        sourceChanged: Boolean = false,
         beforePublish: () -> Unit = {},
-    ) = observe(ScrcpyRecord.Session(observed, clientResize = false), publicationLock,
-        managedResize = true, beforePublish = beforePublish)
+    ): Boolean {
+        val changed = sourceChanged || value.observed != observed
+        observe(ScrcpyRecord.Session(observed, clientResize = false), publicationLock,
+            managedResize = true, beforePublish = { if (changed) beforePublish() })
+        return changed
+    }
 
     companion object {
         fun unavailable(id: Long = 0, scale: Double = 1.0) =

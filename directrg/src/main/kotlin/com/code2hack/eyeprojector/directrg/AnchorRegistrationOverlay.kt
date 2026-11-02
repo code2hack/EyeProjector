@@ -21,23 +21,27 @@ internal class AnchorRegistrationOverlay(context: Context,
     private var pointerX = 0f
     private var pointerY = 0f
     private var pointerAvailable = false
+    private var anchorX = 0f
+    private var anchorY = 0f
     private class Presentation { var hideAttempted = false; var drawn = false }
     private var presentation: Presentation? = null
     private var admission = 0L
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     init { visibility = View.GONE; isClickable = true; setWillNotDraw(false) }
 
-    fun show(bounds: AnchorRegistrationHighlight) {
+    fun show(bounds: AnchorRegistrationHighlight, x: Float = ((bounds.left + bounds.right) / 2).toFloat(),
+        y: Float = ((bounds.top + bounds.bottom) / 2).toFloat()) {
         presentation = Presentation(); admission++
         target = bounds; choosing = false; selected = null; pointerAvailable = false
-        menu = AnchorRegistrationMenu.layout(bounds, width, height, resources.displayMetrics.density)
+        anchorX = x; anchorY = y
+        menu = layout(bounds)
         visibility = View.VISIBLE; invalidate()
     }
     fun pointer(x: Float, y: Float, available: Boolean) {
         if (presentation == null || choosing) return
         pointerX = x; pointerY = y; pointerAvailable = available
         val bounds = target ?: return
-        menu = AnchorRegistrationMenu.layout(bounds, width, height, resources.displayMetrics.density)
+        menu = layout(bounds)
         selected = if (available) menu?.at(x, y) else null
         highlighted(selected); invalidate()
     }
@@ -60,7 +64,7 @@ internal class AnchorRegistrationOverlay(context: Context,
         val targetBounds = target ?: return
         // A previously GONE overlay is measured only after it becomes visible. Layout/hit
         // testing therefore uses this draw's actual viewport, including a stationary head.
-        menu = AnchorRegistrationMenu.layout(targetBounds, width, height, resources.displayMetrics.density)
+        menu = layout(targetBounds)
         if (!choosing) {
             selected = if (pointerAvailable) menu?.at(pointerX, pointerY) else null
             highlighted(selected)
@@ -91,4 +95,7 @@ internal class AnchorRegistrationOverlay(context: Context,
     override fun onTouchEvent(event: MotionEvent): Boolean = true
     override fun performClick(): Boolean = true
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean = true
+
+    private fun layout(bounds: AnchorRegistrationHighlight) = AnchorRegistrationMenu.layout(
+        bounds, width, height, resources.displayMetrics.density, anchorX, anchorY)
 }

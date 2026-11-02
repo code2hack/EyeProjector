@@ -202,7 +202,7 @@ internal class AnchorContactOwner(
         // Fix consumption before output can throw, block or reenter with a successor.
         control.disposition = AnchorControlDisposition.CONSUMED
         generation++
-        cancelContact(original)
+        cancelContact(original, "other-control")
         AnchorControlDisposition.CONSUMED
         } finally { observed("CONTROL_DISPOSITION", observedContact, control) }
     }
@@ -226,7 +226,8 @@ internal class AnchorContactOwner(
         // A delayed observer/response must never roll the handled revision backwards.
         if (previous != null && previous.instanceId == context.instanceId && previous.revision > context.revision)
             return@synchronized false
-        cancelContact()
+        // A delayed setting event from app A cannot cancel app B's original contact.
+        contact?.takeIf { it.setting.packageName == context.packageName }?.let { cancelContact(it, "setting-revision") }
         handled[context.packageName] = context
         true
     }
@@ -365,10 +366,11 @@ internal class AnchorContactOwner(
     }
 
     /** Registration cancels old Hold without invalidating its own captured REGISTER admission. */
-    fun cancelHeld() = synchronized(lock) { contact?.takeIf { it.hold }?.let(::cancelContact) }
+    fun cancelHeld() = synchronized(lock) { contact?.takeIf { it.hold }?.let { cancelContact(it) } }
 
     /** Retire pending admissions too; the next press must capture a fresh original context. */
-    fun retire() = synchronized(lock) { generation++; cancelContact() }
+    fun retire() = retire("context")
+    fun retire(reason: String) = synchronized(lock) { generation++; cancelContact(reason = reason) }
     /** A failed original Binder operation cannot retire a later admitted contact. */
     fun retire(admission: AnchorAdmission) = synchronized(lock) {
         val originalSequence = admission.startedSequence ?: admission.releaseSequence.takeIf { admission.releaseInspected }
@@ -379,12 +381,13 @@ internal class AnchorContactOwner(
     }
     fun close() = synchronized(lock) { if (!closed) { closed = true; generation++; cancelContact() } }
 
-    private fun cancelContact(original: Contact? = contact) {
+    private fun cancelContact(original: Contact? = contact, reason: String = "original") {
         if (original == null || contact !== original) return
         val persistent = original.hold && original.downSubmitted
         if (persistent) {
             cancellation = original // Owner119: discard before detachment, callbacks or output.
             observed("CANCELING", original)
+            AnchorAppRuntime.flow("hold_cancel source=${original.intent.source} gesture=${original.intent.gestureId} contact=${original.down.contactId} reason=$reason settingRevision=${original.setting.revision}")
         }
         contact = null // Clear first: a reentrant ordinary-input handoff cannot cancel a successor.
         val revision = if (original.hold) ++stateRevision else null

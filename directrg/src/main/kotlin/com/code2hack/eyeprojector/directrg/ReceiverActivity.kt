@@ -348,8 +348,8 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         pointer = PointerOverlay(this).apply {
             sensitivity(settings.pointerXGain, settings.pointerYGain)
             onPositionChanged = {
-                if (!position.available) cancelInputOperation(reason = "pointer-unavailable")
-                else if (::heldInput.isInitialized) heldInput.move(SystemClock.uptimeMillis())
+                if (!position.available && !anchorOwnsPointer()) cancelPointerWork()
+                else if (!anchorOwnsPointer() && ::heldInput.isInitialized) heldInput.move(SystemClock.uptimeMillis())
                 updateEdgeScroll()
                 publishHeadPointer()
             }
@@ -504,13 +504,39 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         val source = session ?: return
         if (!::pointer.isInitialized || root.width <= 0 || root.height <= 0) return
         val position = pointer.position
-        if (registrationActive()) anchorOverlay.pointer(position.x, position.y, position.available)
+        if (registrationActive()) {
+            // Menu highlighting is live head input; the original selected target is not.
+            anchorOverlay.pointer(position.x, position.y, position.available)
+            val original = anchorRegistration.offer?.original?.pointer ?: return
+            source.headPointer(original.copy(revision = inputGeneration, projected = false,
+                available = usable()), pointer.expiresAtNs)
+            return
+        }
+        if (anchorOwnsPointer()) return
         val size = currentGeometry
         val fit = size?.let { Fit.inside(root.width, root.height, it) }
         val projected = !localInputVisible()
         val available = usable() && position.available && (!projected || projectedInput())
         source.headPointer(HeadPointerState(inputGeneration, 0, available, projected,
             position.x, position.y, fit, size), pointer.expiresAtNs)
+    }
+
+    private fun anchorOwnsPointer(): Boolean = registrationActive() || anchorHeldIndicator.visible ||
+        (::functionInput.isInitialized && functionInput.pinsPointer)
+
+    /** Tracking loss retires captured ordinary pointer work, not the semantic Anchor lifetime.
+     * In particular it must not publish a new global input revision before Phone Hold feedback. */
+    private fun cancelPointerWork() {
+        if (!::gestures.isInitialized || !::heldOwner.isInitialized) return
+        val oldConfirm = confirmTap
+        confirmTap = newConfirmTap()
+        nativePadMotionInput.retire()
+        padControlInput.retire()
+        val cleanup = preparePadCleanup(SystemClock.uptimeMillis(), includeShell = true)
+        val pad = gestures.prepareCancel(SystemClock.uptimeMillis())
+        val detector = screen.prepareCancel()
+        InputRetirement.finishAll(listOf({ root.removeCallbacks(oldConfirm) }, cleanup.finishOriginal,
+            pad.finishOriginal, detector.finishOriginal))
     }
 
     /** Presentation follows the current original input context, never a saved/contact toggle. */
@@ -577,6 +603,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         val message = anchorOffer
         val position = pointer.position
         if (original?.intent == intent) anchorOverlay.pointer(position.x, position.y, position.available)
+        ProjectionSession.anchorFlow("registration_release transaction=${transactionId ?: original?.id} source=${intent.source} gesture=${intent.gestureId} canceled=$canceled usable=${usable()} ready=${original?.ready} highlighted=${original?.highlighted} pointerAvailable=${position.available}")
         if (!anchorRegistration.released(source, intent, canceled || !usable(), transactionId)) return
         if (anchorOffer !== message) return
         if (anchorRegistration.offer === original) anchorOverlay.waiting()
@@ -639,7 +666,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
                 }
                 if (operation.second.superseded() || anchorOffer !== message) return true
                 anchorRegistration.offer?.let {
-                    anchorOverlay.show(it.highlight)
+                    anchorOverlay.show(it.highlight, it.original.pointer.x, it.original.pointer.y)
                     val current = pointer.position
                     anchorOverlay.pointer(current.x, current.y, current.available)
                 }
@@ -1015,7 +1042,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun updateEdgeScroll() {
-        if (!usable() || !projectedInput() || (::heldInput.isInitialized && heldInput.holding) ||
+        if (!usable() || !projectedInput() || anchorOwnsPointer() || (::heldInput.isInitialized && heldInput.holding) ||
             edgeMotion.direction(pointer.position, pointer.visibleBounds, pointer.expiresAtNs, SystemClock.elapsedRealtimeNanos()) == 0) {
             root.removeCallbacks(edgeTick); edgeScheduled = false; edgeMotion.stop()
             session?.cancelHeadScroll()
@@ -1028,7 +1055,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             edgeScheduled = false
             val point = pointer.inputPosition()
             if (edgeTick !== this) return
-            if (!usable() || !projectedInput() || (::heldInput.isInitialized && heldInput.holding)) { edgeMotion.stop(); return }
+            if (!usable() || !projectedInput() || anchorOwnsPointer() || (::heldInput.isInitialized && heldInput.holding)) { edgeMotion.stop(); return }
             val now = SystemClock.elapsedRealtimeNanos()
             val bounds = pointer.visibleBounds
             if (edgeMotion.direction(point, bounds, pointer.expiresAtNs, now) == 0) { edgeMotion.stop(); return }

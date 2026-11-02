@@ -47,6 +47,7 @@ internal class AnchorRegistrationProvider : AnchorRegistrationInstaller {
             return
         }
         pending = Pending(token, original, request.source)
+        runtime.coordinator.observeWindow(original, request.source, capture.target.current.window)
         val bounds = capture.target.highlight
         original.send(AnchorMessage.Offer(token.id, token.intent,
             AnchorHighlight(bounds.left, bounds.top, bounds.right, bounds.bottom)))
@@ -58,6 +59,7 @@ internal class AnchorRegistrationProvider : AnchorRegistrationInstaller {
         if (message.transactionId != selected.token.id || message.intent != selected.token.intent ||
             original.transactionId != selected.token.id || original.intent != selected.token.intent ||
             original.identity != selected.token.route) return
+        AnchorAppRuntime.flow("registration_message transaction=${message.transactionId} type=${message.javaClass.simpleName} choice=${(message as? AnchorMessage.Choice)?.choice}")
         val source = original.source()
         if (source != selected.source) {
             // A successor route cannot retire or save the original pending registration.
@@ -115,6 +117,8 @@ internal class AnchorRegistrationProvider : AnchorRegistrationInstaller {
         val selected = pending ?: return
         pending = null
         coordinator.cancel(selected.token)
+        runtime.coordinator.reportRegistration(selected.route, AnchorRegistrationDiagnostic.Stage.COMPLETION,
+            selected.source, detail = "Canceled")
         result(selected.route, AnchorRegistrationResult.CANCELED)
     }
 

@@ -30,6 +30,7 @@ internal class NativeFunctionInput(
     private class RawPress(val source: Any, val id: Long, var retired: Boolean)
     private var rawSource: Any? = null
     private var rawPress: RawPress? = null
+    val pinsPointer: Boolean get() = rawPress?.retired == false
     private val recognizer = FunctionGestureRecognizer(now, { if (registered) currentContext() else null },
         { at, action ->
             val cancel = schedule(at, action)

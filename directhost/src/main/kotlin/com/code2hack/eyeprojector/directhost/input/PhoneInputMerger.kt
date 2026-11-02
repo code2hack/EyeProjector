@@ -137,6 +137,11 @@ internal class PhoneInputMerger(
         val sourceContextChanged = pointerSource?.let { old -> source != null &&
             (old.ownerEpoch != source.ownerEpoch || old.incarnation != source.incarnation ||
                 old.inputRevision != source.inputRevision || old.mode != source.mode) } == true
+        // Anchor DOWN owns its original hover/contact until its own terminal. Head samples
+        // (including tracking loss) are passive, not another control or a new target.
+        // A real source transition still follows the retirement path below.
+        if (!sourceContextChanged && (anchorInput.activePress != null ||
+                anchorInput.registration != null || !passiveAllowed())) return@transaction
         if (pointerSource != null && source != null && pointerSource!!.incarnation != source.incarnation) {
             // Session already retired Anchor before publishing this accepted usability context.
             // Pointer cleanup must not retire an Anchor birth received after that publication.
@@ -148,7 +153,7 @@ internal class PhoneInputMerger(
             retire(out, false, passive = sourceContextChanged, preserveRegistration = anchorInput.registration?.second?.context?.let { original ->
                 source != null && source.ownerEpoch == original.usability.ownerEpoch &&
                     source.incarnation == original.usability.incarnation && source.mode == ReceiverUsabilityMode.LOCAL_PANEL &&
-                    !next.projected && next.available && next.geometry == original.pointer.geometry
+                    !next.projected && next.geometry == original.pointer.geometry
             } == true)
         else if (!next.available) retire(out, false, preserveNavigation = true, passive = true)
         if (!active() || !accepts()) return@transaction // Retirement may contain an old stock write.
@@ -301,6 +306,10 @@ internal class PhoneInputMerger(
             else if (old.edge.action == PhoneHidAction.NAVIGATION) backHome.up(navigationToken(routeId, edge), edge.eventTimeMs)
             return@transaction
         }
+        if (old.edge.action == PhoneHidAction.ANCHOR) {
+            anchorInput.up(old, edge.eventTimeMs, out)
+            return@transaction
+        }
         val position = point
         if (position?.available != true || position.revision != old.point.revision || position.projected != old.point.projected) {
             if (held === old) retireContact(out)
@@ -318,7 +327,7 @@ internal class PhoneInputMerger(
                 if (position.projected) position.target()?.let { scroll(Scroll(it, pixels)) }
                 else out.add(ReceiverInput(ReceiverInputKind.SCROLL, position.revision, x = position.x, y = position.y, pixels = pixels))
             }
-            PhoneHidAction.ANCHOR -> anchorInput.up(old, edge.eventTimeMs, out)
+            PhoneHidAction.ANCHOR -> Unit // Original Anchor terminal completed above.
             PhoneHidAction.NAVIGATION -> Unit // Completed above without spatial input.
         }
         }
@@ -482,10 +491,14 @@ internal class PhoneInputMerger(
             if (activePress !== current) return
             cancel() // A long's eventual physical UP cannot become an activation.
             if (kind == AnchorIntentKind.REGISTER) current.press.control.ordinary()
-            if (kind == AnchorIntentKind.REGISTER && currentNavigation(current.press) &&
-                anchorControl(current.press.control) != AnchorControlDisposition.NORMAL) return
-            val position = point?.takeIf { it.available && it.revision == current.context.pointer.revision } ?: return
-            if (!allowsNew(current.press, position)) return
+            // A completed original is classified at its captured DOWN position. A later head
+            // sample cannot move it, make it unavailable or select another app target.
+            val press = current.press
+            if (!active() || !press.point.available ||
+                press.point.projected && press.point.geometry != geometry() ||
+                !press.qualifies(press.point, press.source)) return
+            if (kind == AnchorIntentKind.REGISTER &&
+                anchorControl(press.control) != AnchorControlDisposition.NORMAL) return
             val intent = AnchorIntent(kind, AnchorSource.PHONE_HID, current.gestureId, anchorIdentity.delivery(), current.context)
             if (kind == AnchorIntentKind.REGISTER && physicalHeld) registration = current to intent
             out.add(intent, current.press.control)

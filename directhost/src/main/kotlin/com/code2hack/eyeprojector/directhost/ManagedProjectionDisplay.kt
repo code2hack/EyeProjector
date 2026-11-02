@@ -235,6 +235,9 @@ internal class ManagedProjectionDisplay private constructor(
         observedSource?.layout ?: throw Failure("DISPLAY_GEOMETRY_UNAVAILABLE")
     }
 
+    /** Existing original display observation; no WindowManager query or input admission. */
+    fun sourceObservation(): SourceObservation? = synchronized(inputOperations) { observedSource }
+
     /** Same lifetime/transition admission as input; release this lock before any accessibility read. */
     fun uiInputSnapshot(): ManagedUiMapping? = synchronized(inputOperations) {
         if (closeRequested.get() || sourceTransitioning || resizeRequested.get() != null || displayChanged.get()) return@synchronized null

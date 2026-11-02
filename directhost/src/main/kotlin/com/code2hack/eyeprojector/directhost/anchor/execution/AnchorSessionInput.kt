@@ -45,7 +45,7 @@ internal class AnchorSessionInput(private val lock: Any, write: (ByteArray) -> U
     fun geometry(next: Geometry) = synchronized(lock) {
         if (geometry != next) {
             retirementGeometry = next
-            try { anchor.retire() } finally { retirementGeometry = null }
+            try { anchor.retire("geometry") } finally { retirementGeometry = null }
         }
         geometry = next; output.geometry(next)
     }
@@ -55,7 +55,7 @@ internal class AnchorSessionInput(private val lock: Any, write: (ByteArray) -> U
     fun navigate(event: Navigate): Boolean = synchronized(lock) { anchor.retire(); output.navigate(event) }
     fun cancel(next: Geometry? = null) = synchronized(lock) {
         retirementGeometry = next
-        try { if (!transferring) anchor.retire() } finally { retirementGeometry = null }
+        try { if (!transferring) anchor.retire("input-cancel") } finally { retirementGeometry = null }
         output.cancel(next)
     }
     fun close() = synchronized(lock) { anchor.close(); output.close() }

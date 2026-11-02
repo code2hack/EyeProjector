@@ -148,11 +148,15 @@ internal data class AnchorRegistrationMenu(val left: Float, val top: Float, val 
         return AnchorRegistrationAction.entries[((x - left) * 3 / width).toInt().coerceIn(0, 2)]
     }
     companion object {
-        fun layout(target: AnchorRegistrationHighlight, viewportWidth: Int, viewportHeight: Int, density: Float): AnchorRegistrationMenu {
+        fun layout(target: AnchorRegistrationHighlight, viewportWidth: Int, viewportHeight: Int, density: Float,
+            anchorX: Float = ((target.left + target.right) / 2).toFloat(),
+            anchorY: Float = ((target.top + target.bottom) / 2).toFloat()): AnchorRegistrationMenu {
             val width = (216f * density).coerceAtMost(viewportWidth.toFloat().coerceAtLeast(0f))
             val height = (44f * density).coerceAtMost(viewportHeight.toFloat().coerceAtLeast(0f))
-            val left = ((target.left + target.right).toFloat() / 2 - width / 2).coerceIn(0f, (viewportWidth - width).coerceAtLeast(0f))
-            val top = ((target.top + target.bottom).toFloat() / 2 - height / 2).coerceIn(0f, (viewportHeight - height).coerceAtLeast(0f))
+            val left = (anchorX.coerceIn(target.left.toFloat(), target.right.toFloat()) - width / 2)
+                .coerceIn(0f, (viewportWidth - width).coerceAtLeast(0f))
+            val top = (anchorY.coerceIn(target.top.toFloat(), target.bottom.toFloat()) - height / 2)
+                .coerceIn(0f, (viewportHeight - height).coerceAtLeast(0f))
             return AnchorRegistrationMenu(left, top, width, height)
         }
     }
