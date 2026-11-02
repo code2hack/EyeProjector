@@ -84,9 +84,42 @@ private fun readerScenarios() {
     var deep = Node()
     val nodes = ArrayList<Node>(); nodes.add(deep)
     repeat(12000) { deep = Node(isClickable = false, children = listOf(deep)); nodes.add(deep) }
-    check(read(mapOf(34 to listOf(Window(node = deep)))).windows.single().targets.size == 12001)
+    val deepTargets = read(mapOf(34 to listOf(Window(node = deep)))).windows.single().targets
+    check(deepTargets.size == 12001)
+    check(deepTargets.last().drawingOrderPath.size == 12001)
+    check(deepTargets.last().drawingOrderPath.first().ordinal == 1)
+    check(deepTargets.last().drawingOrderPath.last().ordinal == 12001)
     check(nodes.all { it.closed == 1 })
     println("PASS actual reader + Android adapter: exact display/window, static properties, usable bounds, null/repeated IDs, deep tree, stale failure and owned-handle cleanup")
+}
+
+private fun drawingOrderScenarios() {
+    val behindChild = Node(viewIdResourceName = "behind", drawingOrder = 100)
+    val behind = Node(isEnabled = false, drawingOrder = 2, children = listOf(behindChild))
+    val frontChild = Node(viewIdResourceName = "front", drawingOrder = 1)
+    val front = Node(screen = Rect(0, 0, 0, 0), drawingOrder = 11, children = listOf(frontChild))
+    val tiedFirst = Node(viewIdResourceName = "tied-first", drawingOrder = 7)
+    val tiedSecond = Node(viewIdResourceName = "tied-second", drawingOrder = 7)
+    val root = Node(isVisibleToUser = false, children = listOf(null, behind, front, tiedFirst, tiedSecond))
+    val window = Window(node = root)
+    val observed = read(mapOf(34 to listOf(window))).windows.single().targets.associateBy { it.resourceId }
+    val behindPath = observed.getValue("behind").drawingOrderPath
+    val frontPath = observed.getValue("front").drawingOrderPath
+    check(behindPath.map { it.drawingOrder } == listOf(0, 2, 100))
+    check(frontPath.map { it.drawingOrder } == listOf(0, 11, 1))
+    check(behindPath.map { it.childIndex } == listOf(-1, 1, 0))
+    check(frontPath.map { it.childIndex } == listOf(-1, 2, 0))
+    check(behindPath.first() == frontPath.first() && behindPath[1].ordinal != frontPath[1].ordinal)
+    check(observed.getValue("front").ancestorOrdinals == frontPath.dropLast(1).map { it.ordinal })
+    check(observed.getValue("front").drawingOrder == 1 && observed.getValue("behind").drawingOrder == 100)
+    val ties = listOf(observed.getValue("tied-first"), observed.getValue("tied-second"))
+    check(ties.map { it.drawingOrder } == listOf(7, 7))
+    check(ties.map { it.drawingOrderPath.last().childIndex } == listOf(3, 4))
+    check(ties[0].drawingOrderPath.last().ordinal != ties[1].drawingOrderPath.last().ordinal)
+    check(root.childrenRead == 5 && behind.childrenRead == 1 && front.childrenRead == 1)
+    check(listOf(root, behind, behindChild, front, frontChild, tiedFirst, tiedSecond).all { it.closed == 1 })
+    check(window.rootsRead == 1 && window.closed == 1)
+    println("PASS actual Android drawingOrder: sibling-relative ties/skips, filtered ancestors, first-divergent branch context, actual child indices and one owned traversal")
 }
 
 private fun crossAppReadScenarios() {
@@ -230,4 +263,4 @@ private fun serviceScenarios() {
     println("PASS actual HID service: retrieval/view-ID/key flags, modeled key result/pin coexistence, interrupt/unbind/destroy/replacement lifecycle")
 }
 
-fun main() { readerScenarios(); crossAppReadScenarios(); geometryScenarios(); providerScenarios(); connectionScenarios(); serviceScenarios() }
+fun main() { readerScenarios(); drawingOrderScenarios(); crossAppReadScenarios(); geometryScenarios(); providerScenarios(); connectionScenarios(); serviceScenarios() }
