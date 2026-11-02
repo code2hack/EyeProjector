@@ -94,10 +94,13 @@ class RegistrationReleaseTest {
             assertFalse(c.show(session,3,context,AnchorRegistrationHighlight(1.0,1.0,2.0,2.0),i))
         }
     }
-    @Test fun menuUsesTargetAndViewportAndHeadHitTestingWithoutDefaultChoice() {
-        for(target in listOf(AnchorRegistrationHighlight(0.0,0.0,10.0,10.0),AnchorRegistrationHighlight(470.0,630.0,480.0,640.0))) {
-            val m=AnchorRegistrationMenu.layout(target,480,640,1f)
-            assertTrue(m.left>=0&&m.top>=0&&m.left+m.width<=480&&m.top+m.height<=640)
+    @Test fun menuUsesViewportCentreAndHeadHitTestingWithoutDefaultChoice() {
+        for((width,height) in listOf(480 to 640,640 to 480,100 to 30,0 to 0)) for(density in listOf(1f,2f)) {
+            val m=AnchorRegistrationMenu.layout(width,height,density)
+            assertEquals(width/2f,m.left+m.width/2,0f)
+            assertEquals(height/2f,m.top+m.height/2,0f)
+            assertTrue(m.left>=0&&m.top>=0&&m.left+m.width<=width&&m.top+m.height<=height)
+            if(width==0||height==0){assertNull(m.at(0f,0f));continue}
             for((i,a) in AnchorRegistrationAction.entries.withIndex())assertEquals(a,m.at(m.left+(i+0.5f)*m.width/3,m.top+m.height/2))
             assertNull(m.at(m.left-1,m.top));assertNull(m.at(m.left+m.width,m.top))
         }

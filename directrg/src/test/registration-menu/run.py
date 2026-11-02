@@ -10,16 +10,18 @@ for e in manifest['jars']:
  assert sha(Path(e['path']))==e['sha256']
  if e['kind']=='compiler-dependency':jars.append(e['path'])
 proto=root/'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol';main=root/'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg'
-files=[proto/(n+'.kt') for n in ['Wire','Touch','PhoneInput','ReceiverUsability','ActivationControl','CameraFeed','FunctionIntent','AnchorMessage']]
-files += [main/(n+'.kt') for n in ['InputRetirement','FunctionGestureRecognizer','NativeFunctionInput','AnchorRegistrationController','AnchorRegistrationOverlay']]
+files=[proto/(n+'.kt') for n in ['Wire','Touch','PhoneInput','ReceiverUsability','ActivationControl','CameraFeed','AnchorIntent','AnchorMessage','ReceiverControlIntent','LayoutScale','SessionState']]
+files += [main/(n+'.kt') for n in ['InputRetirement','FunctionGestureRecognizer','NativeFunctionInput','AnchorGesture','AnchorRegistrationController','AnchorRegistrationOverlay']]
 files += [root/'directrg/src/test/functionadapter/doubles'/(n+'.kt') for n in ['Android','Activity','Annotation','Clock']]
-files += sorted((suite/'doubles').glob('*.kt'))+[suite/'RegistrationMenuRenderingTest.kt',root/'directrg/src/test/functionintent/NativeFunctionIntentTest.kt']
+files += [root/'directrg/src/test/kotlin/android/util/Log.kt']
+files += sorted((suite/'doubles').glob('*.kt'))+[suite/'RegistrationMenuRenderingTest.kt']
+files += [root/'directrg/src/test/kotlin/com/code2hack/eyeprojector/directrg'/(n+'.kt') for n in ['RegistrationReleaseTest','AnchorRegistrationControllerTest']]
 snapshots=[]
 for f in files+[Path(__file__).resolve()]:
  target=out/'inputs'/f.relative_to(root);target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(f.read_bytes());snapshots.append({'path':str(f),'snapshot':str(target),'sha256':sha(target)})
 cp=os.pathsep.join(jars);java='/usr/lib/jvm/java-17-openjdk-amd64/bin/java';jar=out/'menu-renderer.jar'
 compile=[java,'-cp',cp,'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler','-jvm-target','17','-no-stdlib','-no-reflect','-classpath',cp,'-d',str(jar)]+[s['snapshot'] for s in snapshots if s['path'].endswith('.kt')]
-run=[java,'-cp',str(jar)+os.pathsep+cp,'org.junit.runner.JUnitCore','com.code2hack.eyeprojector.directrg.RegistrationMenuRenderingTest','com.code2hack.eyeprojector.directrg.NativeFunctionIntentTest']
+run=[java,'-cp',str(jar)+os.pathsep+cp,'org.junit.runner.JUnitCore']+['com.code2hack.eyeprojector.directrg.'+n for n in ['RegistrationMenuRenderingTest','RegistrationReleaseTest','AnchorRegistrationControllerTest']]
 r={'sources':snapshots,'dependencies':[{'path':j,'sha256':sha(Path(j))} for j in jars],'commands':{'compile':compile,'run':run},'scope':'Actual native BroadcastReceiver/grammar/controller/overlay draw bodies on framework drawing/delivery doubles; no Android compile or hardware acceptance'}
 for phase,cmd in [('compile',compile),('test',run)]:
  with (out/(phase+'.log')).open('w') as log:z=subprocess.run(cmd,stdout=log,stderr=subprocess.STDOUT,timeout=120 if phase=='compile' else 30)

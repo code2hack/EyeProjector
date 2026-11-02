@@ -146,22 +146,20 @@ internal class AnchorRegistrationController<S : Any>(
     }
 }
 
-/** Compact three-way menu centered on the current target and clamped to the visible viewport. */
+/** Compact three-way menu centered in the viewport, independent of the pinned target or DOWN. */
 internal data class AnchorRegistrationMenu(val left: Float, val top: Float, val width: Float, val height: Float) {
     fun at(x: Float, y: Float): AnchorRegistrationAction? {
         if (width <= 0 || height <= 0 || x < left || x >= left + width || y < top || y >= top + height) return null
         return AnchorRegistrationAction.entries[((x - left) * 3 / width).toInt().coerceIn(0, 2)]
     }
     companion object {
-        fun layout(target: AnchorRegistrationHighlight, viewportWidth: Int, viewportHeight: Int, density: Float,
-            anchorX: Float = ((target.left + target.right) / 2).toFloat(),
-            anchorY: Float = ((target.top + target.bottom) / 2).toFloat()): AnchorRegistrationMenu {
-            val width = (216f * density).coerceAtMost(viewportWidth.toFloat().coerceAtLeast(0f))
-            val height = (44f * density).coerceAtMost(viewportHeight.toFloat().coerceAtLeast(0f))
-            val left = (anchorX.coerceIn(target.left.toFloat(), target.right.toFloat()) - width / 2)
-                .coerceIn(0f, (viewportWidth - width).coerceAtLeast(0f))
-            val top = (anchorY.coerceIn(target.top.toFloat(), target.bottom.toFloat()) - height / 2)
-                .coerceIn(0f, (viewportHeight - height).coerceAtLeast(0f))
+        fun layout(viewportWidth: Int, viewportHeight: Int, density: Float): AnchorRegistrationMenu {
+            val viewportW = viewportWidth.toFloat().coerceAtLeast(0f)
+            val viewportH = viewportHeight.toFloat().coerceAtLeast(0f)
+            val width = (216f * density).coerceAtMost(viewportW)
+            val height = (44f * density).coerceAtMost(viewportH)
+            val left = (viewportW - width) / 2
+            val top = (viewportH - height) / 2
             return AnchorRegistrationMenu(left, top, width, height)
         }
     }

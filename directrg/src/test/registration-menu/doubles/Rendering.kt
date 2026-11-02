@@ -7,7 +7,8 @@ class Paint(flags:Int=0) {
 }
 class Canvas {
     val rectangles=mutableListOf<List<Float>>();val labels=mutableListOf<String>()
-    fun drawRect(l:Float,t:Float,r:Float,b:Float,p:Paint){rectangles.add(listOf(l,t,r,b))}
+    val rectangleColors=mutableListOf<Int>()
+    fun drawRect(l:Float,t:Float,r:Float,b:Float,p:Paint){rectangles.add(listOf(l,t,r,b));rectangleColors.add(p.color)}
     fun drawText(text:String,x:Float,y:Float,p:Paint){labels.add(text)}
 }
 object Color { const val YELLOW=-256;const val BLACK=-16777216;const val WHITE=-1
