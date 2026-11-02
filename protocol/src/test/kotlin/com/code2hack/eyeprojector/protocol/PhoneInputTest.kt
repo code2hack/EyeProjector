@@ -25,19 +25,20 @@ class PhoneInputTest {
         assertEquals(listOf(4, 3, -1), Navigation.entries.take(3).map { it.keycode })
     }
 
-    @Test fun semanticAnchorAndSingleNavigationRolesRetainTypedEdgeFacts() {
-        val roles = listOf("TAP", "SCROLL_DOWN", "SCROLL_UP", "ANCHOR", "NAVIGATION")
+    @Test fun sevenSemanticRolesRetainGestureIdentityAndTypedEdgeFacts() {
+        val roles = listOf("TAP", "SCROLL_DOWN", "SCROLL_UP", "BACK", "HOME", "LOCK", "MODE")
         assertEquals(roles, PhoneHidAction.entries.map { it.name })
         for ((id, name) in roles.withIndex()) {
-            // Existing Binder consumers encode the first byte as these exact historical IDs.
+            // This edge is Phone Binder-local; both consumers update together.
             val payload = bytes {
                 writeByte(id); writeByte(1); writeInt(7); writeInt(66); writeInt(23)
                 writeLong(1234); writeLong(1299); writeInt(0)
+                writeByte(PhoneHidGesture.Kind.SINGLE.ordinal); writeInt(1)
             }
             val edge = PhoneHidEdge.from(payload)
             assertEquals(name, edge.action.name)
             assertEquals(PhoneHidPhase.UP, edge.phase)
-            assertEquals(34, payload.size)
+            assertEquals(39, payload.size)
             assertArrayEquals(payload, edge.bytes())
         }
     }

@@ -83,6 +83,12 @@ internal class PhoneHidRuntime private constructor(context: Context) {
         },
         userControl = { sessions.userControl() },
         recognizeInput = ::recognizeInput,
+        schedule = { deadline, action ->
+            val task = Runnable(action)
+            main.postAtTime(task, deadline)
+            val cancel: () -> Unit = { main.removeCallbacks(task) }
+            cancel
+        },
     )
 
     val pin = PhoneHidPinRuntime(app, controller, { connected ->

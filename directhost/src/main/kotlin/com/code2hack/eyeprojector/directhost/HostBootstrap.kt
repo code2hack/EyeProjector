@@ -316,10 +316,10 @@ class HostBootstrap private constructor(private val context: Context) {
         }
     }
 
-    /** Anchor's original Phone receipt remains valid across ordinary presentation changes. */
+    /** Transitional v0.3-only receipt route; new v0.4 ingress always captures ordinary control. Issue149 deletes it. */
     internal fun captureOriginalAnchorRoute(down: PhoneHidEdge,
         original: com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal): PhoneHidRoute? {
-        if (!original.capturedAnchor || down.action != com.code2hack.eyeprojector.protocol.PhoneHidAction.ANCHOR ||
+        if (!original.capturedAnchor ||
             down.phase != PhoneHidPhase.DOWN || down.repeatCount != 0) return null
         return original.route(down, "", 0L, bindingGeneration, inputRoutes.incrementAndGet())
     }

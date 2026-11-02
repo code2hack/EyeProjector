@@ -3,7 +3,20 @@ package com.code2hack.eyeprojector.protocol
 import java.io.DataInputStream
 
 /** Semantic HID operations; native physical Function is a separate source. */
-enum class PhoneHidAction { TAP, SCROLL_DOWN, SCROLL_UP, ANCHOR, NAVIGATION }
+enum class PhoneHidAction { TAP, SCROLL_DOWN, SCROLL_UP, BACK, HOME, LOCK, MODE;
+    val learnsSingleOnly: Boolean get() = this == TAP || this == SCROLL_DOWN || this == SCROLL_UP
+}
+
+/** A binding identifies the complete gesture, never a prefix of a multi-click. */
+data class PhoneHidGesture(val kind: Kind, val clicks: Int = 1) {
+    enum class Kind { SINGLE, LONG, MULTI }
+    init { require(if (kind == Kind.MULTI) clicks >= 2 else clicks == 1) }
+    companion object {
+        val SINGLE = PhoneHidGesture(Kind.SINGLE)
+        val LONG = PhoneHidGesture(Kind.LONG)
+        fun clicks(count: Int) = if (count == 1) SINGLE else PhoneHidGesture(Kind.MULTI, count)
+    }
+}
 enum class PhoneHidPhase { DOWN, UP, CANCEL }
 
 /** Actual Phone-local facts. This record is Binder-local, never forwarded over LAN. */
@@ -11,21 +24,24 @@ data class PhoneHidEdge(
     val action: PhoneHidAction, val phase: PhoneHidPhase, val attachmentId: Int,
     val keyCode: Int, val scanCode: Int, val downTimeMs: Long, val eventTimeMs: Long,
     val repeatCount: Int = 0,
+    val gesture: PhoneHidGesture = PhoneHidGesture.SINGLE,
 ) {
     init { require(downTimeMs >= 0 && eventTimeMs >= downTimeMs && repeatCount >= 0) }
     fun samePress(other: PhoneHidEdge) = attachmentId == other.attachmentId && keyCode == other.keyCode &&
-        scanCode == other.scanCode && downTimeMs == other.downTimeMs && action == other.action
+        scanCode == other.scanCode && downTimeMs == other.downTimeMs && action == other.action && gesture == other.gesture
     fun bytes(): ByteArray = bytes {
         writeByte(action.ordinal); writeByte(phase.ordinal); writeInt(attachmentId); writeInt(keyCode); writeInt(scanCode)
         writeLong(downTimeMs); writeLong(eventTimeMs); writeInt(repeatCount)
+        writeByte(gesture.kind.ordinal); writeInt(gesture.clicks)
     }
     companion object {
-        const val PAYLOAD_SIZE = 34
+        const val PAYLOAD_SIZE = 39
         fun from(payload: ByteArray): PhoneHidEdge {
             require(payload.size == PAYLOAD_SIZE)
             val input = DataInputStream(payload.inputStream())
             return PhoneHidEdge(PhoneHidAction.entries[input.readUnsignedByte()], PhoneHidPhase.entries[input.readUnsignedByte()],
-                input.readInt(), input.readInt(), input.readInt(), input.readLong(), input.readLong(), input.readInt())
+                input.readInt(), input.readInt(), input.readInt(), input.readLong(), input.readLong(), input.readInt(),
+                PhoneHidGesture(PhoneHidGesture.Kind.entries[input.readUnsignedByte()], input.readInt()))
         }
     }
 }
