@@ -535,7 +535,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         val cleanup = preparePadCleanup(SystemClock.uptimeMillis(), includeShell = true)
         val pad = gestures.prepareCancel(SystemClock.uptimeMillis())
         val detector = screen.prepareCancel()
-        InputRetirement.finishAll(listOf({ root.removeCallbacks(oldConfirm) }, cleanup.finishOriginal,
+        InputRetirement.finishAll(listOf<() -> Unit>({ root.removeCallbacks(oldConfirm); Unit }, cleanup.finishOriginal,
             pad.finishOriginal, detector.finishOriginal))
     }
 
