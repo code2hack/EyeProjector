@@ -110,7 +110,8 @@ internal object RegistrationFixtureChecks {
         println("PASS unrelated/nested siblings and duplicate persistent identity remain ambiguous")
 
         val noLabelId = raw.map { if (it.ordinal == 36) it.copy(resourceId = null) else it }
-        check(selected(read(noLabelId)).descriptor.resourceId == "$app:id/speak_area")
+        val idless = AnchorRegistrationTargets.inspect(intent, read(noLabelId))
+        check(idless.capture is AnchorRegistrationCapture.Rejected && idless.selected?.resourceId == null)
         val root = raw.single { it.parent == null }
         for (disabled in listOf(false, true)) {
             val hidden = label.copy(parent = root.ordinal, childIndex = 0,
@@ -120,6 +121,6 @@ internal object RegistrationFixtureChecks {
         val storage = Storage(); val coordinator = AnchorRegistrationCoordinator<String>(AppAnchorStore(storage))
         check(coordinator.begin("cancel", intent, read(raw)) is AnchorRegistrationCapture.Selected)
         check(coordinator.cancel("cancel") && storage.writes == 0)
-        println("PASS nearest identified ancestor, nonvisible/disabled exclusion and cancel without a write")
+        println("PASS no ancestor target substitution, nonvisible/disabled exclusion and cancel without a write")
     }
 }

@@ -19,6 +19,15 @@ class AccessibilityNodeInfo(
     val failBounds: Boolean = false,
     val drawingOrder: Int = 0,
     val onRefresh: ((AccessibilityNodeInfo) -> Boolean)? = null,
+    val reportedUniqueId: String? = null,
+    val isEditable: Boolean = false,
+    val isPassword: Boolean = false,
+    val inputType: Int = 0,
+    val controlDescription: CharSequence? = null,
+    val controlText: CharSequence? = null,
+    val forbidLabelRead: Boolean = false,
+    val forbidTextRead: Boolean = false,
+    val forbidUniqueIdRead: Boolean = false,
 ) {
     var closed = 0
     var childrenRead = 0
@@ -31,8 +40,18 @@ class AccessibilityNodeInfo(
         out.set(screen)
     }
     fun recycle() { closed++ }
-    val text: CharSequence get() = error("Must not read content")
-    val contentDescription: CharSequence get() = error("Must not read content")
+    var textReads = 0
+    var descriptionReads = 0
+    val uniqueId: String? get() {
+        check(!forbidUniqueIdRead) { "Unique ID API is not available" }
+        return reportedUniqueId
+    }
+    val text: CharSequence? get() {
+        textReads++; check(!forbidLabelRead && !forbidTextRead) { "Must not read input/conversation content" }; return controlText
+    }
+    val contentDescription: CharSequence? get() {
+        descriptionReads++; check(!forbidLabelRead) { "Must not read input/conversation content" }; return controlDescription
+    }
     fun performAction(action: Int): Boolean = error("Must not invoke actions")
     class AccessibilityAction(val id: Int) {
         val label: CharSequence get() = error("Must not read labels")

@@ -45,8 +45,8 @@ sealed interface AnchorTargetCapture {
 
 /**
  * Pure current-screen matching over the production reader's value snapshots. Never reads text,
- * ranks coordinates/layers/ordinals, performs input or mutates a saved descriptor. ID-less controls
- * have no supported persistent identity. Repeated ID/class pairs remain ambiguous.
+ * ranks coordinates/layers/ordinals, performs input or mutates a saved descriptor. Control
+ * identity comes from observed static metadata, with no substitution of an ancestor control.
  */
 object AnchorTargetResolver {
     fun capture(snapshot: UiTargetSnapshot, selected: UiTargetObservation): AnchorTargetCapture {
@@ -57,10 +57,16 @@ object AnchorTargetResolver {
             return AnchorTargetCapture.Rejected(AnchorTargetResolution.Missing(AnchorTargetMissingReason.SELECTION_ABSENT))
         }
         val id = selected.resourceId?.takeIf { it.isNotBlank() }
-            ?: return AnchorTargetCapture.Rejected(AnchorTargetResolution.Unavailable(AnchorTargetUnavailableReason.IDENTITY_UNAVAILABLE))
+        val uniqueId = selected.uniqueId?.value?.takeIf { it.isNotBlank() && id == null }
+        val label = selected.controlLabel?.takeIf { id == null && uniqueId == null &&
+            !selected.editable && !selected.password && selected.inputType == 0 }
+        if (id == null && uniqueId == null && label == null)
+            return AnchorTargetCapture.Rejected(AnchorTargetResolution.Unavailable(AnchorTargetUnavailableReason.IDENTITY_UNAVAILABLE))
+        val ancestor = label?.let { namedAncestor(selected, lookup.window.targets) }
         val descriptor = AnchorTargetDescriptor(selected.packageName,
             lookup.source.foregroundActivity?.takeIf { it.isNotBlank() }, lookup.window.window.type,
-            id, selected.className?.takeIf { it.isNotBlank() })
+            id, selected.className?.takeIf { it.isNotBlank() }, uniqueId, label?.source?.name, label?.fingerprint,
+            ancestor?.resourceId, ancestor?.className?.takeIf { it.isNotBlank() })
         return when (val resolution = resolve(descriptor, snapshot)) {
             is AnchorTargetResolution.Unique -> AnchorTargetCapture.Captured(descriptor, resolution.current)
             else -> AnchorTargetCapture.Rejected(resolution)
@@ -77,7 +83,7 @@ object AnchorTargetResolver {
         }
         val candidates = window.targets.filter { target ->
             target.packageName == descriptor.packageName && target.windowId == window.window.windowId &&
-                target.usable() && target.resourceId == descriptor.resourceId &&
+                target.usable() && identityMatches(descriptor, target, window.targets) &&
                 (descriptor.className == null || target.className == descriptor.className)
         }
         return when (candidates.size) {
@@ -86,6 +92,29 @@ object AnchorTargetResolver {
             else -> AnchorTargetResolution.Ambiguous(AnchorTargetAmbiguity.TARGET_IDENTITY, candidates.size)
         }
     }
+
+    private fun identityMatches(descriptor: AnchorTargetDescriptor, target: UiTargetObservation,
+        targets: List<UiTargetObservation>): Boolean {
+        if (descriptor.resourceId != null && target.resourceId != descriptor.resourceId) return false
+        if (descriptor.uniqueId != null && target.uniqueId?.value != descriptor.uniqueId) return false
+        if (descriptor.labelFingerprint != null) {
+            if (target.editable || target.password || target.inputType != 0 ||
+                target.controlLabel?.source?.name != descriptor.labelSource ||
+                target.controlLabel?.fingerprint != descriptor.labelFingerprint) return false
+            if (descriptor.ancestorResourceId != null) {
+                if (target.ancestorOrdinals.none { ordinal -> targets.any { ancestor ->
+                    ancestor.ordinal == ordinal && ancestor.resourceId == descriptor.ancestorResourceId &&
+                        (descriptor.ancestorClassName == null || ancestor.className == descriptor.ancestorClassName)
+                } }) return false
+            }
+        }
+        return true
+    }
+
+    private fun namedAncestor(target: UiTargetObservation, targets: List<UiTargetObservation>): UiTargetObservation? =
+        target.ancestorOrdinals.asReversed().firstNotNullOfOrNull { ordinal ->
+            targets.singleOrNull { it.ordinal == ordinal && !it.resourceId.isNullOrBlank() }
+        }
 
     private sealed interface WindowLookup {
         data class Current(val source: ManagedUiSource, val window: UiWindowSnapshot) : WindowLookup

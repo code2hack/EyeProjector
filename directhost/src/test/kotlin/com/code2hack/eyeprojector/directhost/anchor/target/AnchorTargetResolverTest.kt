@@ -287,7 +287,7 @@ class AnchorTargetResolverTest {
             assertThrows(Exception::class.java) { AnchorTargetDescriptorCodec.decode(payload.copyOf(size)) }
         }
         assertThrows(IllegalArgumentException::class.java) { AnchorTargetDescriptorCodec.decode(payload + byteArrayOf(0)) }
-        assertThrows(IllegalArgumentException::class.java) { AnchorTargetDescriptorCodec.decode(payload.copyOf().also { it[3] = 2 }) }
+        assertThrows(IllegalArgumentException::class.java) { AnchorTargetDescriptorCodec.decode(payload.copyOf().also { it[3] = 3 }) }
     }
 
     @Test fun codecRejectsImpossibleLengthsInvalidUtfAndPresenceFlags() {

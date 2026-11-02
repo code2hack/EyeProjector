@@ -6,6 +6,7 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.security.MessageDigest
 
 /** Screen coordinates on the source display, including the window's existing inset/IME offset. */
 data class UiBounds(val left: Int, val top: Int, val right: Int, val bottom: Int) {
@@ -71,6 +72,19 @@ data class UiWindowMetadata(
 /** One actual hierarchy edge in this read. Index/ordinal are identity, not drawing-order substitutes. */
 data class UiDrawingOrderStep(val ordinal: Int, val drawingOrder: Int?, val childIndex: Int)
 
+enum class UiControlLabelSource { CONTENT_DESCRIPTION, BUTTON_TEXT }
+
+internal fun uiIdentityFingerprint(value: String): String = MessageDigest.getInstance("SHA-256")
+    .digest(value.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+
+/** Public provider identity; diagnostics expose its fingerprint, not its opaque value. */
+data class UiNodeUniqueId(val value: String) {
+    override fun toString() = "UiNodeUniqueId(fingerprint=${uiIdentityFingerprint(value)})"
+}
+
+/** Only the fingerprint of an observed semantic control label; never input/conversation text. */
+data class UiControlLabel(val source: UiControlLabelSource, val fingerprint: String)
+
 /** Values only. The ordinal is local to one observation, and resource IDs may be null or repeated. */
 data class UiTargetObservation(
     val ordinal: Int,
@@ -90,6 +104,13 @@ data class UiTargetObservation(
     val drawingOrder: Int? = null,
     /** Root through self, including ancestors omitted from targets; root childIndex is -1. */
     val drawingOrderPath: List<UiDrawingOrderStep> = emptyList(),
+    val uniqueId: UiNodeUniqueId? = null,
+    val controlLabel: UiControlLabel? = null,
+    val editable: Boolean = false,
+    val password: Boolean = false,
+    val inputType: Int = 0,
+    val uniqueIdRead: Boolean = false,
+    val controlLabelRead: Boolean = false,
 )
 
 enum class UiWindowReadStatus { READ, OTHER_PACKAGE, NO_ROOT, WINDOW_MISMATCH, FAILED }

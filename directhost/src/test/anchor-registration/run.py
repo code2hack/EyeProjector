@@ -32,7 +32,7 @@ classpath = os.pathsep.join(jars)
 java = str(Path(os.environ['JAVA_HOME']) / 'bin/java') if os.environ.get('JAVA_HOME') else shutil.which('java')
 sources = sorted((actual / 'anchor/target').glob('*.kt'))
 sources += [p for p in sorted((actual / 'anchor/registration').glob('*.kt')) if p.name != 'AnchorRegistrationProvider.kt']
-sources += [actual / 'anchor/preferences' / (name + '.kt') for name in ['AppAnchor', 'AppAnchorStore']]
+sources += [actual / 'anchor/preferences' / (name + '.kt') for name in ['AppAnchor', 'AppAnchorStore', 'FileAppAnchorStorage']]
 sources += [actual / 'uiaccess' / (name + '.kt') for name in
             ['UiTargetSnapshot', 'UiSourceGeometry', 'UiTargetReader', 'UiTargetSnapshotProvider']]
 sources += [actual / 'ProjectionContext.kt']
@@ -42,7 +42,8 @@ sources += [protocol / (name + '.kt') for name in
 # Only unused CapturedProjection return types are doubled; all snapshot/geometry/identity models are real.
 sources += [suite.parent / 'uiaccess/doubles/ProjectionDependencies.kt', suite.parent / 'uiaccess/doubles/SnapshotDescriptor.kt']
 sources += [suite.parent / 'kotlin/com/code2hack/eyeprojector/directhost/anchor/registration/AnchorRegistrationTest.kt',
-            suite / 'FrontmostRegistrationTest.kt']
+            suite / 'FrontmostRegistrationTest.kt', suite / 'IdlessIdentityTest.kt',
+            suite.parent / 'kotlin/com/code2hack/eyeprojector/directhost/anchor/target/AnchorTargetResolverTest.kt']
 sources += [root / 'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/AnchorRegistrationController.kt',
             root / 'directrg/src/test/kotlin/com/code2hack/eyeprojector/directrg/AnchorRegistrationControllerTest.kt']
 if args.provider_api_checks:
@@ -95,6 +96,8 @@ ran = None
 run_command = [java, '-cp', str(jar) + os.pathsep + classpath, 'org.junit.runner.JUnitCore',
                'com.code2hack.eyeprojector.directhost.anchor.registration.AnchorRegistrationTest',
                'com.code2hack.eyeprojector.directhost.anchor.registration.FrontmostRegistrationTest',
+               'com.code2hack.eyeprojector.directhost.anchor.registration.IdlessIdentityTest',
+               'com.code2hack.eyeprojector.directhost.anchor.target.AnchorTargetResolverTest',
                'com.code2hack.eyeprojector.directrg.AnchorRegistrationControllerTest']
 if args.provider_api_checks:
     run_command += ['com.code2hack.eyeprojector.directhost.anchor.registration.AnchorRegistrationProviderTest']

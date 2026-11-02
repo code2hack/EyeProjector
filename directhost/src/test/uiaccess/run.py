@@ -8,6 +8,7 @@ p.add_argument('--dependency-manifest',type=Path)
 p.add_argument('--production-ref')
 p.add_argument('--android-adapter-ref', help='Freeze only AndroidUiAccess.kt at an exact ref for adapter regression evidence')
 p.add_argument('--registration-only',action='store_true')
+p.add_argument('--identity-only',action='store_true')
 a=p.parse_args(); suite=Path(__file__).resolve().parent; root=suite.parents[3]; out=a.output_dir.resolve();out.mkdir(parents=True,exist_ok=False)
 def sha(b):return hashlib.sha256(b).hexdigest()
 if a.dependency_manifest:
@@ -24,7 +25,7 @@ actual=root/'directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost';p
 sources=sorted((actual/'uiaccess').glob('*.kt'))+[actual/'ProjectionContext.kt',actual/'hid/PhoneHidKeyService.kt']
 sources += [protocol/(n+'.kt') for n in ['Wire','Touch','PhoneInput','ReceiverUsability','CameraFeed','ActivationControl','AnchorIntent','AnchorMessage','OriginalContact']]
 sources += [actual/(s+'.kt') for s in ['anchor/target/AnchorTargetDescriptor','anchor/target/AnchorTargetResolver','anchor/preferences/AppAnchor','anchor/preferences/AppAnchorStore','anchor/registration/AnchorRegistrationTarget','anchor/registration/AnchorRegistrationCoordinator']]
-sources += sorted((suite/'doubles').glob('*.kt'))+[suite/'RegistrationScenarios.kt',suite/'Scenarios.kt']
+sources += sorted((suite/'doubles').glob('*.kt'))+[suite/'RegistrationScenarios.kt',suite/'Scenarios.kt',suite/'IdentityAdapterScenarios.kt']
 inputs=[]; frozen=[]
 for path in sources+[Path(__file__).resolve(),suite/'fixtures/doubao-voice306.json']:
     rel=path.relative_to(root);ref=a.android_adapter_ref if path==actual/'uiaccess/AndroidUiAccess.kt' and a.android_adapter_ref else a.production_ref
@@ -47,7 +48,7 @@ cmd=[java,'-cp',cp,'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler','-jvm-target','1
 with (out/'compile.log').open('w') as f:c=subprocess.run(cmd,stdout=f,stderr=subprocess.STDOUT,timeout=120)
 r=None;commands=[]
 if c.returncode==0:
-    for main in (['RegistrationFixtureChecks'] if a.registration_only else ['ScenariosKt','RegistrationFixtureChecks']):
+    for main in (['IdentityAdapterScenarios'] if a.identity_only else ['RegistrationFixtureChecks'] if a.registration_only else ['ScenariosKt','RegistrationFixtureChecks']):
         cmd2=[java,'-cp',str(jar)+os.pathsep+cp,'com.code2hack.eyeprojector.directhost.uiaccess.'+main];commands.append(cmd2)
         with (out/(main+'.log')).open('w') as f:r=subprocess.run(cmd2,stdout=f,stderr=subprocess.STDOUT,timeout=60)
         if r.returncode:break

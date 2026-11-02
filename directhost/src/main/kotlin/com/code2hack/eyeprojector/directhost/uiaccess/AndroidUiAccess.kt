@@ -3,10 +3,11 @@ package com.code2hack.eyeprojector.directhost.uiaccess
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.graphics.Rect
+import android.os.Build
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 
-/** Public service APIs only. No default-display root, content reads, action invocation or logging. */
+/** Public APIs only. No default-display root, conversation/input content, input invocation or logging. */
 internal class AndroidUiAccess(private val service: AccessibilityService) : UiAccess {
     override val canRead: Boolean get() {
         val info = service.serviceInfo ?: return false
@@ -59,13 +60,37 @@ internal class AndroidUiAccess(private val service: AccessibilityService) : UiAc
             val clickable = node.isClickable
             val longClickable = node.isLongClickable
             val resourceId = node.viewIdResourceName
+            val className = node.className?.toString()
+            val editable = node.isEditable
+            val password = node.isPassword
+            val inputType = node.inputType
+            val uniqueId = if (Build.VERSION.SDK_INT >= 33) node.uniqueId?.takeIf { it.isNotBlank() }?.let(::UiNodeUniqueId) else null
+            // A supplied accessibility name works for any class. Only button-like controls
+            // use static text as a fallback; generic conversation/input text is never read.
+            val controlLabelRead = !editable && !password && inputType == 0
+            val label = if (controlLabelRead) {
+                val description = node.contentDescription?.toString()?.takeIf { it.isNotBlank() }
+                if (description != null) fingerprint(UiControlLabelSource.CONTENT_DESCRIPTION, description)
+                else if (className in BUTTON_LABEL_CLASSES) node.text?.toString()?.takeIf { it.isNotBlank() }?.let {
+                    fingerprint(UiControlLabelSource.BUTTON_TEXT, it)
+                } else null
+            } else null
             // Flags/actions are copied metadata. User-directed selection uses actual hierarchy
             // and persistent identity, including custom touch regions with no advertised action.
             return UiTargetObservation(ordinal, windowId, packageName.orEmpty(), resourceId,
-                node.className?.toString(), Rect().also(node::getBoundsInScreen).bounds(), actions,
-                clickable, longClickable, node.isVisibleToUser, node.isEnabled, drawingOrder = node.drawingOrder)
+                className, Rect().also(node::getBoundsInScreen).bounds(), actions,
+                clickable, longClickable, node.isVisibleToUser, node.isEnabled, drawingOrder = node.drawingOrder,
+                uniqueId = uniqueId, controlLabel = label, editable = editable, password = password, inputType = inputType,
+                uniqueIdRead = Build.VERSION.SDK_INT >= 33, controlLabelRead = controlLabelRead)
         }
         @Suppress("DEPRECATION") override fun close() = node.recycle()
+
+        private fun fingerprint(source: UiControlLabelSource, value: String) = UiControlLabel(source, uiIdentityFingerprint(value))
+
+        companion object {
+            private val BUTTON_LABEL_CLASSES = setOf("android.widget.Button", "android.widget.ImageButton",
+                "android.widget.CheckBox", "android.widget.RadioButton", "android.widget.ToggleButton", "android.widget.Switch")
+        }
     }
 }
 

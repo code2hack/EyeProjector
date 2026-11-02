@@ -37,6 +37,13 @@ data class AnchorRegistrationHoverTarget(
     val ancestorOrdinals: List<Int>,
     val leaf: Boolean,
     val drawingOrderPath: List<UiDrawingOrderStep> = emptyList(),
+    val uniqueId: UiNodeUniqueId? = null,
+    val controlLabel: UiControlLabel? = null,
+    val editable: Boolean = false,
+    val password: Boolean = false,
+    val inputType: Int = 0,
+    val uniqueIdRead: Boolean = false,
+    val controlLabelRead: Boolean = false,
 )
 
 /** Copied evidence from the same selection pass; it never supplies a fallback target. */
@@ -117,7 +124,8 @@ object AnchorRegistrationTargets {
         } }
         hoverTargets = targets.map { item -> AnchorRegistrationHoverTarget(item.ordinal, item.windowId,
             item.resourceId, item.className, item.bounds, item.ancestorOrdinals.toList(),
-            selectedBranches.any { it === item }, item.drawingOrderPath.toList()) }
+            selectedBranches.any { it === item }, item.drawingOrderPath.toList(), item.uniqueId, item.controlLabel,
+            item.editable, item.password, item.inputType, item.uniqueIdRead, item.controlLabelRead) }
         if (selectedBranches.isEmpty()) return reject(AnchorRegistrationFailure.HOVER_ABSENT)
         // Android drawing order is sibling-relative: compare the first divergent branch,
         // not unrelated leaf numbers. Equal/unavailable platform order supplies no winner.
@@ -125,14 +133,10 @@ object AnchorRegistrationTargets {
             selectedBranches.all { other -> other === candidate || inFrontOf(candidate, other) }
         } ?: return reject(AnchorRegistrationFailure.HOVER_AMBIGUOUS)
         // Advertised actions do not infer an activation mode or activate the target.
-        // An ID-less label may be part of an identified parent region. Bind the nearest
-        // actual containing ancestor, never another branch or a persisted tree position.
-        val chosen = if (!element.resourceId.isNullOrBlank()) element else
-            element.ancestorOrdinals.asReversed().firstNotNullOfOrNull { ancestor ->
-                targets.singleOrNull { it.ordinal == ancestor && !it.resourceId.isNullOrBlank() }
-            } ?: element
-        selected = chosen
-        return when (val captured = AnchorTargetResolver.capture(snapshot, chosen)) {
+        // Preserve the actual frontmost control. Ancestor identity may refine context,
+        // but cannot substitute a different control or its larger bounds.
+        selected = element
+        return when (val captured = AnchorTargetResolver.capture(snapshot, element)) {
             is AnchorTargetCapture.Captured -> {
                 resolution = AnchorTargetResolution.Unique(captured.current)
                 finish(AnchorRegistrationCapture.Selected(AnchorRegistrationTarget(captured.descriptor, captured.current)))
