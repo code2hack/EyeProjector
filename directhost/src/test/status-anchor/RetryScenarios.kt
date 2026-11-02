@@ -26,6 +26,7 @@ private class RetryRig:AutoCloseable {
  val core=SessionController({error("No backend startup in this fixture")},{error("No backend stop in this fixture")})
  val engine:PhoneActivationEngine
  var gates=0
+ @Volatile var captured:()->Unit={}
  val facade:FacadeCommand
  val feature=ReceiverActivationStore(dir.resolve("glasses.properties"))
  val scope1=ReceiverLaunchScope("scope1","T1",1)
@@ -43,7 +44,7 @@ private class RetryRig:AutoCloseable {
   storage.write(ActivationJournal(current=DesiredActivation("activation1"),triggers=mapOf("T1" to TriggerBinding("activation1","A1"))))
   engine=PhoneActivationEngine(core,storage::read,storage::write,{"FIXTURE_NO_BACKEND"},{source.context})
   facade=FacadeCommand(engine,admit={gates++;controls.consumeHeldControl(AnchorControlAdmission())==AnchorControlDisposition.NORMAL},capture={
-    val original=AnchorControlAdmission();controls.anchor.receiveControl(original)
+    val original=AnchorControlAdmission();controls.anchor.receiveControl(original);captured()
     val gate:()->Boolean={gates++;controls.consumeHeldControl(original)==AnchorControlDisposition.NORMAL};gate
    })
   feature.startIncarnation();feature.launch(scope1,"A1");feature.accept(engine.state().activation!!.copy(
@@ -55,7 +56,8 @@ private class RetryRig:AutoCloseable {
    if(loseReplies)null else reply
   },feature=feature)
  }
- fun poll(){client.presentationChanged();val executor=client.javaClass.getDeclaredField("executor").apply{isAccessible=true}.get(client) as ScheduledExecutorService
+ fun poll(){client.presentationChanged();awaitPoll()}
+ fun awaitPoll(){val executor=client.javaClass.getDeclaredField("executor").apply{isAccessible=true}.get(client) as ScheduledExecutorService
   executor.submit{}.get(3,TimeUnit.SECONDS);settle()}
  fun hold(id:Long){val i=AnchorIntent(AnchorIntentKind.ACTIVATE,AnchorSource.GLASSES_NATIVE,id,id,context)
   check(controls.hold(controls.anchor.capture(i)!!,setting,target,source,{true},{it()},AnchorHoldOutput(work){_,_->})==AnchorExecutionStatus.HOLD_SUBMITTED)}
@@ -94,6 +96,40 @@ fun main(){var failures=0
   r.hold(21);val gates=r.gates;val count=r.touches.size;r.loseReplies=false;r.poll()
   check(r.controls.anchor.holding&&r.touches.size==count&&r.gates==gates){"Consumed cancellation tail canceled successor"}
   check(r.engine.journal.current!!.desired);r.release(22)
+ }
+ scenario("terminal trigger and paired cancellation receipts survive journal reload"){r->
+  r.hold(40);r.facade.receive(SessionControl.Request(SessionControl.Operation.STATUS,intent=ActivationIntent("T2")));r.settle()
+  r.hold(41);r.facade.receive(SessionControl.Request(SessionControl.Operation.STATUS,cancelTrigger=CancelTrigger("T1","A1")));r.settle()
+  r.hold(42);val count=r.touches.size
+  val restored=PhoneActivationEngine(r.core,r.storage::read,r.storage::write,{"FIXTURE_NO_BACKEND"},{r.source.context})
+  var gates=0
+  FacadeCommand(restored,admit={error("No direct recapture")},capture={
+   val original=AnchorControlAdmission();r.controls.anchor.receiveControl(original)
+   val gate:()->Boolean={gates++;r.controls.consumeHeldControl(original)==AnchorControlDisposition.NORMAL};gate
+  }).use { next ->
+   for(request in listOf(SessionControl.Request(SessionControl.Operation.STATUS,intent=ActivationIntent("T2")),
+       SessionControl.Request(SessionControl.Operation.STATUS,cancelTrigger=CancelTrigger("T1","A1")),
+       SessionControl.Request(SessionControl.Operation.STATUS,cancelActivation=CancelActivation("activation1"))))next.receive(request)
+  }
+  r.settle();check(gates==0&&r.controls.anchor.holding&&r.touches.size==count)
+  check(restored.journal.current!!.desired);r.release(43)
+ }
+ scenario("control received CANCELING cannot wait behind feature writer then cancel later Hold"){r->
+  val cancelEntered=CountDownLatch(1);val cancelRelease=CountDownLatch(1)
+  val writerEntered=CountDownLatch(1);val writerRelease=CountDownLatch(1);val received=CountDownLatch(1)
+  r.hold(50)
+  try{
+   r.work.submit{cancelEntered.countDown();check(cancelRelease.await(3,TimeUnit.SECONDS))};check(cancelEntered.await(2,TimeUnit.SECONDS))
+   check(r.controls.consumeHeldControl(AnchorControlAdmission())==AnchorControlDisposition.CONSUMED)
+   check(r.controls.anchor.discardingControls)
+   r.facade.blockWriter(writerEntered,writerRelease);check(writerEntered.await(2,TimeUnit.SECONDS))
+   r.captured={received.countDown()};r.feature.launch(ReceiverLaunchScope("scope3","T3",3),"A3");r.client.presentationChanged()
+   check(received.await(2,TimeUnit.SECONDS));r.captured={}
+   cancelRelease.countDown();r.settle();r.hold(51);val count=r.touches.size
+   writerRelease.countDown();r.awaitPoll()
+   check(r.controls.anchor.holding&&r.touches.size==count){"Queued received-CANCELING action canceled later Hold"}
+   check(r.storage.read().triggers.getValue("T3").canceled);r.release(52)
+  }finally{cancelRelease.countDown();writerRelease.countDown();r.captured={}}
  }
  check(failures==0){"$failures retry ownership failures"}
 }
