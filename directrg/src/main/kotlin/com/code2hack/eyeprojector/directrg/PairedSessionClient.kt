@@ -56,7 +56,9 @@ internal class PairedSessionClient(
         synchronized(lock) {
             if (closed.get()) return
             val attempt = admission ?: Attempt().also { admission = it }
+            val newTrigger = feature != null && scope.trigger !in feature.state.triggers
             feature?.launch(scope, attempt.id)
+            if (newTrigger) commandGeneration++
             if (feature == null) connectWanted = true
             executor.execute(::poll)
         }
@@ -173,11 +175,13 @@ internal class PairedSessionClient(
         }
     }
 
-    /** The request keeps its original admission; queued acknowledgments never borrow a successor. */
+    /** A direct Stop owns its epoch; passive polling may replace only its observation admission. */
     private fun commandCurrent(original: OwnerCommand): Boolean =
         !closed.get() && original.generation == commandGeneration &&
             (original.request.operation == SessionControl.Operation.FAILED ||
-                original.attempt === admission &&
+                if (feature != null && original.request.operation == SessionControl.Operation.STOP)
+                    observedActiveEpoch == null || observedActiveEpoch == original.request.epoch
+                else original.attempt === admission &&
                     (original.request.operation !in setOf(SessionControl.Operation.CONNECTING, SessionControl.Operation.RENDERED) ||
                         original.request.epoch !in failedOwners))
 
@@ -212,7 +216,8 @@ internal class PairedSessionClient(
                     }
                 }
                 if (closed.get() || generation != commandGeneration || original != null &&
-                    (!commandCurrent(original) || original.attempt !== admission)) false
+                    (!commandCurrent(original) ||
+                        (feature == null || original.request.operation != SessionControl.Operation.STOP) && original.attempt !== admission)) false
                 else {
                     if (state.phase != SessionPhase.UNKNOWN) observedActiveEpoch = state.epoch.takeIf { state.phase.active }
                     true
@@ -247,7 +252,8 @@ internal class PairedSessionClient(
         when {
             closed.get() -> "CLOSED"
             generation != commandGeneration || original != null &&
-                (!commandCurrent(original) || original.attempt !== admission) -> "STALE"
+                (!commandCurrent(original) ||
+                    (feature == null || original.request.operation != SessionControl.Operation.STOP) && original.attempt !== admission) -> "STALE"
             else -> "CURRENT"
         }
     }
