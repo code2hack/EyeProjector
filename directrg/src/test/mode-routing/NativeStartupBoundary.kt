@@ -47,7 +47,10 @@ internal class ReceiverSessionOwner(private val context:Context):AutoCloseable {
     private fun failOutput() { error("Unexpected presentation failure") }
     private fun publish() {}
     fun presentation(view:View,usable:Boolean,panel:Boolean) { if(listener===view) uiUsable=usable }
-    fun disconnect(complete:(()->Unit)?=null,scope:ReceiverLaunchScope?=null,activationId:String?=null) { complete?.invoke() }
+    fun disconnect(complete:(()->Unit)?=null,scope:ReceiverLaunchScope?=null,activationId:String?=null,
+        originalSession:ProjectionSession?=null,originalEpoch:String?=null) { complete?.invoke() }
+    data class Snapshot(val session:ProjectionSession?,val epoch:String?)
+    fun snapshot()=Snapshot(session,attachment.epoch)
     fun launch(scope:ReceiverLaunchScope) {}
     private class Attachment(val epoch:String?="owner")
     private val attachment=Attachment()
@@ -62,6 +65,7 @@ internal class ReceiverSessionOwner(private val context:Context):AutoCloseable {
 }
 internal class ActivityNativeCaller:Activity(),ServiceConnection {
     private var owner:ReceiverSessionOwner?=null
+    private val session:ProjectionSession? get()=owner?.session
     private var serviceBinder:ReceiverSessionService.LocalBinder?=null
     private var pendingExit:Pair<ReceiverLaunchScope,String?>?=null
     private var pendingForget:(()->Unit)?=null

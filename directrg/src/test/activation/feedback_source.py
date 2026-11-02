@@ -1,5 +1,22 @@
 """Preserve complete actual Activity callback/resize/cancellation bodies on named UI boundaries."""
 import hashlib,importlib.util,re
+from pathlib import Path
+
+def generate_disconnect(root,out):
+    parser=root/'directhost/src/test/hid/run.py'
+    spec=importlib.util.spec_from_file_location('disconnect_extract',parser);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+    activity=root/'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/ReceiverActivity.kt';source=activity.read_text()
+    patterns=[r'^    internal fun disconnect\(',r'^    internal fun captureFixtureTeardownTarget\(',
+              r'^    internal interface FixtureTeardownTarget ',r'^    override fun onDestroy\(',
+              r'^    private fun finishProjection\(',r'^    private fun cancelOriginalOnExit\(']
+    blocks=[m.block(source,p) for p in patterns]
+    blocks += [re.search(r'^    internal data class FixtureTeardownObservation\([\s\S]*?\n    \)',source,re.M).group()]
+    boundary=Path(__file__).with_name('ReceiverDisconnectBoundary.kt')
+    generated=out/'ReceiverDisconnectSource.kt'
+    generated.write_text(boundary.read_text().replace('// ACTUAL_DISCONNECT_METHODS','\n'.join(blocks)))
+    return generated,{'source':str(activity),'sourceSha256':hashlib.sha256(source.encode()).hexdigest(),
+        'boundary':str(boundary),'parser':str(parser),'methods':[{'sha256':hashlib.sha256(b.encode()).hexdigest(),'body':b} for b in blocks],
+        'scope':'Verbatim Disconnect, fixture capture/observation, finish and destructor; UI/OS and existing cancellation wait are explicit boundaries'}
 
 def generate(root,out):
     parser=root/'directhost/src/test/hid/run.py'

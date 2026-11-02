@@ -112,10 +112,14 @@ internal class PairedSessionClient(
             val current = feature.cancellationTargetsCurrent(scope, activationId)
             feature.cancel(scope, activationId, synchronized(lock) { admission?.id.orEmpty() })
             synchronized(lock) {
-                if (current) {
+                // The owner validated this captured local Session/epoch before calling us.
+                // A newer peer observation cannot lend its admission to the old Stop.
+                val originalCurrent = epoch != null && (observedActiveEpoch == null || observedActiveEpoch == epoch)
+                if (originalCurrent || current && observedActiveEpoch == null) {
                     commandGeneration++; connectWanted = false; runCatching { active?.close() }; admission = null
-                    listOfNotNull(epoch, observedActiveEpoch).forEach(canceledOwners::add)
                 }
+                epoch?.let(canceledOwners::add)
+                if (originalCurrent) command(SessionControl.Operation.STOP, epoch!!)
                 complete?.let { featureCompletions.add(FeatureCompletion(scope?.trigger, activationId, it)) }
                 if (!closed.get()) executor.execute { reconcile() }
             }
