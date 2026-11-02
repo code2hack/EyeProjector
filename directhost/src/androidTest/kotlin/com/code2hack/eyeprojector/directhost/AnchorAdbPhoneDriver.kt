@@ -186,10 +186,11 @@ internal class AnchorAdbPhoneDriver(private val instrumentation: Instrumentation
         val route = command.optString("route", "own_view")
         var submitted = false
         onMain {
-            if (!host.isDestroyed && !host.isFinishing && host.hasWindowFocus()) {
+            if (!host.isDestroyed && !host.isFinishing) {
                 if (route == "own_view") {
                     val button = if (start) stagedStart else stagedStop
-                    if (button?.isAttachedToWindow == true && button.isShown && button.isEnabled) submitted = button.performClick()
+                    if (host.hasWindowFocus() && button?.isAttachedToWindow == true && button.isShown && button.isEnabled)
+                        submitted = button.performClick()
                 } else if (route == "controller") {
                     val controller = PhoneSessionController.get(context)
                     if (start) controller.start() else controller.stopFromUser()

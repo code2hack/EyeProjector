@@ -35,7 +35,7 @@ internal class AnchorAdbControlDriver(private val instrumentation: Instrumentati
     private var receiver = WeakReference<ReceiverActivity>(null)
     private var queue: NativeInputObservationQueue? = null
     private var closed = false
-    private var connectAttempted = false
+    private var initialConnectionAccounted = false
     private var awaitPlanRecorded = false
     private val unavailable = linkedMapOf<String, Map<String, String>>()
     private var commands = emptyMap<String, JSONObject>()
@@ -92,12 +92,17 @@ internal class AnchorAdbControlDriver(private val instrumentation: Instrumentati
                 publishedState = state
                 record("source_state", mapOf("source" to lastSnapshot))
             }
-            if (args.getString("autoConnect") != "false" && !connectAttempted && lastSnapshot["focused"] == true &&
+            if (!initialConnectionAccounted && (lastSnapshot["streaming"] == true || field(activity, "session") != null ||
+                field(activity, "connectRequested") == true || field(activity, "connectBeforeBinding") == true)) {
+                initialConnectionAccounted = true
+                record("initial_connection_observed", mapOf("source" to lastSnapshot))
+            }
+            if (args.getString("autoConnect") != "false" && !initialConnectionAccounted && lastSnapshot["focused"] == true &&
                 lastSnapshot["streaming"] == false && field(activity, "session") == null &&
                 field(activity, "connectRequested") != true && field(activity, "connectBeforeBinding") != true) {
                 val button = field(activity, "connectButton") as? Button
                 if (button != null && button.isShown && button.isEnabled) {
-                    connectAttempted = true
+                    initialConnectionAccounted = true
                     record("own_connect_submitted", mapOf("injectionKind" to "own_view_performClick"))
                     syntheticInputInjected = true
                     button.performClick()
