@@ -87,7 +87,7 @@ internal class PhoneHidPinRuntime(
         val json = JSONObject(value)
         // Read the immutable assignment snapshot at arrival. Ordinary controls never acquire
         // Anchor's generation or Short FIFO lifetime, even before the native/main queues.
-        val anchorOperation = controller.bindings.action(inputBinding(json).button) == PhoneHidAction.ANCHOR
+        val anchorOperation = false // Mode is an ordinary semantic control, never old Anchor admission.
         val key = RawOriginal(epoch, token, json.getString("deviceKey"), json.getLong("generation"),
             json.getInt("sourceId"), json.getString("collectionKey"), json.getInt("code"), json.getLong("downTimeMs"), json.getLong("pressId"))
         val phase = PhoneHidPhase.valueOf(json.getString("phase"))

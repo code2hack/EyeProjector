@@ -1006,7 +1006,7 @@ private class Session(
             try {
                 if (running.get()) phoneInput.stampedEdge(routeId, edge,
                     { point, source -> receiverUsability.acceptsContext(regionId, word, point, source) }) { point, source ->
-                    if (edge.action == PhoneHidAction.NAVIGATION)
+                    if (!edge.action.learnsSingleOnly)
                         receiverUsability.acceptsContext(regionId, word, point, source)
                     else receiverUsability.accepts(regionId, word, point, source)
                 }
@@ -1023,7 +1023,7 @@ private class Session(
         try {
             if (running.get()) phoneInput.stampedEdgeOriginal(routeId, edge, original,
                 { point, source -> receiverUsability.acceptsContext(region, word, point, source) },
-                { point, source -> if (edge.action == PhoneHidAction.NAVIGATION)
+                { point, source -> if (!edge.action.learnsSingleOnly)
                     receiverUsability.acceptsContext(region, word, point, source) else receiverUsability.accepts(region, word, point, source) })
         } catch (error: Exception) { closeSafely(sessionFailureReason(error, control = true), error) }
     }

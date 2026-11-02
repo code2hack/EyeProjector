@@ -72,69 +72,6 @@ class PhoneInputMergerTest {
         assertFalse(f.dispatcher.holding)
     }
 
-    @Test fun passivePointerRevisionAndAvailabilityRetireOrdinaryContactButKeepOriginalAnchorPress() {
-        val f = Fixture(); val d = f.down(); f.merger.edge(1, d)
-        val fn = f.down(PhoneHidAction.ANCHOR, 67); f.merger.edge(2, fn)
-        f.pointer(revision = 2)
-        assertFalse(f.dispatcher.holding)
-        f.merger.edge(1, d.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1030))
-        f.advance(2000)
-        assertEquals(listOf(AnchorIntentKind.REGISTER),f.intents.map{it.kind})
-        assertEquals(1L,f.intents.single().context.usability.inputRevision)
-        f.merger.edge(2,fn.copy(phase=PhoneHidPhase.UP,eventTimeMs=2010))
-        val fresh = f.down(PhoneHidAction.ANCHOR,67);f.merger.edge(3,fresh)
-        f.pointer(revision=2,available=false);f.pointer(revision=2)
-        f.advance(3000)
-        assertEquals(List(2){AnchorIntentKind.REGISTER},f.intents.map{it.kind})
-        assertEquals(2L,f.intents.last().context.usability.inputRevision)
-        assertTrue(f.nav.isEmpty())
-    }
-
-    @Test fun phoneShortsEmitAllOrderedIntentionsAndLongReleaseEmitsNoActivation() {
-        for (projected in listOf(true, false)) for (count in 1..3) {
-            val f = Fixture(); f.pointer(projected = projected)
-            repeat(count) { i -> f.now = 1000L + i * 100; val d = f.down(PhoneHidAction.ANCHOR)
-                f.merger.edge(i.toLong(), d); f.merger.edge(i.toLong(), d.copy(phase = PhoneHidPhase.UP, eventTimeMs = f.now + 20)) }
-            f.advance(2000)
-            assertEquals(List(count) { AnchorIntentKind.ACTIVATE }, f.intents.map { it.kind })
-            assertEquals((0L until count.toLong()).toList(), f.intents.map { it.sequence })
-            assertEquals((0L until count.toLong()).toList(), f.intents.map { it.gestureId })
-            assertTrue(f.intents.all { it.source == AnchorSource.PHONE_HID && it.context.pointer.projected == projected })
-            assertTrue(f.nav.isEmpty()); assertTrue(f.ui.isEmpty()); assertTrue(f.records.isEmpty())
-        }
-        val f = Fixture(); val d = f.down(PhoneHidAction.ANCHOR); f.merger.edge(1, d)
-        f.advance(1799); assertTrue(f.intents.isEmpty())
-        f.advance(1800); f.merger.edge(1, d.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1800)); f.advance(2500)
-        assertEquals(listOf(AnchorIntentKind.REGISTER), f.intents.map { it.kind })
-        assertTrue(f.nav.isEmpty()); assertTrue(f.ui.isEmpty())
-    }
-
-    @Test fun aCanceledTimerCannotRegisterAnAlreadyCompletedShort() {
-        val f = Fixture(); val d = f.down(PhoneHidAction.ANCHOR); f.merger.edge(1, d)
-        val old = f.jobs.single().action
-        f.merger.edge(1, d.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1020))
-        f.now = 1850; old()
-        assertEquals(listOf(AnchorIntentKind.ACTIVATE), f.intents.map { it.kind }); assertTrue(f.nav.isEmpty())
-    }
-
-    @Test fun longReleaseWithoutTimerDeliveryRegistersOnceAndNextShortWorks() {
-        val f = Fixture(); val first = f.down(PhoneHidAction.ANCHOR)
-        f.merger.edge(1, first); f.merger.edge(1, first.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1800))
-        f.now = 1900; val next = f.down(PhoneHidAction.ANCHOR)
-        f.merger.edge(2, next); f.merger.edge(2, next.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1920))
-        f.advance(3000)
-        assertEquals(listOf(AnchorIntentKind.REGISTER, AnchorIntentKind.ACTIVATE), f.intents.map { it.kind })
-    }
-
-    @Test fun originalHoverIsCapturedAtDownAndDoesNotBecomeLatestPointerAtCompletion() {
-        val f = Fixture(); val d = f.down(PhoneHidAction.ANCHOR); f.merger.edge(1, d)
-        f.pointer(x = 400f, y = 500f)
-        f.merger.edge(1, d.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1020))
-        assertEquals(200f, f.intents.single().context.pointer.x)
-        assertEquals(300f, f.intents.single().context.pointer.y)
-        assertEquals("original-receiver", f.intents.single().context.usability.incarnation.id)
-    }
-
     @Test fun localCompletedEventsCarryCoordinatesAndPhoneDurationButNoRemoteClockArithmetic() {
         val f = Fixture(); f.pointer(projected = false)
         val d = f.down(); f.merger.edge(9, d); f.now = 1040; f.pointer(projected = false, x = 210f)
@@ -142,28 +79,6 @@ class PhoneInputMergerTest {
         assertEquals(listOf(ReceiverInputKind.DOWN, ReceiverInputKind.MOVE, ReceiverInputKind.UP), f.ui.map { it.kind })
         assertEquals(210f, f.ui.last().x); assertEquals(50, f.ui.last().heldMs)
         assertTrue(f.records.isEmpty())
-    }
-
-    @Test fun releasedFunctionCannotBeUndoneByCancellationAndOldCancelCannotAffectNewerPress() {
-        val f = Fixture(); val first = f.down(PhoneHidAction.ANCHOR)
-        f.merger.edge(1, first); f.merger.edge(1, first.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1020))
-        f.merger.edge(1, first.copy(phase = PhoneHidPhase.CANCEL, eventTimeMs = 1021))
-        f.advance(2000); assertEquals(1, f.intents.size); assertTrue(f.nav.isEmpty())
-        val fresh = f.down(PhoneHidAction.ANCHOR)
-        f.merger.edge(2, fresh); f.merger.edge(2, fresh.copy(phase = PhoneHidPhase.UP, eventTimeMs = 2020))
-        f.merger.edge(1, first.copy(phase = PhoneHidPhase.CANCEL, eventTimeMs = 2021))
-        f.advance(2520); assertEquals(List(2) { AnchorIntentKind.ACTIVATE }, f.intents.map { it.kind }); assertTrue(f.nav.isEmpty())
-    }
-
-    @Test fun ordinaryNextFunctionPressAndIndependentScrollRetainBothCompletedIntentions() {
-        val f = Fixture(); val first = f.down(PhoneHidAction.ANCHOR)
-        f.merger.edge(1, first); f.merger.edge(1, first.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1020))
-        f.now = 1100; val second = f.down(PhoneHidAction.ANCHOR)
-        f.merger.edge(2, second); f.merger.edge(2, second.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1120))
-        f.merger.edge(1, first.copy(phase = PhoneHidPhase.CANCEL, eventTimeMs = 1121))
-        val scroll = f.down(PhoneHidAction.SCROLL_DOWN, 90)
-        f.merger.edge(3, scroll); f.merger.edge(3, scroll.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1130))
-        f.advance(1620); assertEquals(List(2) { AnchorIntentKind.ACTIVATE }, f.intents.map { it.kind }); assertTrue(f.nav.isEmpty()); assertEquals(160, f.scrolls.single().pixels)
     }
 
     @Test fun actualCancellationCallbackCannotResurrectTheOuterNativeDown() {
@@ -198,38 +113,6 @@ class PhoneInputMergerTest {
             assertFalse(down.isAlive || move.isAlive || up.isAlive)
             assertEquals(listOf(ReceiverInputKind.DOWN, ReceiverInputKind.MOVE, ReceiverInputKind.UP), f.ui.map { it.kind })
         } finally { release.countDown(); down.join(2000); move.join(2000); up.join(2000) }
-    }
-
-    @Test(timeout = 7000) fun functionBackpressureRetainsBothOriginalsInCommittedOrder() {
-        val f = Fixture(); val entered = CountDownLatch(1); val release = CountDownLatch(1)
-        f.onIntent = { if (it.sequence == 0L) { entered.countDown(); check(release.await(4, TimeUnit.SECONDS)) } }
-        val first = f.down(PhoneHidAction.ANCHOR)
-        f.merger.edge(1, first)
-        val a = Thread { f.merger.edge(1, first.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1020)) }
-        val b = Thread {
-            val second = first.copy(downTimeMs = 1050, eventTimeMs = 1050)
-            f.merger.edge(2, second); f.merger.edge(2, second.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1070))
-        }
-        try {
-            a.start(); assertTrue(entered.await(2, TimeUnit.SECONDS)); b.start()
-            // Caller B may wait for output, but can still commit without holding the control lock.
-            synchronized(f.lock) { assertTrue(f.nav.isEmpty()) }
-            release.countDown(); a.join(2000); b.join(2000)
-            assertFalse(a.isAlive || b.isAlive)
-            assertEquals(listOf(0L, 1L), f.intents.map { it.sequence })
-            assertEquals(listOf(0L, 1L), f.intents.map { it.gestureId })
-        } finally { release.countDown(); a.join(2000); b.join(2000) }
-    }
-
-    @Test fun functionCallbackCanReenterWithoutWaitingOnItsOwnEmission() {
-        val f = Fixture()
-        f.onIntent = { if (it.sequence == 0L) {
-            val next = f.down(PhoneHidAction.ANCHOR)
-            f.merger.edge(2, next); f.merger.edge(2, next.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1020))
-        } }
-        val first = f.down(PhoneHidAction.ANCHOR)
-        f.merger.edge(1, first); f.merger.edge(1, first.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1020))
-        assertEquals(listOf(0L, 1L), f.intents.map { it.sequence })
     }
 
     @Test fun completedUiCallbackCanReenterWithoutSelfWaitingOrReordering() {
