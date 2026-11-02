@@ -1,7 +1,6 @@
 package com.code2hack.eyeprojector.directrg
 
 import com.code2hack.eyeprojector.protocol.*
-import com.code2hack.eyeprojector.directhost.input.PhoneInputMerger
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -120,22 +119,5 @@ class RegistrationReleaseTest {
         assertEquals(listOf(false),terminals)
         input.accept(HidKeyInput.Event(9,binding,HidKeyInput.Phase.UP,0,900))
         assertEquals(1,terminals.size);assertEquals(1,output.size)
-    }
-    @Test fun phoneOriginalReleaseSurvivesOnlyMatchingChooserAndOutputsOutsideControlLock() {
-        for(cancel in listOf(false,true)) {
-            val clock=Clock();val lock=Any();val intents=mutableListOf<FunctionIntent>();val terminals=mutableListOf<Pair<FunctionIntent,Boolean>>()
-            val m=PhoneInputMerger(lock,{clock.now},clock::schedule,{geometry},{error("No touch")},{error("No scroll")},
-                {_,_->error("No navigation")},{},{error("No receiver action")},functionIntent=intents::add,
-                registrationRelease={i,c->assertFalse(Thread.holdsLock(lock));terminals.add(i to c)})
-            m.pointer(context.pointer,context.usability)
-            val down=PhoneHidEdge(PhoneHidAction.ANCHOR,PhoneHidPhase.DOWN,8,3,4,0,0)
-            m.edge(7,down);clock.advance(800);val original=intents.single()
-            val local=context.usability.copy(revision=2,inputRevision=5,mode=ReceiverUsabilityMode.LOCAL_PANEL)
-            m.pointer(context.pointer.copy(revision=5,sequence=2,projected=false),local)
-            assertTrue(terminals.isEmpty())
-            if(cancel)m.invalidate()
-            m.edge(7,down.copy(phase=PhoneHidPhase.UP,eventTimeMs=900));m.edge(7,down.copy(phase=PhoneHidPhase.UP,eventTimeMs=901))
-            assertEquals(listOf(original to cancel),terminals);assertEquals(1,intents.size)
-        }
     }
 }

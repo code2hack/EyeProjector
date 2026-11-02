@@ -222,7 +222,10 @@ internal class AnchorShellSession(
         val original = registration.get() ?: return
         if (closed || binding.get() !== original.original || original.admission.intent != intent ||
             intent.source != FunctionSource.PHONE_HID) return
-        send(AnchorMessage.Release(original.id, intent, canceled || !original.chooserObserved))
+        // Reverse OPEN/usability may still be in flight while the original menu is already
+        // drawn. Forward the physical terminal unchanged; Glasses checks its original
+        // ready/highlight state, and its Choice follows OPEN/fact on the existing writer.
+        send(AnchorMessage.Release(original.id, intent, canceled))
     }
 
     /** OPEN precedes publication of exactly this chooser fact; unrelated revisions cannot adopt it. */

@@ -22,6 +22,9 @@ fun main() {
     fun frame(j: Joined, channel: Int, bytes: ByteArray) { j.phone.receive(Frame(channel, payload = bytes)); j.pump() }
     val geometry = Geometry(480, 640)
     try {
+        if(System.getenv("EYEPROJECTOR_RELEASE_ORDER_ONLY")=="1") {
+            pinProducerScenarios(::scenario);println("RESULT release-order $passed passed; ${failures.size} failed");check(failures.isEmpty());return
+        }
         if (System.getenv("EYEPROJECTOR_C206_NATIVE_ONLY")=="1") {
             pinProducerScenarios(::scenario)
             println("RESULT native-first $passed passed; ${failures.size} failed")

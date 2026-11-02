@@ -12,7 +12,7 @@ import org.json.*
 /** Full actual native listener/connect/queue/controller/route -> real original Phone Binder/merger.
  * Android service transport and JSON registry are named boundaries; publication uses actual region/word. */
 internal fun pinProducerScenarios(run:(String,(Joined)->Unit)->Unit) {
-    val modes=if(System.getenv("EYEPROJECTOR_C206_NATIVE_ONLY")=="1")listOf("first-observation")else listOf("H1-Long-H2","first-observation","canceling-first-result","empty-Long-H2","normal-Short","normal-Long","held-menu-Click","held-menu-Hold","held-menu-Cancel","two-Shorts","learning-H1-H2","learning-UP-H2","learning-persist-H2","learning-normal","binding-retired","state-before-DOWN","routed-binding-retired","routed-CANCELING-UP","routed-CANCELING-CANCEL","routed-CANCELING-REPEAT")
+    val modes=if(System.getenv("EYEPROJECTOR_RELEASE_ORDER_ONLY")=="1")listOf("held-menu-delayed-Click","held-menu-delayed-Hold")else if(System.getenv("EYEPROJECTOR_C206_NATIVE_ONLY")=="1")listOf("first-observation")else listOf("H1-Long-H2","first-observation","canceling-first-result","empty-Long-H2","normal-Short","normal-Long","held-menu-Click","held-menu-Hold","held-menu-Cancel","held-menu-delayed-Click","held-menu-delayed-Hold","held-menu-physical-Cancel","two-Shorts","learning-H1-H2","learning-UP-H2","learning-persist-H2","learning-normal","binding-retired","state-before-DOWN","routed-binding-retired","routed-CANCELING-UP","routed-CANCELING-CANCEL","routed-CANCELING-REPEAT")
     for(queue in listOf("lane","main")) for(mode in modes)
         run("R187-3-actual-native-$queue-$mode") { j ->
         var listener:IHidCaptureListener?=null
@@ -161,14 +161,30 @@ internal fun pinProducerScenarios(run:(String,(Joined)->Unit)->Unit) {
             }
             if(mode.startsWith("held-menu")) {
                 val until=System.nanoTime()+TimeUnit.SECONDS.toNanos(3)
-                while(!j.wiring.active()&&System.nanoTime()<until){j.pump();Thread.yield()}
+                while(!j.wiring.active()&&System.nanoTime()<until){j.pump(holdReverse=mode.contains("delayed"));Thread.yield()}
                 check(j.wiring.active()&&j.messages.any{it is AnchorMessage.Offer}) {"Held original did not show menu before UP"}
                 val choice=when(mode.substringAfterLast('-')){"Click"->com.code2hack.eyeprojector.directrg.AnchorRegistrationAction.CLICK
                     "Hold"->com.code2hack.eyeprojector.directrg.AnchorRegistrationAction.HOLD
                     else->com.code2hack.eyeprojector.directrg.AnchorRegistrationAction.CANCEL}
                 j.wiring.highlight(choice)
+                if(mode.contains("delayed")) {
+                    val delegate=j.phone.get("anchorSession$"+"delegate") as Lazy<*>
+                    val shell=delegate.value!!
+                    val op=(shell.javaClass.getDeclaredField("registration").apply{isAccessible=true}.get(shell) as java.util.concurrent.atomic.AtomicReference<*>).get()!!
+                    check(!op.javaClass.getDeclaredField("chooserObserved").apply{isAccessible=true}.getBoolean(op))
+                    check(j.wiring.anchorRegistration.offer!!.ready)
+                    println("PHASE visible highlighted original menu; reverse OPEN/usability held before Phone; physical UP follows")
+                }
                 val before=j.runtime.store.snapshot("app")
-                listener!!.onInput(event("UP",time=at+900));drain();j.pump()
+                listener!!.onInput(event(if(mode.contains("physical"))"CANCEL" else "UP",time=at+900));drain()
+                if(mode.contains("delayed")) {
+                    j.pump(holdReverse=true)
+                    val terminal=j.messages.filterIsInstance<AnchorMessage.Release>().last()
+                    check(!terminal.canceled) {"Valid original physical UP changed to CANCEL solely because reverse chooser fact was in flight"}
+                    check(j.wiring.active()&&j.wiring.anchorRegistration.offer!!.choosing)
+                    check(j.runtime.store.snapshot("app")==before)
+                }
+                j.pump()
                 check(!j.wiring.active()&&j.events.isEmpty()&&j.ordinary.isEmpty()) {"Registration activated target or failed to finish"}
                 val after=j.runtime.store.snapshot("app")
                 if(choice==com.code2hack.eyeprojector.directrg.AnchorRegistrationAction.CANCEL)check(before==after)
@@ -185,7 +201,7 @@ internal fun pinProducerScenarios(run:(String,(Joined)->Unit)->Unit) {
             j.pump()
             when(mode){
                 "normal-Long"->check(!j.wiring.active()&&!j.input.anchor.holding&&j.events.isEmpty()&&j.messages.any{it is AnchorMessage.Offer}) {"Already-released Long must cancel before a ready menu"}
-                "held-menu-Click","held-menu-Hold","held-menu-Cancel"->Unit
+                "held-menu-Click","held-menu-Hold","held-menu-Cancel","held-menu-delayed-Click","held-menu-delayed-Hold","held-menu-physical-Cancel"->Unit
                 "normal-Short","state-before-DOWN"->{check(j.input.anchor.holding&&j.events.map{it.phase}==listOf(Touch.Phase.DOWN));j.press();check(j.events.last().phase==Touch.Phase.UP)}
                 "two-Shorts"->check(!j.input.anchor.holding&&j.events.map{it.phase}==listOf(Touch.Phase.DOWN,Touch.Phase.UP)){"raw distinct Shorts lost FIFO toggle: ${j.events}"}
                 "empty-Long-H2"->check(j.input.anchor.holding&&j.events.map{it.phase}==listOf(Touch.Phase.DOWN)){"empty-born Long adopted H2: ${j.events}"}

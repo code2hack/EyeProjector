@@ -199,7 +199,7 @@ raw_generated.write_text(raw_generated.read_text().replace('RawVoiceNode(0,null,
 sources += [raw_generated,host/'uiaccess/AndroidUiAccess.kt',root/'directhost/src/test/uiaccess/RegistrationScenarios.kt',suite/'RawRegistrationScenarios.kt']
 sources += [root/'directhost/src/test/uiaccess/doubles'/(n+'.kt') for n in ['AndroidAccessibility','AndroidService','AndroidSparseArray','AndroidRect']]
 (out/'raw-fixture.json').write_bytes(raw_fixture.read_bytes())
-canonical_phone_tests=['PhoneInputMergerTest','hid.PhoneHidBindingsTest','hid.PhoneHidFunctionCompositionTest','hid.PhoneHidNavigationCompositionTest','hid.PhoneHidBackHomeOwnershipTest']
+canonical_phone_tests=['input.PhoneRegistrationReleaseTest','PhoneInputMergerTest','hid.PhoneHidBindingsTest','hid.PhoneHidFunctionCompositionTest','hid.PhoneHidNavigationCompositionTest','hid.PhoneHidBackHomeOwnershipTest']
 sources += [root/'directhost/src/test/kotlin/com/code2hack/eyeprojector/directhost'/(n.replace('.','/')+'.kt') for n in canonical_phone_tests]
 sources = list(dict.fromkeys(sources))
 before_sources = {}
@@ -293,8 +293,14 @@ if r.returncode == 0:
                 if name.endswith('.class'):
                     overlaps.append({'class': name, 'oldDependency': dep['path'], 'disposition': 'new actual source JAR first'})
     record['overlaps'] = overlaps
-    with (out / 'scenarios.log').open('w') as log:
-        r = subprocess.run(run_cmd, stdout=log, stderr=subprocess.STDOUT, timeout=60, env=env)
+    (out/'attempt-inputs.json').write_text(json.dumps(record,indent=2)+'\n')
+    try:
+        with (out / 'scenarios.log').open('w') as log:
+            r = subprocess.run(run_cmd, stdout=log, stderr=subprocess.STDOUT, timeout=60, env=env)
+    except subprocess.TimeoutExpired:
+        record.update(testExit=124,scenarioTimeoutSeconds=60)
+        (out/'result.json').write_text(json.dumps(record,indent=2)+'\n')
+        raise SystemExit(124)
     record['testExit'] = r.returncode
     record['scenarioExit'] = r.returncode
     record['artifactSha256'] = sha(jar)
@@ -334,6 +340,8 @@ if r.returncode == 0:
         required=['com.code2hack.eyeprojector.directhost.'+n for n in ['Session','SessionPanelPower','anchor.execution.AnchorContactOwner','anchor.execution.AnchorSessionInput','input.PhoneInputMerger']]
     elif a.native_before_result:
         required=['com.code2hack.eyeprojector.directhost.'+n for n in ['Session','hid.PhoneHidPinRuntime','hid.PhoneHidController','input.PhoneHidOriginal','input.PhoneInputMerger','anchor.execution.AnchorAppRuntime','anchor.execution.AnchorShellSession','anchor.execution.AnchorContactOwner']]
+    if os.environ.get('EYEPROJECTOR_RELEASE_ORDER_ONLY')=='1':
+        required=['com.code2hack.eyeprojector.directhost.'+n for n in ['Session','hid.PhoneHidPinRuntime','hid.PhoneHidController','input.PhoneHidOriginal','input.PhoneInputMerger','anchor.execution.AnchorAppRuntime','anchor.execution.AnchorShellSession','anchor.execution.AnchorContactOwner']]+['com.code2hack.eyeprojector.directrg.'+n for n in ['ProjectionSession','AnchorRegistrationController']]
     loaded = (out / 'class-load.log').read_text().splitlines()
     record['sourceClassLoads'] = {name: [line for line in loaded if '] ' + name + ' source:' in line] for name in required}
     record['sourceClassesVerified'] = all(

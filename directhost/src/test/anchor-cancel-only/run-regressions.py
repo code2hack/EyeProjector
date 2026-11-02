@@ -74,6 +74,8 @@ for name in ['AnchorMessageTest','FunctionIntentTest','PhoneInputTest','TouchTes
     tests.append('com.code2hack.eyeprojector.protocol.'+name)
 sources += [protocol/'LayoutScale.kt',protocol/'OriginalContact.kt']
 sources += [root/'directrg/src/test/hidframework/doubles'/(n+'.kt') for n in ['Point','Rect','Log']]
+sources.append(root/'directhost/src/test/kotlin/com/code2hack/eyeprojector/directhost/input/PhoneRegistrationReleaseTest.kt')
+tests.append('com.code2hack.eyeprojector.directhost.input.PhoneRegistrationReleaseTest')
 out = a.output_dir.resolve()
 if (out/'result.json').exists(): p.error('Refusing to overwrite frozen regression result')
 out.mkdir(parents=True, exist_ok=True)

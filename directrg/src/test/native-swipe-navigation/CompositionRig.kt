@@ -55,6 +55,7 @@ internal class Joined(val runtime: AnchorAppRuntime) : AutoCloseable {
     val appLaunches = mutableListOf<String>()
     var cancelBehavior: (Touch) -> Boolean = { true }
     var upBehavior: (Touch) -> Boolean = { true }
+    private val reverseHeld=mutableListOf<Frame>()
     private var phoneOffset = 0
     private var time = android.os.SystemClock.uptimeMillis()
     init {
@@ -85,9 +86,11 @@ internal class Joined(val runtime: AnchorAppRuntime) : AutoCloseable {
         wiring.move(10f, 20f); pump()
         android.widget.Toast.messages.clear(); Toast.messages.clear()
     }
-    fun pump() {
+    fun pump(holdReverse: Boolean = false) {
         repeat(24) {
-            val sent = glasses.frames(); fromGlasses.addAll(sent); sent.forEach(phone::receive)
+            val sent = glasses.frames(); fromGlasses.addAll(sent)
+            if(holdReverse) reverseHeld.addAll(sent)
+            else { val delivering=reverseHeld.toList()+sent;reverseHeld.clear();delivering.forEach(phone::receive) }
             phone.holdFlush(runtime)
             launches.snapshot(true) // Serial launch observation barrier, not a synthetic navigation decision.
             phone.holdFlush(runtime)
