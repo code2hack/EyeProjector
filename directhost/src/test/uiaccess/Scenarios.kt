@@ -122,6 +122,64 @@ private fun drawingOrderScenarios() {
     println("PASS actual Android drawingOrder: sibling-relative ties/skips, filtered ancestors, first-divergent branch context, actual child indices and one owned traversal")
 }
 
+private fun rootRefreshScenarios() {
+    fun sparse(refresh: ((Node) -> Boolean)? = null) = Node(className = null,
+        screen = Rect(0, 0, 0, 0), isClickable = false, isVisibleToUser = false,
+        isEnabled = false, onRefresh = refresh)
+    val child = Node(viewIdResourceName = "selected.app:id/current", isClickable = false)
+    val initial = sparse { root ->
+        root.className = "android.widget.FrameLayout"
+        root.screen = Rect(0, 0, 1248, 1664)
+        root.isVisibleToUser = true; root.isEnabled = true; root.children = listOf(child)
+        true
+    }
+    val window = Window(node = initial)
+    val recovered = read(mapOf(34 to listOf(window))).windows.single()
+    check(recovered.targets.any { it.resourceId == "selected.app:id/current" }) {
+        "One refresh of the same sparse root must expose the live child before traversal"
+    }
+    val traversal = checkNotNull(recovered.traversal)
+    val refresh = checkNotNull(traversal.rootRefresh)
+    check(refresh.succeeded == true && refresh.before.className == null && refresh.beforeChildCount == 0)
+    check(!refresh.before.bounds.hasArea && !refresh.before.visible && !refresh.before.enabled)
+    check(traversal.visitedNodes == 2 && traversal.rootChildCount == 1 && traversal.root?.visible == true)
+    check(initial.refreshes == 1 && child.refreshes == 0 && initial.childrenRead == 1)
+    check(window.rootsRead == 1 && initial.closed == 1 && child.closed == 1 && window.closed == 1)
+
+    for (outcome in listOf("empty", "obsolete", "exception")) {
+        val root = sparse {
+            when (outcome) {
+                "exception" -> throw IllegalStateException("private provider detail")
+                "obsolete" -> false
+                else -> true
+            }
+        }
+        val currentWindow = Window(node = root)
+        val current = read(mapOf(34 to listOf(currentWindow))).windows.single()
+        check(current.status == UiWindowReadStatus.READ && current.targets.isEmpty())
+        val facts = checkNotNull(current.traversal)
+        val attempt = checkNotNull(facts.rootRefresh)
+        check(facts.visitedNodes == 1 && facts.rootChildCount == 0)
+        check(attempt.succeeded == when (outcome) { "empty" -> true; "obsolete" -> false; else -> null })
+        check(attempt.failureClass == if (outcome == "exception") "java.lang.IllegalStateException" else null)
+        check(!attempt.toString().contains("private provider detail"))
+        check(root.refreshes == 1 && root.childrenRead == 0 && currentWindow.rootsRead == 1)
+        check(root.closed == 1 && currentWindow.closed == 1)
+    }
+    val normal = Node(children = listOf(Node()))
+    val normalWindow = Window(node = normal)
+    check(read(mapOf(34 to listOf(normalWindow))).windows.single().traversal?.rootRefresh == null)
+    check(normal.refreshes == 0 && normalWindow.rootsRead == 1)
+    val changedWindow = sparse { it.windowId = 99; true }
+    check(read(mapOf(34 to listOf(Window(node = changedWindow)))).windows.single().status == UiWindowReadStatus.WINDOW_MISMATCH)
+    check(changedWindow.closed == 1 && changedWindow.refreshes == 1)
+    val throwingRoot = Node(className = null, failBounds = true)
+    val failedWindow = Window(node = throwingRoot)
+    check(read(mapOf(34 to listOf(failedWindow))).windows.single().status == UiWindowReadStatus.FAILED)
+    check(throwingRoot.closed == 1 && failedWindow.closed == 1 && throwingRoot.refreshes == 0)
+    println("PASS sparse original root: one public refresh recovers modeled live children; persistent empty/obsolete/exception stay distinct, no new rejection, one root/walk and exact cleanup")
+}
+
 private fun crossAppReadScenarios() {
     val service = AccessibilityService()
     val reader = UiTargetReader(AndroidUiAccess(service)) { 100L }
@@ -263,4 +321,4 @@ private fun serviceScenarios() {
     println("PASS actual HID service: retrieval/view-ID/key flags, modeled key result/pin coexistence, interrupt/unbind/destroy/replacement lifecycle")
 }
 
-fun main() { readerScenarios(); drawingOrderScenarios(); crossAppReadScenarios(); geometryScenarios(); providerScenarios(); connectionScenarios(); serviceScenarios() }
+fun main() { readerScenarios(); drawingOrderScenarios(); rootRefreshScenarios(); crossAppReadScenarios(); geometryScenarios(); providerScenarios(); connectionScenarios(); serviceScenarios() }

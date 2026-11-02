@@ -93,6 +93,13 @@ data class UiTargetObservation(
 )
 
 enum class UiWindowReadStatus { READ, OTHER_PACKAGE, NO_ROOT, WINDOW_MISMATCH, FAILED }
+/** One refresh of the same sparse root; success does not assert that the provider exposes children. */
+data class UiRootRefresh(
+    val before: UiTargetObservation,
+    val beforeChildCount: Int,
+    val succeeded: Boolean?,
+    val failureClass: String? = null,
+)
 /** Counts from this traversal, before target filtering; a pruned subtree is not an empty tree. */
 data class UiWindowTraversal(
     val visitedNodes: Int,
@@ -103,6 +110,7 @@ data class UiWindowTraversal(
     val rootPackageName: String?,
     val root: UiTargetObservation?,
     val rootChildCount: Int?,
+    val rootRefresh: UiRootRefresh? = null,
 )
 data class UiWindowSnapshot(
     val window: UiWindowMetadata,
