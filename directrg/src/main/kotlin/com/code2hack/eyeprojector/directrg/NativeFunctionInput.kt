@@ -16,14 +16,14 @@ import android.util.Log
 internal class NativeFunctionInput(
     private val context: Context,
     private val currentContext: () -> Any?,
-    dispatch: (FunctionGestureRecognizer.Gesture) -> Unit,
+    dispatch: (AnchorGesture) -> Unit,
     now: () -> Long = SystemClock::uptimeMillis,
     schedule: (Long, () -> Unit) -> (() -> Unit) = handlerSchedule(),
     timing: FunctionGestureRecognizer.Timing = FunctionGestureRecognizer.Timing(),
     capture: (Any) -> Any? = { it },
     captureOriginal: ((Any, Long, Long?) -> Any?)? = null,
     retireOriginal: ((Long, Any) -> Unit)? = null,
-    registrationRelease: (FunctionGestureRecognizer.Gesture, Boolean) -> Unit = { _, _ -> },
+    registrationRelease: (AnchorGesture, Boolean) -> Unit = { _, _ -> },
 ) {
     private var registered = false
     private var retiring: MutableList<() -> Unit>? = null
@@ -35,12 +35,12 @@ internal class NativeFunctionInput(
             val cancel = schedule(at, action)
             val original: () -> Unit = { retiring?.add(cancel) ?: cancel() }
             original
-        }, dispatch, timing, capture = capture, identity = identities, captureOriginal = captureOriginal,
+        }, { dispatch(it.anchorOperation()) }, timing, capture = capture, identity = identities, captureOriginal = captureOriginal,
         retireOriginal = retireOriginal?.let { retire -> { id, original ->
             val effect: () -> Unit = {retire(id,original)}
             retiring?.add(effect) ?: effect()
         } }, registrationRelease = { gesture, canceled ->
-            val effect: () -> Unit = { registrationRelease(gesture, canceled) }
+            val effect: () -> Unit = { registrationRelease(gesture.anchorOperation(), canceled) }
             retiring?.add(effect) ?: effect()
         })
     private val receiver = object : BroadcastReceiver() {
@@ -131,6 +131,10 @@ internal class NativeFunctionInput(
         registered = false
         context.unregisterReceiver(receiver)
     }
+
+    /** Native recognition is an adapter; semantic chooser/contact owners never see OEM reports. */
+    private fun FunctionGestureRecognizer.Gesture.anchorOperation() =
+        AnchorGesture(kind, gestureId, sequence, original, physicalHeld)
 
     companion object {
         private val identities = FunctionGestureRecognizer.Identity()

@@ -268,7 +268,7 @@ internal class ReceiverSessionOwner(
     /** Failure feedback belongs to its captured input context, just like the Function itself. */
     private fun currentAnchorFeedback(source: ProjectionSession, message: AnchorMessage.Feedback): Boolean {
         val original = message.intent.context.usability
-        val current = source.captureFunctionContext(message.intent.context.pointer)?.usability ?: return false
+        val current = source.captureAnchorContext(message.intent.context.pointer)?.usability ?: return false
         return inputRevision == original.inputRevision && current.ownerEpoch == original.ownerEpoch &&
             current.incarnation == original.incarnation && current.inputRevision == original.inputRevision &&
             current.mode == original.mode

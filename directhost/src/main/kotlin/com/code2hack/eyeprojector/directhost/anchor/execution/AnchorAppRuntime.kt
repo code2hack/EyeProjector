@@ -39,11 +39,11 @@ internal class AnchorAppRuntime(context: Context, registrationProviderName: Stri
             bindingGeneration.get() == captured.generation
     }
     /** Capture synchronously at the raw callback, before native lane or Android main delivery. */
-    fun capturePhoneHidOriginal(): com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal {
+    fun capturePhoneHidOriginal(anchorOperation: Boolean): com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal {
         val captured = controlSource.get()
         val generation = bindingGeneration.get()
         val disposition = intArrayOf(if (captured == null) AnchorControlDisposition.NORMAL.ordinal else AnchorControlDisposition.RETIRED.ordinal)
-        val remote = captured?.let { runCatching { it.original.captureRawControl(disposition) }.getOrNull() }
+        val remote = captured?.let { runCatching { it.original.captureRawControl(anchorOperation, disposition) }.getOrNull() }
         return com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal(remote,
             captured?.context ?: com.code2hack.eyeprojector.directhost.ProjectionContext(), disposition[0]) {
             controlSource.get() === captured && bindingGeneration.get() == generation &&
@@ -105,8 +105,8 @@ internal class AnchorAppRuntime(context: Context, registrationProviderName: Stri
                     if (bindingGeneration.get() == generation) original.apply()
                 }
             }
-            override fun onIntent(transactionId: Long, functionIntent: ByteArray, original: IAnchorSession) {
-                val intent = FunctionIntent.from(functionIntent)
+            override fun onIntent(transactionId: Long, anchorIntent: ByteArray, original: IAnchorSession) {
+                val intent = AnchorIntent.from(anchorIntent)
                 coordinator.accept(Route(transactionId, intent, original) { bindingGeneration.get() == generation })
             }
             override fun onRegistration(message: ByteArray, original: IAnchorSession) {
@@ -116,7 +116,7 @@ internal class AnchorAppRuntime(context: Context, registrationProviderName: Stri
         }
     }
 
-    private class Route(override val transactionId: Long, override val intent: FunctionIntent,
+    private class Route(override val transactionId: Long, override val intent: AnchorIntent,
         private val original: IAnchorSession, private val current: () -> Boolean) : AnchorOriginalRoute {
         override val identity: Any get() = original.asBinder()
         override fun source(): ManagedUiSource? = if (current()) original.source()?.let(ManagedUiSource::from) else null

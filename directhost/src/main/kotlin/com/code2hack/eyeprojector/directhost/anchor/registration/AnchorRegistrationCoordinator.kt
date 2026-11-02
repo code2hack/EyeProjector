@@ -6,7 +6,7 @@ import com.code2hack.eyeprojector.directhost.anchor.preferences.AppAnchorStore
 import com.code2hack.eyeprojector.directhost.anchor.target.AnchorTargetResolution
 import com.code2hack.eyeprojector.directhost.anchor.target.AnchorTargetResolver
 import com.code2hack.eyeprojector.directhost.uiaccess.UiTargetSnapshot
-import com.code2hack.eyeprojector.protocol.FunctionIntent
+import com.code2hack.eyeprojector.protocol.AnchorIntent
 
 sealed interface AnchorRegistrationCompletion {
     data class Saved(val anchor: AppAnchor) : AnchorRegistrationCompletion
@@ -27,11 +27,11 @@ class AnchorRegistrationCoordinator<T : Any>(private val store: AppAnchorStore) 
     var lastFailure: Exception? = null
         private set
 
-    fun begin(token: T, intent: FunctionIntent, snapshot: UiTargetSnapshot): AnchorRegistrationCapture {
+    fun begin(token: T, intent: AnchorIntent, snapshot: UiTargetSnapshot): AnchorRegistrationCapture {
         return beginDetailed(token, intent, snapshot).capture
     }
 
-    fun beginDetailed(token: T, intent: FunctionIntent, snapshot: UiTargetSnapshot): AnchorRegistrationInspection {
+    fun beginDetailed(token: T, intent: AnchorIntent, snapshot: UiTargetSnapshot): AnchorRegistrationInspection {
         pending = null
         lastFailure = null
         return AnchorRegistrationTargets.inspect(intent, snapshot).also {

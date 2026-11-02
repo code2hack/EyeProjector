@@ -9,7 +9,7 @@ internal class AnchorControlAdmission {
     internal var normalSequence: Long? = null
     internal var receivedSequence: Long? = null
     internal var capturedHold = false
-    internal var functionGeneration: Long? = null
+    internal var anchorGeneration: Long? = null
     internal var receivedDuringRetirement = false
     internal var sourceBinding: Pair<java.util.concurrent.atomic.AtomicReference<*>, Any?>? = null
     internal var sourceRevision: Pair<java.util.concurrent.atomic.AtomicLong, Long>? = null
@@ -29,7 +29,7 @@ internal class AnchorControlAdmission {
             (revision == null || revision.first.get() == revision.second)
     }
 
-    /** Long/ordinary uses birth lifetime; Short deliberately retains its authoritative FIFO mode. */
+    /** Anchor registration/ordinary uses birth lifetime; Short deliberately retains its authoritative FIFO mode. */
     internal fun ordinary() { if (normalSequence == null) normalSequence = receivedSequence }
 
     /** Existing grammar membership, not timestamps, associates a second Back/Home press. */
@@ -47,7 +47,7 @@ internal class AnchorControlAdmission {
     internal fun inheritLifetime(original: AnchorControlAdmission) {
         if (terminal) return
         owner=original.owner;normalSequence=original.normalSequence;receivedSequence=original.receivedSequence;capturedHold=original.capturedHold
-        functionGeneration=original.functionGeneration;receivedDuringRetirement=original.receivedDuringRetirement
+        anchorGeneration=original.anchorGeneration;receivedDuringRetirement=original.receivedDuringRetirement
         sourceBinding=original.sourceBinding;sourceRevision=original.sourceRevision
         disposition=original.disposition
     }

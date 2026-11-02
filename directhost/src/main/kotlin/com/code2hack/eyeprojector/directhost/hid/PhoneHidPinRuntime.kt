@@ -9,6 +9,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import com.code2hack.eyeprojector.protocol.PhoneHidPhase
+import com.code2hack.eyeprojector.protocol.PhoneHidAction
 import org.json.JSONArray
 import org.json.JSONObject
 import rikka.shizuku.Shizuku
@@ -34,7 +35,7 @@ internal class PhoneHidPinRuntime(
     private val changed: () -> Unit,
     private val userControl: () -> Boolean = { true },
     private val recognizeInput: () -> Boolean = { true },
-    private val captureOriginal: () -> com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal? = { null },
+    private val captureOriginal: (Boolean) -> com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal? = { null },
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val lane = Executors.newSingleThreadExecutor()
@@ -83,9 +84,12 @@ internal class PhoneHidPinRuntime(
         // The first authoritative result includes both original lifetime and arrival disposition.
         // A preliminary Boolean followed by another capture could silently bind a later Hold.
         val token = command // Preserve the native command lifetime across that first Binder call too.
-        val captured = captureOriginal()
-        val discarded = captured?.discarded ?: !recognizeInput()
         val json = JSONObject(value)
+        // Read the immutable assignment snapshot at arrival. Ordinary controls never acquire
+        // Anchor's generation or Short FIFO lifetime, even before the native/main queues.
+        val anchorOperation = controller.bindings.action(inputBinding(json).button) == PhoneHidAction.ANCHOR
+        val captured = captureOriginal(anchorOperation)
+        val discarded = captured?.discarded ?: !recognizeInput()
         val key = RawOriginal(epoch, token, json.getString("deviceKey"), json.getLong("generation"),
             json.getInt("sourceId"), json.getString("collectionKey"), json.getInt("code"), json.getLong("downTimeMs"), json.getLong("pressId"))
         val phase = PhoneHidPhase.valueOf(json.getString("phase"))
@@ -372,12 +376,8 @@ internal class PhoneHidPinRuntime(
         }
         val source = json.getInt("sourceId")
         val attachment = attachments.getOrPut(source) { nextAttachment-- }
-        val collection = json.getString("collectionKey")
-        val identity = PhoneHidDeviceIdentity(NATIVE_PREFIX + JSONArray().put(key).put(collection).toString(),
-            json.getInt("vendorId"), json.getInt("productId"))
         val event = PhoneHidController.Event(attachment,
-            PhoneHidBinding(PhoneHidButton(identity, json.getInt("code"), 0),
-                json.getString("deviceName"), json.getString("label")),
+            inputBinding(json),
             PhoneHidPhase.valueOf(json.getString("phase")), json.getLong("downTimeMs"),
             json.getLong("eventTimeMs"), json.getInt("repeatCount"), json.getLong("pressId"), received.discarded, received.original)
         val token = command
@@ -390,6 +390,13 @@ internal class PhoneHidPinRuntime(
             deliveredAttachments.add(attachment)
             controller.accept(event)
         }
+    }
+
+    private fun inputBinding(json: JSONObject): PhoneHidBinding {
+        val descriptor = NATIVE_PREFIX + JSONArray().put(json.getString("deviceKey")).put(json.getString("collectionKey")).toString()
+        val identity = PhoneHidDeviceIdentity(descriptor, json.getInt("vendorId"), json.getInt("productId"))
+        return PhoneHidBinding(PhoneHidButton(identity, json.getInt("code"), 0),
+            json.getString("deviceName"), json.getString("label"))
     }
 
     private fun lost(error: String) {

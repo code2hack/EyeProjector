@@ -13,28 +13,28 @@ data class AnchorHighlight(val left: Double, val top: Double, val right: Double,
 }
 
 /** One original Session's transaction. Highlight uses VIDEO pixels; no UI text/node crosses wire. */
-sealed class AnchorMessage(open val transactionId: Long, open val intent: FunctionIntent) {
-    data class Feedback(override val transactionId: Long, override val intent: FunctionIntent,
+sealed class AnchorMessage(open val transactionId: Long, open val intent: AnchorIntent) {
+    data class Feedback(override val transactionId: Long, override val intent: AnchorIntent,
         val status: AnchorFeedback) : AnchorMessage(transactionId, intent)
-    data class Offer(override val transactionId: Long, override val intent: FunctionIntent,
+    data class Offer(override val transactionId: Long, override val intent: AnchorIntent,
         val highlight: AnchorHighlight) : AnchorMessage(transactionId, intent)
-    data class Open(override val transactionId: Long, override val intent: FunctionIntent,
+    data class Open(override val transactionId: Long, override val intent: AnchorIntent,
         val chooser: ReceiverUsability) : AnchorMessage(transactionId, intent)
-    data class Choice(override val transactionId: Long, override val intent: FunctionIntent,
+    data class Choice(override val transactionId: Long, override val intent: AnchorIntent,
         val choice: AnchorChoice) : AnchorMessage(transactionId, intent)
-    data class Result(override val transactionId: Long, override val intent: FunctionIntent,
+    data class Result(override val transactionId: Long, override val intent: AnchorIntent,
         val result: AnchorRegistrationResult) : AnchorMessage(transactionId, intent)
     /** Original contact facts only; revision orders presentation, never input admission. */
-    data class HeldState(override val transactionId: Long, override val intent: FunctionIntent,
+    data class HeldState(override val transactionId: Long, override val intent: AnchorIntent,
         val revision: Long, val state: AnchorHoldState) : AnchorMessage(transactionId, intent) {
         init { require(revision >= 0) }
     }
 
     /** Physical Phone HID Anchor terminal, correlated to its original registration transaction.
      * Canceled includes release before the original chooser OPEN was observed. */
-    data class Release(override val transactionId: Long, override val intent: FunctionIntent,
+    data class Release(override val transactionId: Long, override val intent: AnchorIntent,
         val canceled: Boolean) : AnchorMessage(transactionId, intent) {
-        init { require(intent.kind == FunctionIntentKind.REGISTER && intent.source == FunctionSource.PHONE_HID) }
+        init { require(intent.kind == AnchorIntentKind.REGISTER && intent.source == AnchorSource.PHONE_HID) }
     }
 
     fun bytes(): ByteArray = bytes {
@@ -52,13 +52,13 @@ sealed class AnchorMessage(open val transactionId: Long, open val intent: Functi
         }
     }
     companion object {
-        const val MIN_PAYLOAD_SIZE = 14 + FunctionIntent.MIN_PAYLOAD_SIZE
-        const val MAX_PAYLOAD_SIZE = 17 + FunctionIntent.MAX_PAYLOAD_SIZE + ReceiverUsability.MAX_PAYLOAD_SIZE
+        const val MIN_PAYLOAD_SIZE = 14 + AnchorIntent.MIN_PAYLOAD_SIZE
+        const val MAX_PAYLOAD_SIZE = 17 + AnchorIntent.MAX_PAYLOAD_SIZE + ReceiverUsability.MAX_PAYLOAD_SIZE
         fun from(payload: ByteArray): AnchorMessage = DataInputStream(payload.inputStream()).use { input ->
             val kind = input.readUnsignedByte(); val id = input.readLong(); require(id >= 0)
             val size = input.readInt()
-            require(size in FunctionIntent.MIN_PAYLOAD_SIZE..FunctionIntent.MAX_PAYLOAD_SIZE && size <= input.available())
-            val intent = FunctionIntent.from(ByteArray(size).also(input::readFully))
+            require(size in AnchorIntent.MIN_PAYLOAD_SIZE..AnchorIntent.MAX_PAYLOAD_SIZE && size <= input.available())
+            val intent = AnchorIntent.from(ByteArray(size).also(input::readFully))
             val value = when (kind) {
                 0 -> Feedback(id, intent, AnchorFeedback.entries[input.readUnsignedByte()])
                 1 -> Offer(id, intent, AnchorHighlight(input.readDouble(), input.readDouble(), input.readDouble(), input.readDouble()))

@@ -87,7 +87,8 @@ internal class PhoneHidRuntime private constructor(context: Context) {
     val pin = PhoneHidPinRuntime(app, controller, { connected ->
         nativeConnected = connected
         updateConnection()
-    }, ::publish, { sessions.userControl() }, ::recognizeInput, { sessions.bootstrap.anchorRuntime.capturePhoneHidOriginal() })
+    }, ::publish, { sessions.userControl() }, ::recognizeInput,
+        { anchorOperation -> sessions.bootstrap.anchorRuntime.capturePhoneHidOriginal(anchorOperation) })
 
     fun userControl(): Boolean = sessions.userControl()
 

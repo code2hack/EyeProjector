@@ -45,7 +45,7 @@ class ProjectionSession(
     private val controls = OrderedControlDispatcher { error -> failure(error); closeWithState("DISCONNECTED") }
     private val scaleControls = OrderedControlDispatcher { error -> failure(error); closeWithState("DISCONNECTED") }
     /** Feature consumers attach to this actual Session, never a latest-peer singleton. */
-    val functionIntents = FunctionIntentConsumers<ProjectionSession>()
+    val anchorIntents = AnchorIntentConsumers<ProjectionSession>()
     private val inputLock = Any()
     private val heldTouch = HeldTouchTransport(controls,
         { running.get() && readyForTouch && it.target.geometry == geometry },
@@ -355,11 +355,11 @@ class ProjectionSession(
                 onAnchor(this, message)
             }
             Wire.RECEIVER_INPUT -> onReceiverInput(this, ReceiverInput.from(frame.payload))
-            Wire.FUNCTION_INTENT -> {
+            Wire.ANCHOR_INTENT -> {
                 require(frame.stamp == 0L)
-                val captured = CapturedFunctionIntent(FunctionIntent.from(frame.payload), this)
-                controls.submit(SystemClock.uptimeMillis(), { currentFunction(captured.intent.context) },
-                    "function", preserveTiming = false) { functionIntents.dispatch(captured) }
+                val captured = CapturedAnchorIntent(AnchorIntent.from(frame.payload), this)
+                controls.submit(SystemClock.uptimeMillis(), { currentAnchor(captured.intent.context) },
+                    "anchor", preserveTiming = false) { anchorIntents.dispatch(captured) }
             }
             Wire.CAMERA_USE -> { require(frame.stamp == 0L); cameraUses.observe(CameraFeed.readUseMessage(frame.payload)) }
             Wire.CAMERA_PROGRESS -> { require(frame.stamp == 0L); cameraUses.observeProgress(CameraFeed.readProgress(frame.payload)) }
@@ -426,12 +426,12 @@ class ProjectionSession(
     }
 
     /** Capture, without republishing a stale positive mode or substituting the latest hover later. */
-    fun captureFunctionContext(point: HeadPointerState): FunctionIntentContext? = synchronized(inputLock) {
+    fun captureAnchorContext(point: HeadPointerState): AnchorIntentContext? = synchronized(inputLock) {
         val fact = sourceUsability ?: return null
-        FunctionIntentContext(fact, point).takeIf(::currentFunction)
+        AnchorIntentContext(fact, point).takeIf(::currentAnchor)
     }
 
-    private fun currentFunction(captured: FunctionIntentContext): Boolean {
+    private fun currentAnchor(captured: AnchorIntentContext): Boolean {
         val current = sourceUsability ?: return false
         val original = captured.usability
         val point = captured.pointer
@@ -449,7 +449,7 @@ class ProjectionSession(
     fun openAnchorRegistration(offer: AnchorMessage.Offer, chooser: ReceiverUsability): Boolean {
         var admitted = false
         headPointer.sourceChanged {
-            if (running.get() && currentFunction(offer.intent.context) &&
+            if (running.get() && currentAnchor(offer.intent.context) &&
                 chooser.ownerEpoch == offer.intent.context.usability.ownerEpoch &&
                 chooser.incarnation == offer.intent.context.usability.incarnation) {
                 val fact = chooser.copy(revision = nextUsabilityRevision())
@@ -468,35 +468,35 @@ class ProjectionSession(
             send(Frame(Wire.ANCHOR, payload = AnchorMessage.Choice(offer.transactionId, offer.intent, choice).bytes()))
         }
 
-    fun functionIntent(captured: CapturedFunctionIntent<ProjectionSession>): Boolean = synchronized(inputLock) {
-        if (captured.original !== this || !currentFunction(captured.intent.context)) return false
-        controls.submit(SystemClock.uptimeMillis(), { currentFunction(captured.intent.context) },
-            "function", preserveTiming = false) {
+    fun anchorIntent(captured: CapturedAnchorIntent<ProjectionSession>): Boolean = synchronized(inputLock) {
+        if (captured.original !== this || !currentAnchor(captured.intent.context)) return false
+        controls.submit(SystemClock.uptimeMillis(), { currentAnchor(captured.intent.context) },
+            "anchor", preserveTiming = false) {
             synchronized(outputLock) {
                 // Source mode may change while the queued writer waits for this exact output lock.
-                if (currentFunction(captured.intent.context))
-                    send(Frame(Wire.FUNCTION_INTENT, payload = captured.intent.bytes()))
+                if (currentAnchor(captured.intent.context))
+                    send(Frame(Wire.ANCHOR_INTENT, payload = captured.intent.bytes()))
             }
         }
     }
 
     /** Same source grammar identity as its later intention, on the same ordered original writer. */
-    fun beginFunction(original: FunctionOriginal): Boolean = synchronized(inputLock) {
-        if (!currentFunction(original.context)) return false
-        controls.submit(SystemClock.uptimeMillis(), { currentFunction(original.context) }, "function-original", preserveTiming = false) {
+    fun beginAnchor(original: AnchorOriginal): Boolean = synchronized(inputLock) {
+        if (!currentAnchor(original.context)) return false
+        controls.submit(SystemClock.uptimeMillis(), { currentAnchor(original.context) }, "anchor-original", preserveTiming = false) {
             synchronized(outputLock) {
-                if (currentFunction(original.context)) {
+                if (currentAnchor(original.context)) {
                     writeUsabilityLocked(original.context.usability)
-                    writeFrameLocked(Frame(Wire.FUNCTION_ORIGINAL,payload=original.bytes()))
+                    writeFrameLocked(Frame(Wire.ANCHOR_ORIGINAL,payload=original.bytes()))
                 }
             }
         }
     }
 
-    fun retireFunction(original: FunctionOriginal): Boolean = scaleControls.submit(SystemClock.uptimeMillis(),
-        {running.get()},"function-retire",preserveTiming=false) {
+    fun retireAnchor(original: AnchorOriginal): Boolean = scaleControls.submit(SystemClock.uptimeMillis(),
+        {running.get()},"anchor-retire",preserveTiming=false) {
         synchronized(outputLock) {
-            if(running.get())writeFrameLocked(Frame(Wire.FUNCTION_ORIGINAL,payload=original.copy(retired=true).bytes()))
+            if(running.get())writeFrameLocked(Frame(Wire.ANCHOR_ORIGINAL,payload=original.copy(retired=true).bytes()))
         }
     }
 

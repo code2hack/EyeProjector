@@ -4,8 +4,8 @@ import com.code2hack.eyeprojector.directhost.anchor.preferences.*
 import com.code2hack.eyeprojector.directhost.anchor.target.*
 import com.code2hack.eyeprojector.directhost.ProjectionContext
 import com.code2hack.eyeprojector.directhost.uiaccess.*
-import com.code2hack.eyeprojector.protocol.FunctionIntent
-import com.code2hack.eyeprojector.protocol.FunctionIntentKind
+import com.code2hack.eyeprojector.protocol.AnchorIntent
+import com.code2hack.eyeprojector.protocol.AnchorIntentKind
 import com.code2hack.eyeprojector.protocol.AnchorMessage
 import java.io.Closeable
 import java.util.concurrent.ConcurrentHashMap
@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicLong
 internal interface AnchorOriginalRoute {
     val transactionId: Long get() = 0
     val identity: Any get() = this
-    val intent: FunctionIntent
+    val intent: AnchorIntent
     fun source(): ManagedUiSource?
     fun reconcile(setting: AnchorSettingContext): Boolean
     fun heldSetting(): AnchorSettingContext? = null
@@ -67,7 +67,7 @@ internal class AnchorAppCoordinator(
         source: ManagedUiSource? = null, snapshot: UiTargetSnapshot? = null,
         inspection: com.code2hack.eyeprojector.directhost.anchor.registration.AnchorRegistrationInspection? = null,
         detail: String? = null, failure: Exception? = null) {
-        if (original.intent.kind != FunctionIntentKind.REGISTER) return
+        if (original.intent.kind != AnchorIntentKind.REGISTER) return
         val copied = snapshot?.copy(windows = snapshot.windows.map { window ->
             window.copy(targets = window.targets.map { it.copy(actionIds = it.actionIds.toList()) }) })
         val observation = AnchorRegistrationDiagnostic(original.transactionId, original.intent, stage,
@@ -101,7 +101,7 @@ internal class AnchorAppCoordinator(
                 pending?.source, pending?.snapshot, failure = error)
             if (registrationRequest?.original?.identity == original.identity) registrationRequest = null
             try { original.retire() } catch (cleanup: Exception) { error.addSuppressed(cleanup) }
-            if (original.intent.kind == FunctionIntentKind.REGISTER) {
+            if (original.intent.kind == AnchorIntentKind.REGISTER) {
                 try { original.send(AnchorMessage.Result(original.transactionId, original.intent,
                     com.code2hack.eyeprojector.protocol.AnchorRegistrationResult.UNAVAILABLE)) }
                 catch (feedback: Exception) { error.addSuppressed(feedback) }
@@ -112,14 +112,14 @@ internal class AnchorAppCoordinator(
     }
 
     private fun execute(original: AnchorOriginalRoute) {
-        if (original.intent.kind == FunctionIntentKind.REGISTER) {
+        if (original.intent.kind == AnchorIntentKind.REGISTER) {
             val disposition = original.consumeHeldControl()
             if (disposition != AnchorControlDisposition.NORMAL) {
                 reportRegistration(original, AnchorRegistrationDiagnostic.Stage.CONTROL_DISPOSITION, detail = disposition.name)
                 return
             }
         }
-        if (original.intent.kind == FunctionIntentKind.ACTIVATE) {
+        if (original.intent.kind == AnchorIntentKind.ACTIVATE) {
             // Original metadata + in-memory revision check; no saved record/source/target lookup.
             val held = original.heldSetting()
             when (original.releaseHeld(held, held == null || store.isCurrent(held))) {
@@ -150,7 +150,7 @@ internal class AnchorAppCoordinator(
         val provider = UiTargetSnapshotProvider(ManagedUiSourceProvider { expected ->
             original.source()?.takeIf { it.context == expected }
         }, reader, uptime)
-        if (original.intent.kind == FunctionIntentKind.REGISTER) {
+        if (original.intent.kind == AnchorIntentKind.REGISTER) {
             val beforeRead = original.consumeHeldControl()
             if (beforeRead != AnchorControlDisposition.NORMAL) {
                 reportRegistration(original, AnchorRegistrationDiagnostic.Stage.CONTROL_DISPOSITION, source, detail = beforeRead.name)
@@ -205,8 +205,8 @@ internal class AnchorAppCoordinator(
         subscriptions.firstOrNull { it.context == context && it.packageName == packageName }?.let {
             // REGISTER has an operation-scoped normal lease. A later real ACTIVATE owns the
             // continuing setting observation; do not retain the completed chooser's lease.
-            if (it.route.intent.kind == FunctionIntentKind.REGISTER &&
-                route.intent.kind == FunctionIntentKind.ACTIVATE) it.route = route
+            if (it.route.intent.kind == AnchorIntentKind.REGISTER &&
+                route.intent.kind == AnchorIntentKind.ACTIVATE) it.route = route
             return
         }
         lateinit var subscription: Subscription

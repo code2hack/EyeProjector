@@ -13,7 +13,7 @@ import com.code2hack.eyeprojector.protocol.*
 
 /** Installed by #122's runtime; all handlers, reads and complete-value saves use its one FIFO. */
 internal class AnchorRegistrationProvider : AnchorRegistrationInstaller {
-    private data class Token(val route: Any, val context: ProjectionContext, val id: Long, val intent: FunctionIntent)
+    private data class Token(val route: Any, val context: ProjectionContext, val id: Long, val intent: AnchorIntent)
     private data class Pending(val token: Token, val route: AnchorOriginalRoute, val source: ManagedUiSource,
         var chooser: ReceiverUsability? = null)
 

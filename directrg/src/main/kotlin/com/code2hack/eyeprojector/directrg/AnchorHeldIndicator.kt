@@ -1,6 +1,6 @@
 package com.code2hack.eyeprojector.directrg
 
-import com.code2hack.eyeprojector.protocol.FunctionIntent
+import com.code2hack.eyeprojector.protocol.AnchorIntent
 import com.code2hack.eyeprojector.protocol.ReceiverUsability
 import com.code2hack.eyeprojector.protocol.ReceiverUsabilityMode
 
@@ -27,7 +27,7 @@ internal class AnchorHeldIndicator(private val render: (Boolean) -> Unit) {
     }
 
     /** State revisions are monotonic within the original Session, including cancellation. */
-    fun accept(source: Any, intent: FunctionIntent, stateRevision: Long, held: Boolean): Boolean {
+    fun accept(source: Any, intent: AnchorIntent, stateRevision: Long, held: Boolean): Boolean {
         if (source !== original || !sameContext(context, intent.context.usability) || context == null) return false
         if (stateRevision <= revision) return true
         admission++

@@ -1,6 +1,6 @@
 package com.code2hack.eyeprojector.directrg
 
-import com.code2hack.eyeprojector.protocol.FunctionIntentKind
+import com.code2hack.eyeprojector.protocol.AnchorIntentKind
 
 /**
  * Function owns original gestures, never navigation or an Anchor output contact.
@@ -32,9 +32,9 @@ internal class FunctionGestureRecognizer(
     }
     enum class Report { DOWN, UP, CLICK, DOUBLE, TRIPLE, LONG }
     data class Timing(val quietMs: Long = 500, val longMs: Long = 800)
-    data class Gesture(val kind: FunctionIntentKind, val gestureId: Long, val sequence: Long, val original: Any, val physicalHeld: Boolean = false)
+    data class Gesture(val kind: AnchorIntentKind, val gestureId: Long, val sequence: Long, val original: Any, val physicalHeld: Boolean = false)
     private class Original(val id: Long, val captured: Any) {
-        var kind = FunctionIntentKind.ACTIVATE
+        var kind = AnchorIntentKind.ACTIVATE
         var hasEdge = false
     }
     private class Sequence(val owner: Any) {
@@ -95,7 +95,7 @@ internal class FunctionGestureRecognizer(
                 if (held != null) {
                     s.held = null
                     if (at - s.downAt >= timing.longMs) {
-                        held.kind = FunctionIntentKind.REGISTER
+                        held.kind = AnchorIntentKind.REGISTER
                         finish(s); return
                     }
                 } else if (s.originals.isEmpty() && original(s) == null) return
@@ -111,7 +111,7 @@ internal class FunctionGestureRecognizer(
             }
             Report.LONG -> {
                 val original = s.held ?: s.originals.lastOrNull() ?: original(s) ?: return
-                original.kind = FunctionIntentKind.REGISTER
+                original.kind = AnchorIntentKind.REGISTER
                 finish(s); return
             }
         }
@@ -153,7 +153,7 @@ internal class FunctionGestureRecognizer(
                 if (context() != s.owner) cancel()
                 else if (now() < deadline) arm(s)
                 else {
-                    s.held?.kind = FunctionIntentKind.REGISTER
+                    s.held?.kind = AnchorIntentKind.REGISTER
                     finish(s)
                 }
             }
@@ -172,7 +172,7 @@ internal class FunctionGestureRecognizer(
         try { for (original in s.originals) {
             if (generation != ownershipGeneration || context() != s.owner) return
             val gesture = Gesture(original.kind, original.id, identity.delivery(), original.captured,
-                original.kind == FunctionIntentKind.REGISTER && s.held === original && original.hasEdge)
+                original.kind == AnchorIntentKind.REGISTER && s.held === original && original.hasEdge)
             if (gesture.physicalHeld) registrationHold = gesture
             dispatch(gesture);next++
         } } finally {

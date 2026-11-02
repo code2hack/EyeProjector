@@ -14,16 +14,16 @@ internal class HidKeyInput(
     private val contact: (Any, PadGestureRecognizer.Event) -> Unit,
     private val cancelContact: (Any, Long) -> Unit,
     private val scroll: (Int, PointerPosition, Long) -> Unit,
-    function: (FunctionGestureRecognizer.Gesture) -> Unit,
+    anchorOperation: (AnchorGesture) -> Unit,
     private val changed: () -> Unit = {},
     private val captureTarget: (HidDecisionTrace.Event?) -> HidAction? = { null },
-    functionCapture: (Any) -> Any? = { it },
+    anchorCapture: (Any) -> Any? = { it },
     private val navigation: (ContextualNavigationAction) -> Unit = {},
-    functionCaptureOriginal: ((Any, Long, Long?) -> Any?)? = null,
-    functionRetireOriginal: ((Long, Any) -> Unit)? = null,
-    registrationRelease: (FunctionGestureRecognizer.Gesture, Boolean) -> Unit = { _, _ -> },
+    anchorCaptureOriginal: ((Any, Long, Long?) -> Any?)? = null,
+    anchorRetireOriginal: ((Long, Any) -> Unit)? = null,
+    registrationRelease: (AnchorGesture, Boolean) -> Unit = { _, _ -> },
 ) {
-    companion object { private val functionIdentities = FunctionGestureRecognizer.Identity() }
+    companion object { private val anchorIdentities = AnchorInputIdentity() }
 
     enum class Phase { DOWN, UP, CANCEL }
     data class Event(
@@ -45,7 +45,7 @@ internal class HidKeyInput(
     private var capture: Capture? = null
     private var captureAttempt: Any? = null
     val selected: HidAction? get() = capture?.action
-    private var functionAttachment: Int? = null
+    private var anchorAttachment: Int? = null
     private var registrationPress: Event? = null
     private var generation = 0L
     private var admission = 0L // Actual Press publication, including a later completed Scroll.
@@ -55,11 +55,11 @@ internal class HidKeyInput(
         val original: () -> Unit = { retiring?.add(cancel) ?: cancel() }
         original
     }
-    private val recognizer = FunctionGestureRecognizer(now,
-        { context()?.let { Pair(it, functionAttachment) } }, originalSchedule, function, edgeOnly = true,
-        capture = { functionCapture((it as Pair<*, *>).first!!) }, identity = functionIdentities,
-        captureOriginal = functionCaptureOriginal?.let { capture -> { owner, id, parent -> capture((owner as Pair<*, *>).first!!,id,parent) } },
-        retireOriginal = functionRetireOriginal?.let { retire -> { id, original ->
+    private val anchorInput = AnchorPressInput(now,
+        { context()?.let { Pair(it, anchorAttachment) } }, originalSchedule, anchorOperation,
+        capture = { anchorCapture((it as Pair<*, *>).first!!) }, identity = anchorIdentities,
+        captureOriginal = anchorCaptureOriginal?.let { capture -> { owner, id -> capture((owner as Pair<*, *>).first!!,id,null) } },
+        retireOriginal = anchorRetireOriginal?.let { retire -> { id, original ->
             val effect: () -> Unit = {retire(id,original)}
             retiring?.add(effect) ?: effect()
         } }, registrationRelease = { gesture, canceled ->
@@ -147,7 +147,7 @@ internal class HidKeyInput(
             val attempt = Any()
             captureAttempt = attempt
             // A normal bound DOWN owns its per-key/shared-output transition before pointer refresh.
-            // An independent Function key can advance without invalidating this contact.
+            // An independent Anchor key can advance without invalidating this contact.
             val press = action?.let { Press(event, it, current) }
             if (press != null) {
                 admissions[key] = press
@@ -203,9 +203,9 @@ internal class HidKeyInput(
             when (action) {
                 HidAction.TAP -> contact(press.owner, edge(event, PadGestureRecognizer.Phase.DOWN, point))
                 HidAction.ANCHOR -> {
-                    if (functionAttachment != event.attachmentId) recognizer.cancel()
-                    functionAttachment = event.attachmentId
-                    recognizer.accept(FunctionGestureRecognizer.Report.DOWN, event.downTimeMs)
+                    if (anchorAttachment != event.attachmentId) anchorInput.cancel()
+                    anchorAttachment = event.attachmentId
+                    anchorInput.down(event.downTimeMs)
                 }
                 HidAction.NAVIGATION -> backHome.down(retired, key, press.context)
                 else -> Unit
@@ -233,8 +233,8 @@ internal class HidKeyInput(
             HidAction.TAP -> contact(old.owner, edge(event, PadGestureRecognizer.Phase.UP, point))
             HidAction.SCROLL_DOWN -> if (point?.available == true) scroll(160, point, event.timeMs)
             HidAction.SCROLL_UP -> if (point?.available == true) scroll(-160, point, event.timeMs)
-            HidAction.ANCHOR -> if (functionAttachment == event.attachmentId)
-                recognizer.accept(FunctionGestureRecognizer.Report.UP, event.timeMs)
+            HidAction.ANCHOR -> if (anchorAttachment == event.attachmentId)
+                anchorInput.up(event.timeMs)
             HidAction.NAVIGATION -> backHome.up(retired, event.timeMs)
         }
         return true
@@ -247,8 +247,8 @@ internal class HidKeyInput(
             original.binding.button.scanCode != scanCode || original.downTimeMs != downTimeMs) return false
         if (phase != Phase.DOWN) {
             registrationPress = null
-            if (phase == Phase.UP) recognizer.accept(FunctionGestureRecognizer.Report.UP)
-            else recognizer.cancel()
+            if (phase == Phase.UP) anchorInput.up()
+            else anchorInput.cancel()
         }
         return true
     }
@@ -291,7 +291,7 @@ internal class HidKeyInput(
         return consumeRetired(attachmentId, keyCode, scanCode, phase, downTimeMs)
     }
 
-    @Suppress("UNUSED_PARAMETER") // Removal invalidates the shared HID context, including pending Function work.
+    @Suppress("UNUSED_PARAMETER") // Removal invalidates the shared HID context, including pending Anchor work.
     fun cancelDevice(attachmentId: Int) {
         // Attachment IDs are transient; saved identity and assignments remain untouched.
         cancel()
@@ -314,7 +314,7 @@ internal class HidKeyInput(
         capture = nextCapture
         if (oldCapture != null) suppressed.add(Retired(Key(oldCapture.event.attachmentId, oldCapture.event.binding.button), oldCapture.event.downTimeMs))
         val old = presses.values.toList()
-        if (preserveRegistration && recognizer.awaitingRegistrationRelease)
+        if (preserveRegistration && anchorInput.awaitingRegistrationRelease)
             registrationPress = old.firstOrNull { it.action == HidAction.ANCHOR }?.event ?: registrationPress
         else registrationPress = null
         admissions.forEach { (key, press) -> if (press.event !== registrationPress) suppressed.add(Retired(key, press.event.downTimeMs)) }
@@ -322,17 +322,17 @@ internal class HidKeyInput(
         presses.clear()
         val effects = mutableListOf<() -> Unit>()
         retiring = effects
-        try { recognizer.cancel(preserveRegistration); if (!preserveRegistration) functionAttachment = null; backHome.cancel() }
+        try { anchorInput.cancel(preserveRegistration); if (!preserveRegistration) anchorAttachment = null; backHome.cancel() }
         finally { retiring = null }
         val originalGeneration = generation
         val originalAdmission = admission
-        val originalFunction = recognizer.retirementState()
+        val originalAnchor = anchorInput.retirementState()
         effects.add { oldCapture?.trace?.record(if (nextCapture == null) Step.CAPTURE_CANCEL else Step.CAPTURE_RETIRE, target = oldCapture.action) }
         effects.add { nextCapture?.trace?.record(Step.CAPTURE_BEGIN, target = nextCapture.action) }
         old.filter { it.action == HidAction.TAP }.forEach { press -> effects.add { cancelPress(press, at) } }
         if (oldCapture != null || nextCapture != null) effects.add(changed)
         return InputRetirement({ InputRetirement.finishAll(effects) }, {
-            generation != originalGeneration || admission != originalAdmission || recognizer.retirementState() != originalFunction
+            generation != originalGeneration || admission != originalAdmission || anchorInput.retirementState() != originalAnchor
         })
     }
 
@@ -349,7 +349,7 @@ internal class HidKeyInput(
     private fun cancelPress(press: Press, at: Long) {
         when (press.action) {
             HidAction.TAP -> cancelContact(press.owner, at)
-            HidAction.ANCHOR -> if (functionAttachment == press.event.attachmentId) recognizer.cancel()
+            HidAction.ANCHOR -> if (anchorAttachment == press.event.attachmentId) anchorInput.cancel()
             HidAction.NAVIGATION -> backHome.cancel(Retired(Key(press.event.attachmentId, press.event.binding.button), press.event.downTimeMs))
             else -> Unit
         }

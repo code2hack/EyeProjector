@@ -36,14 +36,14 @@ import com.code2hack.eyeprojector.protocol.AnchorChoice
 import com.code2hack.eyeprojector.protocol.AnchorRegistrationResult
 import com.code2hack.eyeprojector.protocol.ReceiverUsabilityMode
 import com.code2hack.eyeprojector.protocol.Touch
-import com.code2hack.eyeprojector.protocol.CapturedFunctionIntent
-import com.code2hack.eyeprojector.protocol.FunctionIntent
-import com.code2hack.eyeprojector.protocol.FunctionIntentKind
-import com.code2hack.eyeprojector.protocol.FunctionOriginal
+import com.code2hack.eyeprojector.protocol.CapturedAnchorIntent
+import com.code2hack.eyeprojector.protocol.AnchorIntent
+import com.code2hack.eyeprojector.protocol.AnchorIntentKind
+import com.code2hack.eyeprojector.protocol.AnchorOriginal
 import com.code2hack.eyeprojector.protocol.ReceiverControlSource
 import com.code2hack.eyeprojector.protocol.ReceiverControlDisposition
-import com.code2hack.eyeprojector.protocol.FunctionIntentContext
-import com.code2hack.eyeprojector.protocol.FunctionSource
+import com.code2hack.eyeprojector.protocol.AnchorIntentContext
+import com.code2hack.eyeprojector.protocol.AnchorSource
 import com.code2hack.eyeprojector.protocol.HeadPointerState
 import com.code2hack.eyeprojector.protocol.ReceiverInputKind
 import com.code2hack.eyeprojector.protocol.Fit
@@ -345,7 +345,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         anchorOverlay = AnchorRegistrationOverlay(this, anchorRegistration::highlight) {
             anchorRegistration.presented()
             anchorRegistration.offer?.let {
-                runCatching { Log.i("EyeProjectorFunction", "menu_drawn transaction=${it.id} source=${it.intent?.source} gesture=${it.intent?.gestureId}") }
+                runCatching { Log.i("EyeProjectorAnchor", "menu_drawn transaction=${it.id} source=${it.intent?.source} gesture=${it.intent?.gestureId}") }
             }
         }
         root.addView(anchorOverlay, FrameLayout.LayoutParams(-1, -1))
@@ -434,18 +434,18 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             schedulePadConfirmation()
         }
         functionInput = NativeFunctionInput(this,
-            ::functionContext,
-            { gesture -> dispatchFunction(FunctionSource.GLASSES_NATIVE, gesture) },
-            capture = ::captureFunction,
-            captureOriginal = { expected, id, parent -> captureFunctionOriginal(expected,id,FunctionSource.GLASSES_NATIVE,parent) },
-            retireOriginal = { id, original -> retireFunctionOriginal(id,original,FunctionSource.GLASSES_NATIVE) },
-            registrationRelease = { gesture, canceled -> releaseFunctionRegistration(FunctionSource.GLASSES_NATIVE, gesture, canceled) },
+            ::anchorContext,
+            { gesture -> dispatchAnchor(AnchorSource.GLASSES_NATIVE, gesture) },
+            capture = ::captureAnchor,
+            captureOriginal = { expected, id, parent -> captureAnchorOriginal(expected,id,AnchorSource.GLASSES_NATIVE,parent) },
+            retireOriginal = { id, original -> retireAnchorOriginal(id,original,AnchorSource.GLASSES_NATIVE) },
+            registrationRelease = { gesture, canceled -> releaseAnchorRegistration(AnchorSource.GLASSES_NATIVE, gesture, canceled) },
         )
         nativeSwipeInput = NativeSwipeNavigationInput(this) { action ->
             if (usable()) dispatchNavigation(action, ReceiverControlSource.NATIVE_SWIPE)
         }
         hidInput = HidKeyInput(hidBindings, SystemClock::uptimeMillis,
-            ::functionContext,
+            ::anchorContext,
             { deadline, action ->
                 val task = Runnable(action)
                 val handler = android.os.Handler(android.os.Looper.getMainLooper())
@@ -471,14 +471,14 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
                     updateEdgeScroll()
             },
             { pixels, point, at -> dispatchPadAction(PadGestureRecognizer.Action.Scroll(pixels, point, at)) },
-            { gesture -> dispatchFunction(FunctionSource.GLASSES_HID, gesture) },
+            { gesture -> dispatchAnchor(AnchorSource.GLASSES_HID, gesture) },
             { if (::hidPanel.isInitialized) hidPanel.refresh() },
             ::hoveredHidAction,
-            functionCapture = ::captureFunction,
+            anchorCapture = ::captureAnchor,
             navigation = { action -> dispatchNavigation(action, ReceiverControlSource.GLASSES_HID) },
-            functionCaptureOriginal = { expected, id, parent -> captureFunctionOriginal(expected,id,FunctionSource.GLASSES_HID,parent) },
-            functionRetireOriginal = { id, original -> retireFunctionOriginal(id,original,FunctionSource.GLASSES_HID) },
-            registrationRelease = { gesture, canceled -> releaseFunctionRegistration(FunctionSource.GLASSES_HID, gesture, canceled) },
+            anchorCaptureOriginal = { expected, id, parent -> captureAnchorOriginal(expected,id,AnchorSource.GLASSES_HID,parent) },
+            anchorRetireOriginal = { id, original -> retireAnchorOriginal(id,original,AnchorSource.GLASSES_HID) },
+            registrationRelease = { gesture, canceled -> releaseAnchorRegistration(AnchorSource.GLASSES_HID, gesture, canceled) },
         )
         hidDevices = AndroidHidInput(this, hidInput, learning = ::hidLearningPage,
             admit = ::admitHidLearning, unhandled = ::unhandledHid, current = ::hidLearningContext) { event ->
@@ -565,14 +565,14 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         anchorHeldIndicator.bind(source, current)
     }
 
-    private data class FunctionCapture(val source: ProjectionSession, val context: FunctionIntentContext)
+    private data class AnchorCapture(val source: ProjectionSession, val context: AnchorIntentContext)
 
-    private fun functionContext(): Any? = if (usable() && !registrationActive()) Triple(inputGeneration, session, projectionContext) else null
+    private fun anchorContext(): Any? = if (usable() && !registrationActive()) Triple(inputGeneration, session, projectionContext) else null
 
     /** Read the original hover once. Pointer callbacks may retire ownership, so recheck that capture. */
-    private fun captureFunction(expected: Any): FunctionCapture? {
+    private fun captureAnchor(expected: Any): AnchorCapture? {
         val source = session ?: return null
-        val original = functionContext() ?: return null
+        val original = anchorContext() ?: return null
         if (original != expected) return null
         val position = pointer.inputPosition()
         publishHeadPointer()
@@ -581,39 +581,39 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         val projected = !localInputVisible()
         val point = HeadPointerState(inputGeneration, 0, usable() && position.available && (!projected || fit != null && projectedInput()),
             projected, position.x, position.y, fit, if (fit != null) size else null)
-        if (functionContext() != original || session !== source) return null
-        val captured = source.captureFunctionContext(point) ?: return null
-        return FunctionCapture(source, captured)
+        if (anchorContext() != original || session !== source) return null
+        val captured = source.captureAnchorContext(point) ?: return null
+        return AnchorCapture(source, captured)
     }
 
-    private fun captureFunctionOriginal(expected: Any, id: Long, source: FunctionSource, summaryOriginal: Long? = null): FunctionCapture? {
-        val captured = captureFunction(expected) ?: return null
-        return captured.takeIf { captured.source.beginFunction(FunctionOriginal(source,id,captured.context,summaryOriginal)) }
+    private fun captureAnchorOriginal(expected: Any, id: Long, source: AnchorSource, summaryOriginal: Long? = null): AnchorCapture? {
+        val captured = captureAnchor(expected) ?: return null
+        return captured.takeIf { captured.source.beginAnchor(AnchorOriginal(source,id,captured.context,summaryOriginal)) }
     }
 
-    private fun retireFunctionOriginal(id: Long, original: Any, source: FunctionSource) {
-        val captured=original as FunctionCapture
-        captured.source.retireFunction(FunctionOriginal(source,id,captured.context,retired=true))
+    private fun retireAnchorOriginal(id: Long, original: Any, source: AnchorSource) {
+        val captured=original as AnchorCapture
+        captured.source.retireAnchor(AnchorOriginal(source,id,captured.context,retired=true))
     }
 
-    private fun dispatchFunction(source: FunctionSource, gesture: FunctionGestureRecognizer.Gesture) {
-        val captured = gesture.original as FunctionCapture
+    private fun dispatchAnchor(source: AnchorSource, gesture: AnchorGesture) {
+        val captured = gesture.original as AnchorCapture
         if (!usable() || session !== captured.source || inputGeneration != captured.context.pointer.revision) return
-        val intent = FunctionIntent(gesture.kind, source, gesture.gestureId, gesture.sequence, captured.context)
-        runCatching { Log.i("EyeProjectorFunction", "classified source=$source kind=${gesture.kind} gesture=${gesture.gestureId} sequence=${gesture.sequence} physicalHeld=${gesture.physicalHeld}") }
-        if (intent.kind == FunctionIntentKind.REGISTER)
+        val intent = AnchorIntent(gesture.kind, source, gesture.gestureId, gesture.sequence, captured.context)
+        runCatching { Log.i("EyeProjectorAnchor", "classified source=$source kind=${gesture.kind} gesture=${gesture.gestureId} sequence=${gesture.sequence} physicalHeld=${gesture.physicalHeld}") }
+        if (intent.kind == AnchorIntentKind.REGISTER)
             anchorRegistration.registration(captured.source, intent, gesture.physicalHeld)
-        captured.source.functionIntent(CapturedFunctionIntent(intent, captured.source))
+        captured.source.anchorIntent(CapturedAnchorIntent(intent, captured.source))
     }
 
     private fun usable() = resumed && hasWindowFocus()
-    private fun releaseFunctionRegistration(source: FunctionSource, gesture: FunctionGestureRecognizer.Gesture, canceled: Boolean) {
-        val captured = gesture.original as FunctionCapture
-        val intent = FunctionIntent(gesture.kind, source, gesture.gestureId, gesture.sequence, captured.context)
+    private fun releaseAnchorRegistration(source: AnchorSource, gesture: AnchorGesture, canceled: Boolean) {
+        val captured = gesture.original as AnchorCapture
+        val intent = AnchorIntent(gesture.kind, source, gesture.gestureId, gesture.sequence, captured.context)
         registrationReleased(captured.source, intent, canceled)
     }
 
-    private fun registrationReleased(source: ProjectionSession, intent: FunctionIntent, canceled: Boolean, transactionId: Long? = null) {
+    private fun registrationReleased(source: ProjectionSession, intent: AnchorIntent, canceled: Boolean, transactionId: Long? = null) {
         if (session !== source) return
         val original = anchorRegistration.offer
         val message = anchorOffer
@@ -634,11 +634,11 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     private fun localInputVisible() = connectionView.visibility == View.VISIBLE || registrationActive()
     private fun projectedInput() = streaming && presentation.projectedInput && !registrationActive()
 
-    private fun currentRegistrationIntent(source: ProjectionSession, original: FunctionIntentContext): Boolean {
+    private fun currentRegistrationIntent(source: ProjectionSession, original: AnchorIntentContext): Boolean {
         if (!usable() || session !== source || !projectedInput() ||
             original.pointer.geometry != currentGeometry || root.width <= 0 || root.height <= 0 ||
             original.pointer.fit != currentGeometry?.let { Fit.inside(root.width, root.height, it) }) return false
-        val current = source.captureFunctionContext(original.pointer)?.usability ?: return false
+        val current = source.captureAnchorContext(original.pointer)?.usability ?: return false
         return current.mode == ReceiverUsabilityMode.PROJECTED && current.ownerEpoch == original.usability.ownerEpoch &&
             current.incarnation == original.usability.incarnation && current.inputRevision == original.usability.inputRevision &&
             inputGeneration == original.usability.inputRevision

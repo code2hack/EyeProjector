@@ -112,14 +112,14 @@ internal class PhoneInputTrace private constructor(
                 mapOf("frameControlId" to it.id, "frameControlSource" to it.source.name,
                     "frameIncarnation" to it.context.incarnation.id, "frameInputRevision" to it.context.inputRevision)
             }
-            Wire.FUNCTION_INTENT -> FunctionIntent.from(frame.payload).let {
+            Wire.ANCHOR_INTENT -> AnchorIntent.from(frame.payload).let {
                 mapOf("frameGestureId" to it.gestureId, "frameFunctionSource" to it.source.name,
                     "frameFunctionKind" to it.kind.name, "frameFunctionSequence" to it.sequence,
                     "frameIncarnation" to it.context.usability.incarnation.id)
             }
-            Wire.FUNCTION_ORIGINAL -> FunctionOriginal.from(frame.payload).let {
+            Wire.ANCHOR_ORIGINAL -> AnchorOriginal.from(frame.payload).let {
                 mapOf("frameGestureId" to it.gestureId, "frameFunctionSource" to it.source.name,
-                    "frameOriginalRetired" to it.retired, "frameSummaryOriginal" to it.summaryOriginal,
+                    "frameOriginalRetired" to it.retired, "frameSummaryOriginal" to it.parentOriginal,
                     "frameIncarnation" to it.context.usability.incarnation.id)
             }
             Wire.TOUCH -> Touch.from(frame.payload).let { mapOf("frameTouchContactId" to it.contactId, "frameTouchPhase" to it.phase.name) }

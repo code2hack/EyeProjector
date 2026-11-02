@@ -1,9 +1,9 @@
 package com.code2hack.eyeprojector.directrg
 
-import com.code2hack.eyeprojector.protocol.FunctionIntent
-import com.code2hack.eyeprojector.protocol.FunctionSource
+import com.code2hack.eyeprojector.protocol.AnchorIntent
+import com.code2hack.eyeprojector.protocol.AnchorSource
 import com.code2hack.eyeprojector.protocol.Fit
-import com.code2hack.eyeprojector.protocol.FunctionIntentContext
+import com.code2hack.eyeprojector.protocol.AnchorIntentContext
 import com.code2hack.eyeprojector.protocol.Geometry
 import com.code2hack.eyeprojector.protocol.ReceiverIncarnation
 
@@ -24,19 +24,19 @@ internal data class AnchorRegistrationHighlight(val left: Double, val top: Doubl
 internal class AnchorRegistrationController<S : Any>(
     private val send: (S, Long, AnchorRegistrationAction) -> Boolean,
 ) {
-    internal data class Offer<S>(val source: S, val id: Long, val original: FunctionIntentContext,
+    internal data class Offer<S>(val source: S, val id: Long, val original: AnchorIntentContext,
         val highlight: AnchorRegistrationHighlight, val fit: Fit, val geometry: Geometry,
         var chooserRevision: Long? = null, var choosing: Boolean = false,
-        val intent: FunctionIntent? = null, var highlighted: AnchorRegistrationAction? = null, var ready: Boolean = false)
+        val intent: AnchorIntent? = null, var highlighted: AnchorRegistrationAction? = null, var ready: Boolean = false)
 
     var offer: Offer<S>? = null
         private set
-    private class Original<S>(val source: S, val intent: FunctionIntent, var held: Boolean)
-    private val originals = mutableMapOf<FunctionSource, Original<S>>()
+    private class Original<S>(val source: S, val intent: AnchorIntent, var held: Boolean)
+    private val originals = mutableMapOf<AnchorSource, Original<S>>()
     private var revision = 0L
 
     /** Classification retains this physical original before its asynchronous registration request. */
-    fun registration(source: S, intent: FunctionIntent, held: Boolean) {
+    fun registration(source: S, intent: AnchorIntent, held: Boolean) {
         val old = originals[intent.source]
         if (old?.source === source && old.intent == intent) return
         originals[intent.source] = Original(source, intent, held)
@@ -45,15 +45,15 @@ internal class AnchorRegistrationController<S : Any>(
     }
 
     /** Exact original UP, never a summary, current context recapture or ordinary activation. */
-    fun released(source: S, intent: FunctionIntent, canceled: Boolean = false, transactionId: Long? = null): Boolean {
+    fun released(source: S, intent: AnchorIntent, canceled: Boolean = false, transactionId: Long? = null): Boolean {
         if (transactionId != null && offer?.let { it.source === source && it.intent == intent && it.id != transactionId } == true) return false
         val old = originals[intent.source]
         if (old == null) {
             // Phone can report release before its asynchronous app snapshot/Offer returns.
-            if (intent.source == FunctionSource.PHONE_HID) originals[intent.source] = Original(source, intent, false)
+            if (intent.source == AnchorSource.PHONE_HID) originals[intent.source] = Original(source, intent, false)
             return false
         }
-        if (old.source === source && intent.source == FunctionSource.PHONE_HID && intent.sequence > old.intent.sequence) {
+        if (old.source === source && intent.source == AnchorSource.PHONE_HID && intent.sequence > old.intent.sequence) {
             originals[intent.source] = Original(source, intent, false)
             return false
         }
@@ -72,10 +72,10 @@ internal class AnchorRegistrationController<S : Any>(
 
     val active: Boolean get() = offer != null
 
-    fun show(source: S, id: Long, original: FunctionIntentContext, highlight: AnchorRegistrationHighlight,
-        intent: FunctionIntent? = null): Boolean {
+    fun show(source: S, id: Long, original: AnchorIntentContext, highlight: AnchorRegistrationHighlight,
+        intent: AnchorIntent? = null): Boolean {
         if (intent != null) {
-            if (intent.source == FunctionSource.PHONE_HID) {
+            if (intent.source == AnchorSource.PHONE_HID) {
                 val prior = originals[intent.source]
                 if (prior == null || prior.source !== source || intent.sequence > prior.intent.sequence)
                     registration(source, intent, true)

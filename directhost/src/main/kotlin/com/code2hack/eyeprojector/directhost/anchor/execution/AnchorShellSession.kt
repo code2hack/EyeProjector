@@ -2,7 +2,7 @@ package com.code2hack.eyeprojector.directhost.anchor.execution
 
 import com.code2hack.eyeprojector.directhost.anchor.preferences.AnchorSettingContext
 import com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiSource
-import com.code2hack.eyeprojector.directhost.input.FunctionWork
+import com.code2hack.eyeprojector.directhost.input.InputWork
 import com.code2hack.eyeprojector.protocol.*
 import android.os.IBinder
 import java.io.Closeable
@@ -12,19 +12,19 @@ import java.util.concurrent.atomic.AtomicLong
 internal class AnchorShellSession(
     private val input: AnchorSessionInput,
     private val source: () -> ManagedUiSource?,
-    private val accepts: (FunctionIntent, ManagedUiSource) -> Boolean,
+    private val accepts: (AnchorIntent, ManagedUiSource) -> Boolean,
     private val ordinaryHandoff: ((() -> Boolean) -> Boolean),
-    private val stateWork: FunctionWork,
+    private val stateWork: InputWork,
     private val failure: (Exception) -> Unit,
     private val send: (AnchorMessage) -> Unit,
     private val rawEdge: (AnchorControlAdmission, Long, PhoneHidEdge, String, Long) -> Unit = { _, _, _, _, _ -> },
 ) : Closeable {
     private var controlContext = com.code2hack.eyeprojector.directhost.ProjectionContext()
     private val controlPort by lazy { object : IAnchorControlSession.Stub() {
-        override fun captureRawControl(disposition: IntArray): IAnchorRawControl? {
+        override fun captureRawControl(anchorOperation: Boolean, disposition: IntArray): IAnchorRawControl? {
             if (closed) { disposition[0] = AnchorControlDisposition.RETIRED.ordinal; return null }
             val original = AnchorControlAdmission()
-            input.anchor.receiveControl(original, function = true)
+            input.anchor.receiveControl(original, anchorOperation = anchorOperation)
             disposition[0] = original.disposition.ordinal // Same original result; never query a later Hold.
             original.sourceBinding = binding to binding.get()
             original.sourceRevision = sourceRevision to sourceRevision.get()
@@ -98,13 +98,13 @@ internal class AnchorShellSession(
         val original = binding.get()
         val id = sequence.incrementAndGet()
         if (!input.anchor.isCurrent(admission)) return
-        if (admission.intent.kind == FunctionIntentKind.REGISTER &&
+        if (admission.intent.kind == AnchorIntentKind.REGISTER &&
             input.anchor.consumeHeldControl(admission, captureNormal = false) != AnchorControlDisposition.NORMAL) return
         if (original == null || closed) {
             send(AnchorMessage.Feedback(id, admission.intent, AnchorFeedback.UNAVAILABLE)); return
         }
         val operation = Operation(id, admission, original)
-        if (admission.intent.kind == FunctionIntentKind.REGISTER) {
+        if (admission.intent.kind == AnchorIntentKind.REGISTER) {
             cancelRegistration(registration.get(), deferred = true)
             registration.set(operation)
         }
@@ -159,12 +159,12 @@ internal class AnchorShellSession(
             if (!closed) try { send.invoke(AnchorMessage.HeldState(id, admission.intent, revision, state)) }
             catch (error: Exception) { failure(error) }
         }
-        private fun currentControl() = admission.intent.kind != FunctionIntentKind.REGISTER ||
+        private fun currentControl() = admission.intent.kind != AnchorIntentKind.REGISTER ||
             input.anchor.isCurrent(admission.control)
         override fun source(): ByteArray? = if (alive() && currentControl()) source.invoke()?.bytes() else null
         override fun reconcile(settingContext: ByteArray): Boolean = alive() &&
             input.anchor.reconcile(AnchorExecutionCodec.setting(settingContext),
-                admission.control.takeIf { admission.intent.kind == FunctionIntentKind.REGISTER })
+                admission.control.takeIf { admission.intent.kind == AnchorIntentKind.REGISTER })
         override fun click(settingContext: ByteArray, resolvedTarget: ByteArray): Int {
             if (!alive()) return AnchorExecutionStatus.RETIRED.ordinal
             val setting = AnchorExecutionCodec.setting(settingContext)
@@ -210,7 +210,7 @@ internal class AnchorShellSession(
                     if (registration.get() !== this) return
                 }
                 is AnchorMessage.Result -> if (!registration.compareAndSet(this, null)) return
-                is AnchorMessage.Feedback -> if (admission.intent.kind == FunctionIntentKind.REGISTER) registration.compareAndSet(this, null) else Unit
+                is AnchorMessage.Feedback -> if (admission.intent.kind == AnchorIntentKind.REGISTER) registration.compareAndSet(this, null) else Unit
                 else -> error("Invalid app Anchor response")
             }
             send.invoke(message)
@@ -218,10 +218,10 @@ internal class AnchorShellSession(
     }
 
     /** Captured physical Phone Anchor terminal; no new context or input admission is consulted. */
-    fun release(intent: FunctionIntent, canceled: Boolean) {
+    fun release(intent: AnchorIntent, canceled: Boolean) {
         val original = registration.get() ?: return
         if (closed || binding.get() !== original.original || original.admission.intent != intent ||
-            intent.source != FunctionSource.PHONE_HID) return
+            intent.source != AnchorSource.PHONE_HID) return
         // Reverse OPEN/usability may still be in flight while the original menu is already
         // drawn. Forward the physical terminal unchanged; Glasses checks its original
         // ready/highlight state, and its Choice follows OPEN/fact on the existing writer.

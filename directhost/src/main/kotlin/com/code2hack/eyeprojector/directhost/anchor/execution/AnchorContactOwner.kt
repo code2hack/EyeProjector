@@ -3,12 +3,12 @@ package com.code2hack.eyeprojector.directhost.anchor.execution
 import com.code2hack.eyeprojector.directhost.anchor.preferences.AnchorSettingContext
 import com.code2hack.eyeprojector.directhost.uiaccess.*
 import com.code2hack.eyeprojector.directhost.anchor.target.ResolvedAnchorTarget
-import com.code2hack.eyeprojector.directhost.input.FunctionWork
+import com.code2hack.eyeprojector.directhost.input.InputWork
 import com.code2hack.eyeprojector.directhost.PhoneInputTrace
 import com.code2hack.eyeprojector.protocol.*
 
-/** A local admission token captured by the original Session before any Function/Binder queue. */
-internal class AnchorAdmission(val intent: FunctionIntent, internal val generation: Long) {
+/** A local admission token captured by the original Session before any Anchor/Binder queue. */
+internal class AnchorAdmission(val intent: AnchorIntent, internal val generation: Long) {
     internal var consumed = false // Guarded by the original owner's control lock.
     internal val control = AnchorControlAdmission()
     internal var releaseInspected = false
@@ -23,7 +23,7 @@ enum class AnchorExecutionStatus { CLICK_SUBMITTED, NO_ANCHOR, UNAVAILABLE, HOLD
 internal enum class AnchorReleaseResult { NOT_HELD, RELEASE_SUBMITTED, RETIRED, INPUT_REJECTED }
 
 /** Concrete enqueue: even an inline ordinary handoff cannot deliver state under the contact lock. */
-internal class AnchorHoldOutput(private val work: FunctionWork,
+internal class AnchorHoldOutput(private val work: InputWork,
     private val deliver: (Long, AnchorHoldState) -> Unit) {
     fun publish(revision: Long, state: AnchorHoldState) = work.submit { deliver(revision, state) }
 }
@@ -42,7 +42,7 @@ internal class AnchorContactOwner(
     @Volatile private var generation = 0L
     @Volatile private var closed = false
     @Volatile private var sequence = 0L
-    private class Contact(val intent: FunctionIntent, val down: Touch, val setting: AnchorSettingContext,
+    private class Contact(val intent: AnchorIntent, val down: Touch, val setting: AnchorSettingContext,
         val source: ManagedUiSource, val hold: Boolean, val state: AnchorHoldOutput?) {
         var downSubmitted = false
     }
@@ -96,7 +96,7 @@ internal class AnchorContactOwner(
 
     /** First ingress observation, before the merger/Binder/FIFO can wait. This records lifetime;
      * completed Short still selects its release contact only on the original app FIFO. */
-    fun receiveControl(control: AnchorControlAdmission, function: Boolean = false) {
+    fun receiveControl(control: AnchorControlAdmission, anchorOperation: Boolean = false) {
         try {
         if (control.terminal) return
         if (discardingControls) {
@@ -106,10 +106,10 @@ internal class AnchorContactOwner(
         if (control.owner == null) {
             control.owner = this
             control.receivedSequence = sequence
-            if (function) control.functionGeneration = generation
+            if (anchorOperation) control.anchorGeneration = generation
             val held = contact?.let { it.hold && it.downSubmitted } == true
             control.capturedHold = held
-            if (!function || held) control.normalSequence = sequence
+            if (!anchorOperation || held) control.normalSequence = sequence
         }
         if (closed) control.disposition = AnchorControlDisposition.RETIRED
         else if (discardingControls) {
@@ -124,10 +124,10 @@ internal class AnchorContactOwner(
         prepareCancellation = prepare; scheduleCancellation = schedule; cancellationFailure = failure
     }
 
-    fun capture(intent: FunctionIntent, original: AnchorControlAdmission? = null): AnchorAdmission? {
+    fun capture(intent: AnchorIntent, original: AnchorControlAdmission? = null): AnchorAdmission? {
         if (discardingControls) return null
         return synchronized(lock) {
-            if (closed || discardingControls || original != null && (original.terminal || original.owner !== this || original.functionGeneration != generation ||
+            if (closed || discardingControls || original != null && (original.terminal || original.owner !== this || original.anchorGeneration != generation ||
                 original.capturedHold && (original.normalSequence != sequence || contact?.let { it.hold && it.downSubmitted } != true))) null
             else AnchorAdmission(intent, generation)
         }
@@ -144,32 +144,32 @@ internal class AnchorContactOwner(
     fun currentAtSubmission(control: AnchorControlAdmission): Boolean =
         !closed && !discardingControls && control.current(this, sequence)
 
-    /** Retain a Function original's existing Hold for later Long classification; no cancellation. */
+    /** Retain an Anchor original's existing Hold for later Long classification; no cancellation. */
     fun captureHeldControl(control: AnchorControlAdmission) = synchronized(lock) {
         if (discardingControls) { control.disposition = AnchorControlDisposition.CONSUMED; return@synchronized }
         if (control.terminal) return@synchronized
         if (control.owner != null) {
-            if (control.owner !== this || control.functionGeneration != generation)
+            if (control.owner !== this || control.anchorGeneration != generation)
                 control.disposition = AnchorControlDisposition.RETIRED
             return@synchronized
         }
         if (closed) return@synchronized
         control.owner = this
         control.receivedSequence = sequence
-        control.functionGeneration = generation // Lifetime only; FIFO still chooses Short mode.
+        control.anchorGeneration = generation // Lifetime only; FIFO still chooses Short mode.
         if (contact?.let { it.hold && it.downSubmitted } == true) {
             control.normalSequence = sequence
             control.capturedHold = true
         }
     }
 
-    /** A raw press starts unclassified so Anchor Short can keep its FIFO lifetime. Once its
-     * actual role is ordinary, validate that birth before replacing the Function-only lifetime.
-     * Its own ordinary output retirement must not invalidate this same contact/sequence. */
+    /** Ordinary output retains its original receipt without acquiring Anchor's generation.
+     * Validate first so a stale or consumed original cannot become a fresh control. This also
+     * preserves the original-to-ordinary handoff for an already captured unclassified receipt. */
     fun classifyOrdinaryControl(control: AnchorControlAdmission): AnchorControlDisposition = synchronized(lock) {
         control.ordinary()
         val result = consumeHeldControl(control)
-        if (result == AnchorControlDisposition.NORMAL) control.functionGeneration = null
+        if (result == AnchorControlDisposition.NORMAL) control.anchorGeneration = null
         result
     }
 
@@ -183,7 +183,7 @@ internal class AnchorContactOwner(
             return@synchronized control.disposition
         }
         if (closed || !control.current(this, sequence) || !control.capturedHold &&
-            control.functionGeneration?.let { it != generation } == true) {
+            control.anchorGeneration?.let { it != generation } == true) {
             control.disposition = AnchorControlDisposition.RETIRED
             return@synchronized control.disposition
         }
@@ -315,7 +315,7 @@ internal class AnchorContactOwner(
         val finish: () -> Boolean
         val revision: Long
         synchronized(lock) {
-            if (!isCurrent(admission) || admission.intent.kind != FunctionIntentKind.ACTIVATE)
+            if (!isCurrent(admission) || admission.intent.kind != AnchorIntentKind.ACTIVATE)
                 return AnchorReleaseResult.RETIRED
             val held = contact?.takeIf { it.hold && it.downSubmitted }
             if (admission.releaseInspected && (admission.releaseSequence != sequence || admission.releaseContact !== held)) {

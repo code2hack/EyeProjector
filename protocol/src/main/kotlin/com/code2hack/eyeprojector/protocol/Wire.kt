@@ -102,12 +102,14 @@ object Wire {
     const val CAMERA_MEDIA = 20 // Receiver -> Phone, camera socket.
     const val CAMERA_PROGRESS = 21 // Either peer's own observations, projection socket.
     const val CAMERA_END = 22 // Either peer's own observations, camera socket.
-    const val FUNCTION_INTENT = 23 // Typed original Function intention; no raw HID or uptime.
+    const val ANCHOR_INTENT = 23 // Semantic Anchor operation; no native gesture codes or raw HID.
+    const val FUNCTION_INTENT = ANCHOR_INTENT // Historical channel name; byte-compatible.
     const val ANCHOR = 24 // Typed Anchor feedback and original registration transaction.
     const val CONTROL_INTENT = 25 // Receiver local operation before any cleanup or local effect.
     const val CONTROL_RESULT = 26 // Original Phone's fixed central-gate disposition.
     const val PASSIVE_SCROLL = 27 // Head-derived motion, distinct from a user wheel action.
-    const val FUNCTION_ORIGINAL = 28 // Existing source gesture identity before classification/queues.
+    const val ANCHOR_ORIGINAL = 28 // Original semantic Anchor lifetime before classification/queues.
+    const val FUNCTION_ORIGINAL = ANCHOR_ORIGINAL // Historical channel name; byte-compatible.
     const val STREAM = 1
     const val STOP_HOST = 2
     const val CAMERA = 3
@@ -137,8 +139,8 @@ object Wire {
             HEAD_POINTER -> require(length == HeadPointerState.MIN_PAYLOAD_SIZE || length == HeadPointerState.MAX_PAYLOAD_SIZE)
             RECEIVER_INPUT -> require(length == ReceiverInput.PAYLOAD_SIZE)
             RECEIVER_USABILITY -> require(length in ReceiverUsability.MIN_PAYLOAD_SIZE..ReceiverUsability.MAX_PAYLOAD_SIZE)
-            FUNCTION_INTENT -> require(length in FunctionIntent.MIN_PAYLOAD_SIZE..FunctionIntent.MAX_PAYLOAD_SIZE)
-            FUNCTION_ORIGINAL -> require(length in FunctionOriginal.MIN_PAYLOAD_SIZE..FunctionOriginal.MAX_PAYLOAD_SIZE)
+            FUNCTION_INTENT -> require(length in AnchorIntent.MIN_PAYLOAD_SIZE..AnchorIntent.MAX_PAYLOAD_SIZE)
+            FUNCTION_ORIGINAL -> require(length in AnchorOriginal.MIN_PAYLOAD_SIZE..AnchorOriginal.MAX_PAYLOAD_SIZE)
             ANCHOR -> require(length in AnchorMessage.MIN_PAYLOAD_SIZE..AnchorMessage.MAX_PAYLOAD_SIZE)
             CONTROL_INTENT -> require(length in (9 + ReceiverUsability.MIN_PAYLOAD_SIZE)..(9 + ReceiverUsability.MAX_PAYLOAD_SIZE))
             CONTROL_RESULT -> require(length == 9)

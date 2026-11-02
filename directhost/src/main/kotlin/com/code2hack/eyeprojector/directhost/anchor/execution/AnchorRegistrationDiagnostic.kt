@@ -5,12 +5,12 @@ import com.code2hack.eyeprojector.directhost.anchor.registration.AnchorRegistrat
 import com.code2hack.eyeprojector.directhost.anchor.target.AnchorTargetResolution
 import com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiSource
 import com.code2hack.eyeprojector.directhost.uiaccess.UiTargetSnapshot
-import com.code2hack.eyeprojector.protocol.FunctionIntent
+import com.code2hack.eyeprojector.protocol.AnchorIntent
 
 /** Original FIFO observation only. No live node, Binder, target text or input permission. */
 internal data class AnchorRegistrationDiagnostic(
     val transactionId: Long,
-    val intent: FunctionIntent,
+    val intent: AnchorIntent,
     val stage: Stage,
     val source: ManagedUiSource? = null,
     val snapshot: UiTargetSnapshot? = null,

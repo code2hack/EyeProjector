@@ -8,7 +8,7 @@ import com.code2hack.eyeprojector.protocol.AnchorFeedback
 internal object AnchorFeedbackUi {
     fun show(context: Context?, status: AnchorFeedback) {
         val text = when (status) {
-            AnchorFeedback.NO_ANCHOR -> "Hover a target and long-press Function to set an Anchor"
+            AnchorFeedback.NO_ANCHOR -> "Hover a target and hold the Anchor control to register it"
             AnchorFeedback.UNAVAILABLE, AnchorFeedback.RETIRED, AnchorFeedback.INPUT_REJECTED -> "Anchor unavailable"
             AnchorFeedback.HOLD_MODE -> "Anchor unavailable"
             AnchorFeedback.CLICK_SUBMITTED, AnchorFeedback.HOLD_SUBMITTED, AnchorFeedback.RELEASE_SUBMITTED -> null

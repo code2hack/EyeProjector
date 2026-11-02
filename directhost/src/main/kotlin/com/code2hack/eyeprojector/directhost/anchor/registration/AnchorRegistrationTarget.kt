@@ -7,8 +7,8 @@ import com.code2hack.eyeprojector.directhost.anchor.target.ResolvedAnchorTarget
 import com.code2hack.eyeprojector.directhost.anchor.target.AnchorTargetResolution
 import com.code2hack.eyeprojector.directhost.anchor.target.AnchorTargetAmbiguity
 import com.code2hack.eyeprojector.directhost.uiaccess.*
-import com.code2hack.eyeprojector.protocol.FunctionIntent
-import com.code2hack.eyeprojector.protocol.FunctionIntentKind
+import com.code2hack.eyeprojector.protocol.AnchorIntent
+import com.code2hack.eyeprojector.protocol.AnchorIntentKind
 import com.code2hack.eyeprojector.protocol.ReceiverUsabilityMode
 
 /** Pending values, never a saved coordinate, live node or execution contact. */
@@ -41,10 +41,10 @@ data class AnchorRegistrationInspection(
 
 /** Select only under the original hover, then use #118's persistent-identity capture. */
 object AnchorRegistrationTargets {
-    fun capture(intent: FunctionIntent, snapshot: UiTargetSnapshot): AnchorRegistrationCapture =
+    fun capture(intent: AnchorIntent, snapshot: UiTargetSnapshot): AnchorRegistrationCapture =
         inspect(intent, snapshot).capture
 
-    fun inspect(intent: FunctionIntent, snapshot: UiTargetSnapshot): AnchorRegistrationInspection {
+    fun inspect(intent: AnchorIntent, snapshot: UiTargetSnapshot): AnchorRegistrationInspection {
         var videoHover: UiPoint? = null
         var sourceHover: UiPoint? = null
         var windowCount = 0
@@ -67,7 +67,7 @@ object AnchorRegistrationTargets {
         val pointer = intent.context.pointer
         val request = snapshot.request ?: return reject(AnchorRegistrationFailure.TARGET_UNAVAILABLE)
         val source = request.source
-        if (intent.kind != FunctionIntentKind.REGISTER || fact.mode != ReceiverUsabilityMode.PROJECTED ||
+        if (intent.kind != AnchorIntentKind.REGISTER || fact.mode != ReceiverUsabilityMode.PROJECTED ||
             fact.ownerEpoch != source.context.ownerEpoch || pointer.revision != fact.inputRevision ||
             pointer.geometry != source.geometry.video) return reject(AnchorRegistrationFailure.CONTEXT_CHANGED)
         val video = pointer.target() ?: return reject(AnchorRegistrationFailure.HOVER_ABSENT)
