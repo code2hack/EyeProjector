@@ -17,6 +17,10 @@ It records actual provider installation state/failure, coordinator lastFailure a
 then queries the actual current source through `uiTargetContext` and actual metadata through `uiTargets`.
 Only source/window/target IDs, classes, bounds, actionable flags and typed failures are copied;
 no UI text/content is exported. A fresh snapshot alone is not the original failed-request witness.
+Before wrapping, the same FIFO reads the existing coordinator's private `registrationRequest` field.
+If present, its copied intent/snapshot and pure capture outcome are labeled `RETAINED_ORIGINAL_REQUEST`;
+this is the retained historical transaction, not a new callback, replay or handler invocation. Absence
+and reflection/read failure are explicit and cannot establish what an earlier request contained.
 The public source callback can return null without exposing its internally caught exception; this
 limit is explicit in the output. Callback or FIFO completion not observed within the finite test wait
 is recorded, without repairing setup or substituting stale bootstrap-file data.

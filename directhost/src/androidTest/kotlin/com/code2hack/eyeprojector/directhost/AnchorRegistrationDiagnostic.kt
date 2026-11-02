@@ -112,6 +112,20 @@ internal class AnchorRegistrationDiagnostic(
             emit("actual_bootstrap_status", mapOf("setup" to status.setup.name, "backend" to status.backend,
                 "detail" to status.detail, "source" to projection(status.projectionContext),
                 "uiTargetReaderConnected" to (UiTargetAccess.reader() != null)))
+            fun requestMetadata(request: CapturedAnchorRequest, kind: String, witness: String) {
+                val capturedIntent = request.original.intent.copy(context = request.original.intent.context.copy())
+                val capturedSource = request.source.copy()
+                val capturedSnapshot = copy(request.snapshot)
+                val transaction = request.original.transactionId
+                val identity = System.identityHashCode(request.original.identity)
+                val pure = runCatching { AnchorRegistrationTargets.capture(capturedIntent, capturedSnapshot) }
+                val pureFailure = failure(pure.exceptionOrNull())
+                queue(kind) { mapOf("transactionId" to transaction,
+                    "originalRouteIdentity" to identity, "intent" to intent(capturedIntent),
+                    "source" to source(capturedSource), "snapshot" to snapshot(capturedSnapshot),
+                    "pureCapture" to pure.getOrNull()?.let(::capture), "pureCaptureException" to pureFailure?.json(),
+                    "witness" to witness) }
+            }
             fun runtimeState(phase: String) {
                 val done = CountDownLatch(1)
                 runtime.onLane {
@@ -123,6 +137,16 @@ internal class AnchorRegistrationDiagnostic(
                         queue("actual_runtime_state") { mapOf("phase" to phase, "providerState" to state,
                             "installationFailure" to installation?.json(), "coordinatorLastFailure" to last?.json(),
                             "registrationHandlerPresent" to handlerPresent) }
+                        if (phase == "before") try {
+                            val retainedField = runtime.coordinator.javaClass.getDeclaredField("registrationRequest").apply { isAccessible = true }
+                            val retained = retainedField.get(runtime.coordinator) as? CapturedAnchorRequest
+                            if (retained == null) queue("retained_original_request_absent") {
+                                mapOf("witness" to "No retained request at this FIFO sample; no inference about earlier failure")
+                            } else requestMetadata(retained, "retained_original_request", "RETAINED_ORIGINAL_REQUEST; historical retained transaction, no replay or handler invocation")
+                        } catch (error: Throwable) {
+                            val copied = failure(error)
+                            queue("retained_request_read_exception") { mapOf("failure" to copied?.json()) }
+                        }
                     } finally { done.countDown() }
                 }
                 emit("runtime_read", mapOf("phase" to phase, "completed" to done.await(2, TimeUnit.SECONDS)))
@@ -131,18 +155,7 @@ internal class AnchorRegistrationDiagnostic(
             if (seconds > 0) {
                 lease = RegistrationDiagnosticLease(runtime::onLane, { runtime.coordinator.registration },
                     { runtime.coordinator.registration = it }, { request ->
-                        val capturedIntent = request.original.intent.copy(context = request.original.intent.context.copy())
-                        val capturedSource = request.source.copy()
-                        val capturedSnapshot = copy(request.snapshot)
-                        val transaction = request.original.transactionId
-                        val identity = System.identityHashCode(request.original.identity)
-                        val pure = runCatching { AnchorRegistrationTargets.capture(capturedIntent, capturedSnapshot) }
-                        val pureFailure = failure(pure.exceptionOrNull())
-                        queue("actual_registration_request") { mapOf("transactionId" to transaction,
-                            "originalRouteIdentity" to identity, "intent" to intent(capturedIntent),
-                            "source" to source(capturedSource), "snapshot" to snapshot(capturedSnapshot),
-                            "pureCapture" to pure.getOrNull()?.let(::capture), "pureCaptureException" to pureFailure?.json(),
-                            "witness" to "Actual original handler request; not diagnostic dispatch") }
+                        requestMetadata(request, "actual_registration_request", "Actual original handler request; not diagnostic dispatch")
                     }, { error -> val copied = failure(error); queue("observer_exception") { mapOf("failure" to copied?.json()) } },
                     { error -> val copied = failure(error); queue("original_handler_exception") { mapOf("failure" to copied?.json(), "rethrowsSameThrowable" to true) } })
                 lease.install()
