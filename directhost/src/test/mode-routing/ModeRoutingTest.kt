@@ -28,8 +28,10 @@ class ModeRoutingTest {
             }
         }))
         val states=mutableListOf<CoordinateModeResult>()
+        var beforeDecision: ((CoordinateOperation)->Unit)?=null
         fun decide(operation: CoordinateOperation,point: Tap?=null): CoordinateModeResult {
             assertFalse(Thread.holdsLock(lock))
+            beforeDecision?.invoke(operation)
             return CoordinateModeResult.from(owner.decide("owner","projection",app,operation.ordinal,point?.x?.toDouble() ?: 0.0,
                 point?.y?.toDouble() ?: 0.0)!!).also { states.add(it) }
         }
@@ -196,5 +198,46 @@ class ModeRoutingTest {
             assertTrue(f.dispatcher.navigate(Navigate(Navigation.BACK,f.size)))
             assertFalse(f.stockWrites.isEmpty())
         } finally { launches.close() }
+    }
+    private fun nativeContactThenConsumedScroll(hid: Boolean,settings: Boolean=false) {
+        val f=Fixture()
+        f.decide(CoordinateOperation.CYCLE)
+        if(!settings) {
+            f.router.tap(Tap(30,40,f.size));f.router.tap(Tap(90,100,f.size))
+            f.decide(CoordinateOperation.CYCLE);f.decide(CoordinateOperation.CYCLE)
+        }
+        val down=Touch(Touch.Phase.DOWN,900,Tap(130,230,f.size))
+        assertTrue(f.merger.nativeTouch(down))
+        val original=f.touches.singleOrNull()
+        assertEquals(!settings,f.dispatcher.holding)
+        f.beforeDecision={ operation -> if(operation==CoordinateOperation.SCROLL_DOWN) {
+            assertFalse("Original contact must end before the selection decision",f.dispatcher.holding)
+            assertEquals(if(settings) emptyList() else listOf(Touch.Phase.DOWN,Touch.Phase.CANCEL),f.touches.map { it.phase })
+        } }
+        if(hid) {
+            f.merger.edge(201,f.edge(PhoneHidAction.SCROLL_DOWN,PhoneHidPhase.DOWN))
+            f.merger.edge(201,f.edge(PhoneHidAction.SCROLL_DOWN,PhoneHidPhase.UP,1040))
+        } else assertTrue(f.merger.nativeAction { f.router.scroll(Scroll(down.target,160)) })
+        assertFalse(f.dispatcher.holding);assertTrue(f.scrolls.isEmpty())
+        if(!settings) {
+            assertEquals(1,f.states.last().state.selectedIndex)
+            assertEquals(original!!.copy(phase=Touch.Phase.CANCEL),f.touches.last())
+        } else assertTrue(f.touches.isEmpty())
+        for(phase in listOf(Touch.Phase.UP,Touch.Phase.CANCEL)) assertFalse(f.merger.nativeTouch(down.copy(phase=phase)))
+        if(!settings) {
+            val fresh=down.copy(contactId=901)
+            assertTrue(f.merger.nativeTouch(fresh))
+            for(phase in listOf(Touch.Phase.UP,Touch.Phase.CANCEL)) assertFalse(f.merger.nativeTouch(down.copy(phase=phase)))
+            assertTrue(f.dispatcher.holding)
+            assertTrue(f.merger.nativeTouch(fresh.copy(phase=Touch.Phase.UP)))
+            assertEquals(listOf(Touch.Phase.DOWN,Touch.Phase.CANCEL,Touch.Phase.DOWN,Touch.Phase.UP),f.touches.map { it.phase })
+            assertEquals(listOf(900L,900L,901L,901L),f.touches.map { it.contactId })
+        }
+    }
+    @Test fun nativeDownThenHidAnchorScrollRetiresOriginalOnceAndRejectsItsTail()=nativeContactThenConsumedScroll(true)
+    @Test fun nativeDownThenNativeAnchorScrollRetiresOriginalOnceAndRejectsItsTail()=nativeContactThenConsumedScroll(false)
+    @Test fun settingsConsumedScrollAndOldNativeTerminalsNeverReachApp() {
+        nativeContactThenConsumedScroll(true,settings=true)
+        nativeContactThenConsumedScroll(false,settings=true)
     }
 }

@@ -112,6 +112,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             }
             val native = local.owner.nativeInputs(shellPadContact) ?: return
             functionInput = native.first; shellPadContact = native.second
+            if (usable()) functionInput.start()
             registerTask(launchScope, visibleActivation)
             val forget = pendingForget; pendingForget = null
             if (forget != null) owner?.disconnect(complete = forget, scope = launchScope, activationId = visibleActivation)

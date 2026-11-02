@@ -24,15 +24,17 @@ class RetainedReceiverSessionTest {
         override fun state(snapshot: ReceiverSessionOwner.Snapshot) { states.add(snapshot) }
         override fun input(source: ProjectionSession, event: ReceiverInput) { inputs.add(event) }
     }
-    internal inner class Fixture(withFeature: Boolean = false) : AutoCloseable {
-        val feature = if (withFeature) ReceiverActivationStore(temporary.newFolder().resolve("feature.properties")).also {
+    internal inner class Fixture(withFeature: Boolean = false, directFeature: Boolean = false) : AutoCloseable {
+        val feature = if (withFeature || directFeature) ReceiverActivationStore(temporary.newFolder().resolve("feature.properties")).also {
             it.startIncarnation()
-            val first = ReceiverLaunchScope("old-scope", "old-trigger", 7)
-            it.launch(first, "old-admission")
-            it.accept(ActivationReply(ActivationDirective("H1", true, 1, "old-owner"), TriggerReceipt("old-trigger", "H1", TriggerDisposition.MAPPED)))
-            val current = ReceiverLaunchScope("current-scope", "current-trigger", 8)
-            it.launch(current, "current-admission")
-            it.accept(ActivationReply(ActivationDirective("H2", true, 1, "retained-phone-owner"), TriggerReceipt("current-trigger", "H2", TriggerDisposition.MAPPED)))
+            if (withFeature) {
+                val first = ReceiverLaunchScope("old-scope", "old-trigger", 7)
+                it.launch(first, "old-admission")
+                it.accept(ActivationReply(ActivationDirective("H1", true, 1, "old-owner"), TriggerReceipt("old-trigger", "H1", TriggerDisposition.MAPPED)))
+                val current = ReceiverLaunchScope("current-scope", "current-trigger", 8)
+                it.launch(current, "current-admission")
+                it.accept(ActivationReply(ActivationDirective("H2", true, 1, "retained-phone-owner"), TriggerReceipt("current-trigger", "H2", TriggerDisposition.MAPPED)))
+            }
         } else null
         val queue = LinkedBlockingQueue<() -> Unit>()
         val commands = LinkedBlockingQueue<SessionControl.Request>()
@@ -97,6 +99,89 @@ class RetainedReceiverSessionTest {
     }
     private fun outputFrames(bytes: ByteArrayOutputStream)=DataInputStream(bytes.toByteArray().inputStream()).use { input ->
         buildList{while(input.available()>0)add(Wire.readFrame(input))}
+    }
+
+    @Test fun directAndDemandOwnersWriteModeThenTapThroughActualSessionWriter() {
+        for (source in listOf("legacy", "direct", "demand")) Fixture(withFeature=source=="demand", directFeature=source=="direct").use { f ->
+            val session=f.owner.session!!
+            f.owner.presentation(f.view,true,false)
+            if (source!="legacy") assertEquals(ReceiverUsabilityMode.NONE,mode(session).mode)
+            f.streaming()
+            if (source=="legacy") assertNull(session.observationUsability())
+            else assertEquals(ReceiverUsabilityMode.PROJECTED,mode(session).mode)
+            if (source=="direct") {
+                assertNull(f.owner.currentDemand())
+                assertNull(f.feature!!.presentation) // Direct readiness does not invent an activation report.
+            }
+            assertTrue(session.cycleMode())
+            assertTrue(session.tap(Tap(20,30,size)))
+            drainControls(session)
+            assertEquals(listOf(Wire.MODE_CYCLE,Wire.TAP),outputFrames(f.bytes).filter { it.channel in listOf(Wire.MODE_CYCLE,Wire.TAP) }.map { it.channel })
+            assertEquals(2L,controls(session).snapshot().written)
+            assertEquals(0L,controls(session).snapshot().canceled)
+        }
+    }
+
+    @Test fun directOwnerNoneAndLocalPanelNeverDeliverModeOrBypassExplicitNone() {
+        Fixture(directFeature=true).use { f ->
+            val session=f.owner.session!!
+            assertEquals(ReceiverUsabilityMode.NONE,mode(session).mode)
+            session.presentation(true) // A legacy Boolean cannot override original explicit NONE.
+            assertTrue(session.cycleMode());drainControls(session)
+            f.owner.presentation(f.view,true,true)
+            assertEquals(ReceiverUsabilityMode.LOCAL_PANEL,mode(session).mode)
+            assertTrue(session.cycleMode());drainControls(session)
+            assertEquals(2L,controls(session).snapshot().canceled)
+            assertTrue(outputFrames(f.bytes).none { it.channel==Wire.MODE_CYCLE })
+            f.owner.presentation(f.view,true,false);f.streaming()
+            assertEquals(ReceiverUsabilityMode.PROJECTED,mode(session).mode)
+            assertTrue(session.cycleMode());drainControls(session)
+            assertEquals(1,outputFrames(f.bytes).count { it.channel==Wire.MODE_CYCLE })
+        }
+    }
+
+    private fun controls(session: ProjectionSession) = session.javaClass.getDeclaredField("controls").apply { isAccessible=true }.get(session) as OrderedControlDispatcher
+
+    @Test fun queuedModeRetiresWithOriginalDetachDecoderReplacementAndCloseWithoutReplay() {
+        for (source in listOf("legacy", "direct", "demand")) for (loss in listOf("detach", "decoder", "close", "owner", "panel")) {
+            if(source=="legacy" && loss=="panel") continue // Legacy Boolean sources have no explicit panel fact.
+            Fixture(withFeature=source=="demand", directFeature=source=="direct").use { f ->
+                f.owner.presentation(f.view,true,false);f.streaming()
+                val original=f.owner.session!!;val lane=controls(original)
+                val entered=java.util.concurrent.CountDownLatch(1);val release=java.util.concurrent.CountDownLatch(1)
+                assertTrue(lane.submit(0,{true},"test-blocker",false) {
+                    entered.countDown()
+                    var interrupted=false
+                    while(true) try { release.await();break } catch (_:InterruptedException) { interrupted=true }
+                    if(interrupted) Thread.currentThread().interrupt()
+                })
+                assertTrue(entered.await(2,TimeUnit.SECONDS))
+                try {
+                    assertTrue(original.cycleMode())
+                    when(loss) {
+                        "detach" -> f.owner.detach(f.view)
+                        "decoder" -> original.receive(Frame(Wire.GEOMETRY,payload=Geometry(640,480).bytes()))
+                        "close" -> original.close()
+                        "owner" -> f.observation(SessionState("replacement-phone-owner",SessionPhase.AVAILABLE))
+                        "panel" -> f.owner.presentation(f.view,true,true)
+                    }
+                    if(loss=="owner") assertNotSame(original,f.owner.session)
+                } finally { release.countDown() }
+                drainControls(original)
+                assertEquals("$source/$loss",1L,lane.snapshot().canceled)
+                assertTrue(outputFrames(f.bytes).none { it.channel==Wire.MODE_CYCLE })
+                if(loss=="close" || loss=="owner") assertFalse("closed original cannot admit later Mode",original.cycleMode())
+                if(loss=="detach") {
+                    f.owner.presentation(f.view,true,false) // Retired view cannot restore readiness.
+                    val recreated=View();f.owner.attach(recreated,Surface());f.owner.presentation(recreated,true,false)
+                    f.pumpUntil("current original presents again") { f.owner.snapshot().state=="STREAMING" }
+                    drainControls(original)
+                    assertTrue("canceled Mode never replays after attachment",outputFrames(f.bytes).none { it.channel==Wire.MODE_CYCLE })
+                    assertTrue(original.cycleMode());drainControls(original)
+                    assertEquals(1,outputFrames(f.bytes).count { it.channel==Wire.MODE_CYCLE })
+                }
+            }
+        }
     }
 
 

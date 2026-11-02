@@ -122,6 +122,8 @@ internal class ReceiverSessionOwner(
         }).also { nativeFunction=it }
         val connection=nativePad?.also { it.attachView(pad) } ?: pad.also { nativePad=it }
         connection.bindFunction(function)
+        function.start()
+        connection.start()
         return function to connection
     }
     private fun inputSessionLost(source: ProjectionSession?) {
@@ -180,20 +182,24 @@ internal class ReceiverSessionOwner(
 
     private fun publish(notifyView: Boolean = true) {
         val d = feature?.demand()
-        if (d != null) {
+        val incarnation = d?.incarnation ?: feature?.incarnation
+        if (incarnation != null) {
             // Allocate source authority before selecting eligibility. A concurrent replacement
             // then has a newer NONE even if this selected fact waits before application.
             val sourceRevision = usabilityRevision.incrementAndGet()
-            val shown = session != null && attachment.epoch == d.ownerEpoch && uiUsable && (localPanel || currentDisplayed)
-            val marker = listOf(d.activationId, d.wakeRevision, d.ownerEpoch, d.goal, windowGeneration.get(), inputRevision, listener, uiUsable, localPanel, displayed, mediaState)
+            // Direct projection has the same window authority even without an activation demand.
+            val shown = session != null && (d == null || attachment.epoch == d.ownerEpoch) && uiUsable && (localPanel || currentDisplayed)
+            val marker = listOf(d, incarnation, attachment.epoch, windowGeneration.get(), inputRevision, listener, uiUsable, localPanel, displayed, mediaState)
             if (marker != lastReport) {
                 lastReport = marker
                 lastPublishedInputRevision = inputRevision
-                attachment.epoch?.let { originalEpoch -> session?.usability(ReceiverUsability(originalEpoch, d.incarnation,
+                attachment.epoch?.let { originalEpoch -> session?.usability(ReceiverUsability(originalEpoch, incarnation,
                     sourceRevision, inputRevision,
                     if (!shown) ReceiverUsabilityMode.NONE else if (localPanel) ReceiverUsabilityMode.LOCAL_PANEL else ReceiverUsabilityMode.PROJECTED)) }
-                feature.report(d, ++reportRevision, if (!shown) ReceiverUsabilityMode.NONE else if (localPanel) ReceiverUsabilityMode.LOCAL_PANEL else ReceiverUsabilityMode.PROJECTED, if (shown) { if (localPanel) "LOCAL_PANEL" else "PROJECTED" } else "DISPLAY_DETACHED")
-                client.presentationChanged()
+                if (d != null) {
+                    feature.report(d, ++reportRevision, if (!shown) ReceiverUsabilityMode.NONE else if (localPanel) ReceiverUsabilityMode.LOCAL_PANEL else ReceiverUsabilityMode.PROJECTED, if (shown) { if (localPanel) "LOCAL_PANEL" else "PROJECTED" } else "DISPLAY_DETACHED")
+                    client.presentationChanged()
+                }
             }
             session?.presentation(shown)
         }

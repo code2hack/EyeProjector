@@ -146,33 +146,41 @@ class ProjectedAppLaunchTest {
         val size = Geometry(480, 640)
         touch.geometry(size)
         var component = "example.app/.Main"
-        val observations = mutableListOf<Int>()
+        val observations = mutableListOf<Pair<Int, String>>()
         val adapter = object : Adapter() {
             override fun foregroundComponent(displayId: Int): String {
-                observations.add(displayId)
+                observations.add(displayId to component)
                 return component
             }
         }
         var panels = 0
         ProjectedAppLaunch("context:source", adapter, beforeLaunch = { touch.cancel() }).use { launcher ->
-            launcher.initialize(47); launcher.snapshot(true)
+            launcher.initialize(47)
+            assertEquals("example.app", launcher.snapshot(true).foregroundPackage)
+            assertEquals(listOf(47 to component), observations)
             val callback = { assertFalse(touch.holding); panels++; Unit }
+            fun contextualHomeAndObserveMode(expectedPackage: String?) {
+                val before = observations.size
+                launcher.contextualHome(callback)
+                assertEquals(expectedPackage, launcher.currentModePackage())
+                // One decision read, then one serialized mode/foreground observation of the same source.
+                assertEquals(listOf(47 to component, 47 to component), observations.drop(before))
+            }
             touch.touch(Touch(Touch.Phase.DOWN, 71, Tap(40, 50, size)))
-            launcher.contextualHome(callback); launcher.snapshot(true)
+            contextualHomeAndObserveMode("example.app")
             assertEquals(2, adapter.calls.size)
             assertFalse(touch.holding); assertEquals(0, panels)
             for (grid in listOf(ProjectionLaunchCommands.HOME_COMPONENT,
                 "${ProjectionLaunchCommands.HOME_PACKAGE}/${ProjectionLaunchCommands.HOME_PACKAGE}.ProjectedHomeActivity")) {
                 component = grid
                 touch.touch(Touch(Touch.Phase.DOWN, 72, Tap(40, 50, size)))
-                launcher.contextualHome(callback); launcher.snapshot(true)
+                contextualHomeAndObserveMode(null)
             }
             assertEquals(2, panels); assertEquals(2, adapter.calls.size)
             // The package alone is insufficient: another EyeProjector Activity is not the app grid.
             component = "${ProjectionLaunchCommands.HOME_PACKAGE}/.HostActivity"
-            launcher.contextualHome(callback); launcher.snapshot(true)
+            contextualHomeAndObserveMode(ProjectionLaunchCommands.HOME_PACKAGE)
             assertEquals(3, adapter.calls.size); assertEquals(2, panels)
-            assertEquals(listOf(47, 47, 47, 47), observations)
             assertTrue(adapter.calls.all { it.first == 47 && it.third })
         }
     }

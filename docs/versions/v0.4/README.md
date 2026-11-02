@@ -16,6 +16,7 @@ Replace the old semantic Anchor pipeline with per-app absolute-position lists an
 | [V04-02 / #148](https://github.com/code2hack/EyeProjector/issues/148) | Seven Phone HID roles, gesture learning/matching and continuous Scroll controls | None for owned HID source; coordinate routing joins V04-01/V04-03 |
 | [V04-03 / #149](https://github.com/code2hack/EyeProjector/issues/149) | Phone/Glasses mode wiring, native Function Mode, numbered Settings overlay, pointer routing and removal of old Anchor code | V04-01 and V04-02 exact contracts |
 | [V04-04 / #150](https://github.com/code2hack/EyeProjector/issues/150) | Assemble, independently assess cleanup, and run both-device ADB E2E plus carried ordinary-input/stability regression | V04-01 through V04-03 |
+| [V04-05 / #154](https://github.com/code2hack/EyeProjector/issues/154) | Retire the captured original direct session on explicit Disconnect, preserving successor isolation | Frozen V04-03 routing contract; final integration follows #149 |
 
 V04-01 and V04-02 run concurrently with disjoint write ownership. They publish exact typed contracts promptly; V04-03 may inspect/plan its caller removal while those contracts settle, but imports only committed prerequisites. One independent Reviewer assesses each exact candidate. No mutable peer worktree import or shared SDK/device concurrency is allowed. Each PR targets version/v0.4.
 
@@ -37,3 +38,7 @@ The Owner is asleep and authorized the Manager to operate, trace and debug both 
 ## Completion boundary
 
 Integrate independently assessed exact candidates, then verify the assembled version branch and real-device effects. Report unsupported physical/camera/audio/firmware cases honestly. A software pass or scripted input submission does not establish universal app compatibility. Release/Owner usability acceptance stays distinct from the Owner's current implementation and unattended-testing authorization. Retain carried issue #103 and native input limitations in the verification record if they survive the redesign.
+
+## Device-test follow-up
+
+The first assembled device trials exposed a supported direct-session path without an activation ID. V04-05 runs as a small parallel lifecycle correction while V04-03 Mode readiness is verified. Its local and peer cleanup must target the captured original Session; trigger acknowledgement or a stale STREAMING status file alone is not resource-release evidence. The product contract remains unchanged.
