@@ -17,8 +17,8 @@ class AnchorExecutionTest {
         listOf(16), true, false, true, true)
     private val target get() = ResolvedAnchorTarget(source, window, node)
     private val setting = AnchorSettingContext("store", "app", 1)
-    private fun intent(sequence: Long = 0) = FunctionIntent(FunctionIntentKind.ACTIVATE, FunctionSource.GLASSES_NATIVE,
-        sequence, sequence, FunctionIntentContext(ReceiverUsability("owner", ReceiverIncarnation("glasses", 1), 1,
+    private fun intent(sequence: Long = 0) = AnchorIntent(AnchorIntentKind.ACTIVATE, AnchorSource.GLASSES_NATIVE,
+        sequence, sequence, AnchorIntentContext(ReceiverUsability("owner", ReceiverIncarnation("glasses", 1), 1,
             1, ReceiverUsabilityMode.PROJECTED), HeadPointerState(1, 1, true, true, 10f, 20f,
             Fit(0, 0, 480, 640), geometry)))
 
@@ -63,12 +63,13 @@ class AnchorExecutionTest {
         }
     }
 
-    @Test fun rejectedUpCancelsWithoutReportingCompletedClick() {
+    @Test fun rejectedUpReportsLossWithoutInventingCancelOrCompletedClick() {
         val touches = mutableListOf<Touch>(); var canceled = 0
         val owner = AnchorContactOwner(Any(), { touches.add(it); it.phase != Touch.Phase.UP }, { canceled++ })
         owner.reconcile(setting)
         assertEquals(AnchorExecutionStatus.INPUT_REJECTED, owner.click(owner.capture(intent())!!, setting, target, source) { true })
-        assertEquals(1, canceled); assertFalse(owner.holding)
+        assertEquals(0, canceled); assertFalse(owner.holding)
+        assertEquals(listOf(Touch.Phase.DOWN, Touch.Phase.UP), touches.map { it.phase })
     }
 
     @Test fun typedBinderValuesRoundTripCurrentSourceAndSetting() {
@@ -101,7 +102,7 @@ class AnchorExecutionTest {
             }))
         }
     }
-    private inner class Route(override val intent: FunctionIntent = intent()) : AnchorOriginalRoute {
+    private inner class Route(override val intent: AnchorIntent = intent()) : AnchorOriginalRoute {
         val owner = AnchorContactOwner(Any(), { true }, {})
         val admission = owner.capture(intent)!!
         val feedback = mutableListOf<AnchorExecutionStatus>(); val reconciled = mutableListOf<AnchorSettingContext>()
@@ -126,7 +127,7 @@ class AnchorExecutionTest {
     @Test fun unavailableRegistrationProviderReportsActualReadWithoutClickOrObserverSideEffects() {
         val store = AppAnchorStore(Storage()); val queue = ArrayDeque<() -> Unit>()
         val app = AnchorAppCoordinator(store, { UiTargetReader(Access()) { 0 } }, { 0 }, { queue.add(it) })
-        val i = intent().copy(kind = FunctionIntentKind.REGISTER)
+        val i = intent().copy(kind = AnchorIntentKind.REGISTER)
         val route = Route(i)
         app.registrationDiagnostic = { throw IllegalStateException("diagnostic sink failed") }
         app.accept(route)
@@ -146,7 +147,7 @@ class AnchorExecutionTest {
         val original = java.io.IOException("private application content")
         val store = AppAnchorStore(Storage()); val queue = ArrayDeque<() -> Unit>()
         val app = AnchorAppCoordinator(store, { UiTargetReader(Access()) { 0 } }, { 0 }, { queue.add(it) })
-        val route = Route(intent().copy(kind = FunctionIntentKind.REGISTER))
+        val route = Route(intent().copy(kind = AnchorIntentKind.REGISTER))
         val failing = object : AnchorOriginalRoute by route {
             override fun source(): ManagedUiSource? = throw original
         }
@@ -173,7 +174,7 @@ class AnchorExecutionTest {
         val failedSource = provider.read(source.context, "app")
         assertEquals(UiTargetReadStatus.FAILED, failedSource.status)
         assertSame(original, failedSource.failure)
-        val event = AnchorRegistrationDiagnostic(51, intent().copy(kind = FunctionIntentKind.REGISTER),
+        val event = AnchorRegistrationDiagnostic(51, intent().copy(kind = AnchorIntentKind.REGISTER),
             AnchorRegistrationDiagnostic.Stage.CAPTURE, source, read)
         assertTrue(event.render().contains(original.javaClass.name))
         assertFalse(event.render().contains("application content is not diagnostic output"))
@@ -197,14 +198,14 @@ class AnchorExecutionTest {
         val hold = Route(intent(2)); app.accept(hold); while (queue.isNotEmpty()) queue.removeFirst()()
         assertEquals(listOf(AnchorExecutionStatus.HOLD_MODE), hold.feedback); assertEquals(0, hold.clicks)
     }
-    @Test fun windowChangeOrAccessLossDuringReadRetiresPendingUse() {
+    @Test fun windowNotificationsDuringReadDoNotRetireCapturedUse() {
         for (display in listOf<Int?>(47, null)) {
             val store = AppAnchorStore(Storage()); store.replace(anchor)
             val queue = ArrayDeque<() -> Unit>(); val access = Access()
             val app = AnchorAppCoordinator(store, { UiTargetReader(access) { 0 } }, { 0 }, { queue.add(it) })
-            access.duringRead = { app.contextRetired(display) }
+            access.duringRead = { app.windowChanged(display ?: 47, 3, true) }
             val route = Route(); app.accept(route); while (queue.isNotEmpty()) queue.removeFirst()()
-            assertEquals(listOf(AnchorExecutionStatus.RETIRED), route.feedback); assertEquals(0, route.clicks)
+            assertEquals(listOf(AnchorExecutionStatus.CLICK_SUBMITTED), route.feedback); assertEquals(1, route.clicks)
         }
     }
 
@@ -237,7 +238,8 @@ class AnchorExecutionTest {
             assertEquals(latest, next.reconciled.last())
             assertEquals(listOf(AnchorExecutionStatus.CLICK_SUBMITTED), next.feedback)
             block = false; release.countDown(); mutator.join(2000); assertFalse(mutator.isAlive); drain()
-            assertEquals(latest, first.reconciled.last()) // Older immutable event never rolls owner back.
+            assertEquals(1L, first.reconciled.last().revision) // Completed operation is no longer observer owner.
+            assertEquals(latest, next.reconciled.last()) // Older event never rolls current owner back.
         } finally { release.countDown(); mutator.join(2000); subscription.close() }
     }
 
@@ -266,7 +268,7 @@ class AnchorExecutionTest {
         assertEquals(4, events.size); assertFalse(input.holding)
     }
 
-    @Test fun ordinaryInputAndGeometryRetirePendingAnchorBeforeHandoff() {
+    @Test fun explicitInputRetiresPendingAnchorButGeometryDoesNot() {
         val lock = Any(); val events = mutableListOf<Touch>()
         val input = AnchorSessionInput(lock) {}
         input.bindMotionTarget(object : com.code2hack.eyeprojector.directhost.PhoneTouchDispatcher.MotionTarget {
@@ -284,12 +286,14 @@ class AnchorExecutionTest {
         assertEquals(0, handoffs); assertTrue(events.isEmpty())
         val second = input.anchor.capture(intent(2))!!
         input.geometry(Geometry(640, 480))
-        assertEquals(AnchorExecutionStatus.RETIRED, input.click(second, setting, target, source, { true },
+        assertEquals(AnchorExecutionStatus.CLICK_SUBMITTED, input.click(second, setting, target, source, { true },
             { action -> handoffs++; action() }))
-        assertEquals(0, handoffs)
+        assertEquals(1, handoffs)
+        assertEquals(listOf(Touch.Phase.DOWN,Touch.Phase.UP),events.map{it.phase})
+        assertTrue(events.all{it.target.geometry==geometry})
     }
 
-    @Test fun geometryRetirementDuringActualDispatcherDownCannotLeaveAnOrphan() {
+    @Test fun geometryObservationDuringActualDispatcherDownKeepsOriginalClick() {
         val lock = Any(); val events = mutableListOf<Touch>()
         lateinit var input: AnchorSessionInput
         input = AnchorSessionInput(lock) {}
@@ -305,10 +309,11 @@ class AnchorExecutionTest {
         })
         input.geometry(geometry); input.anchor.reconcile(setting)
         val ticket = input.anchor.capture(intent())!!
-        assertEquals(AnchorExecutionStatus.RETIRED, input.click(ticket, setting, target, source,
+        assertEquals(AnchorExecutionStatus.CLICK_SUBMITTED, input.click(ticket, setting, target, source,
             { true }, { action -> action() }))
-        assertFalse("Retired original DOWN must leave no dispatcher contact", input.holding)
-        assertEquals(listOf(Touch.Phase.DOWN, Touch.Phase.CANCEL), events.map { it.phase })
+        assertFalse("Completed original Click must leave no dispatcher contact", input.holding)
+        assertEquals(listOf(Touch.Phase.DOWN, Touch.Phase.UP), events.map { it.phase })
+        assertEquals(events.first().target, events.last().target)
     }
 
     @Test fun registrationHandlerFailureRetainsCauseAndAllowsFollowingFifoWork() {
@@ -318,13 +323,16 @@ class AnchorExecutionTest {
         val failure = java.io.IOException("original registration Binder retired")
         app.registration = {}
         app.registrationMessage = { _, _ -> throw failure }
-        val register = Route(intent().copy(kind = FunctionIntentKind.REGISTER))
+        val cleanup = IllegalStateException("original metadata cleanup failed")
+        app.registrationLost = { throw cleanup }
+        val register = Route(intent().copy(kind = AnchorIntentKind.REGISTER))
         app.accept(register)
         while (queue.isNotEmpty()) queue.removeFirst()()
         app.acceptRegistration(AnchorMessage.Choice(0, register.intent, AnchorChoice.CANCEL), register)
         val next = Route(intent(2)); app.accept(next)
         while (queue.isNotEmpty()) queue.removeFirst()()
         assertSame(failure, app.lastFailure)
+        assertTrue(failure.suppressed.contains(cleanup))
         assertEquals(listOf(AnchorExecutionStatus.UNAVAILABLE), register.feedback)
         assertEquals(listOf(AnchorExecutionStatus.CLICK_SUBMITTED), next.feedback)
     }

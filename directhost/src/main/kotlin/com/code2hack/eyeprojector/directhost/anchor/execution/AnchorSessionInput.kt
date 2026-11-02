@@ -19,7 +19,10 @@ internal class AnchorSessionInput(private val lock: Any, write: (ByteArray) -> U
     private var geometry: Geometry? = null
     val holding: Boolean get() = output.holding
 
-    init { cancellation({ it() }, { throw it }) }
+    init {
+        anchor.originalDown(output::anchorDown)
+        cancellation({ it() }, { throw it })
+    }
     fun cancellation(schedule: (() -> Unit) -> Unit, failure: (Throwable) -> Unit) {
         anchor.releaseOutput(output::prepareRelease)
         anchor.cancellationOutput({

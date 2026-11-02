@@ -29,7 +29,7 @@ class TouchTest {
         }
     }
     @Test fun touchFramesCoexistWithScaleUnderTheMatchedRevisionTwelveFraming() {
-        assertEquals(13, Wire.VERSION)
+        assertEquals(14, Wire.VERSION)
         val touch = Touch(Touch.Phase.MOVE, 1000, target)
         val output = ByteArrayOutputStream()
         Wire.writeFrame(DataOutputStream(output), Frame(Wire.TOUCH, payload = touch.bytes()))

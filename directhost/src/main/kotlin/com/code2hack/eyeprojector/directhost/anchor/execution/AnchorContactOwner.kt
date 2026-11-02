@@ -53,6 +53,8 @@ internal class AnchorContactOwner(
     private var prepareCancellation: () -> (() -> Unit) = { cancelOutput }
     private var scheduleCancellation: (() -> Unit) -> Unit = { it() }
     private var cancellationFailure: (Throwable) -> Unit = { throw it }
+    private var submitDown: (Touch, ManagedUiSource) -> Boolean = { event, _ -> touch(event) }
+    fun originalDown(output: (Touch, ManagedUiSource) -> Boolean) { submitDown = output }
     private var prepareRelease: (Touch) -> (() -> Boolean) = { down -> {
         var result = false
         var failure: Throwable? = null
@@ -272,7 +274,7 @@ internal class AnchorContactOwner(
         val original = Contact(admission.intent, down, setting, target.source, hold, state)
         contact = original // Own cleanup even when output throws or retires reentrantly.
         try {
-            if (!touch(down)) {
+            if (!submitDown(down, original.source)) {
                 val retired = contact !== original || admission.generation != generation || closed
                 loseContact(original, "down-rejected")
                 return@synchronized if (retired) AnchorExecutionStatus.RETIRED else AnchorExecutionStatus.INPUT_REJECTED

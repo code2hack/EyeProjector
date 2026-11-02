@@ -151,6 +151,11 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             if (session === source && usable()) completedInput.accept(event)
         }
         override fun anchor(source: ProjectionSession, message: AnchorMessage): Boolean = anchorMessage(source, message)
+        override fun anchorReleased(source: ProjectionSession, intent: AnchorIntent, canceled: Boolean): Boolean {
+            if (session !== source) return false
+            registrationReleased(source, intent, canceled)
+            return true
+        }
         override fun captureNativeAnchor(expected: Any, gesture: Long?, parent: Long?): Any? =
             if (gesture == null) captureAnchor(expected) else captureAnchorOriginal(expected, gesture, AnchorSource.GLASSES_NATIVE, parent)
         override fun anchorHeld(source: ProjectionSession, message: AnchorMessage.HeldState) {

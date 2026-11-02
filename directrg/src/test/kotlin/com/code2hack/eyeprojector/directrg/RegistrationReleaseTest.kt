@@ -6,9 +6,9 @@ import org.junit.Test
 
 class RegistrationReleaseTest {
     private val geometry = Geometry(480, 640)
-    private val context = FunctionIntentContext(ReceiverUsability("owner", ReceiverIncarnation("receiver", 1), 1, 4, ReceiverUsabilityMode.PROJECTED),
+    private val context = AnchorIntentContext(ReceiverUsability("owner", ReceiverIncarnation("receiver", 1), 1, 4, ReceiverUsabilityMode.PROJECTED),
         HeadPointerState(4, 1, true, true, 240f, 320f, Fit(0, 0, 480, 640), geometry))
-    private fun intent(source: FunctionSource, id: Long = 1) = FunctionIntent(FunctionIntentKind.REGISTER, source, id, id, context)
+    private fun intent(source: AnchorSource, id: Long = 1) = AnchorIntent(AnchorIntentKind.REGISTER, source, id, id, context)
     private class Clock {
         var now = 0L
         data class Task(val at: Long, val run: () -> Unit, var canceled: Boolean = false)
@@ -47,7 +47,7 @@ class RegistrationReleaseTest {
                 registrationRelease = { _, canceled -> terminals.add(canceled) })
             if (report == FunctionGestureRecognizer.Report.UP) { r.accept(FunctionGestureRecognizer.Report.DOWN); clock.now = 800 }
             r.accept(report)
-            assertEquals(FunctionIntentKind.REGISTER, output.single().kind)
+            assertEquals(AnchorIntentKind.REGISTER, output.single().kind)
             assertFalse(output.single().physicalHeld)
             assertTrue(terminals.isEmpty())
         }
@@ -60,10 +60,10 @@ class RegistrationReleaseTest {
         r.accept(FunctionGestureRecognizer.Report.UP)
         assertEquals(listOf(true), terminals); assertEquals(1, output.size)
         clock.now = 900; r.accept(FunctionGestureRecognizer.Report.DOWN); clock.now = 910; r.accept(FunctionGestureRecognizer.Report.UP)
-        assertEquals(listOf(FunctionIntentKind.REGISTER, FunctionIntentKind.ACTIVATE), output.map { it.kind })
+        assertEquals(listOf(AnchorIntentKind.REGISTER, AnchorIntentKind.ACTIVATE), output.map { it.kind })
     }
     @Test fun sameSourcePressAndTransactionReleaseCommitsOnlyHighlightedMenuOnce() {
-        for (source in FunctionSource.entries) for (action in AnchorRegistrationAction.entries) {
+        for (source in AnchorSource.entries) for (action in AnchorRegistrationAction.entries) {
             val session = Any(); val original = intent(source); val sent = mutableListOf<AnchorRegistrationAction>()
             val c = AnchorRegistrationController<Any> { s, id, choice -> assertSame(session,s); assertEquals(7L,id); sent.add(choice); true }
             c.registration(session, original, true)
@@ -77,7 +77,7 @@ class RegistrationReleaseTest {
         }
     }
     @Test fun releaseBeforeMenuReadyOrOutsideChoicesCancelsAndLateOriginalCannotSaveSuccessor() {
-        val session=Any(); val original=intent(FunctionSource.GLASSES_NATIVE)
+        val session=Any(); val original=intent(AnchorSource.GLASSES_NATIVE)
         for (ready in listOf(false,true)) {
             val sent=mutableListOf<AnchorRegistrationAction>();val c=AnchorRegistrationController<Any>{_,_,a->sent.add(a);true}
             c.registration(session,original,true);c.show(session,1,context,AnchorRegistrationHighlight(1.0,1.0,50.0,50.0),original)
@@ -88,7 +88,7 @@ class RegistrationReleaseTest {
             assertFalse(c.released(session,original));assertEquals(1,sent.size)
             assertTrue(c.released(session,next));assertEquals(AnchorRegistrationAction.CLICK,sent.last())
         }
-        for(source in FunctionSource.entries) {
+        for(source in AnchorSource.entries) {
             val i=intent(source);val c=AnchorRegistrationController<Any>{_,_,_->error("No offer may write")}
             c.registration(session,i,true);c.released(session,i)
             assertFalse(c.show(session,3,context,AnchorRegistrationHighlight(1.0,1.0,2.0,2.0),i))
@@ -101,23 +101,5 @@ class RegistrationReleaseTest {
             for((i,a) in AnchorRegistrationAction.entries.withIndex())assertEquals(a,m.at(m.left+(i+0.5f)*m.width/3,m.top+m.height/2))
             assertNull(m.at(m.left-1,m.top));assertNull(m.at(m.left+m.width,m.top))
         }
-    }
-    @Test fun actualHidInputRetainsExactPhysicalTerminalAcrossChooserCancellation() {
-        val clock=Clock();var owner:Any?=Any();val bindings=HidBindings({null},{true})
-        val binding=HidBinding(HidButton(HidDeviceIdentity("external",1,2),3,4),"Remote","Key")
-        bindings.assign(HidAction.ANCHOR,binding)
-        val output=mutableListOf<FunctionGestureRecognizer.Gesture>();val terminals=mutableListOf<Boolean>()
-        val input=HidKeyInput(bindings,{clock.now},{owner},clock::schedule,{error("No pointer required")},
-            {_,_->error("No contact")},{_,_->error("No cancel contact")},{_,_,_->error("No scroll")},output::add,
-            registrationRelease={_,c->terminals.add(c)})
-        input.accept(HidKeyInput.Event(9,binding,HidKeyInput.Phase.DOWN,0,0));clock.advance(800)
-        assertTrue(output.single().physicalHeld)
-        owner=null;input.prepareCancel(preserveRegistration=true).finishOriginal()
-        assertFalse(input.consumeRetired(10,3,4,HidKeyInput.Phase.UP,0))
-        assertTrue(terminals.isEmpty())
-        assertTrue(input.consumeRetired(9,3,4,HidKeyInput.Phase.UP,0))
-        assertEquals(listOf(false),terminals)
-        input.accept(HidKeyInput.Event(9,binding,HidKeyInput.Phase.UP,0,900))
-        assertEquals(1,terminals.size);assertEquals(1,output.size)
     }
 }

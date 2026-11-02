@@ -7,6 +7,7 @@ import android.view.InputDevice
 import android.view.InputEvent
 import android.view.MotionEvent
 import com.code2hack.eyeprojector.directhost.uiaccess.UiPoint
+import com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiSource
 import com.code2hack.eyeprojector.protocol.Geometry
 import com.code2hack.eyeprojector.protocol.Scroll
 import com.code2hack.eyeprojector.protocol.Tap
@@ -33,6 +34,18 @@ internal class ManagedProjectionInput(
 
     override fun geometry(next: Geometry) {
         owner.inputGeometry(next)
+    }
+
+    @Synchronized override fun anchorDown(event: Touch, source: ManagedUiSource): Boolean {
+        val destination = owner.inputDestination() ?: return false
+        if (event.phase != Touch.Phase.DOWN || destination.displayId != source.displayId ||
+            destination.uniqueId != source.displayUniqueId || event.target.geometry != source.geometry.video) return false
+        val now = SystemClock.uptimeMillis()
+        val original = Contact(event.contactId, destination, now,
+            source.geometry.videoToInput(UiPoint(event.target.x.toDouble(), event.target.y.toDouble())))
+        held = original
+        return owner.withInputDestination(destination) { id -> motion(id, original.point, event.phase.action,
+            now, now, InputDevice.SOURCE_TOUCHSCREEN, MotionEvent.TOOL_TYPE_FINGER, 1f) }
     }
 
     @Synchronized override fun touch(event: Touch): Boolean {

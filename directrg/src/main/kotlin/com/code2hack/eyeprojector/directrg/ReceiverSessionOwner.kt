@@ -48,6 +48,7 @@ internal class ReceiverSessionOwner(
         fun anchor(source: ProjectionSession, message: AnchorMessage): Boolean = false
         fun anchorHeld(source: ProjectionSession, message: AnchorMessage.HeldState) = Unit
         fun captureNativeAnchor(expected: Any, gesture: Long?, parent: Long?): Any? = null
+        fun anchorReleased(source: ProjectionSession, intent: AnchorIntent, canceled: Boolean): Boolean = false
     }
     data class Snapshot(val session: ProjectionSession?, val epoch: String?, val peer: SessionState?,
         val requested: Boolean, val state: String, val geometry: Geometry?, val activationId: String? = null)
@@ -140,9 +141,7 @@ internal class ReceiverSessionOwner(
             }, registrationRelease = { gesture, canceled ->
                 val original = gesture.original as ReceiverAnchorOriginal
                 val intent = AnchorIntent(gesture.kind, AnchorSource.GLASSES_NATIVE, gesture.gestureId, gesture.sequence, original.context)
-                val offer = anchorRegistration.offer?.takeIf { it.source === original.source && it.intent == intent }
-                if (offer == null || !uiUsable) anchorRegistration.released(original.source, intent, canceled)
-                else receiveAnchor(original.source, AnchorMessage.Release(offer.id, intent, canceled))
+                nativeRegistrationReleased(original.source, intent, canceled)
             }, registrationLost = { gesture ->
                 val original = gesture.original as ReceiverAnchorOriginal
                 anchorSourceLost(original.source, AnchorIntent(gesture.kind, AnchorSource.GLASSES_NATIVE,
@@ -168,6 +167,12 @@ internal class ReceiverSessionOwner(
         if (retainedAnchorOffer?.let { it.first === source && it.second.intent == intent } == true) retainedAnchorOffer = null
         deferredAnchorMessages.removeAll { it.first === source && it.second.intent == intent }
         ProjectionSession.anchorFlow("anchor_resource_lost source=${intent.source} gesture=${intent.gestureId}")
+    }
+    /** Native release stays local; Wire Release is exclusively a physical Phone HID terminal. */
+    internal fun nativeRegistrationReleased(source: ProjectionSession, intent: AnchorIntent, canceled: Boolean) {
+        if (closed || session !== source) return
+        if (!uiUsable || listener?.anchorReleased(source, intent, canceled) != true)
+            anchorRegistration.released(source, intent, canceled)
     }
     private fun anchorSessionLost(source: ProjectionSession?) {
         if (source == null) return

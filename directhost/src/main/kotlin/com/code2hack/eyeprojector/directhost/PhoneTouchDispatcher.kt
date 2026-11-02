@@ -1,12 +1,15 @@
 package com.code2hack.eyeprojector.directhost
 
 import com.code2hack.eyeprojector.protocol.*
+import com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiSource
 
 /** Share the session's control lock with resize writes, geometry changes and release. */
 internal class PhoneTouchDispatcher(private val lock: Any = Any(), private val write: (ByteArray) -> Unit) {
     interface MotionTarget {
         fun geometry(next: Geometry)
         fun touch(event: Touch): Boolean
+        /** A selected Anchor uses its captured mapping; ordinary pointers use current geometry. */
+        fun anchorDown(event: Touch, source: ManagedUiSource): Boolean = touch(event)
         fun tap(event: Tap): Boolean
         fun scroll(event: Scroll): Boolean
     }
@@ -52,6 +55,16 @@ internal class PhoneTouchDispatcher(private val lock: Any = Any(), private val w
             }
         }
         true
+    }
+
+    fun anchorDown(event: Touch, source: ManagedUiSource): Boolean = synchronized(lock) {
+        if (closed || event.phase != Touch.Phase.DOWN || event.target.geometry != source.geometry.video)
+            return@synchronized false
+        if (held != null) cancel()
+        if (closed || held != null) return@synchronized false
+        held = event
+        val accepted = motionTarget?.anchorDown(event, source) ?: run { write(Scrcpy.touch(event)); true }
+        accepted && held === event
     }
 
     fun tap(event: Tap): Boolean = synchronized(lock) {

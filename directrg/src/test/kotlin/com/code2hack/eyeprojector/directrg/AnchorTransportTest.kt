@@ -35,8 +35,8 @@ class AnchorTransportTest {
             s.usability(fact); drain(s)
         }
     }
-    private fun offer(s: ProjectionSession) = AnchorMessage.Offer(5, FunctionIntent(FunctionIntentKind.REGISTER,
-        FunctionSource.GLASSES_NATIVE, 1, 1, s.captureFunctionContext(HeadPointerState(1, 1, true, true,
+    private fun offer(s: ProjectionSession) = AnchorMessage.Offer(5, AnchorIntent(AnchorIntentKind.REGISTER,
+        AnchorSource.GLASSES_NATIVE, 1, 1, s.captureAnchorContext(HeadPointerState(1, 1, true, true,
             120f, 230f, Fit(0, 0, 480, 640), geometry))!!), AnchorHighlight(100.0, 200.0, 140.0, 240.0))
     private fun frames(output: ByteArrayOutputStream): List<Frame> = DataInputStream(output.toByteArray().inputStream()).use {
         buildList { while (it.available() > 0) add(Wire.readFrame(it)) }
@@ -60,11 +60,11 @@ class AnchorTransportTest {
             assertEquals(5, choice.transactionId); assertEquals(original.intent, choice.intent)
         }
     }
-    @Test fun oldOfferCannotBindAfterGenuineInputContextReplacement() {
+    @Test fun oldOfferCannotBindAfterOriginalSourceReplacement() {
         val output = ByteArrayOutputStream()
         ready(output, mutableListOf()).use { s ->
             val original = offer(s)
-            s.usability(fact.copy(revision = 100, inputRevision = 3, mode = ReceiverUsabilityMode.NONE)); drain(s)
+            s.usability(fact.copy(revision = 100, incarnation = ReceiverIncarnation("replacement", 2), inputRevision = 3, mode = ReceiverUsabilityMode.NONE)); drain(s)
             assertFalse(s.openAnchorRegistration(original, fact.copy(revision = 101, inputRevision = 4, mode = ReceiverUsabilityMode.LOCAL_PANEL)))
             drain(s); assertTrue(frames(output).none { it.channel == Wire.ANCHOR })
         }

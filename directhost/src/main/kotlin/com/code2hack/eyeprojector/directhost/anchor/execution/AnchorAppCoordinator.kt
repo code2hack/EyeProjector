@@ -96,7 +96,8 @@ internal class AnchorAppCoordinator(
             reportRegistration(original, AnchorRegistrationDiagnostic.Stage.EXCEPTION,
                 pending?.source, pending?.snapshot, failure = error)
             if (registrationRequest?.original?.identity == original.identity) registrationRequest = null
-            registrationLost?.invoke(original)
+            try { registrationLost?.invoke(original) }
+            catch (cleanup: Exception) { error.addSuppressed(cleanup) }
             if (original.intent.kind == AnchorIntentKind.REGISTER) {
                 try { original.send(AnchorMessage.Result(original.transactionId, original.intent,
                     com.code2hack.eyeprojector.protocol.AnchorRegistrationResult.UNAVAILABLE)) }

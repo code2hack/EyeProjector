@@ -9,7 +9,7 @@ class AnchorRegistrationControllerTest {
     private val incarnation = ReceiverIncarnation("receiver", 1)
     private val geometry = Geometry(500, 400)
     private val fit = Fit(73, 31, 1000, 800)
-    private val original = FunctionIntentContext(
+    private val original = AnchorIntentContext(
         ReceiverUsability("owner", incarnation, 3, 4, ReceiverUsabilityMode.PROJECTED),
         HeadPointerState(4, 2, true, true, 200f, 100f, fit, geometry))
     private val highlight = AnchorRegistrationHighlight(60.0, 20.0, 120.0, 60.0)
@@ -25,35 +25,36 @@ class AnchorRegistrationControllerTest {
         assertTrue(controller.current(source, incarnation, geometry, 4, fit))
     }
 
-    @Test fun survivesOnlyItsExplicitChooserTransitionAndPreservesOriginalContext() {
+    @Test fun passivePresentationChangesPreserveOriginalSelectionAndFit() {
         val controller = controller(mutableListOf())
         controller.show(source, 1, original, highlight)
         assertTrue(controller.enteredChooser(source, incarnation, geometry, 5))
         assertTrue(controller.current(source, incarnation, geometry, 5, fit))
         assertEquals(original, controller.offer!!.original)
-        assertFalse(controller.current(source, incarnation, geometry, 4, fit))
-        assertFalse(controller.current(source, incarnation, geometry, 6, fit))
+        assertTrue(controller.current(source, incarnation, geometry, 4, fit))
+        assertTrue(controller.current(source, incarnation, geometry, 6, fit))
         assertFalse(controller.current(Any(), incarnation, geometry, 5, fit))
         assertFalse(controller.current(source, ReceiverIncarnation("replacement", 2), geometry, 5, fit))
-        assertFalse(controller.current(source, incarnation, Geometry(400, 500), 5, fit))
-        assertFalse(controller.current(source, incarnation, geometry, 5, fit.copy(left = 74)))
+        assertTrue(controller.current(source, incarnation, Geometry(400, 500), 5, fit))
+        assertTrue(controller.current(source, incarnation, geometry, 5, fit.copy(left = 74)))
     }
 
-    @Test fun secondTransitionCannotAdoptNewInputRevisionOrSession() {
+    @Test fun repeatedPresentationDoesNotCancelOriginalAndCannotAdoptAnotherSession() {
         val sent = mutableListOf<Triple<Any, Long, AnchorRegistrationAction>>()
         val controller = controller(sent)
         controller.show(source, 1, original, highlight)
-        controller.enteredChooser(source, incarnation, geometry, 5)
+        assertTrue(controller.enteredChooser(source, incarnation, geometry, 5))
         assertFalse(controller.enteredChooser(source, incarnation, geometry, 6))
-        assertFalse(controller.active)
-        assertEquals(listOf(Triple(source, 1L, AnchorRegistrationAction.CANCEL)), sent)
-        controller.show(source, 2, original, highlight)
         assertFalse(controller.enteredChooser(Any(), incarnation, geometry, 5))
-        assertFalse(controller.active)
-        assertSame(source, sent.last().first)
+        assertTrue(controller.active)
+        assertEquals(5L, controller.offer!!.chooserRevision)
+        assertEquals(original, controller.offer!!.original)
+        assertTrue(sent.isEmpty())
+        assertTrue(controller.cancel())
+        assertEquals(listOf(Triple(source, 1L, AnchorRegistrationAction.CANCEL)), sent)
     }
 
-    @Test fun clickAndHoldAlwaysRequireAChoiceAndConsumeDuplicateLocalTapsWhileWaiting() {
+    @Test fun clickAndHoldChoicesAreSubmittedOnceWhileWaitingForOriginalResult() {
         for (action in listOf(AnchorRegistrationAction.CLICK, AnchorRegistrationAction.HOLD)) {
             val sent = mutableListOf<Triple<Any, Long, AnchorRegistrationAction>>()
             val controller = controller(sent)

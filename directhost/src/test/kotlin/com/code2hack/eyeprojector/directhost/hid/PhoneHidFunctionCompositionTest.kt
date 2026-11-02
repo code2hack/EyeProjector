@@ -15,7 +15,7 @@ class PhoneHidFunctionCompositionTest {
         private val tasks = mutableListOf<Task>()
         private val lock = Any()
         val navigation = mutableListOf<Navigation>()
-        val intentions = mutableListOf<FunctionIntent>()
+        val intentions = mutableListOf<AnchorIntent>()
         val receiver = mutableListOf<ReceiverInput>()
         val routes = mutableListOf<PhoneHidRoute>()
         val binding = PhoneHidBinding(
@@ -30,7 +30,7 @@ class PhoneHidFunctionCompositionTest {
             val cancel: () -> Unit = { task.canceled = true }
             cancel
         }, { size }, controls::touch, controls::scroll,
-            { action, _ -> navigation.add(action) }, { controls.cancel() }, { receiver.add(it); Unit }, functionIntent = { intentions.add(it) })
+            { action, _ -> navigation.add(action) }, { controls.cancel() }, { receiver.add(it); Unit }, anchorIntent = { intentions.add(it) })
         private var routeSequence = 0L
         val controller = PhoneHidController(store, object : PhoneHidRoutes {
             override fun capture(down: PhoneHidEdge): PhoneHidRoute {
@@ -89,13 +89,13 @@ class PhoneHidFunctionCompositionTest {
             h.advance(600, runCanceled = true)
             assertEquals(name, emptyList<Navigation>(), h.navigation)
             assertEquals(name, emptyList<ReceiverInput>(), h.receiver)
-            assertEquals(name, listOf(FunctionIntentKind.ACTIVATE), h.intentions.map { it.kind })
+            assertEquals(name, listOf(AnchorIntentKind.ACTIVATE), h.intentions.map { it.kind })
             h.controller.closePage()
             h.controller.connection(true)
             assertTrue(h.store.assign(PhoneHidAction.ANCHOR, h.binding))
             h.press()
             h.advance(600)
-            assertEquals("$name must allow a fresh gesture", List(2) { FunctionIntentKind.ACTIVATE }, h.intentions.map { it.kind })
+            assertEquals("$name must allow a fresh gesture", List(2) { AnchorIntentKind.ACTIVATE }, h.intentions.map { it.kind })
             assertTrue(h.navigation.isEmpty())
         }
     }
@@ -106,7 +106,7 @@ class PhoneHidFunctionCompositionTest {
         h.advance(100)
         h.press()
         h.advance(600)
-        assertEquals(List(2) { FunctionIntentKind.ACTIVATE }, h.intentions.map { it.kind })
+        assertEquals(List(2) { AnchorIntentKind.ACTIVATE }, h.intentions.map { it.kind })
         assertTrue(h.navigation.isEmpty())
         assertTrue(h.receiver.isEmpty())
     }
@@ -116,7 +116,7 @@ class PhoneHidFunctionCompositionTest {
         repeat(3) { h.press(); h.advance(100) }
         h.advance(600)
         assertTrue(h.navigation.isEmpty())
-        assertEquals(List(3) { FunctionIntentKind.ACTIVATE }, h.intentions.map { it.kind })
+        assertEquals(List(3) { AnchorIntentKind.ACTIVATE }, h.intentions.map { it.kind })
         assertTrue(h.receiver.isEmpty())
     }
 
@@ -125,10 +125,10 @@ class PhoneHidFunctionCompositionTest {
         h.press()
         val old = h.routes.single()
         h.advance(600)
-        assertEquals(listOf(FunctionIntentKind.ACTIVATE), h.intentions.map { it.kind })
+        assertEquals(listOf(AnchorIntentKind.ACTIVATE), h.intentions.map { it.kind })
         h.press()
         old.cancel(h.clock)
         h.advance(600)
-        assertEquals(List(2) { FunctionIntentKind.ACTIVATE }, h.intentions.map { it.kind })
+        assertEquals(List(2) { AnchorIntentKind.ACTIVATE }, h.intentions.map { it.kind })
     }
 }

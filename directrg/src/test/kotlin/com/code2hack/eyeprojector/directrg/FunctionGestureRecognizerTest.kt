@@ -3,7 +3,7 @@ package com.code2hack.eyeprojector.directrg
 import org.junit.Assert.*
 import org.junit.Test
 import com.code2hack.eyeprojector.directrg.FunctionGestureRecognizer.Report
-import com.code2hack.eyeprojector.protocol.FunctionIntentKind.*
+import com.code2hack.eyeprojector.protocol.AnchorIntentKind.*
 
 class FunctionGestureRecognizerTest {
     private class Rig(edgeOnly: Boolean = false) {

@@ -25,7 +25,7 @@ class PhoneHidNavigationCompositionTest {
         val tasks = mutableListOf<Task>()
         val frames = mutableListOf<Frame>()
         val touches = mutableListOf<Touch>()
-        val functions = mutableListOf<FunctionIntent>()
+        val functions = mutableListOf<AnchorIntent>()
         val events = mutableListOf<String>()
         val routes = mutableListOf<PhoneHidRoute>()
         val bindings = PhoneHidAction.entries.associateWith { action ->
@@ -195,7 +195,7 @@ class PhoneHidNavigationCompositionTest {
         val h = Harness(available = true)
         h.press(PhoneHidAction.ANCHOR); h.now += 100; h.press(PhoneHidAction.ANCHOR)
         h.advance(2000)
-        assertEquals(List(2) { FunctionIntentKind.ACTIVATE }, h.functions.map { it.kind })
+        assertEquals(List(2) { AnchorIntentKind.ACTIVATE }, h.functions.map { it.kind })
         assertTrue(h.frames.isEmpty())
     }
 }

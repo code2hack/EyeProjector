@@ -11,8 +11,8 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 
-/** Actual grammar/HID producer -> actual ProjectionSession ordered writer -> actual wire bytes. */
-class FunctionIntentTransportTest {
+/** Actual native grammar producer -> actual ProjectionSession ordered writer -> actual wire bytes. */
+class AnchorIntentTransportTest {
     @get:Rule val temporary = TemporaryFolder()
     private val size = Geometry(480, 640)
     private val fact = ReceiverUsability("session-owner", ReceiverIncarnation("function-receiver", 1), 1, 1, ReceiverUsabilityMode.PROJECTED)
@@ -39,10 +39,10 @@ class FunctionIntentTransportTest {
     private fun frames(bytes: ByteArrayOutputStream): List<Frame> = DataInputStream(bytes.toByteArray().inputStream()).use { input ->
         buildList { while (input.available() > 0) add(Wire.readFrame(input)) }
     }
-    private fun intention(s: ProjectionSession, n: Long = 0, p: HeadPointerState = point()) = CapturedFunctionIntent(
-        FunctionIntent(FunctionIntentKind.ACTIVATE, FunctionSource.GLASSES_NATIVE, n, n, s.captureFunctionContext(p)!!), s)
+    private fun intention(s: ProjectionSession, n: Long = 0, p: HeadPointerState = point()) = CapturedAnchorIntent(
+        AnchorIntent(AnchorIntentKind.ACTIVATE, AnchorSource.GLASSES_NATIVE, n, n, s.captureAnchorContext(p)!!), s)
 
-    @Test fun actualNativeGrammarAndHidProducerSerializeEveryOriginalForThePhoneConsumer() {
+    @Test fun actualNativeGrammarSerializesEveryOriginalForThePhoneConsumer() {
         val bytes = ByteArrayOutputStream()
         ready(bytes).use { s ->
             var now = 1000L; var hover = point()
@@ -58,12 +58,16 @@ class FunctionIntentTransportTest {
                     timer.canceled = true; timer.run()
                 }
             }
-            fun deliver(source: FunctionSource, g: FunctionGestureRecognizer.Gesture) {
-                assertTrue(s.functionIntent(CapturedFunctionIntent(FunctionIntent(g.kind, source, g.gestureId, g.sequence,
-                    g.original as FunctionIntentContext), s)))
+            fun deliver(source: AnchorSource, g: FunctionGestureRecognizer.Gesture) {
+                assertTrue(s.anchorIntent(CapturedAnchorIntent(AnchorIntent(g.kind, source, g.gestureId, g.sequence,
+                    g.original as AnchorIntentContext), s)))
             }
             val native = FunctionGestureRecognizer({ now }, { s }, schedule,
-                { deliver(FunctionSource.GLASSES_NATIVE, it) }, capture = { s.captureFunctionContext(hover) })
+                { deliver(AnchorSource.GLASSES_NATIVE, it) }, captureOriginal = { _, id, parent ->
+                    s.captureAnchorContext(hover)?.takeIf {
+                        s.beginAnchor(AnchorOriginal(AnchorSource.GLASSES_NATIVE, id, it, parent))
+                    }
+                })
             fun report(r: FunctionGestureRecognizer.Report, at: Long) { now = at; native.accept(r) }
             report(FunctionGestureRecognizer.Report.DOWN, 1000); hover = point(300f)
             report(FunctionGestureRecognizer.Report.UP, 1020)
@@ -72,32 +76,18 @@ class FunctionIntentTransportTest {
             advance(1640)
             report(FunctionGestureRecognizer.Report.DOWN, 1700); advance(2500)
             report(FunctionGestureRecognizer.Report.LONG, 2501); report(FunctionGestureRecognizer.Report.UP, 2600)
-            val binding = HidBinding(HidButton(HidDeviceIdentity("function-host-fixture", 1, 2), 30, 40), "Fixture", "Function")
-            val bindings = HidBindings({ null }, { true }).also { assertTrue(it.assign(HidAction.ANCHOR, binding)) }
-            val hid = HidKeyInput(bindings, { now }, { s }, schedule, { PointerPosition(300f, 240f, true) },
-                { _, _ -> fail("Function must not own a contact") }, { _, _ -> fail("unexpected contact cancel") },
-                { _, _, _ -> fail("unexpected scroll") }, { deliver(FunctionSource.GLASSES_HID, it) },
-                functionCapture = { s.captureFunctionContext(hover) })
-            fun edge(phase: HidKeyInput.Phase, down: Long, at: Long) {
-                now = at; assertTrue(hid.accept(HidKeyInput.Event(7, binding, phase, down, at)))
-            }
-            edge(HidKeyInput.Phase.DOWN, 3000, 3000); edge(HidKeyInput.Phase.UP, 3000, 3020)
-            edge(HidKeyInput.Phase.DOWN, 3100, 3100); edge(HidKeyInput.Phase.UP, 3100, 3120)
-            edge(HidKeyInput.Phase.DOWN, 3200, 3200); advance(4000)
-            edge(HidKeyInput.Phase.UP, 3200, 4100)
             await(s)
-            val sent = frames(bytes).filter { it.channel == Wire.FUNCTION_INTENT }.map { FunctionIntent.from(it.payload) }
-            assertEquals(listOf(FunctionIntentKind.ACTIVATE, FunctionIntentKind.ACTIVATE, FunctionIntentKind.REGISTER,
-                FunctionIntentKind.ACTIVATE, FunctionIntentKind.ACTIVATE, FunctionIntentKind.REGISTER), sent.map { it.kind })
-            assertEquals(List(3) { FunctionSource.GLASSES_NATIVE } + List(3) { FunctionSource.GLASSES_HID }, sent.map { it.source })
+            val sent = frames(bytes).filter { it.channel == Wire.ANCHOR_INTENT }.map { AnchorIntent.from(it.payload) }
+            assertEquals(listOf(AnchorIntentKind.ACTIVATE, AnchorIntentKind.ACTIVATE, AnchorIntentKind.REGISTER), sent.map { it.kind })
+            assertEquals(List(3) { AnchorSource.GLASSES_NATIVE }, sent.map { it.source })
             assertEquals(120f, sent.first().context.pointer.x)
             assertTrue(sent.drop(1).all { it.context.pointer.x == 300f })
-            for (source in listOf(FunctionSource.GLASSES_NATIVE, FunctionSource.GLASSES_HID)) {
+            for (source in listOf(AnchorSource.GLASSES_NATIVE)) {
                 val originals = sent.filter { it.source == source }
                 assertEquals(3, originals.map { it.gestureId }.distinct().size)
                 assertTrue(originals.zipWithNext().all { (a, b) -> a.sequence < b.sequence })
             }
-            System.getenv("EYEPROJECTOR_FUNCTION_PRODUCER_EVIDENCE")?.let { directory ->
+            System.getenv("EYEPROJECTOR_ANCHOR_PRODUCER_EVIDENCE")?.let { directory ->
                 File(directory).apply { mkdirs() }.resolve("producer-wire.bin").writeBytes(bytes.toByteArray())
             }
         }
@@ -108,35 +98,58 @@ class FunctionIntentTransportTest {
         ready(bytes).use { s ->
             val original = intention(s)
             synchronized(field(s, "outputLock").get(s)) {
-                assertTrue(s.functionIntent(original))
-                assertTrue(s.functionIntent(CapturedFunctionIntent(original.intent.copy(gestureId = 1, sequence = 1), s)))
+                assertTrue(s.beginAnchor(AnchorOriginal(original.intent.source, 0, original.intent.context)))
+                assertTrue(s.anchorIntent(original))
+                assertTrue(s.beginAnchor(AnchorOriginal(original.intent.source, 1, original.intent.context)))
+                assertTrue(s.anchorIntent(CapturedAnchorIntent(original.intent.copy(gestureId = 1, sequence = 1), s)))
                 s.headPointer(point(350f).copy(sequence = 2), Long.MAX_VALUE)
             }
             await(s)
-            val sent = frames(bytes).filter { it.channel == Wire.FUNCTION_INTENT }.map { FunctionIntent.from(it.payload) }
+            val sent = frames(bytes).filter { it.channel == Wire.ANCHOR_INTENT }.map { AnchorIntent.from(it.payload) }
             assertEquals(listOf(0L, 1L), sent.map { it.sequence })
             assertTrue(sent.all { it.context.pointer.x == 120f })
         }
     }
 
-    @Test fun originalContextIsRecheckedAfterOutputLockWaitAndNeverAdoptedByASuccessor() {
-        for (replacement in listOf("mode", "revision", "incarnation", "geometry", "cancel")) {
+    @Test fun capturedOriginalCrossesGeometryAndPresentationChangesWhileWriterIsBlocked() {
+        for (change in listOf("mode", "revision", "geometry", "presentation")) {
             val bytes = ByteArrayOutputStream()
             ready(bytes).use { s ->
                 val original = intention(s)
                 synchronized(field(s, "outputLock").get(s)) {
-                    assertTrue(s.functionIntent(original))
-                    when (replacement) {
+                    assertTrue(s.beginAnchor(AnchorOriginal(original.intent.source, 0, original.intent.context)))
+                    assertTrue(s.anchorIntent(original))
+                    when (change) {
                         "mode" -> s.usability(fact.copy(revision = 2, mode = ReceiverUsabilityMode.NONE))
                         "revision" -> s.usability(fact.copy(revision = 2, inputRevision = 2))
-                        "incarnation" -> s.usability(fact.copy(revision = 2, incarnation = ReceiverIncarnation("successor", 2)))
-                        "geometry" -> field(s, "geometry").set(s, Geometry(640, 480))
-                        "cancel" -> { s.cancelPendingInput(); s.usability(fact.copy(revision = 2, inputRevision = 2)) }
+                        "geometry" -> s.receive(Frame(Wire.GEOMETRY, payload = Geometry(640, 480).bytes()))
+                        "presentation" -> s.presentation(false)
                     }
                 }
                 await(s)
-                assertTrue(replacement, frames(bytes).none { it.channel == Wire.FUNCTION_INTENT })
-                ready(ByteArrayOutputStream()).use { successor -> assertFalse(successor.functionIntent(original)) }
+                val sent = frames(bytes)
+                assertEquals(change, listOf(original.intent), sent.filter { it.channel == Wire.ANCHOR_INTENT }.map { AnchorIntent.from(it.payload) })
+                val birth = sent.filter { it.channel == Wire.ANCHOR_ORIGINAL }.map { AnchorOriginal.from(it.payload) }
+                assertEquals(change, listOf(AnchorOriginal(original.intent.source, 0, original.intent.context)), birth)
+                assertTrue(sent.indexOfFirst { it.channel == Wire.ANCHOR_ORIGINAL } < sent.indexOfFirst { it.channel == Wire.ANCHOR_INTENT })
+            }
+        }
+    }
+
+    @Test fun explicitCancellationOrActualSourceReplacementCannotWriteOrAdoptOriginal() {
+        for (change in listOf("incarnation", "cancel")) {
+            val bytes = ByteArrayOutputStream()
+            ready(bytes).use { s ->
+                val original = intention(s)
+                synchronized(field(s, "outputLock").get(s)) {
+                    assertTrue(s.beginAnchor(AnchorOriginal(original.intent.source, 0, original.intent.context)))
+                    assertTrue(s.anchorIntent(original))
+                    if (change == "incarnation") s.usability(fact.copy(revision = 2, incarnation = ReceiverIncarnation("successor", 2)))
+                    else s.cancelPendingInput()
+                }
+                await(s)
+                assertTrue(change, frames(bytes).none { it.channel == Wire.ANCHOR_INTENT })
+                ready(ByteArrayOutputStream()).use { successor -> assertFalse(successor.anchorIntent(original)) }
             }
         }
     }
@@ -144,10 +157,10 @@ class FunctionIntentTransportTest {
     @Test fun incomingTypedIntentionBindsThisActualSessionBeforeDeferredConsumerDelivery() {
         val bytes = ByteArrayOutputStream()
         ready(bytes).use { s ->
-            val got = mutableListOf<CapturedFunctionIntent<ProjectionSession>>()
-            s.functionIntents.activate = got::add
-            val incoming = intention(s).intent.copy(source = FunctionSource.PHONE_HID)
-            s.receive(Frame(Wire.FUNCTION_INTENT, payload = incoming.bytes())); await(s)
+            val got = mutableListOf<CapturedAnchorIntent<ProjectionSession>>()
+            s.anchorIntents.activate = got::add
+            val incoming = intention(s).intent.copy(source = AnchorSource.PHONE_HID)
+            s.receive(Frame(Wire.ANCHOR_INTENT, payload = incoming.bytes())); await(s)
             assertEquals(incoming, got.single().intent); assertSame(s, got.single().original)
         }
     }

@@ -8,26 +8,26 @@ import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.*
 import org.junit.Test
 
-class FunctionWorkTest {
-    private fun intent(gesture: Long, sequence: Long) = FunctionIntent(
-        FunctionIntentKind.ACTIVATE, FunctionSource.PHONE_HID, gesture, sequence,
-        FunctionIntentContext(
+class InputWorkTest {
+    private fun intent(gesture: Long, sequence: Long) = AnchorIntent(
+        AnchorIntentKind.ACTIVATE, AnchorSource.PHONE_HID, gesture, sequence,
+        AnchorIntentContext(
             ReceiverUsability("owner", ReceiverIncarnation("original", 1), 2, 3, ReceiverUsabilityMode.PROJECTED),
             HeadPointerState(3, 4, true, true, 50f, 50f, Fit(0, 0, 100, 100), Geometry(100, 100)),
         ),
     )
 
     @Test(timeout = 7000) fun blockedWorkerRetainsBothActivationsAndTheirCapturedOriginalContextInOrder() {
-        val work = FunctionWork()
+        val work = InputWork()
         val entered = CountDownLatch(1); val release = CountDownLatch(1); val delivered = CountDownLatch(2)
-        val observed = mutableListOf<CapturedFunctionIntent<Any>>()
+        val observed = mutableListOf<CapturedAnchorIntent<Any>>()
         val original = Any()
         var current = original
         try {
             work.submit { entered.countDown(); check(release.await(4, TimeUnit.SECONDS)) }
             assertTrue(entered.await(2, TimeUnit.SECONDS))
-            val first = CapturedFunctionIntent(intent(10, 0), current)
-            val second = CapturedFunctionIntent(intent(11, 1), current)
+            val first = CapturedAnchorIntent(intent(10, 0), current)
+            val second = CapturedAnchorIntent(intent(11, 1), current)
             for (captured in listOf(first, second)) work.submit {
                 observed.add(captured); delivered.countDown()
             }
@@ -42,7 +42,7 @@ class FunctionWorkTest {
     }
 
     @Test(timeout = 7000) fun externalCloseCancelsPendingWorkAndPreservesRunningCallbackCleanup() {
-        val work = FunctionWork()
+        val work = InputWork()
         val entered = CountDownLatch(1); val release = CountDownLatch(1); val cleaned = CountDownLatch(1)
         val pendingRan = AtomicBoolean()
         try {
@@ -62,7 +62,7 @@ class FunctionWorkTest {
     }
 
     @Test(timeout = 7000) fun callbackFailureDropsPendingWorkWithoutInterruptingItsOwnCleanupThread() {
-        val work = FunctionWork()
+        val work = InputWork()
         val entered = CountDownLatch(1); val release = CountDownLatch(1); val failed = CountDownLatch(1)
         val observedFailure = AtomicReference<Throwable>()
         val interrupted = AtomicBoolean()

@@ -21,12 +21,12 @@ class AnchorRegistrationTest {
         listOf(16), true, false, true, true)
     private val window = UiWindowMetadata(34, 7, 1, 2, true, true, UiBounds(0, 0, 400, 400))
     private val fact = ReceiverUsability("owner", ReceiverIncarnation("receiver", 2), 3, 4, ReceiverUsabilityMode.PROJECTED)
-    private fun intent(current: ManagedUiSource = source, selection: UiBounds = bounds): FunctionIntent {
+    private fun intent(current: ManagedUiSource = source, selection: UiBounds = bounds): AnchorIntent {
         val video = current.geometry.sourceToVideo(UiPoint((selection.left + selection.right) / 2.0,
             (selection.top + selection.bottom) / 2.0))
         val fit = Fit(73, 31, 1000, 800)
-        return FunctionIntent(FunctionIntentKind.REGISTER, FunctionSource.GLASSES_NATIVE, 1, 1,
-            FunctionIntentContext(fact, HeadPointerState(4, 9, true, true,
+        return AnchorIntent(AnchorIntentKind.REGISTER, AnchorSource.GLASSES_NATIVE, 1, 1,
+            AnchorIntentContext(fact, HeadPointerState(4, 9, true, true,
                 (fit.left + video.x * fit.width / current.geometry.video.width).toFloat(),
                 (fit.top + video.y * fit.height / current.geometry.video.height).toFloat(), fit, current.geometry.video)))
     }
@@ -34,7 +34,7 @@ class AnchorRegistrationTest {
         metadata: UiWindowMetadata = window, status: UiTargetReadStatus = UiTargetReadStatus.READ) =
         UiTargetSnapshot(UiTargetRequest(current, app), status, 1, 2,
             listOf(UiWindowSnapshot(metadata, UiWindowReadStatus.READ, targets)))
-    private fun selected(i: FunctionIntent = intent(), s: UiTargetSnapshot = snapshot()) =
+    private fun selected(i: AnchorIntent = intent(), s: UiTargetSnapshot = snapshot()) =
         (AnchorRegistrationTargets.capture(i, s) as AnchorRegistrationCapture.Selected).target
     private val old = AppAnchor(AnchorTargetDescriptor(app, null, 1, "$app:id/previous", null), AnchorMode.CLICK)
     private class Storage(var value: AppAnchor?) : AppAnchorStorage {
@@ -116,7 +116,7 @@ class AnchorRegistrationTest {
         val unread = coordinator.beginDetailed("unread", intent(), snapshot(status = UiTargetReadStatus.ACCESS_REQUIRED))
         assertEquals(AnchorRegistrationCapture.Rejected(AnchorRegistrationFailure.TARGET_UNAVAILABLE), unread.capture)
         assertNull(unread.sourceHover)
-        assertEquals(AnchorRegistrationCompletion.Canceled, coordinator.choose("unread", AnchorMode.HOLD, snapshot()))
+        assertEquals(AnchorRegistrationCompletion.Canceled, coordinator.choose("unread", AnchorMode.HOLD))
         val windows = snapshot().copy(windows = listOf(snapshot().windows.single(), snapshot().windows.single().copy(
             window = window.copy(windowId = 8))))
         val ambiguous = coordinator.beginDetailed("windows", intent(), windows)
@@ -134,7 +134,7 @@ class AnchorRegistrationTest {
         }
         val store = AppAnchorStore(storage); val coordinator = AnchorRegistrationCoordinator<String>(store)
         assertTrue(coordinator.begin("original", intent(), snapshot()) is AnchorRegistrationCapture.Selected)
-        assertEquals(AnchorRegistrationCompletion.SaveFailed, coordinator.choose("original", AnchorMode.HOLD, snapshot()))
+        assertEquals(AnchorRegistrationCompletion.SaveFailed, coordinator.choose("original", AnchorMode.HOLD))
         assertSame(original, coordinator.lastFailure)
         assertEquals(old, store.read(app))
     }
@@ -145,8 +145,8 @@ class AnchorRegistrationTest {
         val original = source.copy(displayId = 57, foregroundActivity = null,
             geometry = UiSourceGeometry(Geometry(1248, 1663), video, 420, 0, false, video))
         val originalFact = fact.copy(inputRevision = 107, mode = ReceiverUsabilityMode.PROJECTED)
-        val originalIntent = FunctionIntent(FunctionIntentKind.REGISTER, FunctionSource.GLASSES_NATIVE, 13, 13,
-            FunctionIntentContext(originalFact, HeadPointerState(107, 0, true, true,
+        val originalIntent = AnchorIntent(AnchorIntentKind.REGISTER, AnchorSource.GLASSES_NATIVE, 13, 13,
+            AnchorIntentContext(originalFact, HeadPointerState(107, 0, true, true,
                 201.89757f, 609.461f, Fit(0, 0, 480, 640), video)))
         val metadata = window.copy(displayId = 57, windowId = 4160, bounds = UiBounds(0, 0, 1248, 1663))
         val neighbors = listOf(
@@ -165,7 +165,7 @@ class AnchorRegistrationTest {
 
     @Test fun wrongOriginalGeometryOwnerInputRevisionModeOrIntentIsRejected() {
         val i = intent()
-        for (changed in listOf(i.copy(kind = FunctionIntentKind.ACTIVATE),
+        for (changed in listOf(i.copy(kind = AnchorIntentKind.ACTIVATE),
             i.copy(context = i.context.copy(usability = fact.copy(ownerEpoch = "replacement"))),
             i.copy(context = i.context.copy(usability = fact.copy(inputRevision = 5))),
             i.copy(context = i.context.copy(usability = fact.copy(mode = ReceiverUsabilityMode.LOCAL_PANEL))),
@@ -186,7 +186,7 @@ class AnchorRegistrationTest {
         assertTrue(coordinator.cancel("original"))
         assertEquals(external, store.read(app))
         assertEquals(1, storage.writes)
-        assertEquals(AnchorRegistrationCompletion.Canceled, coordinator.choose("original", AnchorMode.CLICK, snapshot()))
+        assertEquals(AnchorRegistrationCompletion.Canceled, coordinator.choose("original", AnchorMode.CLICK))
         assertEquals(1, storage.writes)
     }
 
@@ -201,13 +201,13 @@ class AnchorRegistrationTest {
             coordinator.begin(1L, intent(), s)
             assertEquals(old, storage.value)
             assertEquals(0, events)
-            val outcome = coordinator.choose(1L, mode, s) as AnchorRegistrationCompletion.Saved
+            val outcome = coordinator.choose(1L, mode) as AnchorRegistrationCompletion.Saved
             assertEquals(mode, outcome.anchor.mode)
             assertEquals(selected().descriptor, outcome.anchor.descriptor)
             assertEquals(outcome.anchor, store.read(app))
             assertEquals(1, events)
             assertEquals(1, storage.writes)
-            assertEquals(AnchorRegistrationCompletion.Canceled, coordinator.choose(1L, mode, s))
+            assertEquals(AnchorRegistrationCompletion.Canceled, coordinator.choose(1L, mode))
         }
     }
 
@@ -217,25 +217,23 @@ class AnchorRegistrationTest {
         coordinator.begin("old", intent(), snapshot())
         coordinator.begin("new", intent(), snapshot())
         assertFalse(coordinator.cancel("old"))
-        assertEquals(AnchorRegistrationCompletion.Canceled, coordinator.choose("old", AnchorMode.HOLD, snapshot()))
+        assertEquals(AnchorRegistrationCompletion.Canceled, coordinator.choose("old", AnchorMode.HOLD))
         assertEquals(0, storage.writes)
-        assertTrue(coordinator.choose("new", AnchorMode.CLICK, snapshot()) is AnchorRegistrationCompletion.Saved)
+        assertTrue(coordinator.choose("new", AnchorMode.CLICK) is AnchorRegistrationCompletion.Saved)
     }
 
-    @Test fun genuineSourceActivityWindowAndGeometryReplacementKeepPreviousPreference() {
-        for (s in listOf(snapshot(current = source.copy(context = ProjectionContext("owner", "successor"))),
-            snapshot(current = source.copy(displayGeneration = "successor")),
-            snapshot(current = source.copy(foregroundActivity = "example.app/.Other")),
-            snapshot(current = source.copy(geometry = source.geometry.copy(rotation = 1))),
-            snapshot(metadata = window.copy(windowId = 8), targets = listOf(target.copy(windowId = 8))),
-            snapshot(status = UiTargetReadStatus.SOURCE_CHANGED))) {
-            val storage = Storage(old)
-            val coordinator = AnchorRegistrationCoordinator<Long>(AppAnchorStore(storage))
-            coordinator.begin(1L, intent(), snapshot())
-            assertEquals(AnchorRegistrationCompletion.ContextChanged, coordinator.choose(1L, AnchorMode.HOLD, s))
-            assertEquals(old, storage.value)
-            assertEquals(0, storage.writes)
-        }
+    @Test fun capturedSelectionSurvivesPassiveWindowAndGeometryObservations() {
+        val storage = Storage(old)
+        val coordinator = AnchorRegistrationCoordinator<Long>(AppAnchorStore(storage))
+        coordinator.begin(1L, intent(), snapshot())
+        // These independent observations are not user Cancel and are not recaptured at choice.
+        val changed = snapshot(current = source.copy(geometry = source.geometry.copy(rotation = 1)),
+            metadata = window.copy(windowId = 8), targets = listOf(target.copy(windowId = 8)))
+        assertNotEquals(snapshot(), changed)
+        val outcome = coordinator.choose(1L, AnchorMode.HOLD) as AnchorRegistrationCompletion.Saved
+        assertEquals(selected().descriptor, outcome.anchor.descriptor)
+        assertEquals(AnchorMode.HOLD, storage.value!!.mode)
+        assertEquals(1, storage.writes)
     }
 
     @Test fun atomicWriteFailureRetainsPreviousValueAndPublishesNoCompletionEvent() {
@@ -246,7 +244,7 @@ class AnchorRegistrationTest {
         val coordinator = AnchorRegistrationCoordinator<Long>(store)
         coordinator.begin(1L, intent(), snapshot())
         storage.fail = true
-        assertEquals(AnchorRegistrationCompletion.SaveFailed, coordinator.choose(1L, AnchorMode.HOLD, snapshot()))
+        assertEquals(AnchorRegistrationCompletion.SaveFailed, coordinator.choose(1L, AnchorMode.HOLD))
         assertEquals(old, storage.value)
         assertEquals(0, events)
     }
@@ -255,7 +253,7 @@ class AnchorRegistrationTest {
         val storage = Storage(old)
         val coordinator = AnchorRegistrationCoordinator<Long>(AppAnchorStore(storage))
         assertTrue(coordinator.begin(1L, intent(), snapshot(targets = emptyList())) is AnchorRegistrationCapture.Rejected)
-        assertEquals(AnchorRegistrationCompletion.Canceled, coordinator.choose(1L, AnchorMode.HOLD, snapshot()))
+        assertEquals(AnchorRegistrationCompletion.Canceled, coordinator.choose(1L, AnchorMode.HOLD))
         assertEquals(old, storage.value)
         assertEquals(0, storage.writes)
     }
@@ -294,15 +292,15 @@ class AnchorRegistrationTest {
         assertEquals(allocated, closed)
         assertEquals(old, storage.value)
         assertEquals(0, storage.writes)
-        assertTrue(coordinator.choose(1L, AnchorMode.HOLD, provider.read(source.context, app)) is AnchorRegistrationCompletion.Saved)
+        assertTrue(coordinator.choose(1L, AnchorMode.HOLD) is AnchorRegistrationCompletion.Saved)
         assertEquals(allocated, closed)
         assertEquals(AnchorMode.HOLD, storage.value!!.mode)
 
-        val saved = storage.value
-        coordinator.begin(2L, intent(), provider.read(source.context, app))
+        // A new request still reads the current source; a change DURING that read rejects capture.
         duringRead = { actualSource = source.copy(displayGeneration = "replacement") }
-        assertEquals(AnchorRegistrationCompletion.ContextChanged,
-            coordinator.choose(2L, AnchorMode.CLICK, provider.read(source.context, app)))
+        val saved = storage.value
+        assertTrue(coordinator.begin(2L, intent(), provider.read(source.context, app)) is AnchorRegistrationCapture.Rejected)
+        assertEquals(AnchorRegistrationCompletion.Canceled, coordinator.choose(2L, AnchorMode.CLICK))
         assertEquals(allocated, closed)
         assertEquals(saved, storage.value)
         assertEquals(1, storage.writes)

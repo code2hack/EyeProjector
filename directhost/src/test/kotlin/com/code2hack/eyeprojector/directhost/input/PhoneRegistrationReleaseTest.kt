@@ -6,7 +6,7 @@ import org.junit.Test
 
 class PhoneRegistrationReleaseTest {
     private val geometry = Geometry(480, 640)
-    private val context = FunctionIntentContext(ReceiverUsability("owner", ReceiverIncarnation("receiver", 1), 1, 4, ReceiverUsabilityMode.PROJECTED),
+    private val context = AnchorIntentContext(ReceiverUsability("owner", ReceiverIncarnation("receiver", 1), 1, 4, ReceiverUsabilityMode.PROJECTED),
         HeadPointerState(4, 1, true, true, 240f, 320f, Fit(0, 0, 480, 640), geometry))
     private class Clock {
         var now = 0L
@@ -22,9 +22,9 @@ class PhoneRegistrationReleaseTest {
     }
     @Test fun phoneOriginalReleaseSurvivesOnlyMatchingChooserAndOutputsOutsideControlLock() {
         for(cancel in listOf(false,true)) {
-            val clock=Clock();val lock=Any();val intents=mutableListOf<FunctionIntent>();val terminals=mutableListOf<Pair<FunctionIntent,Boolean>>()
+            val clock=Clock();val lock=Any();val intents=mutableListOf<AnchorIntent>();val terminals=mutableListOf<Pair<AnchorIntent,Boolean>>()
             val m=PhoneInputMerger(lock,{clock.now},clock::schedule,{geometry},{error("No touch")},{error("No scroll")},
-                {_,_->error("No navigation")},{},{error("No receiver action")},functionIntent=intents::add,
+                {_,_->error("No navigation")},{},{error("No receiver action")},anchorIntent=intents::add,
                 registrationRelease={i,c->assertFalse(Thread.holdsLock(lock));terminals.add(i to c)})
             m.pointer(context.pointer,context.usability)
             val down=PhoneHidEdge(PhoneHidAction.ANCHOR,PhoneHidPhase.DOWN,8,3,4,0,0)
