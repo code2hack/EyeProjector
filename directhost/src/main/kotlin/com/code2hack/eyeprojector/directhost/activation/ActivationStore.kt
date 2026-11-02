@@ -20,6 +20,7 @@ internal data class ActivationJournal(
     val canceled: Set<String> = emptySet(),
     val incarnation: ReceiverIncarnation? = null,
     val aliases: Map<String, String> = emptyMap(),
+    val consumedControls: Set<RemoteControlKey> = emptySet(),
 )
 
 /** Feature intent precedes core ledger admission. No credentials, Ready target or projection token is stored. */
@@ -37,7 +38,11 @@ internal class ActivationStore(private val file: File) {
         val canceled = (0 until p.getProperty("canceled", "0").toInt()).map { p.getProperty("c.$it") }.toSet()
         val incarnation = p.getProperty("receiver")?.let { ReceiverIncarnation(it, p.getProperty("receiverSequence").toLong()) }
         val aliases = (0 until p.getProperty("aliases", "0").toInt()).associate { i -> p.getProperty("alias.$i.id") to p.getProperty("alias.$i.h") }
-        return ActivationJournal(current, triggers, attempts, canceled, incarnation, aliases)
+        val consumed = (0 until p.getProperty("consumedControls", "0").toInt()).map { i ->
+            RemoteControlKey(RemoteControlKind.valueOf(p.getProperty("consumed.$i.kind")),
+                p.getProperty("consumed.$i.id"), p.getProperty("consumed.$i.admission", ""))
+        }.toSet()
+        return ActivationJournal(current, triggers, attempts, canceled, incarnation, aliases, consumed)
     }
     fun write(value: ActivationJournal) {
         val p = Properties()
@@ -52,6 +57,11 @@ internal class ActivationStore(private val file: File) {
         p.setProperty("aliases",value.aliases.size.toString())
         value.aliases.entries.forEachIndexed { i,(id,h) -> p.setProperty("alias.$i.id",id); p.setProperty("alias.$i.h",h) }
         value.incarnation?.let { p.setProperty("receiver",it.id); p.setProperty("receiverSequence",it.sequence.toString()) }
+        p.setProperty("consumedControls", value.consumedControls.size.toString())
+        value.consumedControls.forEachIndexed { i, key ->
+            p.setProperty("consumed.$i.kind", key.kind.name); p.setProperty("consumed.$i.id", key.id)
+            p.setProperty("consumed.$i.admission", key.admission)
+        }
         file.parentFile?.mkdirs()
         val temporary = Files.createTempFile(file.parentFile.toPath(), "activation-", ".tmp")
         try {

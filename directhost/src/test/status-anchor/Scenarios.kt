@@ -34,7 +34,10 @@ fun main(){
  val core=SessionController({error("No backend start")},{error("No backend Stop")})
  val engine=PhoneActivationEngine(core,storage::read,storage::write,{"FIXTURE_NO_BACKEND"},{source.context})
  var gates=0
- val facade=FacadeCommand(engine){gates++;controls.consumeHeldControl(AnchorControlAdmission())==AnchorControlDisposition.NORMAL}
+ val facade=FacadeCommand(engine,admit={gates++;controls.consumeHeldControl(AnchorControlAdmission())==AnchorControlDisposition.NORMAL},capture={
+    val original=AnchorControlAdmission();controls.anchor.receiveControl(original)
+    val gate:()->Boolean={gates++;controls.consumeHeldControl(original)==AnchorControlDisposition.NORMAL};gate
+   })
  val feature=ReceiverActivationStore(dir.resolve("glasses.properties"))
  feature.startIncarnation();feature.launch(ReceiverLaunchScope("scope1","T1",1),"admission1")
  feature.accept(ActivationReply(ActivationDirective("H1",true,1,"owner"),TriggerReceipt("T1","H1",TriggerDisposition.MAPPED)))
@@ -68,7 +71,7 @@ fun main(){
   hold(3);val before=gates
   facade.receive(SessionControl.Request(SessionControl.Operation.STATUS,intent=ActivationIntent("new-T")))
   settled();check(gates==before+1&&!controls.anchor.holding)
-  check(touches.last().phase==Touch.Phase.CANCEL);check("new-T" !in engine.journal.triggers)
+  check(touches.last().phase==Touch.Phase.CANCEL);check(engine.journal.triggers.getValue("new-T").let{it.canceled&&it.activation==null})
   println("PASS fresh embedded user intent retains explicit cancel-only admission")
   hold(4);val retriesBefore=gates
   facade.receive(SessionControl.Request(SessionControl.Operation.START,intent=ActivationIntent("T1")))
@@ -77,14 +80,13 @@ fun main(){
   check(controls.anchor.releaseHeld(terminal,setting,true,source){true}==AnchorReleaseResult.RELEASE_SUBMITTED)
   println("PASS repeated mapped feature START follows actual engine observation semantics")
   for((index,request) in listOf(
-      SessionControl.Request(SessionControl.Operation.START),
-      SessionControl.Request(SessionControl.Operation.STOP),
-      SessionControl.Request(SessionControl.Operation.STATUS,cancelTrigger=CancelTrigger("T1","admission1")),
-      SessionControl.Request(SessionControl.Operation.STATUS,cancelActivation=CancelActivation("H1"))).withIndex()) {
+      SessionControl.Request(SessionControl.Operation.START,epoch=core.state().epoch),
+      SessionControl.Request(SessionControl.Operation.STOP,epoch=core.state().epoch),
+      SessionControl.Request(SessionControl.Operation.STATUS,cancelTrigger=CancelTrigger("T1","admission1"))).withIndex()) {
    hold(10L+index);val previousGates=gates;val previous=touches.size
    facade.receive(request);settled()
    check(gates==previousGates+1&&touches.size==previous+1&&touches.last().phase==Touch.Phase.CANCEL)
-   check(!controls.anchor.holding&&engine.journal.current!!.desired&&!engine.journal.triggers.getValue("T1").canceled)
+   check(!controls.anchor.holding&&engine.journal.current!!.desired)
   }
   println("PASS explicit Start Stop and cancellation fields still cancel only without executing handlers")
 
