@@ -242,9 +242,6 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var heldInput: HeldPointerDispatcher
     private lateinit var padContact: NativePadContact
     private lateinit var shellPadContact: NativePadShellContact
-    private lateinit var hidInput: HidKeyInput
-    private lateinit var hidDevices: AndroidHidInput
-    private lateinit var hidPanel: HidBindingsPanel
     private lateinit var mainControls: LinearLayout
     private lateinit var heldOwner: HeldInputOwner
     private lateinit var classifiedPadLongPress: ClassifiedPadLongPress
@@ -285,8 +282,6 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         }
         val preferences = getSharedPreferences("projector-input", MODE_PRIVATE)
         settings = LocalInputSettings({ preferences.getString(it, null) }, { k, v -> preferences.edit().putString(k, v).commit() })
-        val hidBindings = HidBindings({ preferences.getString("hid.bindings", null) },
-            { value -> preferences.edit().putString("hid.bindings", value).commit() })
         root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         anchorRegistration = AnchorRegistrationController { source, id, action ->
             val offer = anchorOffer?.takeIf { it.transactionId == id }
@@ -322,7 +317,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         }, ReceiverPairingOwner.get(this).pairing, { action -> localControl(ReceiverControlSource.LOCAL_UI, action) })
         pairingPanel.addView(connectButton, 2)
         localButtons.add(pairingPanel.forgetButton)
-        val settingsPanel = LocalInputSettingsPanel(this, settings, ::showHidBindings, changed = {
+        val settingsPanel = LocalInputSettingsPanel(this, settings, changed = {
             pointer.sensitivity(settings.pointerXGain, settings.pointerYGain)
             edgeMotion.enabled = settings.headScrollEnabled
             updateEdgeScroll()
@@ -444,51 +439,6 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         nativeSwipeInput = NativeSwipeNavigationInput(this) { action ->
             if (usable()) dispatchNavigation(action, ReceiverControlSource.NATIVE_SWIPE)
         }
-        hidInput = HidKeyInput(hidBindings, SystemClock::uptimeMillis,
-            ::anchorContext,
-            { deadline, action ->
-                val task = Runnable(action)
-                val handler = android.os.Handler(android.os.Looper.getMainLooper())
-                handler.postAtTime(task, deadline)
-                val cancel: () -> Unit = { handler.removeCallbacks(task) }
-                cancel
-            }, { pointer.inputPosition() },
-            { owner, event ->
-                val originalEdge = edgeTick
-                val originalRevision = inputGeneration
-                if (event.phase == PadGestureRecognizer.Phase.DOWN) {
-                    gestures.cancel(event.timeMs)
-                    schedulePadConfirmation()
-                }
-                val accepted = (event.phase != PadGestureRecognizer.Phase.DOWN || hidInput.owns(owner)) &&
-                    heldOwner.accept(owner, event)
-                if (accepted && edgeTick === originalEdge && inputGeneration == originalRevision) updateEdgeScroll()
-            },
-            { owner, at ->
-                val originalEdge = edgeTick
-                val originalRevision = inputGeneration
-                if (heldOwner.cancel(owner, at) && edgeTick === originalEdge && inputGeneration == originalRevision)
-                    updateEdgeScroll()
-            },
-            { pixels, point, at -> dispatchPadAction(PadGestureRecognizer.Action.Scroll(pixels, point, at)) },
-            { gesture -> dispatchAnchor(AnchorSource.GLASSES_HID, gesture) },
-            { if (::hidPanel.isInitialized) hidPanel.refresh() },
-            ::hoveredHidAction,
-            anchorCapture = ::captureAnchor,
-            navigation = { action -> dispatchNavigation(action, ReceiverControlSource.GLASSES_HID) },
-            anchorCaptureOriginal = { expected, id, parent -> captureAnchorOriginal(expected,id,AnchorSource.GLASSES_HID,parent) },
-            anchorRetireOriginal = { id, original -> retireAnchorOriginal(id,original,AnchorSource.GLASSES_HID) },
-            registrationRelease = { gesture, canceled -> releaseAnchorRegistration(AnchorSource.GLASSES_HID, gesture, canceled) },
-        )
-        hidDevices = AndroidHidInput(this, hidInput, learning = ::hidLearningPage,
-            admit = ::admitHidLearning, unhandled = ::unhandledHid, current = ::hidLearningContext) { event ->
-            if (::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE && connectionView.visibility == View.VISIBLE)
-                hidPanel.received(event)
-        }
-        hidPanel = HidBindingsPanel(this, hidBindings, hidInput,
-            { action -> localControl(ReceiverControlSource.LOCAL_UI, action) }, ::showControlPanel).apply { visibility = View.GONE }
-        localButtons.addAll(hidPanel.buttons)
-        (connectionView.getChildAt(0) as LinearLayout).addView(hidPanel)
         root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> resize() }
         setContentView(root)
         shellPadContact.start()
@@ -795,8 +745,6 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         val retirement = cancelInputOperation()?.second ?: return
         presentation.showPanel()
         if (retirement.superseded()) return
-        if (::hidPanel.isInitialized) hidPanel.visibility = View.GONE
-        if (retirement.superseded()) return
         mainControls.visibility = View.VISIBLE
         if (retirement.superseded()) return
         connectionView.visibility = View.VISIBLE
@@ -804,52 +752,14 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         connectionView.scrollTo(0, 0)
         if (!retirement.superseded()) resize()
     }
-    private fun hoveredHidAction(trace: HidDecisionTrace.Event? = null): HidAction? {
-        if (!HidDecisionTrace.observed(trace, HidDecisionTrace.Step.HOVER_USABLE_BEFORE, usable()) ||
-            !HidDecisionTrace.observed(trace, HidDecisionTrace.Step.HOVER_INITIALIZED, ::hidPanel.isInitialized) ||
-            HidDecisionTrace.observed(trace, HidDecisionTrace.Step.HOVER_PAGE_HIDDEN, hidPanel.visibility != View.VISIBLE) ||
-            HidDecisionTrace.observed(trace, HidDecisionTrace.Step.HOVER_CONNECTION_HIDDEN, connectionView.visibility != View.VISIBLE)) return null
-        val admitted = inputGeneration
-        val source = session
-        val projected = projectionContext
-        val panel = hidPanel
-        val point = pointer.inputPosition()
-        trace?.record(HidDecisionTrace.Step.HOVER_POINT, point = point)
-        val after = inputGeneration
-        if (HidDecisionTrace.observed(trace, HidDecisionTrace.Step.HOVER_GENERATION_CHANGED, after != admitted, before = admitted, after = after) ||
-            !HidDecisionTrace.observed(trace, HidDecisionTrace.Step.HOVER_USABLE_AFTER, usable()) ||
-            HidDecisionTrace.observed(trace, HidDecisionTrace.Step.HOVER_SESSION_CHANGED, session !== source) ||
-            HidDecisionTrace.observed(trace, HidDecisionTrace.Step.HOVER_PROJECTION_CHANGED, projectionContext != projected) ||
-            HidDecisionTrace.observed(trace, HidDecisionTrace.Step.HOVER_PANEL_CHANGED, hidPanel !== panel) ||
-            HidDecisionTrace.observed(trace, HidDecisionTrace.Step.HOVER_PAGE_HIDDEN_AFTER, panel.visibility != View.VISIBLE) ||
-            HidDecisionTrace.observed(trace, HidDecisionTrace.Step.HOVER_CONNECTION_HIDDEN_AFTER, connectionView.visibility != View.VISIBLE)) return null
-        return panel.actionAt(point, root, trace)
-    }
-
-    private fun showHidBindings() {
-        localControl(ReceiverControlSource.LOCAL_UI) { showHidBindingsAdmitted() }
-    }
-
-    private fun showHidBindingsAdmitted() {
-        val retirement = cancelInputOperation()?.second ?: return
-        mainControls.visibility = View.GONE
-        if (retirement.superseded()) return
-        hidPanel.visibility = View.VISIBLE
-        if (retirement.superseded()) return
-        hidPanel.refresh()
-        if (retirement.superseded()) return
-        connectionView.scrollTo(0, 0)
-        if (!retirement.superseded()) resize()
-    }
     private data class NavigationContext(
         val source: ProjectionSession?, val sourceOwner: ReceiverSessionOwner?, val geometry: Geometry?,
-        val panel: Boolean, val settings: Boolean, val streaming: Boolean,
+        val panel: Boolean, val streaming: Boolean,
         val width: Int, val height: Int, val chooser: Any?,
     ) {}
 
     private fun navigationContext() = NavigationContext(session, owner, currentGeometry,
-        presentation.panelVisible, ::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE,
-        streaming, root.width, root.height, anchorRegistration.offer)
+        presentation.panelVisible, streaming, root.width, root.height, anchorRegistration.offer)
 
     /** Own retirement may advance the revision and dismiss this chooser, never adopt another context. */
     private fun currentNavigation(original: NavigationContext, canceledRevision: Long?, dismissedChooser: Boolean = false): Boolean {
@@ -857,7 +767,6 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             session === original.source && owner === original.sourceOwner &&
             (owner == null || owner?.inputRevision == canceledRevision) && currentGeometry == original.geometry &&
             presentation.panelVisible == original.panel &&
-            (::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE) == original.settings &&
             streaming == original.streaming && root.width == original.width && root.height == original.height &&
             anchorRegistration.offer === (if (dismissedChooser) null else original.chooser)
     }
@@ -875,8 +784,6 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         if (projectionContext) {
             if (!projectedInput()) return
             original.source?.navigate(Navigation.CONTEXTUAL_HOME)
-        } else if (::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE) {
-            showControlPanelAdmitted()
         } else exitToLauncherAdmitted()
     }
     private fun sleepGlasses() {
@@ -898,7 +805,6 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         val original = navigationContext()
         val canceledRevision = cancelInputRevision()
         if (!currentNavigation(original, canceledRevision)) return
-        if (presentation.panelVisible && ::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE) { showControlPanelAdmitted(); return }
         if (presentation.panelVisible) {
             if (presentation.back()) { connectionView.visibility = View.GONE; resize() }
             else { finishProjection() }
@@ -926,7 +832,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         cancelInputOperation() ?: return
         resumed = false
         bindingValid = false
-        hidDevices.stop(); functionInput.stop(); nativeSwipeInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
+        functionInput.stop(); nativeSwipeInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
         if (owner !== originalOwner || (session !== originalSession && session != null)) return
         cancelOriginalOnExit(scope, activation, originalOwner)
         if (owner !== originalOwner || (session !== originalSession && session != null)) return
@@ -1203,7 +1109,6 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             completedInput.prepareCancel { local?.finishOriginal?.invoke() }
         } else null
         val detector = if (::screen.isInitialized) acquire { screen.prepareCancel() } else null
-        val hid = if (::hidInput.isInitialized) acquire { hidInput.prepareCancel(preserveRegistration = !dismissChooser && registrationActive()) } else null
         val nativeFunction = if (::functionInput.isInitialized) acquire { functionInput.prepareCancel(preserveRegistration = !dismissChooser && registrationActive()) } else null
         val classified = if (::classifiedPadLongPress.isInitialized) acquire { classifiedPadLongPress.prepareCancel() } else null
         val shell = if (::shellPadContact.isInitialized) acquire { shellPadContact.prepareCancel() } else null
@@ -1225,7 +1130,6 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             { local?.finishOriginal?.invoke() },
             { completed?.finishOriginal?.invoke() },
             { detector?.finishOriginal?.invoke() },
-            { hid?.finishOriginal?.invoke() },
             { nativeFunction?.finishOriginal?.invoke() },
             { classified?.finishOriginal?.invoke() },
             { shell?.finishOriginal?.invoke() },
@@ -1262,27 +1166,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         observeNativeInput { it.key(System.identityHashCode(this), event,
             SystemClock.uptimeMillis(), SystemClock.elapsedRealtimeNanos()) }
-        val trace = HidDecisionTrace.capture {
-            if (::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE && connectionView.visibility == View.VISIBLE)
-                HidDecisionTrace.Event(event.deviceId, event.keyCode, event.scanCode, event.action, event.repeatCount,
-                    event.isCanceled, event.downTime, event.eventTime).also { it.record(HidDecisionTrace.Step.ARRIVAL) }
-            else null
-        }
-        if (::hidDevices.isInitialized && hidDevices.accept(event, trace)) return true
-        return dispatchNativeKeyEvent(event,event.device?.name)
-    }
-
-    private fun hidLearningPage(): Boolean = ::hidPanel.isInitialized && hidPanel.visibility == View.VISIBLE &&
-        connectionView.visibility == View.VISIBLE
-
-    private fun hidLearningContext(): Any = inputGeneration to navigationContext()
-
-    private fun admitHidLearning(complete: (Boolean) -> Unit) {
-        admitLocalControl(ReceiverControlSource.GLASSES_HID, complete)
-    }
-
-    private fun unhandledHid(event: KeyEvent, deviceName: String) {
-        dispatchNativeKeyEvent(event,deviceName)
+        return dispatchNativeKeyEvent(event, event.device?.name)
     }
 
     private fun dispatchNativeKeyEvent(event: KeyEvent, deviceName: String?): Boolean {
@@ -1481,7 +1365,6 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     }
     override fun onResume() {
         super.onResume(); resumed = true; pointer.start(); longTouch.start(); padContact.start()
-        hidDevices.start()
         if (hasWindowFocus()) { functionInput.start(); nativeSwipeInput.start() }
         attachCameraPermissionHost()
         attachPresentation()
@@ -1497,7 +1380,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     override fun onPause() {
         resumed = false; cancelInput()
         serviceBinder?.detachCameraPermissionHost(cameraPermissionHost)
-        hidDevices.stop(); functionInput.stop(); nativeSwipeInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
+        functionInput.stop(); nativeSwipeInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
         owner?.detach(sessionView)
         super.onPause()
     }
@@ -1506,7 +1389,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         shellPadContact.stop()
         serviceBinder?.detachCameraPermissionHost(cameraPermissionHost)
         cameraPermissionRequests.clear()
-        hidDevices.stop(); functionInput.stop(); nativeSwipeInput.stop(); longTouch.stop(); padContact.stop()
+        functionInput.stop(); nativeSwipeInput.stop(); longTouch.stop(); padContact.stop()
         owner?.detach(sessionView)
         if (isFinishing && bindingValid) {
             // Original view/task scope only. A delayed destructor never resolves a newer singleton H.

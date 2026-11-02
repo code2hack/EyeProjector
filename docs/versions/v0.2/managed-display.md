@@ -16,13 +16,14 @@ The managed source has independent lock state, receives positional input directl
 
 The native sustained touchpad contact and requested Function sleep action currently need one shell-owned helper running on the Glasses. It is local to the Glasses, not a computer relay. Reboot or helper loss requires bootstrap; raw-pad EOF ends that contact connection, while the retained power owner can remain alive across Activity exit/reopen.
 
-Open the Glasses EyeProjector receiver first. Identify the actual Rokid pad node using the device's input inventory and physical-event observation. Supply its path as `PAD_DEVICE`; a historical event number must not be assumed on another device. Then, in the authorized **Glasses shell**, start the installed class:
+Open the Glasses EyeProjector receiver first. Identify the actual Rokid pad node using the device's input inventory and physical-event observation. Supply its path as `PAD_DEVICE`; a historical event number must not be assumed on another device. For the current v0.3 Function release route, also identify the physical Function input node and supply it as `FUNCTION_DEVICE`. The same non-grabbing reader forwards its actual DOWN/UP because OEM long-press policy suppresses the release broadcast. Then, in the authorized **Glasses shell**, start the installed class:
 
 ```sh
 pad_apk=$(pm path com.code2hack.eyeprojector.directrg)
 pad_apk=${pad_apk#package:}
 CLASSPATH="$pad_apk" nohup /system/bin/app_process /system/bin \
   com.code2hack.eyeprojector.directrg.NativePadReader "$PAD_DEVICE" \
+  eyeprojector-native-pad-99 "$FUNCTION_DEVICE" \
   >/data/local/tmp/eyeprojector-native-reader.log 2>&1 </dev/null &
 pad_reader_pid=$!
 printf '%s\n' "$pad_reader_pid" >/data/local/tmp/eyeprojector-native-reader.pid
@@ -36,7 +37,7 @@ The accepted native held-key stream reports release at about three seconds even 
 
 - Open a chosen app from EyeProjector Home or the Phone app grid.
 - Long-press a Phone icon for notifications, numeric/slider Scale and Remove. Scale is absolute, 0.5–1.5, default 1; it changes projected native layout without changing the physical Phone view.
-- For a Phone controller, select it in HID key bindings, Pin it, then learn the four controls. Projection Stop keeps the pin. Unpin/reset releases it and clears the Phone assignments.
+- Controllers connect only to the Phone in current v0.3. Select the actual device in Phone HID bindings, Pin it, then learn Tap, Scroll down, Scroll up, Anchor and Back / Lock / Home. The Glasses have no HID binding feature. Projection Stop keeps the pin; Unpin/reset releases it and clears the Phone assignments.
 - Function single keeps Back. Double steps app → EyeProjector Home → control panel → Rokid Home. Triple requests Glasses sleep. Long remains a no-op.
 - Supported app camera previews use the full Glasses → Phone app → Glasses return path. Reopen an app retaining an obsolete camera context after workspace recreation.
 - Native Bluetooth carries audio. Actual recording demand automatically requests the active headset's SCO route in communication mode and releases the backend's own requests afterward.

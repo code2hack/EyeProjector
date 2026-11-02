@@ -25,7 +25,7 @@ internal class HeldInputOwner(private val dispatcher: HeldPointerDispatcher) {
     val holding: Boolean get() = dispatcher.holding
 
     /**
-     * [owner] is compared by reference; a HID adapter supplies a fresh token per physical press.
+     * [owner] is compared by reference; each input adapter supplies a fresh token per physical press.
      * A reentrant replacement is drained after the outer dispatcher call returns, and returns false
      * here because it has not acquired an output contact yet. Input consumption belongs to the adapter.
      */
@@ -105,7 +105,7 @@ internal class HeldInputOwner(private val dispatcher: HeldPointerDispatcher) {
         } finally { draining = false }
     }
 
-    /** The native source has one physical contact; a retired DOWN cannot reacquire after HID handoff. */
+    /** The native source has one physical contact; a retired DOWN cannot reacquire after another input source takes ownership. */
     fun acceptNative(event: PadGestureRecognizer.Event): Boolean {
         if (event.phase == PadGestureRecognizer.Phase.DOWN) {
             val old = nativePress
