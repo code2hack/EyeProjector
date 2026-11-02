@@ -69,7 +69,7 @@ class ProjectionInstrumentation : Instrumentation() {
     @Volatile private var fixtureTeardownRecorder: FixtureTeardownRecorder? = null
 
     private fun captureFixtureTeardown(activity: Activity?, acceptedStatus: JSONObject, fixture: FixtureSetupPhase?, operation: String) {
-        if (fixture == null || operation !in listOf("input-observation", "static-content")) return
+        if (fixture == null || operation !in listOf("input-observation", "static-content", "coordinate-mode")) return
         try {
             fixtureTeardownRecorder = FixtureTeardownRecorder.capture(this, activity, acceptedStatus, fixture.setupDeadlineElapsedMs)
         } catch (error: Throwable) {
@@ -533,6 +533,8 @@ class ProjectionInstrumentation : Instrumentation() {
                     waitStreaming(fixtureSetup)
                 }
                 if (operation == "coordinate-mode") {
+                    report.put("first", status())
+                    captureFixtureTeardown(activity, report.getJSONObject("first"), fixtureSetup, operation)
                     val detail = JSONObject().also { report.put("coordinateMode", it) }
                     CoordinateModeChecks.run(this, activity as ReceiverActivity, args, seconds, detail)
                 } else if (operation == "scale") {
