@@ -7,7 +7,7 @@ import android.os.Process
 import android.os.SystemClock
 import com.code2hack.eyeprojector.directhost.input.PhoneInputMerger
 import com.code2hack.eyeprojector.directhost.input.InputWork
-import com.code2hack.eyeprojector.directhost.input.AnchorIntentRoute
+import com.code2hack.eyeprojector.directhost.input.CoordinateInputRouter
 import com.code2hack.eyeprojector.directhost.camera.CapturedTrustedPeer
 import com.code2hack.eyeprojector.directhost.camera.PhoneCameraMediaRole
 import com.code2hack.eyeprojector.directhost.camera.PhoneCameraMediaOwner
@@ -124,10 +124,10 @@ internal class Bridge(
     private val ownerEpoch: String = UUID.randomUUID().toString(),
     private val managedDisplayFactory: (((String, Int?, Int?) -> Unit) -> ManagedProjectionDisplay)? = null,
 ) : Closeable {
-    @Volatile private var anchorAppBridge: com.code2hack.eyeprojector.directhost.anchor.execution.IAnchorAppBridge? = null
-    fun installAnchorBridge(client: com.code2hack.eyeprojector.directhost.anchor.execution.IAnchorAppBridge?) {
-        val original = synchronized(admission) { anchorAppBridge = client; active.get() }
-        original?.installAnchorBridge(client)
+    @Volatile private var modeOwner: IPhoneModeOwner? = null
+    fun installModeOwner(client: IPhoneModeOwner?) {
+        val original = synchronized(admission) { modeOwner = client; active.get() }
+        original?.installModeOwner(client)
     }
     private val cameraTasksPrepared = CameraTasks.prepare()
     private val running = AtomicBoolean(true)
@@ -222,7 +222,7 @@ internal class Bridge(
                         if (!running.get() || active.get() != null) return
                         createSession(socket, input).also { active.set(it) }
                     }
-                    session.installAnchorBridge(anchorAppBridge)
+                    session.installModeOwner(modeOwner)
                     status("SESSION_STARTING")
                     session.run()
                 }
@@ -366,7 +366,7 @@ private class Session(
     private val timer: java.util.concurrent.ScheduledExecutorService,
     private val ownerEpoch: String,
     private val firstFrame: () -> Unit,
-) : Closeable, CapturedProjection, AnchorIntentRoute {
+) : Closeable, CapturedProjection {
     private val running = AtomicBoolean(true)
     private val release = OwnedRelease()
     private val resources = Any()
@@ -689,140 +689,67 @@ private class Session(
     private var localListener: LocalServerSocket? = null
     private var video: LocalSocket? = null
     private var control: LocalSocket? = null
-    private val anchorWork = InputWork("eyeprojector-phone-anchor")
-    private val ordinaryWork = InputWork("eyeprojector-phone-ordinary-input")
-    private val controlReplies = InputWork("eyeprojector-phone-control-reply")
+    private val ordinaryWork = InputWork("eyeprojector-phone-mode-input")
     @Volatile private var inputTrace: PhoneInputTrace? = null
     @Volatile private var lastInputTraceStatus = JSONObject().put("enabled", false)
     fun installInputTraceConfiguration(config: PhoneInputTraceConfig?) {
         val trace = PhoneInputTrace.open(config, context, System.identityHashCode(this)) ?: return
         inputTrace = trace
-        inputControls.anchor.observation(trace)
-        val work = trace.retain()
-        anchorWork.whenTerminated {
-            trace.record("ORIGINAL_ANCHOR_WORK_RETIRED", mapOf("discardedCallbacks" to anchorWork.discardedCallbacks))
-            work?.close()
-        }
-        val ordinary = trace.retain()
-        ordinaryWork.whenTerminated {
-            trace.record("ORIGINAL_ORDINARY_WORK_RETIRED", mapOf("discardedCallbacks" to ordinaryWork.discardedCallbacks))
-            ordinary?.close()
-        }
-        trace.whenTerminated {
-            if (inputTrace === trace) {
-                lastInputTraceStatus = trace.status()
-                inputControls.anchor.observation(null)
-                inputTrace = null
+        val original = trace.retain()
+        ordinaryWork.whenTerminated { original?.close() }
+        trace.whenTerminated { lastInputTraceStatus = trace.status(); if (inputTrace === trace) inputTrace = null }
+    }
+    private val inputControls = PhoneTouchDispatcher(controlLock) { control!!.outputStream.write(it) }
+    @Volatile private var modeOwner: IPhoneModeOwner? = null
+    private var publishedMode: CoordinateModeResult? = null
+    private var modePackage: String?=null
+    private var modeAppObserved=false
+    private fun refreshModeApp() { modePackage=launches.currentModePackage();modeAppObserved=true }
+
+    fun installModeOwner(owner: IPhoneModeOwner?) {
+        modeOwner = owner
+        owner?.onSession(context.ownerEpoch,context.projectionToken,object : IPhoneInputSession.Stub() {
+            override fun active() = running.get()
+            override fun edge(routeId: Long, typedEdge: ByteArray, regionId: String, word: Long) {
+                phoneHidStampedEdge(routeId,PhoneHidEdge.from(typedEdge),regionId,word)
             }
+        })
+    }
+    private fun inputOperation(action: () -> Unit) = ordinaryWork.submit {
+        try { if (running.get()) action() }
+        catch (error: Exception) { closeSafely(sessionFailureReason(error,control=true),error) }
+    }
+    /** Only this FIFO invokes app persistence/foreground queries, never while holding controlLock. */
+    private fun modeDecision(operation: CoordinateOperation, point: Tap? = null): CoordinateModeResult {
+        check(!Thread.holdsLock(controlLock))
+        val owner = modeOwner ?: throw java.io.IOException("Phone mode owner unavailable")
+        if(!modeAppObserved) refreshModeApp()
+        val packageName=modePackage
+        val result = CoordinateModeResult.from(owner.decide(context.ownerEpoch,context.projectionToken,packageName,operation.ordinal,
+            point?.x?.toDouble() ?: 0.0,point?.y?.toDouble() ?: 0.0) ?: throw java.io.IOException("Original Phone mode session retired"))
+        if (publishedMode != result || result.failure != null) {
+            publishedMode = result
+            send(Frame(Wire.COORDINATE_STATE,payload=result.bytes()))
         }
+        return result
     }
-    private val inputControls = com.code2hack.eyeprojector.directhost.anchor.execution.AnchorSessionInput(controlLock) { control!!.outputStream.write(it) }.apply {
-        cancellation(anchorWork::submit) { error ->
-            val original = error as? Exception ?: java.io.IOException("Original Anchor retirement failed", error)
-            closeSafely(sessionFailureReason(original, control = true), original)
-        }
-    }
-    /** #121/#122 install typed consumers on the actual Session; grammar owns no Anchor contact. */
-    private var executingAnchor: com.code2hack.eyeprojector.directhost.anchor.execution.AnchorAdmission? = null
-    private val anchorSession by lazy {
-        com.code2hack.eyeprojector.directhost.anchor.execution.AnchorShellSession(inputControls, ::uiTargetContext,
-            { intent, source -> running.get() && intent.context.pointer.projected &&
-                source.context == context && managedDisplay?.inputDestination()?.let { original ->
-                    original.displayId == source.displayId && original.uniqueId == source.displayUniqueId } == true },
-            phoneInput::nativeAction, anchorWork, { error -> closeSafely(sessionFailureReason(error, control = true), error) },
-            { message -> if (running.get()) try { send(Frame(Wire.ANCHOR, payload = message.bytes())) }
-                catch (error: Exception) { closeSafely(sessionFailureReason(error, control = true), error) } },
-            { original, route, edge, region, word -> phoneHidStampedOriginal(original, route, edge, region, word) },
-            captureOriginal = ::captureAnchorOriginal, originalSource = ::capturedAnchorSource).also {
-                    it.controlContext(context)
-                }
-    }
-    fun installAnchorBridge(client: com.code2hack.eyeprojector.directhost.anchor.execution.IAnchorAppBridge?) = anchorSession.install(client)
-    override val anchorIntents = AnchorIntentConsumers<CapturedProjection>().apply {
-        val consume: (CapturedAnchorIntent<CapturedProjection>) -> Unit = { captured ->
-            executingAnchor?.takeIf { captured.original === this@Session && it.intent == captured.intent }?.let(anchorSession::accept)
-        }
-        activate = consume; register = consume
-    }
-
-    private fun acceptAnchor(intent: AnchorIntent) = acceptAnchor(intent, null)
-
-    /** Capture before Phone's HID queue or native Anchor FIFO; no app/window traversal here. */
-    private fun captureAnchorOriginal(original: com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission) {
-        if (original.terminal) return
-        if (original.anchorContext == null)
-            original.anchorContext = inputControls.anchor.heldContext() ?: phoneInput.captureAnchorContext()
-        val resource = synchronized(managedDisplayGate) { managedDisplay }
-        if (original.anchorContext == null || resource == null) {
-            original.disposition = com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.RETIRED
-            return
-        }
-        val held = inputControls.anchor.heldSource()
-        original.anchorMapping = held?.let { com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiMapping(
-            it.displayId, it.displayUniqueId, it.geometry) } ?: resource.uiInputSnapshot()
-        original.anchorResource = resource
-        if (original.anchorMapping == null)
-            original.disposition = com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.RETIRED
-    }
-
-    private fun capturedAnchorSource(original: com.code2hack.eyeprojector.directhost.anchor.execution.AnchorAdmission):
-        com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiSource? {
-        val resource = original.resource as? ManagedProjectionDisplay ?: return null
-        val mapping = original.mapping ?: return null
-        if (!running.get() || synchronized(managedDisplayGate) { managedDisplay !== resource }) return null
-        val destination = resource.inputDestination() ?: return null
-        if (destination.displayId != mapping.displayId || destination.uniqueId != mapping.displayUniqueId) return null
-        val foreground = launches.snapshot(observe = true)
-        if (foreground.context != context || foreground.displayId != mapping.displayId ||
-            !running.get() || synchronized(managedDisplayGate) { managedDisplay !== resource }) return null
-        return com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiSource(context, foreground.generation,
-            mapping.displayId, mapping.displayUniqueId, foreground.foregroundPackage, null, mapping.geometry)
-    }
-
-    private data class RemoteAnchorKey(val incarnation: ReceiverIncarnation, val source: AnchorSource, val id: Long)
-    private val remoteAnchorOriginals = java.util.concurrent.ConcurrentHashMap<RemoteAnchorKey,
-        Pair<AnchorOriginal,com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission>>()
-    private val remoteAnchorSeen=java.util.concurrent.ConcurrentHashMap<Pair<ReceiverIncarnation,AnchorSource>,Long>()
-    private val remoteAnchorRetiredBeforeBirth=java.util.concurrent.ConcurrentHashMap.newKeySet<RemoteAnchorKey>()
-
-    private fun acceptAnchor(intent: AnchorIntent,
-        original: com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission?) {
-        val admission = inputControls.anchor.capture(intent, original)
-        com.code2hack.eyeprojector.directhost.anchor.execution.AnchorAppRuntime.flow(
-            "root_capture source=${intent.source} kind=${intent.kind} gesture=${intent.gestureId} admitted=${admission != null} birthGeneration=${original?.anchorGeneration} currentGeneration=${inputControls.anchor.observationGeneration} disposition=${original?.disposition}")
-        if (admission == null) return
-        val captured = CapturedAnchorIntent<CapturedProjection>(intent, this)
-        anchorWork.submit {
-            try {
-                val current = captured.original === this && running.get() &&
-                    inputControls.anchor.isCurrent(admission)
-                com.code2hack.eyeprojector.directhost.anchor.execution.AnchorAppRuntime.flow(
-                    "root_fifo source=${intent.source} kind=${intent.kind} gesture=${intent.gestureId} current=$current")
-                if (current) {
-                    // False means no feature consumer is installed, not a completed Anchor action.
-                    executingAnchor = admission
-                    try { anchorIntents.dispatch(captured) } finally { executingAnchor = null }
-                }
-            } catch (error: Exception) { closeSafely(sessionFailureReason(error, control = true), error) }
-        }
-    }
-    private val phoneInput: PhoneInputMerger = PhoneInputMerger(controlLock, SystemClock::uptimeMillis,
-        { deadline, action -> scheduleInput(deadline, anchorWork, action) }, { geometry.get() },
-        { event -> running.get() && inputControls.touch(event) },
-        { event -> running.get() && inputControls.scroll(event) },
-        ::phoneNavigation,
-        { inputControls.cancel() },
-        { event -> if (running.get()) send(Frame(Wire.RECEIVER_INPUT, payload = event.bytes())) },
-        { running.get() }, anchorIntent = ::acceptAnchor,
-        anchorControl = inputControls::consumeHeldControl, cancelPassiveControl = inputControls::cancelOrdinary,
-        captureHeldControl = inputControls.anchor::captureHeldControl,
-        originalAnchorIntent = { intent, original -> acceptAnchor(intent, original) },
-        receiveControl = inputControls.anchor::receiveControl,
-        passiveAllowed = { !inputControls.anchor.holding },
-        registrationRelease = { intent, canceled -> anchorWork.submit {
-            try { if (running.get()) anchorSession.release(intent, canceled) }
-            catch (error: Exception) { closeSafely(sessionFailureReason(error, control = true), error) }
-        } }, navigationSchedule = { deadline, action -> scheduleInput(deadline, ordinaryWork, action) })
+    private val coordinateInput=CoordinateInputRouter(::modeDecision,inputControls::touch,inputControls::tap,inputControls::scroll)
+    private fun cancelOrdinaryInput(): Boolean { coordinateInput.cancel();return inputControls.cancel() }
+    private val phoneInput = PhoneInputMerger(controlLock,SystemClock::uptimeMillis,
+        { deadline,action -> scheduleInput(deadline,ordinaryWork,action) },{ geometry.get() },
+        coordinateInput::touch,{ coordinateInput.scroll(it) },::phoneNavigation,{ cancelOrdinaryInput() },
+        { event -> if (running.get()) send(Frame(Wire.RECEIVER_INPUT,payload=event.bytes())) },{ running.get() },
+        hidMode = { modeDecision(CoordinateOperation.CYCLE) },
+        hidAction = { action,point ->
+            val operation = when(action) {
+                PhoneHidAction.TAP -> CoordinateOperation.TAP
+                PhoneHidAction.BACK -> CoordinateOperation.BACK
+                PhoneHidAction.SCROLL_UP -> CoordinateOperation.SCROLL_UP
+                PhoneHidAction.SCROLL_DOWN -> CoordinateOperation.SCROLL_DOWN
+                else -> CoordinateOperation.SNAPSHOT
+            }
+            point.projected && modeDecision(operation,point.target()).consumed && operation != CoordinateOperation.SNAPSHOT
+        })
     private fun scheduleInput(deadline: Long, work: InputWork, action: () -> Unit): () -> Unit {
         val task = timer.schedule({ work.submit {
             try { if (running.get()) action() }
@@ -858,16 +785,14 @@ private class Session(
     private var identifiedDisplay = false
     private fun phoneNavigation(action: Navigation, size: Geometry) {
         if (!running.get()) return
-        val originalControl = com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission()
-        if (inputControls.consumeHeldControl(originalControl) !=
-            com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.NORMAL) return
+        if (action == Navigation.BACK && coordinateInput.back()) return
+        val originalControl = receiveUserControl()
         val originalSource = receiverUsability.snapshot().fact
         val commit: () -> Boolean = { commitUserControl(originalControl, originalSource) }
         val current: () -> Boolean = { currentUserControl(originalControl,originalSource) }
         when (action) {
             Navigation.BACK -> inputControls.navigate(Navigate(action, size))
             Navigation.HOME -> launches.home(commit,current)
-            Navigation.FUNCTION_DOUBLE -> Unit // Reserved legacy key; Function is never navigation.
             Navigation.CONTEXTUAL_HOME -> {
                 val original = receiverUsability.snapshot().fact ?: return
                 launches.contextualHome(commit,current) {
@@ -883,7 +808,7 @@ private class Session(
         }
     }
 
-    private fun commitUserControl(original: com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission,
+    private fun commitUserControl(original: SessionInputReceipt,
         source: ReceiverUsability?): Boolean {
         fun current(): Boolean {
             val now = receiverUsability.snapshot().fact
@@ -891,20 +816,20 @@ private class Session(
                 now.ownerEpoch == source.ownerEpoch && now.incarnation == source.incarnation &&
                 now.inputRevision == source.inputRevision && now.mode == source.mode
         }
-        if (!current() || !inputControls.anchor.isCurrent(original)) return false
-        return phoneInput.nativeAction(original) {
+        if (!current() || !original.current()) return false
+        return phoneInput.nativeAction {
             if (!current()) false else {
-                inputControls.cancel()
-                current() && inputControls.anchor.isCurrent(original)
+                cancelOrdinaryInput()
+                current() && original.current()
             }
         }
     }
 
-    private fun currentUserControl(original: com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission,
+    private fun currentUserControl(original: SessionInputReceipt,
         source: ReceiverUsability?): Boolean {
         val current=receiverUsability.snapshot()
         val fact=current.fact
-        return running.get()&&!current.retired&&inputControls.anchor.currentAtSubmission(original)&&
+        return running.get()&&!current.retired&&original.current()&&
             (if(source==null)fact==null else fact!=null&&fact.ownerEpoch==source.ownerEpoch&&fact.incarnation==source.incarnation&&
                 fact.inputRevision==source.inputRevision&&fact.mode==source.mode)
     }
@@ -933,7 +858,7 @@ private class Session(
         }
     }
     @Synchronized private fun sendScaleOriginal(value: ScaleState,
-        original: com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission,
+        original: SessionInputReceipt,
         source: ReceiverUsability?): Boolean {
         if (!currentUserControl(original, source)) return false
         lastScaleReportAttempt = value
@@ -942,7 +867,7 @@ private class Session(
     }
 
     private fun resizeOriginal(size: Geometry, requested: Double,
-        original: com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission,
+        original: SessionInputReceipt,
         source: ReceiverUsability?) {
         val display = if (managedDisplayFactory == null) null else synchronized(managedDisplayGate) { managedDisplay }
         synchronized(controlLock) {
@@ -955,77 +880,41 @@ private class Session(
     fun scaleState(): ScaleState = if (running.get()) scale.state() else LiveScale.unavailable()
 
     fun projectionContext(): ProjectionContext = if (running.get()) context else ProjectionContext()
-    fun recognizeUserInput(): Boolean = running.get() && !inputControls.anchor.discardingControls
-    fun receiveUserControl(): com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission =
-        com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission().also { inputControls.anchor.receiveControl(it) }
-
-    override fun consumeUserControl(): Boolean = consumeUserControl(receiveUserControl())
-    fun consumeUserControl(original: com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission): Boolean {
-        if (!running.get()) return false
-        return !original.terminal && inputControls.consumeHeldControl(original) ==
-            com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.NORMAL
+    fun recognizeUserInput(): Boolean = running.get()
+    fun receiveUserControl(): SessionInputReceipt {
+        val source = receiverUsability.snapshot().fact
+        return SessionInputReceipt {
+            val now=receiverUsability.snapshot().fact
+            running.get() && (if(source == null) now == null else now != null &&
+                now.ownerEpoch == source.ownerEpoch && now.incarnation == source.incarnation &&
+                now.inputRevision == source.inputRevision && now.mode == source.mode)
+        }
     }
+    override fun consumeUserControl(): Boolean = running.get()
+    fun consumeUserControl(original: SessionInputReceipt): Boolean = original.current()
     override fun receiverUsability(): SessionUsabilitySnapshot = receiverUsability.snapshot()
     override fun launchApp(requestId: Long, packageName: String): ProjectionDisplayState {
-        val original = com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission()
-        if (inputControls.consumeHeldControl(original) != com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.NORMAL)
-            return ProjectionDisplayState(requestId = requestId, requestedPackage = packageName, context = context)
+        val original = receiveUserControl()
         val source = receiverUsability.snapshot().fact
         return launches.launch(requestId,packageName,commitOriginal={commitUserControl(original,source)},
             currentOriginal={currentUserControl(original,source)})
     }
     override fun projectionDisplayState(): ProjectionDisplayState = launches.snapshot(observe = true)
-    override fun uiTargetContext(): com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiSource? {
-        val original = synchronized(managedDisplayGate) {
-            if (!running.get() || nativeResourcesClosing.get() || managedDisplayCloseRequested) null else managedDisplay
-        } ?: return null
-        val mapping = original.uiInputSnapshot() ?: return null
-        // Mapping/admission locks have ended before this existing serialized foreground query.
-        val foreground = launches.snapshot(observe = true)
-        val retained = synchronized(managedDisplayGate) {
-            running.get() && !nativeResourcesClosing.get() && !managedDisplayCloseRequested && managedDisplay === original
-        }
-        if (!retained || original.uiInputSnapshot() != mapping || foreground.context != context ||
-            foreground.displayId != mapping.displayId) return null
-        return com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiSource(context, foreground.generation,
-            mapping.displayId, mapping.displayUniqueId, foreground.foregroundPackage, null, mapping.geometry)
-    }
-    override fun phoneHidEdge(routeId: Long, edge: PhoneHidEdge) {
-        try { if (running.get()) phoneInput.edge(routeId, edge) }
-        catch (error: Exception) { closeSafely(sessionFailureReason(error, control = true), error) }
+    override fun phoneHidEdge(routeId: Long,edge: PhoneHidEdge) = inputOperation {
+        if(edge.phase == PhoneHidPhase.DOWN && edge.repeatCount == 0) refreshModeApp()
+        phoneInput.edge(routeId,edge)
     }
     override fun phoneHidSnapshot(): com.code2hack.eyeprojector.directhost.activation.snapshot.NativeSnapshotDescriptor? {
         if (running.get() && receiverUsability.needsRegion()) prepareHidRegionAsync()
         return receiverUsability.descriptor()
     }
-    override fun phoneHidStampedEdge(routeId: Long, edge: PhoneHidEdge, regionId: String, word: Long) {
-        val timed = edge.action == PhoneHidAction.TAP
-        val arrived = if (timed) SystemClock.uptimeMillis() else 0L
-        if (timed) Log.i("EyeProjectorInput", "hid_tap phase=${edge.phase} route=$routeId stage=arrival uptimeMs=$arrived sourceEventMs=${edge.eventTimeMs} sourceDownMs=${edge.downTimeMs} sourceAgeMs=${arrived - edge.eventTimeMs} tid=${Process.myTid()}")
-        try {
-            try {
-                if (running.get()) phoneInput.stampedEdge(routeId, edge,
-                    { point, source -> receiverUsability.acceptsContext(regionId, word, point, source) }) { point, source ->
-                    if (edge.action == PhoneHidAction.NAVIGATION)
-                        receiverUsability.acceptsContext(regionId, word, point, source)
-                    else receiverUsability.accepts(regionId, word, point, source)
-                }
-            } finally {
-                if (timed) {
-                    val returned = SystemClock.uptimeMillis()
-                    Log.i("EyeProjectorInput", "hid_tap phase=${edge.phase} route=$routeId stage=merger_return uptimeMs=$returned elapsedMs=${returned - arrived} tid=${Process.myTid()}")
-                }
-            }
-        } catch (error: Exception) { closeSafely(sessionFailureReason(error, control = true), error) }
-    }
-    private fun phoneHidStampedOriginal(original: com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission,
-        routeId: Long, edge: PhoneHidEdge, region: String, word: Long) {
-        try {
-            if (running.get()) phoneInput.stampedEdgeOriginal(routeId, edge, original,
-                { point, source -> receiverUsability.acceptsContext(region, word, point, source) },
-                { point, source -> if (edge.action == PhoneHidAction.NAVIGATION)
-                    receiverUsability.acceptsContext(region, word, point, source) else receiverUsability.accepts(region, word, point, source) })
-        } catch (error: Exception) { closeSafely(sessionFailureReason(error, control = true), error) }
+    override fun phoneHidStampedEdge(routeId: Long,edge: PhoneHidEdge,regionId: String,word: Long) = inputOperation {
+        if(edge.phase == PhoneHidPhase.DOWN && edge.repeatCount == 0) refreshModeApp()
+        phoneInput.stampedEdge(routeId,edge,
+            { point,source -> receiverUsability.acceptsContext(regionId,word,point,source) }) { point,source ->
+            if (!edge.action.learnsSingleOnly) receiverUsability.acceptsContext(regionId,word,point,source)
+            else receiverUsability.accepts(regionId,word,point,source)
+        }
     }
     private fun prepareHidRegion() {
         // Normal producer is package-loaded ShizukuHostService(Context) -> inline Bridge -> Session.
@@ -1226,8 +1115,6 @@ private class Session(
                                         inputControls.geometry(videoGeometry)
                                     }
                                 }
-                                com.code2hack.eyeprojector.directhost.anchor.execution.AnchorAppRuntime.flow(
-                                    "managed_layout mappingRefreshed=true logical=${next.source.layout} video=$videoGeometry")
                             }
                             runCatching { recordManagedProjection() }
                             continue
@@ -1289,49 +1176,22 @@ private class Session(
 
     private fun receiveControl(frame: Frame): Boolean {
         val trace = inputTrace
+        if (frame.channel in setOf(Wire.TAP,Wire.TOUCH,Wire.SCROLL,Wire.PASSIVE_SCROLL,Wire.NAVIGATE,
+                Wire.MODE_CYCLE,Wire.HEAD_POINTER)) {
+            inputOperation {
+                val newControl=frame.channel != Wire.HEAD_POINTER && frame.channel != Wire.PASSIVE_SCROLL &&
+                    (frame.channel != Wire.TOUCH || Touch.from(frame.payload).phase == Touch.Phase.DOWN)
+                if(newControl) refreshModeApp()
+                if (trace == null) receiveControlBody(frame) else trace.withFrame(frame) { receiveControlBody(frame) }
+            }
+            return true
+        }
         return if (trace == null) receiveControlBody(frame) else trace.withFrame(frame) { receiveControlBody(frame) }
     }
 
     private fun receiveControlBody(frame: Frame): Boolean {
         when (frame.channel) {
-            Wire.PING -> { lastPingNs.set(System.nanoTime()); pongLane.submit(frame.stamp) }
-            Wire.CONTROL_INTENT -> {
-                val intent = ReceiverControlIntent.from(frame.payload)
-                val original = com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission()
-                inputControls.anchor.receiveControl(original)
-                fun current(): Boolean {
-                    val fact = receiverUsability.snapshot().takeUnless { it.retired }?.fact ?: return false
-                    return running.get() && fact.ownerEpoch == intent.context.ownerEpoch && fact.incarnation == intent.context.incarnation &&
-                        fact.inputRevision == intent.context.inputRevision && fact.mode == intent.context.mode
-                }
-                val reply: (com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition) -> Unit = { disposition ->
-                    val result = ReceiverControlResult(intent.id, ReceiverControlDisposition.entries[disposition.ordinal])
-                    controlReplies.submit {
-                        try { synchronized(this@Session) {
-                            if (running.get()) {
-                                // Wait for this original writer before checking the original receipt.
-                                // NORMAL never authorizes a later Hold/binding/context at dequeue.
-                                val disposition = if (result.disposition == ReceiverControlDisposition.NORMAL &&
-                                    (!current() || !inputControls.anchor.currentAtSubmission(original))) ReceiverControlDisposition.RETIRED
-                                    else result.disposition
-                                send(Frame(Wire.CONTROL_RESULT, payload = result.copy(disposition = disposition).bytes()))
-                            }
-                        } } catch (error: Exception) { closeSafely(sessionFailureReason(error, control = true), error) }
-                    }
-                }
-                if (original.terminal) reply(original.disposition)
-                else if (!current()) reply(com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.RETIRED)
-                else {
-                    val disposition = inputControls.consumeHeldControl(original)
-                    if (disposition != com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.NORMAL) reply(disposition)
-                    else {
-                        val finish = anchorSession.localControl(original, ::current, reply)
-                        ordinaryWork.submit { try { finish() } catch (error: Exception) {
-                            closeSafely(sessionFailureReason(error, control = true), error)
-                        } }
-                    }
-                }
-            }
+            Wire.PING -> { lastPingNs.set(System.nanoTime()); pongLane.submit(frame.stamp); inputOperation { refreshModeApp();modeDecision(CoordinateOperation.SNAPSHOT) } }
             Wire.SCALE_REQUEST -> {
                 requestScale(frame.stamp, ScaleRequest.from(frame.payload).scale, streamRequest = true)
             }
@@ -1341,7 +1201,7 @@ private class Session(
                 try {
                     val tap = Tap.from(frame.payload)
                     if (tap.geometry == geometry.get()) {
-                        if (phoneInput.nativeAction { inputControls.tap(tap) }) touches.incrementAndGet()
+                        if (phoneInput.nativeAction { coordinateInput.tap(tap) }) touches.incrementAndGet()
                     }
                 } finally {
                     val returned = SystemClock.uptimeMillis()
@@ -1350,16 +1210,16 @@ private class Session(
             }
             Wire.SCROLL -> {
                 val scroll = Scroll.from(frame.payload)
-                if (scroll.target.geometry == geometry.get()) phoneInput.nativeAction { inputControls.scroll(scroll) }
+                if (scroll.target.geometry == geometry.get()) phoneInput.nativeAction { coordinateInput.scroll(scroll) }
             }
             Wire.PASSIVE_SCROLL -> {
                 val scroll = Scroll.from(frame.payload)
-                if (scroll.target.geometry == geometry.get()) phoneInput.passiveAction { inputControls.passiveScroll(scroll) }
+                if (scroll.target.geometry == geometry.get()) phoneInput.passiveAction { coordinateInput.scroll(scroll,passive=true) }
             }
             Wire.NAVIGATE -> {
                 val navigate = Navigate.from(frame.payload)
                 if (navigate.geometry == geometry.get()) {
-                    if (navigate.action == Navigation.BACK) phoneInput.nativeAction { inputControls.navigate(navigate) }
+                    if (navigate.action == Navigation.BACK) phoneInput.nativeAction { phoneNavigation(navigate.action,navigate.geometry); true }
                     else phoneNavigation(navigate.action, navigate.geometry)
                 }
             }
@@ -1380,14 +1240,7 @@ private class Session(
             }
             Wire.RECEIVER_USABILITY -> {
                 val fact = ReceiverUsability.from(frame.payload)
-                val previous = receiverUsability.snapshot().fact
                 if (receiverUsability.publish(fact)) {
-                    if (previous != null && (previous.ownerEpoch != fact.ownerEpoch || previous.incarnation != fact.incarnation)) {
-                        remoteAnchorOriginals.clear()
-                        remoteAnchorRetiredBeforeBirth.clear()
-                        remoteAnchorSeen.keys.removeAll { it.first != fact.incarnation }
-                    }
-                    anchorSession.usability(fact)
                 }
                 if (receiverUsability.needsRegion()) prepareHidRegionAsync()
             }
@@ -1396,48 +1249,7 @@ private class Session(
                 val original = receiverUsability.snapshot().fact
                 phoneInput.pointer(point, original) { receiverUsability.acceptsPointer(original, point) }
             }
-            Wire.ANCHOR_INTENT -> {
-                require(frame.stamp == 0L)
-                val intent = AnchorIntent.from(frame.payload)
-                val key = RemoteAnchorKey(intent.context.usability.incarnation,intent.source,intent.gestureId)
-                val original = remoteAnchorOriginals.remove(key)
-                com.code2hack.eyeprojector.directhost.anchor.execution.AnchorAppRuntime.flow(
-                    "intent_received source=${intent.source} kind=${intent.kind} gesture=${intent.gestureId} originalPresent=${original != null} contextMatch=${original?.first?.context == intent.context}")
-                if (original != null && original.first.context == intent.context) acceptAnchor(intent,original.second)
-            }
-            Wire.ANCHOR_ORIGINAL -> {
-                require(frame.stamp == 0L)
-                val original = AnchorOriginal.from(frame.payload)
-                val key = RemoteAnchorKey(original.context.usability.incarnation,original.source,original.gestureId)
-                val domain=key.incarnation to key.source
-                if(original.retired) {
-                    remoteAnchorOriginals.remove(key)
-                    if((remoteAnchorSeen[domain]?:-1)<key.id)remoteAnchorRetiredBeforeBirth.add(key)
-                } else {
-                    val control = com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission()
-                    inputControls.anchor.receiveControl(control,true) // Before any source gate/queue wait.
-                    val seen=remoteAnchorSeen[domain]?:-1
-                    if(key.id>seen) {
-                        remoteAnchorSeen[domain]=key.id
-                        val retired=remoteAnchorRetiredBeforeBirth.remove(key)
-                        remoteAnchorRetiredBeforeBirth.removeAll { it.incarnation==key.incarnation&&it.source==key.source&&it.id<key.id }
-                        if(!retired&&!control.terminal&&original.context.pointer.available&&
-                            receiverUsability.acceptsAnchorSource(original.context.usability)) {
-                            control.anchorContext = original.context
-                            captureAnchorOriginal(control)
-                            original.parentOriginal?.let { parent ->
-                                val captured = remoteAnchorOriginals[RemoteAnchorKey(key.incarnation,key.source,parent)]
-                                if (captured == null) control.disposition = com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.RETIRED
-                                else control.inheritLifetime(captured.second)
-                            }
-                            if(!control.terminal)remoteAnchorOriginals[key]=original to control
-                        }
-                    }
-                }
-                com.code2hack.eyeprojector.directhost.anchor.execution.AnchorAppRuntime.flow(
-                    "original_received source=${original.source} gesture=${original.gestureId} retired=${original.retired} retained=${remoteAnchorOriginals.containsKey(key)} inputRevision=${original.context.usability.inputRevision} currentGeneration=${inputControls.anchor.observationGeneration}")
-            }
-            Wire.ANCHOR -> { require(frame.stamp == 0L); anchorSession.receive(AnchorMessage.from(frame.payload)) }
+            Wire.MODE_CYCLE -> { require(frame.payload.isEmpty()); modeDecision(CoordinateOperation.CYCLE) }
             Wire.CAMERA_PROGRESS -> { require(frame.stamp == 0L); cameraRoles.observeProgress(CameraFeed.readProgress(frame.payload)) }
             Wire.END -> return false
             else -> error("Unsupported control")
@@ -1468,10 +1280,7 @@ private class Session(
         retireNativeResources() // Terminal store precedes resource/deadline/stock cleanup; never joins setup.
         try { release.close {
         running.set(false)
-        controlReplies.close()
         ordinaryWork.close()
-        anchorWork.close()
-        anchorSession.close()
         val stopStartedMs = (System.nanoTime() - begin) / 1_000_000
         val lastStartupStage = startupStage.get()
         val phases = JSONObject()
@@ -1554,3 +1363,5 @@ private class Session(
         }
     }
 }
+
+internal class SessionInputReceipt(val current: () -> Boolean)

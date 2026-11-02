@@ -10,7 +10,6 @@ import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 import com.code2hack.eyeprojector.protocol.PhoneHidPhase
-import com.code2hack.eyeprojector.directhost.uiaccess.UiTargetAccess
 
 /** Legacy Android key ingress. The raw pin owner bypasses this mapping entirely. */
 class PhoneHidKeyService : AccessibilityService(), InputManager.InputDeviceListener {
@@ -20,10 +19,8 @@ class PhoneHidKeyService : AccessibilityService(), InputManager.InputDeviceListe
     override fun onServiceConnected() {
         super.onServiceConnected()
         serviceInfo = serviceInfo.apply {
-            flags = flags or AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS or
-                AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
+            flags = flags or AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
         }
-        UiTargetAccess.connected(this)
         val source = PhoneHidRuntime.get(this)
         runtime = source
         if (manager == null) {
@@ -72,7 +69,7 @@ class PhoneHidKeyService : AccessibilityService(), InputManager.InputDeviceListe
         device.name != "ROKID,PSOC-TP-R" && device.name != "qpnp_pon"
     override fun onInputDeviceChanged(deviceId: Int) { runtime?.controller?.deviceRemoved(deviceId) }
     override fun onInputDeviceRemoved(deviceId: Int) { runtime?.controller?.deviceRemoved(deviceId) }
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) = UiTargetAccess.windowChanged(this, event)
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) { }
     override fun onInterrupt() {
         if (runtime?.pin?.ownsRoute == false) runtime?.controller?.cancelInput()
     }
@@ -80,7 +77,6 @@ class PhoneHidKeyService : AccessibilityService(), InputManager.InputDeviceListe
     override fun onDestroy() { disconnect(); super.onDestroy() }
 
     private fun disconnect() {
-        UiTargetAccess.disconnected(this)
         val source = runtime
         runtime = null // Retire service ownership before cancellation/observation callbacks.
         manager?.unregisterInputDeviceListener(this)

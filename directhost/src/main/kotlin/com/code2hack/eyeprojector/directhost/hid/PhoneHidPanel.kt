@@ -45,8 +45,7 @@ internal class PhoneHidPanel(context: Context, private val runtime: PhoneHidRunt
         addView(pin, LayoutParams(-1, -2))
         addView(message)
         addView(received, LayoutParams(-1, (32 * resources.displayMetrics.density).toInt()))
-        for (action in listOf(PhoneHidAction.TAP, PhoneHidAction.SCROLL_DOWN, PhoneHidAction.SCROLL_UP,
-            PhoneHidAction.NAVIGATION, PhoneHidAction.ANCHOR)) rows[action] = button("") { input.select(action) }.also {
+        for (action in PhoneHidAction.entries) rows[action] = button("") { input.select(action) }.also {
             addView(it, LayoutParams(-1, -2))
         }
         addView(button("Unpin and reset Phone bindings") { runtime.pin.unpinAndReset() }, LayoutParams(-1, -2))
@@ -111,8 +110,10 @@ internal class PhoneHidPanel(context: Context, private val runtime: PhoneHidRunt
             input.bindings.error != null -> input.bindings.error
             input.saving > 0 -> "Saving Phone bindings."
             !owner.intercepted -> "Assignments become available after interception starts. Existing saved bindings are retained until Unpin and reset."
-            input.capturing -> "Release the button to assign it."
-            input.selected != null -> "Press and release a button, or complete one gesture, to assign ${label(input.selected!!)}."
+            input.capturing -> "Complete the gesture, then wait briefly to assign it."
+            input.selected != null -> if (input.selected!!.learnsSingleOnly)
+                "Use one short click to assign ${label(input.selected!!)}."
+                else "Use a short press, long press, or multi-click to assign ${label(input.selected!!)}."
             else -> "Select an action, then use the pinned device. For Y05, press its physical Up button when assigning Scroll up, even if it sends a downward stroke."
         }
         received.text = input.receivedText
@@ -121,7 +122,7 @@ internal class PhoneHidPanel(context: Context, private val runtime: PhoneHidRunt
             val binding = saved?.takeIf { value ->
                 owner.savedKey?.let { PhoneHidPinRuntime.bindingMatchesDevice(value, it) } ?: true
             }
-            val assignment = binding?.let { "${it.deviceName}: ${it.keyLabel}" }
+            val assignment = binding?.let { "${it.deviceName}: ${it.keyLabel} · ${gestureLabel(it.gesture)}" }
                 ?: if (owner.savedKey == null) "Unassigned" else "Unassigned for this device"
             row.text = "${label(action)}: $assignment"
             row.isSelected = input.selected == action
@@ -135,11 +136,18 @@ internal class PhoneHidPanel(context: Context, private val runtime: PhoneHidRunt
         minimumHeight = (48 * resources.displayMetrics.density).toInt()
         setOnClickListener { if (runtime.userControl()) action() }
     }
+    private fun gestureLabel(gesture: com.code2hack.eyeprojector.protocol.PhoneHidGesture) = when (gesture.kind) {
+        com.code2hack.eyeprojector.protocol.PhoneHidGesture.Kind.SINGLE -> "Short press"
+        com.code2hack.eyeprojector.protocol.PhoneHidGesture.Kind.LONG -> "Long press"
+        com.code2hack.eyeprojector.protocol.PhoneHidGesture.Kind.MULTI -> "${gesture.clicks} clicks"
+    }
     private fun label(action: PhoneHidAction) = when (action) {
         PhoneHidAction.TAP -> "Tap"
         PhoneHidAction.SCROLL_DOWN -> "Scroll down"
         PhoneHidAction.SCROLL_UP -> "Scroll up"
-        PhoneHidAction.ANCHOR -> "Anchor"
-        PhoneHidAction.NAVIGATION -> "Back / Lock / Home"
+        PhoneHidAction.BACK -> "Back"
+        PhoneHidAction.HOME -> "Home"
+        PhoneHidAction.LOCK -> "Lock"
+        PhoneHidAction.MODE -> "Mode"
     }
 }

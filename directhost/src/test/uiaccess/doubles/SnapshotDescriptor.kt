@@ -1,2 +1,0 @@
-package com.code2hack.eyeprojector.directhost.activation.snapshot
-class NativeSnapshotDescriptor

@@ -33,14 +33,14 @@ class PhoneHidBindingsTest {
     }
 
     @Test fun semanticRolesReloadAndResetWithoutRepopulatingOldBindings() {
-        assertEquals(listOf("TAP", "SCROLL_DOWN", "SCROLL_UP", "ANCHOR", "NAVIGATION"), PhoneHidAction.entries.map { it.name })
+        assertEquals(listOf("TAP", "SCROLL_DOWN", "SCROLL_UP", "BACK", "HOME", "LOCK", "MODE"), PhoneHidAction.entries.map { it.name })
         val storage = Storage()
         val first = storage.open()
-        assertTrue(first.assign(PhoneHidAction.ANCHOR, binding(30, 90)))
-        assertTrue(first.assign(PhoneHidAction.NAVIGATION, binding(31, 91)))
+        assertTrue(first.assign(PhoneHidAction.MODE, binding(30, 90)))
+        assertTrue(first.assign(PhoneHidAction.BACK, binding(31, 91)))
         val loaded = storage.open()
-        assertEquals(binding(30, 90), loaded.binding(PhoneHidAction.ANCHOR))
-        assertEquals(binding(31, 91), loaded.binding(PhoneHidAction.NAVIGATION))
+        assertEquals(binding(30, 90), loaded.binding(PhoneHidAction.MODE))
+        assertEquals(binding(31, 91), loaded.binding(PhoneHidAction.BACK))
         assertTrue(loaded.resetAll())
         val writes = storage.writes
         val empty = storage.open()
@@ -76,16 +76,16 @@ class PhoneHidBindingsTest {
         val function = binding(24, 29)
         val scroll = binding(25, 30)
         assertTrue(model.assign(PhoneHidAction.TAP, tap))
-        assertTrue(model.assign(PhoneHidAction.ANCHOR, function))
+        assertTrue(model.assign(PhoneHidAction.MODE, function))
         assertTrue(model.assign(PhoneHidAction.SCROLL_DOWN, scroll))
         val renamed = tap.copy(deviceName = "Renamed peripheral", keyLabel = "Renamed button")
-        assertTrue(model.assign(PhoneHidAction.ANCHOR, renamed))
+        assertTrue(model.assign(PhoneHidAction.MODE, renamed))
         assertEquals(4, storage.writes)
         val loaded = storage.open()
         assertNull(loaded.binding(PhoneHidAction.TAP))
         assertNull(loaded.action(function.button))
-        assertEquals(PhoneHidAction.ANCHOR, loaded.action(tap.button))
-        assertEquals(renamed, loaded.binding(PhoneHidAction.ANCHOR))
+        assertEquals(PhoneHidAction.MODE, loaded.action(tap.button))
+        assertEquals(renamed, loaded.binding(PhoneHidAction.MODE))
         assertEquals(scroll, loaded.binding(PhoneHidAction.SCROLL_DOWN))
     }
 
@@ -104,9 +104,9 @@ class PhoneHidBindingsTest {
             observedAgain.copy(scanCode = 29),
         )
         different.forEach { assertNull(loaded.action(it)) }
-        assertTrue(loaded.assign(PhoneHidAction.ANCHOR, value.copy(deviceName = "New display name")))
+        assertTrue(loaded.assign(PhoneHidAction.MODE, value.copy(deviceName = "New display name")))
         assertNull(loaded.binding(PhoneHidAction.TAP))
-        assertEquals(PhoneHidAction.ANCHOR, loaded.action(observedAgain))
+        assertEquals(PhoneHidAction.MODE, loaded.action(observedAgain))
     }
 
     @Test fun absentDescriptorIsRetainedWithoutInventingAnIdentity() {
@@ -124,23 +124,23 @@ class PhoneHidBindingsTest {
         val tap = binding()
         val function = binding(24, 29)
         assertTrue(model.assign(PhoneHidAction.TAP, tap))
-        assertTrue(model.assign(PhoneHidAction.ANCHOR, function))
+        assertTrue(model.assign(PhoneHidAction.MODE, function))
         val saved = storage.record
         storage.writable = false
-        assertFalse(model.assign(PhoneHidAction.ANCHOR, tap))
+        assertFalse(model.assign(PhoneHidAction.MODE, tap))
         assertEquals(3, storage.writes)
         assertNotNull(model.error)
         assertEquals(saved, storage.record)
         assertEquals(tap, model.binding(PhoneHidAction.TAP))
-        assertEquals(function, model.binding(PhoneHidAction.ANCHOR))
+        assertEquals(function, model.binding(PhoneHidAction.MODE))
         assertEquals(tap, storage.open().binding(PhoneHidAction.TAP))
-        assertEquals(function, storage.open().binding(PhoneHidAction.ANCHOR))
+        assertEquals(function, storage.open().binding(PhoneHidAction.MODE))
         storage.writable = true
-        assertTrue(model.assign(PhoneHidAction.ANCHOR, tap))
+        assertTrue(model.assign(PhoneHidAction.MODE, tap))
         assertEquals(4, storage.writes)
         assertNull(model.error)
         assertNull(storage.open().binding(PhoneHidAction.TAP))
-        assertEquals(tap, storage.open().binding(PhoneHidAction.ANCHOR))
+        assertEquals(tap, storage.open().binding(PhoneHidAction.MODE))
     }
 
     @Test fun resetAllRemovesEveryAssignmentInOneEmptyMapWriteAndReloadsEmpty() {
@@ -161,8 +161,8 @@ class PhoneHidBindingsTest {
         assertNull(model.error)
         assertNull(loaded.error)
         val fresh = binding(27, 32)
-        assertTrue(loaded.assign(PhoneHidAction.ANCHOR, fresh))
-        assertEquals(fresh, storage.open().binding(PhoneHidAction.ANCHOR))
+        assertTrue(loaded.assign(PhoneHidAction.MODE, fresh))
+        assertEquals(fresh, storage.open().binding(PhoneHidAction.MODE))
     }
 
     @Test fun failedResetAllRetainsEveryEffectiveAndPersistedAssignmentUntilRetry() {
@@ -196,12 +196,12 @@ class PhoneHidBindingsTest {
             assertTrue(model.assign(PhoneHidAction.TAP, value))
             val saved = storage.record
             storage.throwing = true
-            val success = if (reset) model.resetAll() else model.assign(PhoneHidAction.ANCHOR, value)
+            val success = if (reset) model.resetAll() else model.assign(PhoneHidAction.MODE, value)
             assertFalse(success)
             assertEquals(2, storage.writes)
             assertEquals(saved, storage.record)
             assertEquals(value, model.binding(PhoneHidAction.TAP))
-            assertNull(model.binding(PhoneHidAction.ANCHOR))
+            assertNull(model.binding(PhoneHidAction.MODE))
             assertNotNull(model.error)
             assertEquals(value, storage.open().binding(PhoneHidAction.TAP))
         }
@@ -252,12 +252,12 @@ class PhoneHidBindingsTest {
         val payload = Base64.getDecoder().decode(valid.substringAfter(':'))
         val corrupt = listOf(
             "",
-            "eyeprojector.hid-bindings.2:" + valid.substringAfter(':'),
-            "eyeprojector.hid-bindings.1:not base64!",
-            "eyeprojector.hid-bindings.1:" + Base64.getEncoder().encodeToString(payload.copyOf(payload.size - 1)),
-            "eyeprojector.hid-bindings.1:" + Base64.getEncoder().encodeToString(payload + byteArrayOf(0)),
+            "eyeprojector.hid-bindings.3:" + valid.substringAfter(':'),
+            "eyeprojector.hid-bindings.2:not base64!",
+            "eyeprojector.hid-bindings.2:" + Base64.getEncoder().encodeToString(payload.copyOf(payload.size - 1)),
+            "eyeprojector.hid-bindings.2:" + Base64.getEncoder().encodeToString(payload + byteArrayOf(0)),
             wireRecord(listOf("TAP" to binding(), "TAP" to binding(24, 29))),
-            wireRecord(listOf("TAP" to binding(), "ANCHOR" to binding())),
+            wireRecord(listOf("TAP" to binding(), "MODE" to binding())),
             wireRecord(listOf("UNKNOWN_ACTION" to binding())),
         )
         corrupt.forEachIndexed { index, prior ->
@@ -314,8 +314,10 @@ class PhoneHidBindingsTest {
                 output.writeInt(binding.button.scanCode)
                 string(binding.deviceName)
                 string(binding.keyLabel)
+                string(binding.gesture.kind.name)
+                output.writeInt(binding.gesture.clicks)
             }
         }
-        return "eyeprojector.hid-bindings.1:" + Base64.getEncoder().encodeToString(bytes.toByteArray())
+        return "eyeprojector.hid-bindings.2:" + Base64.getEncoder().encodeToString(bytes.toByteArray())
     }
 }

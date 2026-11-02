@@ -1,6 +1,7 @@
 package com.code2hack.eyeprojector.directhost.hid
 
 import com.code2hack.eyeprojector.protocol.PhoneHidAction
+import com.code2hack.eyeprojector.protocol.PhoneHidGesture
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -15,7 +16,8 @@ internal data class PhoneHidDeviceIdentity(val descriptor: String, val vendorId:
 internal data class PhoneHidButton(val device: PhoneHidDeviceIdentity, val keyCode: Int, val scanCode: Int)
 
 /** Names are display metadata; they do not participate in physical button matching. */
-internal data class PhoneHidBinding(val button: PhoneHidButton, val deviceName: String, val keyLabel: String)
+internal data class PhoneHidBinding(val button: PhoneHidButton, val deviceName: String, val keyLabel: String,
+    val gesture: PhoneHidGesture = PhoneHidGesture.SINGLE)
 
 /**
  * Phone-private assignments occupy one versioned record, so moving a button is one persistence operation.
@@ -34,7 +36,13 @@ internal class PhoneHidBindings(read: () -> String?, private val write: (String)
 
     init {
         try {
-            read()?.let { bindings = decode(it) }
+            read()?.let { record ->
+                val decoded = decode(record)
+                bindings = decoded
+                // Only this bindings record is rewritten. Pin and unrelated preferences are separate.
+                if (record.startsWith(LEGACY_PREFIX) && !write(encode(decoded)))
+                    error = "Migrated HID bindings could not be saved. Try assigning again."
+            }
         } catch (_: Exception) {
             error = "Saved HID bindings could not be read. Assign a button or reset all bindings to replace them."
         }
@@ -42,9 +50,13 @@ internal class PhoneHidBindings(read: () -> String?, private val write: (String)
 
     fun binding(action: PhoneHidAction): PhoneHidBinding? = bindings[action]
 
-    fun action(button: PhoneHidButton): PhoneHidAction? = bindings.entries.firstOrNull { it.value.button == button }?.key
+    fun assignment(button: PhoneHidButton): Pair<PhoneHidAction, PhoneHidBinding>? =
+        bindings.entries.firstOrNull { it.value.button == button }?.let { it.key to it.value }
+
+    fun action(button: PhoneHidButton): PhoneHidAction? = assignment(button)?.first
 
     fun assign(action: PhoneHidAction, binding: PhoneHidBinding): Boolean {
+        require(!action.learnsSingleOnly || binding.gesture == PhoneHidGesture.SINGLE)
         val next = bindings.filterValues { it.button != binding.button }.toMutableMap()
         next[action] = binding
         return save(next)
@@ -81,25 +93,43 @@ internal class PhoneHidBindings(read: () -> String?, private val write: (String)
                 output.writeInt(binding.button.scanCode)
                 output.writeString(binding.deviceName)
                 output.writeString(binding.keyLabel)
+                output.writeString(binding.gesture.kind.name)
+                output.writeInt(binding.gesture.clicks)
             }
         }
         return PREFIX + Base64.getEncoder().encodeToString(bytes.toByteArray())
     }
 
     private fun decode(record: String): Map<PhoneHidAction, PhoneHidBinding> {
-        require(record.startsWith(PREFIX))
-        val bytes = Base64.getDecoder().decode(record.substring(PREFIX.length))
+        val legacy = record.startsWith(LEGACY_PREFIX)
+        require(legacy || record.startsWith(PREFIX))
+        val bytes = Base64.getDecoder().decode(record.substring(if (legacy) LEGACY_PREFIX.length else PREFIX.length))
         return DataInputStream(ByteArrayInputStream(bytes)).use { input ->
             val count = input.readInt()
             require(count in 0..PhoneHidAction.entries.size)
             val result = mutableMapOf<PhoneHidAction, PhoneHidBinding>()
             repeat(count) {
-                val action = PhoneHidAction.valueOf(input.readString())
+                val name = input.readString()
+                val action = if (legacy) when (name) {
+                    "TAP" -> PhoneHidAction.TAP
+                    "SCROLL_DOWN" -> PhoneHidAction.SCROLL_DOWN
+                    "SCROLL_UP" -> PhoneHidAction.SCROLL_UP
+                    "ANCHOR", "FUNCTION" -> PhoneHidAction.MODE
+                    "NAVIGATION", "BACK" -> PhoneHidAction.BACK
+                    // Earlier v0.2 Home/Lock records do not become implicit v0.4 assignments.
+                    "HOME", "LOCK" -> null
+                    else -> error("Unknown legacy HID role")
+                } else PhoneHidAction.valueOf(name)
                 val device = PhoneHidDeviceIdentity(input.readString(), input.readInt(), input.readInt())
                 val button = PhoneHidButton(device, input.readInt(), input.readInt())
-                val binding = PhoneHidBinding(button, input.readString(), input.readString())
-                require(action !in result && result.values.none { it.button == button })
-                result[action] = binding
+                val binding = PhoneHidBinding(button, input.readString(), input.readString(),
+                    if (legacy) PhoneHidGesture.SINGLE else PhoneHidGesture(
+                        PhoneHidGesture.Kind.valueOf(input.readString()), input.readInt()))
+                require(result.values.none { it.button == button })
+                if (action != null) {
+                    require(action !in result && (!action.learnsSingleOnly || binding.gesture == PhoneHidGesture.SINGLE))
+                    result[action] = binding
+                }
             }
             require(input.available() == 0)
             result
@@ -124,6 +154,7 @@ internal class PhoneHidBindings(read: () -> String?, private val write: (String)
     }
 
     private companion object {
-        const val PREFIX = "eyeprojector.hid-bindings.1:"
+        const val LEGACY_PREFIX = "eyeprojector.hid-bindings.1:"
+        const val PREFIX = "eyeprojector.hid-bindings.2:"
     }
 }
