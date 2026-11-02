@@ -72,6 +72,41 @@ internal object CoordinateModeChecks {
             }
             return result
         }
+        if (args.getString("modeObserveOnly") == "true") {
+            report.put("scope", "Observe actual retained Phone mode and pointer; Root owns external actions and target effects")
+                .put("observationOnly", true).put("syntheticCommands", 0).put("physicalUnknown", true)
+                .put("targetReceipt", JSONObject.NULL)
+                .put("originalListRestored", JSONObject.NULL).put("normalCleanupCompleted", JSONObject.NULL)
+                .put("cleanupContract", "No mode/list writes; existing original-session teardown remains")
+                .put("pollDelayMs", 20)
+                .put("sampleIntervalScope", "Requested delay plus sampler/main-thread time; samples carry observed spans")
+                .put("stepsScope", "Changed CoordinateModeResult tuples; polls are not input acknowledgments")
+                .put("observationStartElapsedMs", SystemClock.elapsedRealtime())
+            var previous: CoordinateModeResult? = null
+            var samples = 0
+            do {
+                val started = SystemClock.elapsedRealtime()
+                val result = snapshot()
+                val sample = json(result).put("sampleStartedElapsedMs", started)
+                main {
+                    val point = pointer.position
+                    sample.put("cursorX", point.x).put("cursorY", point.y).put("pointerAvailable", point.available)
+                        .put("pointerSampleElapsedMs", SystemClock.elapsedRealtime())
+                        .put("pointerStateMatchesTuple", field(pointer, "coordinateMode") == result.state)
+                }
+                sample.put("sampleEndedElapsedMs", SystemClock.elapsedRealtime())
+                    .put("sampleIndex", ++samples)
+                if (samples == 1) report.put("first", sample)
+                report.put("last", sample).put("lastObserved", sample)
+                if (result != previous) steps.put(sample)
+                previous = result
+                if (SystemClock.elapsedRealtime() < deadline) Thread.sleep(20)
+            } while (SystemClock.elapsedRealtime() < deadline)
+            report.put("sampleCount", samples).put("observationEndElapsedMs", SystemClock.elapsedRealtime())
+                .put("tuplePointerScope", "Tuple/check and pointer sample use separate main-thread reads; spans and match fact are retained")
+                .put("observationCompleted", true)
+            return
+        }
         fun await(name: String, matches: (CoordinateModeResult) -> Boolean): CoordinateModeResult {
             report.put("currentStep", name)
             do {
