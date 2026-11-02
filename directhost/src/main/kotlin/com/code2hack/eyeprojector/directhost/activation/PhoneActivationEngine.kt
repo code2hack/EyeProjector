@@ -16,7 +16,7 @@ internal class PhoneActivationEngine(
     private val contextRevision: () -> Long = { 0L },
 ) {
     val local = PhoneActivationOwner<ProjectionContext>()
-    var journal = read(); private set
+    @Volatile var journal = read(); private set
     var handle: ActivationHandle? = journal.current?.takeIf { it.desired }?.let { local.restoreActivation(it.id, ActivationCause.GLASSES_LAUNCH) }; private set
     private var localAttempt: ActivationAttempt? = null
     private val canceledLocalAttempts = mutableMapOf<String, ActivationAttempt>()
@@ -37,6 +37,9 @@ internal class PhoneActivationEngine(
     }
     private var presentationRevision = -1L
     private var demandPending = false
+    // Keep a consumed original terminal even when its atomic journal write needs retrying.
+    private val pendingConsumedControls = linkedSetOf<RemoteControlKey>()
+    private val pendingConsumedAdmissions = linkedMapOf<String, String>()
     val desired get() = journal.current?.desired == true
     val ready get() = handle?.let { local.state(it).phase == ActivationPhase.READY } == true
     private fun save(value: ActivationJournal) {
@@ -127,7 +130,72 @@ internal class PhoneActivationEngine(
         if (a.activation in journal.canceled) core.cancelStart(a.baseline, actual)
     }
 
+    private fun controlKey(request: SessionControl.Request): RemoteControlKey? = request.remoteControlKey()?.let {
+        if (it.kind == RemoteControlKind.CANCEL_ACTIVATION) it.copy(id = resolve(it.id)) else it
+    }
+
+    fun consumedRemoteControl(request: SessionControl.Request): Boolean = controlKey(request)?.let {
+        it in journal.consumedControls || it in pendingConsumedControls
+    } == true
+
+    /** Classification uses the original trigger/activation, not whichever Hold is current. */
+    fun requiresUserControl(request: SessionControl.Request): Boolean {
+        if (consumedRemoteControl(request)) return false
+        request.cancelTrigger?.let { cancel ->
+            val old = journal.triggers[cancel.triggerId] ?: return false
+            return !old.canceled && old.activation !in journal.canceled &&
+                old.activation == journal.current?.id && journal.current?.desired == true
+        }
+        request.cancelActivation?.let { cancel ->
+            val original = resolve(cancel.activationId)
+            return original !in journal.canceled && original == journal.current?.id && journal.current?.desired == true
+        }
+        val incoming = request.incarnation
+        val current = journal.incarnation
+        if (incoming != null && current != null && incoming != current && incoming.sequence <= current.sequence) return false
+        request.intent?.let { return it.triggerId !in journal.triggers }
+        return when (request.operation) {
+            SessionControl.Operation.START -> core.acceptsStartCaller(request.epoch)
+            SessionControl.Operation.STOP -> core.acceptsStopCaller(request.startEpoch.ifEmpty { request.epoch })
+            else -> false
+        }
+    }
+
+    fun remoteControlRecorded(request: SessionControl.Request): Boolean {
+        if (consumedRemoteControl(request)) return controlKey(request) in journal.consumedControls
+        request.cancelTrigger?.let { return journal.triggers[it.triggerId]?.canceled == true }
+        request.cancelActivation?.let { return resolve(it.activationId) in journal.canceled }
+        request.intent?.let { return it.triggerId in journal.triggers }
+        return false
+    }
+
+    /** A consumed control gets a terminal receipt, without executing its activation/cancel handler. */
+    fun consumeRemoteControl(request: SessionControl.Request): SessionState {
+        controlKey(request)?.let(pendingConsumedControls::add)
+        request.intent?.let { pendingConsumedAdmissions.putIfAbsent(it.triggerId, request.startEpoch) }
+        request.cancelTrigger?.let { pendingConsumedAdmissions.putIfAbsent(it.triggerId, it.admissionId) }
+        request.cancelTrigger?.let { cancel -> journal.triggers[cancel.triggerId]?.activation?.let { activation ->
+            // The paired reconciler sends T cancellation and then its H cancellation for one action.
+            pendingConsumedControls.add(RemoteControlKey(RemoteControlKind.CANCEL_ACTIVATION, resolve(activation)))
+        } }
+        var triggers = journal.triggers
+        for (key in pendingConsumedControls) when (key.kind) {
+            RemoteControlKind.INTENT -> if (key.id !in triggers)
+                triggers = triggers + (key.id to TriggerBinding(null, pendingConsumedAdmissions[key.id].orEmpty(), canceled = true))
+            RemoteControlKind.CANCEL_TRIGGER -> triggers = triggers + (key.id to
+                (triggers[key.id] ?: TriggerBinding(null, pendingConsumedAdmissions[key.id].orEmpty())).copy(canceled = true))
+            else -> Unit
+        }
+        val next = journal.copy(triggers = triggers, consumedControls = journal.consumedControls + pendingConsumedControls)
+        if (next != journal) save(next)
+        pendingConsumedControls.removeAll(journal.consumedControls)
+        pendingConsumedAdmissions.keys.removeAll(journal.triggers.keys)
+        val result = reply(core.state(), request.cancelTrigger?.triggerId ?: request.intent?.triggerId)
+        return result.copy(activation = result.activation?.copy(cancelAcknowledged = request.cancelActivation?.activationId))
+    }
+
     fun command(request: SessionControl.Request): SessionState {
+        if (consumedRemoteControl(request)) return consumeRemoteControl(request)
         request.incarnation?.let { incoming ->
             val old = journal.incarnation
             if (old == null || incoming.sequence > old.sequence) {

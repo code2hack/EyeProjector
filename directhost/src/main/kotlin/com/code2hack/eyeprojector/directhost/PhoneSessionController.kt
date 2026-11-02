@@ -69,7 +69,8 @@ class PhoneSessionController private constructor(context: Context) {
     @Volatile private var published = SessionState("", SessionPhase.UNKNOWN)
     @Volatile private var featureDetail = "Reconciling projection ownership"
     private lateinit var controller: SessionController
-    private lateinit var activation: PhoneActivationEngine
+    @Volatile private lateinit var activation: PhoneActivationEngine
+    private val remoteControls = java.util.concurrent.ConcurrentHashMap<RemoteControlKey, RemoteControlReceipt>()
     val pairing = LanPairing(store, PeerRole.PHONE, ::invalidateState, { socket ->
         SessionControl.serve(store.directory, socket, ::command)
     })
@@ -345,7 +346,7 @@ class PhoneSessionController private constructor(context: Context) {
     private fun scheduleDrain() {
         if (drainQueued.compareAndSet(false, true)) featureLane.execute { drainQueued.set(false); drain() }
     }
-    private fun drain(control: SessionControl.Request? = null): SessionState? {
+    private fun drain(control: SessionControl.Request? = null, receipt: RemoteControlReceipt? = null): SessionState? {
         val revision = synchronized(fastLock) {
             turnProducerVersion = contextAuthority.version
             localRevision.get()
@@ -384,8 +385,9 @@ class PhoneSessionController private constructor(context: Context) {
             stopped.forEach { id ->
                 try { activation.cancel(id, initialOfferOrigin?.takeIf { it.first == id }?.second) } catch (error: Exception) { synchronized(pendingStops) { pendingStops.add(id) }; throw error }
             }
-            // Retire fast authority for the ORIGINAL accepted scope before ordered feature/backend effects.
-            control?.let { request ->
+            val consumed = control?.let { remoteControlConsumed(it, receipt) } == true
+            // Retire fast authority only for an accepted original, never a consumed control tail.
+            control?.takeUnless { consumed }?.let { request ->
                 val cancelId = request.cancelActivation?.activationId?.let(activation::resolve)
                     ?: request.cancelTrigger?.triggerId?.let { activation.journal.triggers[it]?.activation }
                 val report = request.presentation
@@ -399,7 +401,10 @@ class PhoneSessionController private constructor(context: Context) {
                 if (affected != null && retireFastOwner(affected, cancelId != null,
                         cancelId != null || report?.mode == ReceiverUsabilityMode.NONE || cleanupId != null || failedId != null).notify) invalidateInput()
             }
-            val reply = control?.let(activation::command)
+            val reply = control?.let { request ->
+                if (consumed) activation.consumeRemoteControl(receipt?.request ?: request)
+                else activation.command(request)
+            }
             synchronized(fastLock) { pendingRequest.getAndSet(null) }?.let(::applyLocalRequest)
             pendingForget.getAndSet(null)?.let { done ->
                 try { activation.stop(); bootstrap.stopBeforeForget(done) }
@@ -610,14 +615,29 @@ class PhoneSessionController private constructor(context: Context) {
     fun submitPhoneHid(route: PhoneHidRoute, edge: PhoneHidEdge) = route.submit(edge)
     fun cancelPhoneHid(route: PhoneHidRoute, eventTimeMs: Long) = route.cancel(eventTimeMs)
 
+    /** The existing root original-control port captures disposition/lifetime before any writer wait.
+     * No HID edge is submitted: this is the same ordinary receipt used by non-Anchor controls. */
+    private fun captureRemoteControl(request: SessionControl.Request): RemoteControlReceipt {
+        val original = bootstrap.anchorRuntime.capturePhoneHidOriginal(false)
+        return RemoteControlReceipt(request, original::consumeUserControl)
+    }
+
+    /** Runs on the feature writer after its original state reconciliation, before command effects. */
+    private fun remoteControlConsumed(request: SessionControl.Request, receipt: RemoteControlReceipt?): Boolean {
+        return activation.consumedRemoteControl(request) ||
+            activation.requiresUserControl(request) && receipt?.admit() == false
+    }
+
     private fun command(request: SessionControl.Request): SessionState {
-        val userTransition = request.operation in setOf(SessionControl.Operation.START, SessionControl.Operation.STOP) ||
-            request.intent != null || request.cancelTrigger != null || request.cancelActivation != null
-        // Polling, presentation and genuine failure reports remain live. Embedded STATUS commands
-        // are user input and must not wait behind the feature writer before this decision.
-        if (userTransition && !userControl()) return state()
+        val key = request.remoteControlKey()
+        // Capture before putIfAbsent/FIFO waits. Duplicates retain the first request's receipt.
+        val arrived = key?.let { captureRemoteControl(request) }
+        val original = if (key != null && arrived != null) remoteControls.putIfAbsent(key, arrived) ?: arrived else null
         return featureLane.submit<SessionState> {
-            drain(request) ?: state().copy(detail = "ACTIVATION_STORAGE_PENDING")
+            val result = drain(request, original) ?: state().copy(detail = "ACTIVATION_STORAGE_PENDING")
+            if (key != null && original != null && ::activation.isInitialized && activation.remoteControlRecorded(request))
+                remoteControls.remove(key, original)
+            result
         }.get(4, TimeUnit.SECONDS)
     }
 
