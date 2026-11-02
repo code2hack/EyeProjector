@@ -18,11 +18,15 @@ internal class NativePadShellContact(
     private val prepareDown: () -> Unit,
     private val changed: () -> Unit,
     private val admit: ((Boolean) -> Unit) -> Unit = { it(true) },
+    private val functionSourceAvailable: (Any) -> Unit = {},
+    private val functionSourceLost: (Any) -> Unit = {},
+    private val functionEdge: (Any, Long, Boolean, Long, Boolean) -> Unit = { _, _, _, _, _ -> },
 ) {
     private class Listener(val server: LocalServerSocket) {
         @Volatile var socket: LocalSocket? = null
     }
     private class Source(val socket: LocalSocket) {
+        var functionConnected = false
         var rawPress: Long? = null
         var press: Press? = null
     }
@@ -62,7 +66,10 @@ internal class NativePadShellContact(
                         val previous = source
                         source = original
                         input.retire()
-                        previous?.let(::cancel)
+                        previous?.let {
+                            if (it.functionConnected) { it.functionConnected = false; functionSourceLost(it) }
+                            cancel(it)
+                        }
                         Log.i("EyeProjectorPad", "Native pad shell reader connected")
                     }
                 }
@@ -71,7 +78,31 @@ internal class NativePadShellContact(
                         while (listener === run) {
                             val line = input.readLine() ?: break
                             val fields = line.split(' ')
+                            val report = fields.firstOrNull()
+                            if (report == "FUNCTION_SOURCE" || report == "FUNCTION_LOST") {
+                                main.post {
+                                    if (listener === run && source === original) {
+                                        if (report == "FUNCTION_SOURCE" && !original.functionConnected) {
+                                            original.functionConnected = true
+                                            functionSourceAvailable(original)
+                                        } else if (report == "FUNCTION_LOST" && original.functionConnected) {
+                                            original.functionConnected = false
+                                            functionSourceLost(original)
+                                        }
+                                    }
+                                }
+                                continue
+                            }
                             val id = fields.getOrNull(1)?.toLongOrNull() ?: continue
+                            if (report == "FUNCTION_DOWN" || report == "FUNCTION_UP") {
+                                val at = fields.getOrNull(2)?.toLongOrNull() ?: continue
+                                val revision = contextRevision
+                                main.post {
+                                    if (listener === run && source === original && original.functionConnected)
+                                        functionEdge(original, id, report == "FUNCTION_DOWN", at, revision == contextRevision)
+                                }
+                                continue
+                            }
                             val phase = when (fields.firstOrNull()) {
                                 "DOWN" -> PadGestureRecognizer.Phase.DOWN
                                 "UP" -> PadGestureRecognizer.Phase.UP
@@ -92,6 +123,10 @@ internal class NativePadShellContact(
                         if (source === original) {
                             source = null
                             input.retire()
+                            if (original.functionConnected) {
+                                original.functionConnected = false
+                                functionSourceLost(original)
+                            }
                             cancel(original)
                             changed()
                             Log.i("EyeProjectorPad", "Native pad shell reader disconnected")
@@ -203,7 +238,10 @@ internal class NativePadShellContact(
         listener = null
         val original = source
         source = null
-        if (original != null) cancel(original)
+        if (original != null) {
+            if (original.functionConnected) { original.functionConnected = false; functionSourceLost(original) }
+            cancel(original)
+        }
         try { run?.socket?.close() } catch (_: IOException) { }
         try { run?.server?.close() } catch (_: IOException) { }
     }

@@ -342,7 +342,12 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             })
         }
         root.addView(connectionView, FrameLayout.LayoutParams(-1, -1))
-        anchorOverlay = AnchorRegistrationOverlay(this, anchorRegistration::highlight, anchorRegistration::presented)
+        anchorOverlay = AnchorRegistrationOverlay(this, anchorRegistration::highlight) {
+            anchorRegistration.presented()
+            anchorRegistration.offer?.let {
+                runCatching { Log.i("EyeProjectorFunction", "menu_drawn transaction=${it.id} source=${it.intent?.source} gesture=${it.intent?.gestureId}") }
+            }
+        }
         root.addView(anchorOverlay, FrameLayout.LayoutParams(-1, -1))
         pointer = PointerOverlay(this).apply {
             sensitivity(settings.pointerXGain, settings.pointerYGain)
@@ -414,7 +419,10 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
                 schedulePadConfirmation()
                 classifiedPadLongPress.cancel()
                 completedInput.cancel()
-            }, ::updateEdgeScroll, { complete -> admitLocalControl(ReceiverControlSource.PAD, complete) })
+            }, ::updateEdgeScroll, { complete -> admitLocalControl(ReceiverControlSource.PAD, complete) },
+            functionSourceAvailable = { source -> functionInput.rawSourceAvailable(source) },
+            functionSourceLost = { source -> functionInput.rawSourceLost(source) },
+            functionEdge = { source, id, down, at, current -> functionInput.rawEdge(source, id, down, at, current) })
         padContact = NativePadContact(this, { pointer.inputPosition() }, { event ->
             if (usable()) gestures.accept(event, SystemClock.uptimeMillis()) else cancelInput()
             schedulePadConfirmation()
@@ -592,6 +600,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         val captured = gesture.original as FunctionCapture
         if (!usable() || session !== captured.source || inputGeneration != captured.context.pointer.revision) return
         val intent = FunctionIntent(gesture.kind, source, gesture.gestureId, gesture.sequence, captured.context)
+        runCatching { Log.i("EyeProjectorFunction", "classified source=$source kind=${gesture.kind} gesture=${gesture.gestureId} sequence=${gesture.sequence} physicalHeld=${gesture.physicalHeld}") }
         if (intent.kind == FunctionIntentKind.REGISTER)
             anchorRegistration.registration(captured.source, intent, gesture.physicalHeld)
         captured.source.functionIntent(CapturedFunctionIntent(intent, captured.source))

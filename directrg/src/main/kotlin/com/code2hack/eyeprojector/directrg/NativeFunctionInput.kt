@@ -10,11 +10,12 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 
 /** Foreground Function interception; ordinary touchpad/AI/key reports have independent owners. */
 internal class NativeFunctionInput(
     private val context: Context,
-    currentContext: () -> Any?,
+    private val currentContext: () -> Any?,
     dispatch: (FunctionGestureRecognizer.Gesture) -> Unit,
     now: () -> Long = SystemClock::uptimeMillis,
     schedule: (Long, () -> Unit) -> (() -> Unit) = handlerSchedule(),
@@ -26,6 +27,9 @@ internal class NativeFunctionInput(
 ) {
     private var registered = false
     private var retiring: MutableList<() -> Unit>? = null
+    private class RawPress(val source: Any, val id: Long, var retired: Boolean)
+    private var rawSource: Any? = null
+    private var rawPress: RawPress? = null
     private val recognizer = FunctionGestureRecognizer(now, { if (registered) currentContext() else null },
         { at, action ->
             val cancel = schedule(at, action)
@@ -47,7 +51,52 @@ internal class NativeFunctionInput(
                 resultCode = Activity.RESULT_CANCELED
                 abortBroadcast()
             }
+            // OEM long handling suppresses its UP broadcast. While the existing shell reader
+            // supplies real edges, broadcasts are duplicate summaries, never extra presses.
+            if (rawSource != null) return
             recognizer.accept(report)
+        }
+    }
+
+    fun rawSourceAvailable(source: Any) {
+        if (rawSource === source) return
+        rawSource = source
+        rawPress = null
+        cancel()
+        runCatching { Log.i("EyeProjectorFunction", "raw_source connected=${System.identityHashCode(source)}") }
+    }
+
+    fun rawSourceLost(source: Any) {
+        if (rawSource !== source) return
+        rawSource = null
+        rawPress = null
+        cancel()
+        runCatching { Log.i("EyeProjectorFunction", "raw_source lost=${System.identityHashCode(source)}") }
+    }
+
+    /** Original socket/press membership, not an OEM summary or a later input context. */
+    fun rawEdge(source: Any, id: Long, down: Boolean, at: Long, originalContextCurrent: Boolean) {
+        if (rawSource !== source) return
+        if (down) {
+            if (rawPress?.let { it.source === source && it.id == id } == true) return
+            val previous = rawPress
+            val cancelsRegistration = recognizer.awaitingRegistrationRelease
+            val originalContext = if (registered && originalContextCurrent) currentContext() else null
+            rawPress = null
+            if (previous != null && !cancelsRegistration) cancel()
+            if (rawSource !== source) return
+            val press = RawPress(source, id, cancelsRegistration || originalContext == null || currentContext() != originalContext)
+            rawPress = press
+            runCatching { Log.i("EyeProjectorFunction", "raw_down source=${System.identityHashCode(source)} press=$id uptimeMs=$at retired=${press.retired}") }
+            // A new physical press cancels an old chooser and is consumed in full. Let the
+            // recognizer retire that original lease before considering any new context.
+            if (!press.retired || registered && cancelsRegistration)
+                recognizer.accept(FunctionGestureRecognizer.Report.DOWN, at)
+        } else {
+            val press = rawPress?.takeIf { it.source === source && it.id == id } ?: return
+            rawPress = null
+            runCatching { Log.i("EyeProjectorFunction", "raw_up source=${System.identityHashCode(source)} press=$id uptimeMs=$at retired=${press.retired}") }
+            if (!press.retired && registered) recognizer.accept(FunctionGestureRecognizer.Report.UP, at)
         }
     }
 
@@ -64,17 +113,20 @@ internal class NativeFunctionInput(
     }
 
     fun prepareCancel(preserveRegistration: Boolean = false): InputRetirement {
+        if (!preserveRegistration || !recognizer.awaitingRegistrationRelease) rawPress?.retired = true
         val effects = mutableListOf<() -> Unit>()
         retiring = effects
         try { recognizer.cancel(preserveRegistration) } finally { retiring = null }
-        val original = recognizer.retirementState()
-        return InputRetirement({ InputRetirement.finishAll(effects) }, { recognizer.retirementState() != original })
+        val original = retirementState()
+        return InputRetirement({ InputRetirement.finishAll(effects) }, { retirementState() != original })
     }
+
+    private fun retirementState(): Any = listOf(recognizer.retirementState(), rawSource, rawPress, rawPress?.retired)
 
     fun cancel() = prepareCancel().finishOriginal()
 
     fun stop() {
-        recognizer.cancel()
+        cancel()
         if (!registered) return
         registered = false
         context.unregisterReceiver(receiver)
