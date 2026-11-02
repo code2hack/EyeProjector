@@ -42,3 +42,9 @@ Integrate independently assessed exact candidates, then verify the assembled ver
 ## Device-test follow-up
 
 The first assembled device trials exposed a supported direct-session path without an activation ID. V04-05 runs as a small parallel lifecycle correction while V04-03 Mode readiness is verified. Its local and peer cleanup must target the captured original Session; trigger acknowledgement or a stale STREAMING status file alone is not resource-release evidence. The product contract remains unchanged.
+
+## Integration status
+
+#147, #148 and #149 are accepted. #154's reviewed original-session correction is accepted and merged through PR155 at `2c2f2fb`; its superseded failures remain in the run record. PR156 integrates the reviewed #150 fixture/test source at `376fb17`. That production/test tree matches the tested `883a1adb` composition except for run documentation. The latest affected build passes 253 fresh Glasses tests and Main/AndroidTest assembly; Phone315/protocol93 results are retained from unchanged inputs.
+
+The [run record](../../runs/v0.4.md) distinguishes actual mode, app/Home/restart, keyboard, native adapter, Stop, static-session and reconnect cases from physical input and media limitations. The camera smoke still rejects the registered virtual ID in the ordinary consumer context; #103 stays open. Final assembled evidence review and cleanup are recorded under #150. Integration into the version branch does not publish v0.4 to main or establish Owner usability acceptance.
