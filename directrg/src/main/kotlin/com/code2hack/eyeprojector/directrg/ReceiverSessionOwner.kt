@@ -122,6 +122,8 @@ internal class ReceiverSessionOwner(
         }).also { nativeFunction=it }
         val connection=nativePad?.also { it.attachView(pad) } ?: pad.also { nativePad=it }
         connection.bindFunction(function)
+        function.start()
+        connection.start()
         return function to connection
     }
     private fun inputSessionLost(source: ProjectionSession?) {

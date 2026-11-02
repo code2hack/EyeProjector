@@ -199,8 +199,7 @@ internal class PhoneInputMerger(
                 when (edge.action) {
                     PhoneHidAction.TAP -> {
                         val admitted = ++generation
-                        nativeContact = null; retireContact(out)
-                        out.effect { cancelControl() }
+                        retireContact(out)
                         if (admitted != generation || presses[routeId] !== press || !allowsNew(press, position)) {
                             presses.remove(routeId, press); return@transaction
                         }
@@ -210,7 +209,7 @@ internal class PhoneInputMerger(
                     }
                     PhoneHidAction.SCROLL_DOWN, PhoneHidAction.SCROLL_UP -> {
                         val admitted = ++generation
-                        nativeContact = null; retireContact(out)
+                        retireContact(out)
                         if (generation != admitted || !allowsNew(press, position)) {
                             presses.remove(routeId, press); return@transaction
                         }
@@ -296,12 +295,17 @@ internal class PhoneInputMerger(
     }
 
     private fun retireContact(out: Output, emit: Boolean = true) {
-        val old = held ?: return
-        held = null; presses.remove(old.id)
-        if (old.point.projected) {
+        val originalNative = nativeContact
+        nativeContact = null
+        val originalHid = held
+        held = null
+        originalHid?.let { presses.remove(it.id) }
+        // Replacing the source retires its original output before a mode operation can consume it.
+        if (originalNative != null || originalHid?.point?.projected == true) {
             out.effect { cancelControl() }
+        } else if (originalHid != null && emit) {
+            out.add(ReceiverInput(ReceiverInputKind.CANCEL, originalHid.point.revision, originalHid.contact))
         }
-        else if (emit) out.add(ReceiverInput(ReceiverInputKind.CANCEL, old.point.revision, old.contact))
     }
 
     /** Native contact bookkeeping is ordered with HID; effects emit outside the control lock. */
@@ -331,7 +335,7 @@ internal class PhoneInputMerger(
         var result=false
         transaction { out ->
             if (!active()) return@transaction
-            generation++;nativeContact=null;retireContact(out)
+            generation++;retireContact(out)
             out.effect { result=action() }
         }
         return result
