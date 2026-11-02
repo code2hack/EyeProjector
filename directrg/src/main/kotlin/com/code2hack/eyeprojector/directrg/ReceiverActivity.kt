@@ -602,9 +602,10 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         val scope = launchScope
         val originalOwner = owner
         val originalSession = session
+        val originalEpoch = originalOwner?.snapshot()?.takeIf { it.session === originalSession }?.epoch
         cancelInputOperation() ?: return
         resumed = false; bindingValid = false
-        cancelOriginalOnExit(scope, activation, originalOwner)
+        cancelOriginalOnExit(scope, activation, originalOwner, originalSession, originalEpoch)
         if (owner === originalOwner && (session === originalSession || session == null)) finish()
     }
     internal fun exitToLauncher() {
@@ -616,20 +617,23 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         val scope = launchScope
         val originalOwner = owner
         val originalSession = session
+        val originalEpoch = originalOwner?.snapshot()?.takeIf { it.session === originalSession }?.epoch
         cancelInputOperation() ?: return
         resumed = false
         bindingValid = false
         nativeSwipeInput.stop(); longTouch.stop(); padContact.stop(); pointer.stop()
         if (owner !== originalOwner || (session !== originalSession && session != null)) return
-        cancelOriginalOnExit(scope, activation, originalOwner)
+        cancelOriginalOnExit(scope, activation, originalOwner, originalSession, originalEpoch)
         if (owner !== originalOwner || (session !== originalSession && session != null)) return
         startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         finish()
     }
 
-    private fun cancelOriginalOnExit(scope: ReceiverLaunchScope, activation: String?, originalOwner: ReceiverSessionOwner?) {
+    private fun cancelOriginalOnExit(scope: ReceiverLaunchScope, activation: String?, originalOwner: ReceiverSessionOwner?,
+        originalSession: ProjectionSession?, originalEpoch: String?) {
         pendingExit = scope to activation
-        if (originalOwner != null) originalOwner.disconnect(scope = scope, activationId = activation)
+        if (originalOwner != null) originalOwner.disconnect(scope = scope, activationId = activation,
+            originalSession = originalSession, originalEpoch = originalEpoch)
         else {
             // Delivery survives unbinding/Activity destruction and carries only this original scope.
             startForegroundService(ReceiverSessionService.cancelIntent(this, scope, activation))
@@ -1019,7 +1023,8 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             override fun disconnect(onCompletion: () -> Unit) {
                 capturedOwner.disconnect(notifyPeer = true, complete = {
                     try { onCompletion() } catch (_: Throwable) { /* Observation cannot break reconciliation. */ }
-                }, scope = dispatchScope, activationId = capturedActivation)
+                }, scope = dispatchScope, activationId = capturedActivation,
+                    originalSession = capturedSession, originalEpoch = memory.epoch)
             }
             override fun observe(): FixtureTeardownObservation {
                 val begin = System.nanoTime()
@@ -1129,11 +1134,16 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     }
 
     internal fun disconnect(notifyPeer: Boolean = true) {
+        val source = owner
+        val originalSession = session
+        val originalEpoch = source?.snapshot()?.takeIf { it.session === originalSession }?.epoch
+        val scope = launchScope
+        val activation = visibleActivation
         cancelInput()
         connectBeforeBinding = false
-        val source = owner
         if (source == null) disconnectBeforeBinding = true
-        else source.disconnect(notifyPeer, scope = launchScope, activationId = visibleActivation)
+        else source.disconnect(notifyPeer, scope = scope, activationId = activation,
+            originalSession = originalSession, originalEpoch = originalEpoch)
     }
     override fun onResume() {
         super.onResume(); resumed = true; pointer.start(); longTouch.start(); padContact.start()
@@ -1157,6 +1167,11 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         super.onPause()
     }
     override fun onDestroy() {
+        val originalOwner = owner
+        val originalSession = session
+        val originalEpoch = originalOwner?.snapshot()?.takeIf { it.session === originalSession }?.epoch
+        val scope = launchScope
+        val activation = visibleActivation
         cancelInputOperation(cancelFunction = false, reason = "destroy")
         serviceBinder?.detachCameraPermissionHost(cameraPermissionHost)
         cameraPermissionRequests.clear()
@@ -1164,7 +1179,8 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         owner?.detach(sessionView)
         if (isFinishing && bindingValid) {
             // Original view/task scope only. A delayed destructor never resolves a newer singleton H.
-            owner?.disconnect(scope = launchScope, activationId = visibleActivation)
+            originalOwner?.disconnect(scope = scope, activationId = activation,
+                originalSession = originalSession, originalEpoch = originalEpoch)
         }
         if (bound) { unbindService(serviceConnection); bound = false }
         owner = null; serviceBinder = null; pairingPanel.close(); super.onDestroy()

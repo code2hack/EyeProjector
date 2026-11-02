@@ -528,13 +528,16 @@ internal class ReceiverSessionOwner(
     }
 
     fun disconnect(notifyPeer: Boolean = true, complete: (() -> Unit)? = null,
-        scope: ReceiverLaunchScope? = feature?.currentScope(), activationId: String? = feature?.directive?.activationId) {
+        scope: ReceiverLaunchScope? = feature?.currentScope(), activationId: String? = feature?.directive?.activationId,
+        originalSession: ProjectionSession? = null, originalEpoch: String? = null) {
         if (closed) { complete?.invoke(); return }
         if (notifyPeer && pendingLaunch?.id == scope?.id) pendingLaunch = null
         val originalH = scope?.let { feature?.state?.triggers?.get(it.trigger)?.activation }
         val mediaH = peer?.activation?.directive?.takeIf { it.ownerEpoch == attachment.epoch }?.activationId
             ?: feature?.directive?.takeIf { it.ownerEpoch == attachment.epoch }?.activationId
-        val affectsCurrent = !notifyPeer || feature == null ||
+        val affectsCurrent = !notifyPeer || if (originalSession != null) {
+            session === originalSession && originalEpoch != null && attachment.epoch == originalEpoch
+        } else feature == null ||
             mediaH != null && (mediaH == activationId || mediaH == originalH) ||
             session == null && feature.cancellationTargetsCurrent(scope, activationId)
         if (affectsCurrent && notifyPeer) uiUsable = false
@@ -545,7 +548,7 @@ internal class ReceiverSessionOwner(
                 client.disconnect(epoch, complete?.let { done -> { deliver(done) } }, scope, activationId).forEach(attachment::suppress)
                 pendingCancellations.remove(scope?.id to activationId)
             } catch (_: Exception) {
-                pendingCancellations[scope?.id to activationId] = { disconnect(notifyPeer, complete, scope, activationId) }
+                pendingCancellations[scope?.id to activationId] = { disconnect(notifyPeer, complete, scope, activationId, originalSession, originalEpoch) }
                 if (affectsCurrent) { requested = true; mediaState = "CANCEL_PENDING"; publish() }
                 return
             }
