@@ -17,6 +17,7 @@ class AccessibilityNodeInfo(
     val actionList: List<AccessibilityAction> = emptyList(),
     val children: List<AccessibilityNodeInfo?> = emptyList(),
     val failBounds: Boolean = false,
+    val drawingOrder: Int = 0,
 ) {
     var closed = 0
     var childrenRead = 0

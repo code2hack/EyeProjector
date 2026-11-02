@@ -43,7 +43,7 @@ internal class AndroidUiAccess(private val service: AccessibilityService) : UiAc
             // and persistent identity, including custom touch regions with no advertised action.
             return UiTargetObservation(ordinal, windowId, packageName.orEmpty(), resourceId,
                 node.className?.toString(), Rect().also(node::getBoundsInScreen).bounds(), actions,
-                clickable, longClickable, node.isVisibleToUser, node.isEnabled)
+                clickable, longClickable, node.isVisibleToUser, node.isEnabled, drawingOrder = node.drawingOrder)
         }
         @Suppress("DEPRECATION") override fun close() = node.recycle()
     }
