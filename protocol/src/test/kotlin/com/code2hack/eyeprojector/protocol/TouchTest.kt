@@ -28,8 +28,8 @@ class TouchTest {
             assertThrows(RuntimeException::class.java) { Touch.from(bad) }
         }
     }
-    @Test fun touchFramesCoexistWithScaleUnderTheMatchedRevisionTwelveFraming() {
-        assertEquals(14, Wire.VERSION)
+    @Test fun touchFramesCoexistWithScaleUnderTheMatchedRevisionFifteenFraming() {
+        assertEquals(15, Wire.VERSION)
         val touch = Touch(Touch.Phase.MOVE, 1000, target)
         val output = ByteArrayOutputStream()
         Wire.writeFrame(DataOutputStream(output), Frame(Wire.TOUCH, payload = touch.bytes()))
