@@ -7,11 +7,11 @@ import java.io.DataOutputStream
 import java.io.ByteArrayOutputStream
 
 class PhoneInputTest {
-    @Test fun dedicatedNavigationUsesNewIdsAndRoundTripsInVersionEight() {
-        assertEquals((0..9).toList(), listOf(ReceiverInputKind.DOWN, ReceiverInputKind.MOVE, ReceiverInputKind.UP,
+    @Test fun dedicatedNavigationRoundTripsInMatchedWireVersion() {
+        assertEquals((0..7).toList(), listOf(ReceiverInputKind.DOWN, ReceiverInputKind.MOVE, ReceiverInputKind.UP,
             ReceiverInputKind.CANCEL, ReceiverInputKind.SCROLL, ReceiverInputKind.PANEL, ReceiverInputKind.BACK,
-            ReceiverInputKind.EXIT, ReceiverInputKind.FUNCTION_DOUBLE, ReceiverInputKind.SLEEP).map { it.ordinal })
-        for ((kind, id) in listOf(ReceiverInputKind.HOME to 10, ReceiverInputKind.LOCK to 11)) {
+            ReceiverInputKind.EXIT).map { it.ordinal })
+        for ((kind, id) in listOf(ReceiverInputKind.HOME to 8, ReceiverInputKind.LOCK to 9)) {
             val event = ReceiverInput(kind, 19)
             assertEquals(id, event.bytes()[0].toInt())
             val b = ByteArrayOutputStream()
@@ -22,7 +22,7 @@ class PhoneInputTest {
         val home = Navigate(Navigation.CONTEXTUAL_HOME, Geometry(480, 640))
         assertEquals(-2, Navigation.CONTEXTUAL_HOME.keycode)
         assertEquals(home, Navigate.from(home.bytes()))
-        assertEquals(listOf(4, 3, -1), Navigation.entries.take(3).map { it.keycode })
+        assertEquals(listOf(4, 3, -2), Navigation.entries.take(3).map { it.keycode })
     }
 
     @Test fun sevenSemanticRolesRetainGestureIdentityAndTypedEdgeFacts() {
@@ -68,8 +68,8 @@ class PhoneInputTest {
 
     private fun stateBytesWithTrailingData() = HeadPointerState(0, 0, false, false, 0f, 0f, null, null).bytes() + 0.toByte()
 
-    @Test fun wireTwelveMatchesBothNewDirectionsAndRejectsThePriorHandshakes() {
-        assertEquals(14, Wire.VERSION); assertEquals(15, Wire.HEAD_POINTER); assertEquals(16, Wire.RECEIVER_INPUT)
+    @Test fun wireFifteenMatchesBothNewDirectionsAndRejectsThePriorHandshakes() {
+        assertEquals(15, Wire.VERSION); assertEquals(15, Wire.HEAD_POINTER); assertEquals(16, Wire.RECEIVER_INPUT)
         assertEquals(14, Wire.TOUCH); assertEquals(3, Wire.TAP); assertEquals(8, Wire.SCROLL)
         val frames = listOf(Frame(Wire.HEAD_POINTER, payload = HeadPointerState(1, 2, false, false, 0f, 0f, null, null).bytes()),
             Frame(Wire.RECEIVER_INPUT, payload = ReceiverInput(ReceiverInputKind.PANEL, 1).bytes()))

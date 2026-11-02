@@ -1,15 +1,12 @@
 package com.code2hack.eyeprojector.directhost
 
 import com.code2hack.eyeprojector.protocol.*
-import com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiSource
 
 /** Share the session's control lock with resize writes, geometry changes and release. */
 internal class PhoneTouchDispatcher(private val lock: Any = Any(), private val write: (ByteArray) -> Unit) {
     interface MotionTarget {
         fun geometry(next: Geometry)
         fun touch(event: Touch): Boolean
-        /** A selected Anchor uses its captured mapping; ordinary pointers use current geometry. */
-        fun anchorDown(event: Touch, source: ManagedUiSource): Boolean = touch(event)
         fun tap(event: Tap): Boolean
         fun scroll(event: Scroll): Boolean
     }
@@ -57,16 +54,6 @@ internal class PhoneTouchDispatcher(private val lock: Any = Any(), private val w
         true
     }
 
-    fun anchorDown(event: Touch, source: ManagedUiSource): Boolean = synchronized(lock) {
-        if (closed || event.phase != Touch.Phase.DOWN || event.target.geometry != source.geometry.video)
-            return@synchronized false
-        if (held != null) cancel()
-        if (closed || held != null) return@synchronized false
-        held = event
-        val accepted = motionTarget?.anchorDown(event, source) ?: run { write(Scrcpy.touch(event)); true }
-        accepted && held === event
-    }
-
     fun tap(event: Tap): Boolean = synchronized(lock) {
         if (closed || event.geometry != geometry) return@synchronized false
         cancel()
@@ -88,7 +75,7 @@ internal class PhoneTouchDispatcher(private val lock: Any = Any(), private val w
         if (!closed) { closed = true; held = null }
     }
 
-    /** Detach the exact original before a persistent Anchor cancellation runs off the ingress lane. */
+    /** Detach the exact ordinary contact before its cancellation output. */
     fun prepareCancel(nextGeometry: Geometry? = null): () -> Boolean = synchronized(lock) {
         val old = held ?: return@synchronized { true }
         held = null
@@ -110,31 +97,6 @@ internal class PhoneTouchDispatcher(private val lock: Any = Any(), private val w
     }
 
     fun cancel(nextGeometry: Geometry? = null): Boolean = prepareCancel(nextGeometry).invoke()
-
-    /** Persistent Anchor release detaches only its original backend before an external UP. */
-    fun prepareRelease(expected: Touch): () -> Boolean = synchronized(lock) {
-        val old = held?.takeIf { it.contactId == expected.contactId && it.target == expected.target }
-            ?: return@synchronized { false }
-        held = null
-        val originalTarget = motionTarget
-        var completed = false
-        var result = false
-        var failure: Throwable? = null
-        val finish: () -> Boolean = {
-            if (!completed) {
-                completed = true
-                fun output(phase: Touch.Phase): Boolean {
-                    val event = old.copy(phase = phase)
-                    return originalTarget?.touch(event) ?: run { write(Scrcpy.touch(event)); true }
-                }
-                try { result = output(Touch.Phase.UP) }
-                catch (error: Throwable) { failure = error }
-            }
-            failure?.let { throw it }
-            result
-        }
-        finish
-    }
 
     private fun writeTouch(event: Touch): Boolean = motionTarget?.touch(event) ?: run {
         write(Scrcpy.touch(event)); true

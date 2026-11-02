@@ -11,11 +11,6 @@ import com.code2hack.eyeprojector.protocol.PhoneHidPhase
 import com.code2hack.eyeprojector.directhost.input.PhoneHidRoute
 import com.code2hack.eyeprojector.directhost.activation.snapshot.PhoneHidSnapshotSource
 import com.code2hack.eyeprojector.directhost.activation.snapshot.NativeSnapshotReadLane
-import com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiSource
-import com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiSourceProvider
-import com.code2hack.eyeprojector.directhost.uiaccess.UiTargetAccess
-import com.code2hack.eyeprojector.directhost.uiaccess.UiTargetSnapshot
-import com.code2hack.eyeprojector.directhost.uiaccess.UiTargetSnapshotProvider
 import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Context
@@ -45,8 +40,7 @@ class HostBootstrap private constructor(private val context: Context) {
     private val forget = HostForgetCompletion { main.post(it) }
     private val executor = Executors.newSingleThreadScheduledExecutor()
     private val displayExecutor = Executors.newSingleThreadExecutor()
-    internal val anchorRuntime = com.code2hack.eyeprojector.directhost.anchor.execution.AnchorAppRuntime(context)
-    private val uiTargetExecutor = Executors.newSingleThreadExecutor()
+    internal val modeOwner = com.code2hack.eyeprojector.directhost.input.PhoneModeOwner(context)
     private val inputTraceConfiguration = java.util.concurrent.atomic.AtomicReference<PhoneInputTraceConfig?>()
     /** Test-owned configuration for subsequent normal starts; the caller can restore the prior value. */
     fun configureInputTrace(config: PhoneInputTraceConfig?): PhoneInputTraceConfig? = inputTraceConfiguration.getAndSet(config)
@@ -102,14 +96,14 @@ class HostBootstrap private constructor(private val context: Context) {
                             else if (remote?.asBinder() == binder) { remote = null; publish("UNKNOWN", "SERVICE_DIED") }
                             }
                         }, 0)
-                        remote?.setAnchorBridge(anchorRuntime.bind())
+                        remote?.setModeOwner(modeOwner)
                         performPending()
                         refreshNow()
                     }.onFailure { remote = null; publish("UNKNOWN", "SERVICE_UNREACHABLE") }
                 }
             }
             override fun onServiceDisconnected(name: ComponentName) {
-                if (generation == bindingGeneration) anchorRuntime.invalidateBinding()
+                if (generation == bindingGeneration) modeOwner.invalidateBinding()
                 originalBinding?.let { original ->
                     if (!original.first.isBinderAlive) contextPublisher.retireBinding(original.second)
                 }
@@ -125,7 +119,7 @@ class HostBootstrap private constructor(private val context: Context) {
     }
 
     private fun abandonConnection() {
-        anchorRuntime.invalidateBinding()
+        modeOwner.invalidateBinding()
         val previous = connection
         connection = null; connecting = false
         bindingGeneration++; acceptedGeneration = -1L
@@ -135,7 +129,7 @@ class HostBootstrap private constructor(private val context: Context) {
     }
     private val received = Shizuku.OnBinderReceivedListener { refresh() }
     private val dead = Shizuku.OnBinderDeadListener {
-        anchorRuntime.invalidateBinding()
+        modeOwner.invalidateBinding()
         // The delivered capability loss is known now; it is not an acknowledgment of backend release.
         contextPublisher.retire(contextPublisher.capture())
         executor.execute { if (connecting) abandonConnection(); publish(current.backend, "SHIZUKU_DIED") }
@@ -158,12 +152,12 @@ class HostBootstrap private constructor(private val context: Context) {
     fun status(): Status = current
     /** Forward before app queues/stores/UI effects; a held label never authorizes this command. */
     fun userControl(expected: ProjectionContext? = null, kind: Int = UserControls.ORDINARY): Boolean {
-        val original = remote ?: return anchorRuntime.userControl(expected, kind == UserControls.RECOGNITION)
+        val original = remote ?: return expected?.available != true
         val owner = current.sessionEpoch
         val captured = expected ?: ProjectionContext()
         val result = try { original.userControl(kind, captured.ownerEpoch, captured.projectionToken) }
         catch (_: Exception) { return false }
-        return result == com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.NORMAL.ordinal &&
+        return result == 0 &&
             remote === original && current.sessionEpoch == owner &&
             (kind == UserControls.STOP || expected == null || current.projectionContext == expected)
     }
@@ -316,14 +310,6 @@ class HostBootstrap private constructor(private val context: Context) {
         }
     }
 
-    /** Transitional v0.3-only receipt route; new v0.4 ingress always captures ordinary control. Issue149 deletes it. */
-    internal fun captureOriginalAnchorRoute(down: PhoneHidEdge,
-        original: com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal): PhoneHidRoute? {
-        if (!original.capturedAnchor ||
-            down.phase != PhoneHidPhase.DOWN || down.repeatCount != 0) return null
-        return original.route(down, "", 0L, bindingGeneration, inputRoutes.incrementAndGet())
-    }
-
     /** Compatibility route; ordinary production HID uses its stamped snapshot source. */
     fun capturePhoneHidRoute(down: PhoneHidEdge): PhoneHidRoute? {
         if (down.phase != PhoneHidPhase.DOWN || down.repeatCount != 0) return null
@@ -359,46 +345,6 @@ class HostBootstrap private constructor(private val context: Context) {
     fun projectionDisplayState(expected: ProjectionContext, complete: (ProjectionDisplayState?) -> Unit) =
         displayOperation(expected, LaunchOperationDiagnostics.Kind.DISPLAY_QUERY, null,
             { service, _ -> service.projectionDisplayState(expected.ownerEpoch, expected.projectionToken) }, complete)
-
-    /** Captures one app->shell binding; neither queued work nor the second sample adopts a successor. */
-    internal fun captureUiTargetSource(expected: ProjectionContext): ManagedUiSourceProvider? {
-        if (!expected.available) return null
-        val service = remote ?: return null
-        val binding = bindingGeneration
-        val original = current
-        fun matches(): Boolean {
-            val observed = current
-            return remote === service && bindingGeneration == binding && (observed.projectionContext == expected ||
-                (original.projectionToken.isEmpty() && observed === original && observed.sessionEpoch == expected.ownerEpoch))
-        }
-        if (!matches()) return null
-        return ManagedUiSourceProvider { query ->
-            if (query != expected || !matches()) null
-            else service.uiTargetContext(expected.ownerEpoch, expected.projectionToken)?.let { payload ->
-                ManagedUiSource.from(payload).takeIf { matches() && it.context == expected }
-            }
-        }
-    }
-
-    fun uiTargetContext(expected: ProjectionContext, complete: (ManagedUiSource?) -> Unit) {
-        val original = captureUiTargetSource(expected)
-        uiTargetExecutor.execute {
-            val result = runCatching { original?.current(expected) }.getOrNull()
-            main.post { complete(result) }
-        }
-    }
-
-    /** Accessibility traversal runs in this app process, outside projection/input and lifecycle locks. */
-    fun uiTargets(expected: ProjectionContext, selectedPackage: String, windowId: Int? = null,
-        complete: (UiTargetSnapshot) -> Unit) {
-        val original = captureUiTargetSource(expected)
-        uiTargetExecutor.execute {
-            val provider = UiTargetSnapshotProvider(original ?: ManagedUiSourceProvider { null },
-                UiTargetAccess::reader, android.os.SystemClock::uptimeMillis)
-            val result = provider.read(expected, selectedPackage, windowId)
-            main.post { complete(result) }
-        }
-    }
 
     private fun displayOperation(expected: ProjectionContext, kind: LaunchOperationDiagnostics.Kind, selectedPackage: String?,
         operation: (IHostBootstrap, Long) -> ByteArray, complete: (ProjectionDisplayState?) -> Unit,

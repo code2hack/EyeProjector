@@ -2,199 +2,80 @@ package com.code2hack.eyeprojector.directrg
 
 import android.annotation.SuppressLint
 import android.app.Activity
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
-import android.os.Build
-import android.os.Handler
-import android.os.Looper
-import android.os.SystemClock
-import android.util.Log
+import android.content.*
+import android.os.*
 
-/** Foreground Function interception; ordinary touchpad/AI/key reports have independent owners. */
+/** Native short is Mode; native long has no action. The retained raw reader owns physical IDs. */
 internal class NativeFunctionInput(
     private val context: Context,
     private val currentContext: () -> Any?,
-    dispatch: (AnchorGesture) -> Unit,
-    now: () -> Long = SystemClock::uptimeMillis,
+    private val dispatch: (Any) -> Unit,
+    private val now: () -> Long = SystemClock::uptimeMillis,
     schedule: (Long, () -> Unit) -> (() -> Unit) = handlerSchedule(),
-    timing: FunctionGestureRecognizer.Timing = FunctionGestureRecognizer.Timing(),
-    private val capture: (Any) -> Any? = { it },
-    private val captureOriginal: ((Any, Long, Long?) -> Any?)? = null,
-    private val retireOriginal: ((Long, Any) -> Unit)? = null,
-    registrationRelease: (AnchorGesture, Boolean) -> Unit = { _, _ -> },
-    registrationLost: (AnchorGesture) -> Unit = {},
 ) {
-    @Volatile private var registered = false
-    @Volatile private var userCancellation = 0L
-    internal class RawOriginal(val owner: Any, val captured: FunctionGestureRecognizer.CapturedOriginal,
-        val cancellation: Long, private val retire: () -> Unit) {
-        private val retired = java.util.concurrent.atomic.AtomicBoolean()
-        fun discard() { if (retired.compareAndSet(false, true)) retire() }
+    @Volatile private var registered=false
+    @Volatile private var cancellation=0L
+    internal class RawOriginal(val owner: Any,val revision: Long) {
+        @Volatile var discarded=false;private set
+        fun discard() { discarded=true }
     }
-    private var losingResource = false
-    private var retiring: MutableList<() -> Unit>? = null
-    private class RawPress(val source: Any, val id: Long, var retired: Boolean)
-    private var rawSource: Any? = null
-    private var rawPress: RawPress? = null
-    val pinsPointer: Boolean get() = rawPress?.retired == false
-    private val recognizer = FunctionGestureRecognizer(now, { if (registered) currentContext() else null },
-        { at, action ->
-            val cancel = schedule(at, action)
-            val original: () -> Unit = { retiring?.add(cancel) ?: cancel() }
-            original
-        }, { dispatch(it.anchorOperation()) }, timing, capture = capture, identity = identities, captureOriginal = captureOriginal,
-        retireOriginal = retireOriginal?.let { retire -> { id, original ->
-            val effect: () -> Unit = {retire(id,original)}
-            retiring?.add(effect) ?: effect()
-        } }, registrationRelease = { gesture, canceled ->
-            val lost = losingResource && canceled
-            val effect: () -> Unit = {
-                if (lost) registrationLost(gesture.anchorOperation())
-                else registrationRelease(gesture.anchorOperation(), canceled)
-            }
-            retiring?.add(effect) ?: effect()
-        })
-    private val receiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
+    private class RawPress(val source: Any,val id: Long,val downAt: Long,val original: RawOriginal?)
+    private var rawSource: Any?=null
+    private var rawPress: RawPress?=null
+    private val fallback=FunctionGestureRecognizer(now,currentContext,schedule,dispatch)
+    private val receiver=object: BroadcastReceiver() {
+        override fun onReceive(context: Context,intent: Intent) {
             if (!registered) return
-            val report = REPORTS[intent.action] ?: return
+            val report=REPORTS[intent.action] ?: return
             if (isOrderedBroadcast && intent.flags and Intent.FLAG_RECEIVER_NO_ABORT == 0) {
-                resultCode = Activity.RESULT_CANCELED
-                abortBroadcast()
+                resultCode=Activity.RESULT_CANCELED;abortBroadcast()
             }
-            // OEM long handling suppresses its UP broadcast. While the existing shell reader
-            // supplies real edges, broadcasts are duplicate summaries, never extra presses.
-            if (rawSource != null) return
-            recognizer.accept(report)
+            if (rawSource == null) fallback.accept(report)
         }
     }
-
-    fun rawSourceAvailable(source: Any) {
-        if (rawSource === source) return
-        rawSource = source
-        rawPress = null
-        loseResource()
-        runCatching { Log.i("EyeProjectorFunction", "raw_source connected=${System.identityHashCode(source)}") }
-    }
-
-    fun rawSourceLost(source: Any) {
-        if (rawSource !== source) return
-        rawSource = null
-        rawPress = null
-        loseResource()
-        runCatching { Log.i("EyeProjectorFunction", "raw_source lost=${System.identityHashCode(source)}") }
-    }
-
-    /** Original socket/press membership, not an OEM summary or a later input context. */
-    /** Runs on the socket reader: copy the published original before any main-queue wait. */
-    fun captureRawOriginal(): RawOriginal? {
-        val owner = if (registered) currentContext() else null
-        if (owner == null) return null
-        val cancellation = userCancellation
-        val id = identities.gesture()
-        val value = captureOriginal?.invoke(owner, id, null) ?: if (captureOriginal == null) capture(owner) else null
-        if (value == null) return null
-        val original = RawOriginal(owner, FunctionGestureRecognizer.CapturedOriginal(id, value), cancellation) {
-            retireOriginal?.invoke(id, value)
-        }
-        if (!registered || currentContext() != owner || userCancellation != cancellation) {
-            original.discard(); return null
-        }
-        return original
-    }
-
-    fun rawEdge(source: Any, id: Long, down: Boolean, at: Long, received: RawOriginal?) {
-        if (rawSource !== source) { received?.discard(); return }
-        if (down) {
-            if (rawPress?.let { it.source === source && it.id == id } == true) { received?.discard(); return }
-            val previous = rawPress
-            val cancelsRegistration = recognizer.awaitingRegistrationRelease
-            val originalContext = received?.owner?.takeIf { registered &&
-                received.cancellation == userCancellation && currentContext() == it }
-            rawPress = null
-            if (previous != null && !cancelsRegistration) cancel()
-            if (rawSource !== source) { received?.discard(); return }
-            val press = RawPress(source, id, cancelsRegistration || originalContext == null || currentContext() != originalContext)
-            rawPress = press
-            runCatching { Log.i("EyeProjectorFunction", "raw_down source=${System.identityHashCode(source)} press=$id uptimeMs=$at retired=${press.retired}") }
-            // A new physical press cancels an old chooser and is consumed in full. Let the
-            // recognizer retire that original lease before considering any new context.
-            if (!press.retired || registered && cancelsRegistration)
-                recognizer.accept(FunctionGestureRecognizer.Report.DOWN, at, received?.captured)
-            if (press.retired) received?.discard()
+    fun rawSourceAvailable(source: Any) { if(rawSource !== source) { cancel();rawSource=source } }
+    fun rawSourceLost(source: Any) { if(rawSource === source) { cancel();rawSource=null } }
+    fun captureRawOriginal(): RawOriginal? = if(registered) currentContext()?.let { RawOriginal(it,cancellation) } else null
+    fun rawEdge(source: Any,id: Long,down: Boolean,at: Long,received: RawOriginal?) {
+        if(rawSource !== source || !registered) return
+        if(down) {
+            if(rawPress?.let { it.source === source && it.id == id } != true)
+                rawPress=RawPress(source,id,at,received)
         } else {
-            val press = rawPress?.takeIf { it.source === source && it.id == id } ?: return
-            rawPress = null
-            runCatching { Log.i("EyeProjectorFunction", "raw_up source=${System.identityHashCode(source)} press=$id uptimeMs=$at retired=${press.retired}") }
-            if (!press.retired && registered) recognizer.accept(FunctionGestureRecognizer.Report.UP, at)
+            val original=rawPress?.takeIf { it.source === source && it.id == id } ?: return
+            rawPress=null
+            val captured=original.original ?: return
+            if(at-original.downAt < 800 && at >= original.downAt && !captured.discarded && captured.revision == cancellation &&
+                currentContext() == captured.owner) dispatch(captured.owner)
         }
     }
-
-    @SuppressLint("UnspecifiedRegisterReceiverFlag") // API32 has no exported flag.
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
     fun start() {
-        if (registered) return
-        val filter = IntentFilter().apply { REPORTS.keys.forEach(::addAction); priority = Int.MAX_VALUE }
-        if (Build.VERSION.SDK_INT >= 33) context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
-        else {
-            @Suppress("DEPRECATION")
-            context.registerReceiver(receiver, filter)
-        }
-        registered = true
+        if(registered) return
+        val filter=IntentFilter().apply { REPORTS.keys.forEach(::addAction);priority=Int.MAX_VALUE }
+        if(Build.VERSION.SDK_INT >= 33) context.registerReceiver(receiver,filter,Context.RECEIVER_EXPORTED)
+        else { @Suppress("DEPRECATION") context.registerReceiver(receiver,filter) }
+        registered=true
     }
-
-    fun prepareCancel(preserveRegistration: Boolean = false): InputRetirement {
-        if (!losingResource) userCancellation++
-        if (!preserveRegistration || !recognizer.awaitingRegistrationRelease) rawPress?.retired = true
-        val effects = mutableListOf<() -> Unit>()
-        retiring = effects
-        try { recognizer.cancel(preserveRegistration) } finally { retiring = null }
-        val original = retirementState()
-        return InputRetirement({ InputRetirement.finishAll(effects) }, { retirementState() != original })
+    fun prepareCancel(): InputRetirement {
+        cancellation++;rawPress=null;fallback.cancel()
+        val original=cancellation
+        return InputRetirement({}, { cancellation != original })
     }
-
-    private fun retirementState(): Any = listOf(recognizer.retirementState(), rawSource, rawPress, rawPress?.retired)
-
     fun cancel() = prepareCancel().finishOriginal()
-
-    private fun loseResource() {
-        losingResource = true
-        try { cancel() } finally { losingResource = false }
-    }
-
-    fun originalSessionLost() = loseResource()
-
-    fun stop() {
-        loseResource()
-        if (!registered) return
-        registered = false
-        context.unregisterReceiver(receiver)
-    }
-
-    /** Native recognition is an adapter; semantic chooser/contact owners never see OEM reports. */
-    private fun FunctionGestureRecognizer.Gesture.anchorOperation() =
-        AnchorGesture(kind, gestureId, sequence, original, physicalHeld)
-
+    fun originalSessionLost() = cancel()
+    fun stop() { cancel();if(registered) { registered=false;context.unregisterReceiver(receiver) } }
     companion object {
-        private val identities = FunctionGestureRecognizer.Identity()
-        private val REPORTS = mapOf(
+        private val REPORTS=mapOf(
             "com.android.action.ACTION_SPRITE_BUTTON_DOWN" to FunctionGestureRecognizer.Report.DOWN,
             "com.android.action.ACTION_SPRITE_BUTTON_UP" to FunctionGestureRecognizer.Report.UP,
             "com.android.action.ACTION_SPRITE_BUTTON_CLICK" to FunctionGestureRecognizer.Report.CLICK,
             "com.android.action.ACTION_SPRITE_BUTTON_DOUBLE_CLICK" to FunctionGestureRecognizer.Report.DOUBLE,
             "com.android.action.ACTION_BOLON_PAIRING" to FunctionGestureRecognizer.Report.TRIPLE,
-            "com.android.action.ACTION_SPRITE_BUTTON_LONG_PRESS" to FunctionGestureRecognizer.Report.LONG,
-        )
-
+            "com.android.action.ACTION_SPRITE_BUTTON_LONG_PRESS" to FunctionGestureRecognizer.Report.LONG)
         private fun handlerSchedule(): (Long, () -> Unit) -> (() -> Unit) {
-            val handler = Handler(Looper.getMainLooper())
-            return { deadline, action ->
-                val task = Runnable(action)
-                handler.postAtTime(task, deadline)
-                val cancel: () -> Unit = { handler.removeCallbacks(task) }
-                cancel
-            }
+            val handler=Handler(Looper.getMainLooper())
+            return { deadline,action -> val task=Runnable(action);handler.postAtTime(task,deadline);{ handler.removeCallbacks(task) } }
         }
     }
 }

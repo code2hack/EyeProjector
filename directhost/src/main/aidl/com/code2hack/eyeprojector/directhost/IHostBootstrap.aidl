@@ -1,7 +1,7 @@
 package com.code2hack.eyeprojector.directhost;
 import com.code2hack.eyeprojector.directhost.activation.snapshot.NativeSnapshotDescriptor;
 
-import com.code2hack.eyeprojector.directhost.anchor.execution.IAnchorAppBridge;
+import com.code2hack.eyeprojector.directhost.IPhoneModeOwner;
 
 // Only EyeProjector operations. No command, executable or caller-chosen path API.
 interface IHostBootstrap {
@@ -17,8 +17,7 @@ interface IHostBootstrap {
     oneway void phoneHidEdge(long routeId, in byte[] typedEdge, String expectedOwnerEpoch, String expectedProjectionToken) = 9;
     @nullable NativeSnapshotDescriptor phoneHidSnapshot(String expectedOwnerEpoch, String expectedProjectionToken) = 10;
     oneway void phoneHidStampedEdge(long routeId, in byte[] typedEdge, String expectedOwnerEpoch, String expectedProjectionToken, String regionId, long word) = 11;
-    @nullable byte[] uiTargetContext(String expectedOwnerEpoch, String expectedProjectionToken) = 12;
-    void setAnchorBridge(@nullable IAnchorAppBridge bridge) = 13;
+    void setModeOwner(@nullable IPhoneModeOwner owner) = 13;
     int userControl(int kind, String expectedOwnerEpoch, String expectedProjectionToken) = 14;
     void destroy() = 16777114;
 }

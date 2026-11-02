@@ -17,8 +17,6 @@ class PhoneInputMergerTest {
         val scrolls = mutableListOf<Scroll>()
         val ui = mutableListOf<ReceiverInput>()
         val nav = mutableListOf<Navigation>()
-        val intents = mutableListOf<AnchorIntent>()
-        var onIntent: ((AnchorIntent) -> Unit)? = null
         var onCancel: (() -> Unit)? = null
         var onUi: ((ReceiverInput) -> Unit)? = null
         data class Job(val at: Long, val action: () -> Unit, var canceled: Boolean = false)
@@ -29,9 +27,7 @@ class PhoneInputMergerTest {
         val merger = PhoneInputMerger(lock, { now }, { at, action ->
             val j = Job(at, action); jobs.add(j); val cancel: () -> Unit = { j.canceled = true }; cancel
         }, { size }, { records.add(it); dispatcher.touch(it) }, { scrolls.add(it); dispatcher.scroll(it) },
-            { action, _ -> nav.add(action) }, { dispatcher.cancel() }, { assertFalse(Thread.holdsLock(lock)); ui.add(it); onUi?.invoke(it) },
-            anchorIntent = { assertFalse(Thread.holdsLock(lock)); intents.add(it); onIntent?.invoke(it) },
-            anchorIdentity = PhoneInputMerger.AnchorIdentity())
+            { action, _ -> nav.add(action) }, { dispatcher.cancel() }, { assertFalse(Thread.holdsLock(lock)); ui.add(it); onUi?.invoke(it) })
         init { dispatcher.geometry(size); pointer() }
         fun pointer(revision: Long = 1, available: Boolean = true, projected: Boolean = true, x: Float = 200f, y: Float = 300f) =
             merger.pointer(HeadPointerState(revision, ++sequence, available, projected, x, y, Fit(100, 100, 480, 640), size),

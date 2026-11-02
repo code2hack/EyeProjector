@@ -85,8 +85,7 @@ data class HeadPointerState(
     }
 }
 
-/** FUNCTION_DOUBLE and SLEEP retain their old numeric slots; v9 no longer dispatches them. */
-enum class ReceiverInputKind { DOWN, MOVE, UP, CANCEL, SCROLL, PANEL, BACK, EXIT, FUNCTION_DOUBLE, SLEEP, HOME, LOCK }
+enum class ReceiverInputKind { DOWN, MOVE, UP, CANCEL, SCROLL, PANEL, BACK, EXIT, HOME, LOCK }
 
 /** Completed UI operation. Identity is opaque; elapsed duration is Phone-local, not a remote uptime. */
 data class ReceiverInput(val kind: ReceiverInputKind, val revision: Long, val contactId: Long = 0,

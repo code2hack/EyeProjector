@@ -36,7 +36,6 @@ class PhoneHidV04Test {
         var onMode: (() -> Unit)? = null
         var onCaptured: ((PhoneHidEdge) -> Unit)? = null
         var ownerEpoch = 1
-        var oldAnchorIntents = 0
         var sourceActive = true
         var intercept: (PhoneHidAction, HeadPointerState) -> Boolean = { _, _ -> false }
         var record: String? = null
@@ -45,7 +44,7 @@ class PhoneHidV04Test {
         val lock = Any()
         val merger = PhoneInputMerger(lock, { now }, schedule, { size }, { touches.add(it); true },
             { scrolls.add(it); true }, { kind, _ -> navigation.add(kind) }, {}, receiver::add,
-            active = { sourceActive }, anchorIntent = { oldAnchorIntents++ },
+            active = { sourceActive },
             hidMode = { assertFalse(Thread.holdsLock(lock)); modes++; onMode?.invoke() },
             hidAction = { action, point -> intercept(action, point) })
         var routeSequence = 0L
@@ -80,7 +79,7 @@ class PhoneHidV04Test {
         fun clicks(count: Int, key: Int = 20) {
             repeat(count) { up(down(key)); if (it + 1 < count) advance(now + 100) }
         }
-        fun outputs() = touches.size + scrolls.size + navigation.size + receiver.size + modes + oldAnchorIntents
+        fun outputs() = touches.size + scrolls.size + navigation.size + receiver.size + modes
     }
 
     @Test fun allSevenRolesAndGestureIdentitiesRoundTripThroughActualLocalCodec() {
@@ -135,7 +134,6 @@ class PhoneHidV04Test {
                 f.advance(f.now + 500)
                 assertEquals("$action $gesture", 1, f.outputs())
                 assertEquals(if (action == PhoneHidAction.MODE) 1 else 0, f.modes)
-                assertEquals(0, f.oldAnchorIntents)
                 if (action == PhoneHidAction.BACK) assertEquals(listOf(Navigation.BACK), f.navigation)
                 if (action == PhoneHidAction.HOME) assertEquals(listOf(Navigation.CONTEXTUAL_HOME), f.navigation)
                 if (action == PhoneHidAction.LOCK) assertEquals(listOf(ReceiverInputKind.LOCK), f.receiver.map { it.kind })
@@ -231,7 +229,6 @@ class PhoneHidV04Test {
         assertEquals(4, semantic.count { it == PhoneHidAction.SCROLL_DOWN }); assertTrue(f.scrolls.isEmpty())
         f.assign(PhoneHidAction.BACK); f.clicks(1); f.advance(f.now + 500)
         assertEquals(1, semantic.count { it == PhoneHidAction.BACK }); assertTrue(f.navigation.isEmpty())
-        assertEquals(0, f.oldAnchorIntents)
     }
 
     @Test fun pendingModeIsCanceledOnDeviceLossStopResetAndContextChange() {

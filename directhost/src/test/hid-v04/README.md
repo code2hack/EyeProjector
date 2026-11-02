@@ -7,9 +7,9 @@ records compiler dependency hashes and commands, and writes `result.json` plus c
 
 Actual production components compiled together are the Phone HID binding store, controller,
 opaque original route, complete gesture recognizer, merger, touch dispatcher and relevant shared
-protocol codecs. The old Anchor admission/raw-receipt/dispatcher type signatures use explicit
-opaque doubles while issue 149 removes that pipeline. Android framework, pin/interception service,
-Shell, Binder and the authoritative app mode owner are outside this runner's execution scope.
+protocol codecs, plus the actual app-process coordinate owner and router. Only Context and
+Binder transport are doubled. Android framework, native pin acquisition, Shell execution and
+physical devices remain outside the host runner's scope.
 Preserved ordinary Tap/contact/reentry/concurrent-emission tests run with the actual dispatcher.
 Results establish source/component behavior, not physical HID, radio, Android timing or app readiness.
 
@@ -27,15 +27,9 @@ DOWN, repeats after 400 ms and then every 100 ms, and never emits on UP. Delayed
 from the actual delivery time, avoiding catch-up bursts. These are implementation choices, not
 measured hardware timing.
 
-Issue 149 supplies `PhoneInputMerger.hidMode: () -> Unit` and
-`hidAction: (PhoneHidAction, HeadPointerState) -> Boolean`.
-Mode completion invokes only hidMode, outside the control lock and in committed output order.
-hidAction returns true to consume Settings Tap/Back and mode-dependent Scroll. It runs under the
-existing control lock. Tap invokes it once on DOWN and consumes the entire contact if handled;
-Scroll invokes it for each original press/repeat; Back/Home/Lock invoke it once after a matched
-complete learned gesture. A false result uses ordinary behavior. These default ports are component
-seams: the final mode owner must be supplied before claiming application readiness.
-
-`PhoneHidEdge` is a 39-byte Phone Binder-local record, including learned gesture kind/count;
-HeadPointerState and LAN input payloads are unchanged by issue 148. Both local producers and
-consumers must come from the same updated host artifact.
+Issue 149 joins the actual PhoneModeOwner and CoordinateInputRouter to the merger.
+Mode and mode-aware Tap/Back/Scroll decisions emit in committed order after releasing the
+control lock. The Session's mode/input FIFO also owns native wire input and deadlines.
+The regression blocks Mode delivery while later operations commit, then checks Settings
+consumes the complete Tap contact and all persistence/publication/output occurs outside
+that lock. Context and Binder transport are test boundaries; this is no Android/device pass.

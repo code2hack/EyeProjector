@@ -348,7 +348,7 @@ internal class PhoneHidController(
             admissions.entries.removeAll { it.value===old }
             if(tapAdmission===old)tapAdmission=null
             releasedGestures.entries.removeAll { it.value === old }
-            // The original proxy receives CANCEL metadata only: no new admission or Anchor action.
+            // The original proxy receives CANCEL metadata only: no new input action.
             cancel(old)
         }
         if(phase!=PhoneHidPhase.DOWN)retired.remove(raw)
