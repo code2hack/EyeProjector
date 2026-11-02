@@ -124,13 +124,14 @@ class PairedSessionClientTest {
         val fresh = CountDownLatch(1)
         val stops = Collections.synchronizedList(mutableListOf<SessionControl.Request>())
         val client = PairedSessionClient(directory, states::add, {}, { request, opened ->
+            val cancelTrigger = request.cancelTrigger
             when {
                 request.operation == SessionControl.Operation.STOP -> {
                     stops.add(request); SessionState("retired", SessionPhase.INACTIVE)
                 }
-                request.cancelTrigger != null -> SessionState("retired", SessionPhase.INACTIVE,
+                cancelTrigger != null -> SessionState("retired", SessionPhase.INACTIVE,
                     activation = com.code2hack.eyeprojector.protocol.ActivationReply(trigger =
-                        com.code2hack.eyeprojector.protocol.TriggerReceipt(request.cancelTrigger.triggerId, null,
+                        com.code2hack.eyeprojector.protocol.TriggerReceipt(cancelTrigger.triggerId, null,
                             com.code2hack.eyeprojector.protocol.TriggerDisposition.CANCELED)))
                 request.operation == SessionControl.Operation.RENDERED -> {
                     opened(Socket()); entered.countDown(); check(release.await(3, TimeUnit.SECONDS))
