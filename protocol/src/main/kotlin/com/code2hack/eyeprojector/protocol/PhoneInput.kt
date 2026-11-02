@@ -2,7 +2,8 @@ package com.code2hack.eyeprojector.protocol
 
 import java.io.DataInputStream
 
-enum class PhoneHidAction { TAP, SCROLL_DOWN, SCROLL_UP, FUNCTION }
+/** Semantic HID operations; native physical Function is a separate source. */
+enum class PhoneHidAction { TAP, SCROLL_DOWN, SCROLL_UP, ANCHOR, NAVIGATION }
 enum class PhoneHidPhase { DOWN, UP, CANCEL }
 
 /** Actual Phone-local facts. This record is Binder-local, never forwarded over LAN. */
@@ -68,7 +69,8 @@ data class HeadPointerState(
     }
 }
 
-enum class ReceiverInputKind { DOWN, MOVE, UP, CANCEL, SCROLL, PANEL, BACK, EXIT, FUNCTION_DOUBLE, SLEEP }
+/** FUNCTION_DOUBLE and SLEEP retain their old numeric slots; v9 no longer dispatches them. */
+enum class ReceiverInputKind { DOWN, MOVE, UP, CANCEL, SCROLL, PANEL, BACK, EXIT, FUNCTION_DOUBLE, SLEEP, HOME, LOCK }
 
 /** Completed UI operation. Identity is opaque; elapsed duration is Phone-local, not a remote uptime. */
 data class ReceiverInput(val kind: ReceiverInputKind, val revision: Long, val contactId: Long = 0,

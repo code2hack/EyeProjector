@@ -4,6 +4,7 @@ import com.code2hack.eyeprojector.protocol.*
 
 class ShizukuHostService
 interface IHostBootstrap {
+    fun uiTargetContext(expectedOwnerEpoch: String, expectedProjectionToken: String): ByteArray? = null
     fun phoneHidSnapshot(expectedOwnerEpoch:String,expectedProjectionToken:String):com.code2hack.eyeprojector.directhost.activation.snapshot.NativeSnapshotDescriptor?=null
     fun phoneHidStampedEdge(routeId:Long,typedEdge:ByteArray,expectedOwnerEpoch:String,expectedProjectionToken:String,regionId:String,word:Long) {}
 
@@ -24,6 +25,9 @@ interface IHostBootstrap {
 
 /** The first stop may time out; the test later releases construction independently. */
 class FakeService : IHostBootstrap, android.os.IBinder {
+    var uiTargetProvider: ((ProjectionContext) -> ByteArray?)? = null
+    override fun uiTargetContext(expectedOwnerEpoch: String, expectedProjectionToken: String): ByteArray? =
+        uiTargetProvider?.invoke(ProjectionContext(expectedOwnerEpoch, expectedProjectionToken))
     data class InputCall(val routeId: Long, val edge: PhoneHidEdge, val expected: ProjectionContext)
     val inputCalls = mutableListOf<InputCall>()
     val inputWrites = mutableListOf<InputCall>()

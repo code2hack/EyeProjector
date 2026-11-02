@@ -22,7 +22,9 @@ internal class PhoneWidgetSessionAdapter(private val sessions: PhoneSessionContr
     }
     override fun start(expectedEpoch: String) = sessions.start(expectedEpoch)
     override fun stop(expectedEpoch: String) = sessions.stop(expectedEpoch)
-    override fun stopActivation(activationId: String) = sessions.cancelActivation(activationId)
+    override fun stopActivation(activationId: String) {
+        if (sessions.userControl()) sessions.cancelActivation(activationId)
+    }
     override fun requestPanelOff(expected: ProjectionContext, complete: (PanelPowerState?) -> Unit) = sessions.requestPanelOff(expected, complete)
     override fun panelState(complete: (PanelPowerState?) -> Unit) = sessions.panelState(complete)
     override fun refresh() = sessions.bootstrap.refresh()

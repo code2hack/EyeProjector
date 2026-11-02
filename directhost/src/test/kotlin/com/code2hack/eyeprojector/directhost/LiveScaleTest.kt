@@ -206,15 +206,18 @@ class LiveScaleTest {
         scale.observe(ScrcpyRecord.Session(Geometry(480, 640), false))
         scale.request(1, 1.25)
         scale.request(2, 1.5)
-        scale.request(3, 2.0)
-        assertEquals(listOf(Geometry(384, 512), Geometry(320, 427), Geometry(240, 320)), writes)
+        scale.request(3, 1.2)
+        assertEquals(listOf(Geometry(384, 512), Geometry(320, 427), Geometry(400, 533)), writes)
+        // The accepted range remains0.5..1.5. An invalid request cannot replace the latest valid resize.
+        assertEquals(ScaleStatus.REJECTED, scale.request(4, 2.0).status)
+        assertEquals(3, writes.size)
         scale.observe(ScrcpyRecord.Session(Geometry(384, 512), true))
         assertEquals(3L, scale.state().requestId)
-        assertEquals(2.0, scale.state().requested, 0.0)
+        assertEquals(1.2, scale.state().requested, 0.0)
         assertEquals(1.25, LayoutScale.applied(scale.state().observed!!), 0.0)
-        scale.observe(ScrcpyRecord.Session(Geometry(240, 320), true))
+        scale.observe(ScrcpyRecord.Session(Geometry(400, 533), true))
         assertEquals(ScaleStatus.OBSERVED, scale.state().status)
-        assertEquals(2.0, LayoutScale.applied(scale.state().observed!!), 0.0)
+        assertEquals(1.2, LayoutScale.applied(scale.state().observed!!), 0.0)
     }
 
     @Test fun roundedNoOpCannotBlockLaterRequestsAndReturningToCurrentSizeCancelsPendingResize() {

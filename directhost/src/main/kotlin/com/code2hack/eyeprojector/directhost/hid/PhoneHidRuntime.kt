@@ -45,6 +45,14 @@ internal class PhoneHidRuntime private constructor(context: Context) {
                 if (!sessions.isHidAuthorityCurrent(original)) return null
                 return admission.route?.invoke(down)
             }
+            override fun capture(down: PhoneHidEdge, admission: PhoneHidCapture,
+                original: com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal?): PhoneHidRoute? {
+                if (original == null) return capture(down, admission)
+                if (original.capturedAnchor) return sessions.captureOriginalAnchorRoute(down, original)
+                val authority = admission.wake?.authority ?: return null
+                if (!sessions.isHidAuthorityCurrent(authority)) return null
+                return admission.routeOriginal?.invoke(down, original)
+            }
             override fun submit(route: PhoneHidRoute, edge: PhoneHidEdge) = sessions.submitPhoneHid(route, edge)
             override fun cancel(route: PhoneHidRoute, eventTimeMs: Long) = sessions.cancelPhoneHid(route, eventTimeMs)
         },
@@ -73,12 +81,19 @@ internal class PhoneHidRuntime private constructor(context: Context) {
                 }
             }
         },
+        userControl = { sessions.userControl() },
+        recognizeInput = ::recognizeInput,
     )
 
     val pin = PhoneHidPinRuntime(app, controller, { connected ->
         nativeConnected = connected
         updateConnection()
-    }, ::publish)
+    }, ::publish, { sessions.userControl() }, ::recognizeInput,
+        { anchorOperation -> sessions.bootstrap.anchorRuntime.capturePhoneHidOriginal(anchorOperation) })
+
+    fun userControl(): Boolean = sessions.userControl()
+
+    fun recognizeInput(): Boolean = sessions.bootstrap.userControl(kind = com.code2hack.eyeprojector.directhost.UserControls.RECOGNITION)
 
     fun accessibilityConnection(connected: Boolean) {
         accessibilityConnected = connected
@@ -172,12 +187,15 @@ internal class PhoneHidRuntime private constructor(context: Context) {
         }
     }
 
-    fun openSettings(): Boolean = try {
+    fun openSettings(): Boolean {
+        if (!sessions.userControl()) return false
+        return try {
         app.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
             .putExtra(Intent.EXTRA_COMPONENT_NAME, ComponentName(app, PhoneHidKeyService::class.java))
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         true
-    } catch (_: Exception) { false }
+        } catch (_: Exception) { false }
+    }
 
     fun refresh() { serviceEnabled = readEnabled(); pin.refresh(); publish() }
     private fun publish() {

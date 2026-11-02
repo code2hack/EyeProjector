@@ -1,0 +1,10 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.code2hack.eyeprojector.uitargetaccess">
+    <uses-sdk android:minSdkVersion="32" android:targetSdkVersion="35" />
+    <application android:allowBackup="false" android:debuggable="true"
+        android:label="EyeProjector UI access evidence" android:hasCode="true" />
+    <instrumentation
+        android:name="com.code2hack.eyeprojector.uitargetaccess.UiTargetAccessInstrumentation"
+        android:targetPackage="com.code2hack.eyeprojector.uitargetaccess"
+        android:functionalTest="true" />
+</manifest>

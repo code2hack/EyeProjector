@@ -10,6 +10,7 @@ internal class HeldPointerDispatcher(
     data class Event(val phase: Touch.Phase, val contactId: Long, val timeMs: Long, val position: PointerPosition)
     private data class Held(val event: Event, val send: (Event) -> Boolean)
     private var held: Held? = null
+    private var admission = 0L
     val holding get() = held != null
     var accepted = 0L; private set
     var rejected = 0L; private set
@@ -26,6 +27,7 @@ internal class HeldPointerDispatcher(
             val event = Event(phase, contact.downTimeMs, contact.timeMs, point)
             val next = Held(event, send)
             held = next // Callbacks may synchronously switch context and cancel.
+            admission++
             if (!send(event)) { rejected++; if (held === next) cancel(contact.timeMs); return false }
             accepted++; return true
         }
@@ -52,10 +54,21 @@ internal class HeldPointerDispatcher(
         return true
     }
 
-    fun cancel(timeMs: Long) {
-        val old = held ?: return
-        held = null; canceled++
-        val event = old.event.copy(phase = Touch.Phase.CANCEL, timeMs = maxOf(timeMs, old.event.timeMs))
-        if (old.send(event)) accepted++ else rejected++
+    fun prepareCancel(timeMs: Long, releaseOriginal: (() -> Unit)? = null): InputRetirement {
+        val old = held
+        held = null
+        if (old != null) canceled++
+        val baseline = admission
+        return InputRetirement({
+            if (old != null) {
+                if (releaseOriginal != null) releaseOriginal()
+                else {
+                    val event = old.event.copy(phase = Touch.Phase.CANCEL, timeMs = maxOf(timeMs, old.event.timeMs))
+                    if (old.send(event)) accepted++ else rejected++
+                }
+            }
+        }, { admission != baseline })
     }
+
+    fun cancel(timeMs: Long) = prepareCancel(timeMs).finishOriginal()
 }

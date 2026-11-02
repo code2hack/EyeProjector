@@ -1,5 +1,7 @@
 # HID connection topology
 
+**Current v0.3:** Bluetooth input controllers connect only to the Phone. Glasses HID binding, learning, persistence and local HID routing have been removed. The Phone owns controller input and combines it with the Glasses head pointer; completed operations return to the Glasses when needed. Native Rokid input and Bluetooth audio remain separate. The v0.1 discussion below is historical, not a current setup instruction.
+
 v0.1 discussion, 2026-10-20. The Owner selected **HID → Glasses** for v0.1, with four bindings that reuse touchpad Tap, Scroll down, Scroll up and Function button. [SPEC.md](../../SPEC.md#hid-interaction) owns the behavior. The comparison below explains the input paths considered; the selected Glasses route keeps binding and head-pointer handling together.
 
 ## Input path and visible response

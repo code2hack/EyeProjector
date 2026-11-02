@@ -21,6 +21,7 @@ class NotificationAccessPanel internal constructor(context: Context, private val
         addView(Button(context).apply {
             setText(R.string.notification_access_settings)
             setOnClickListener {
+                if (!com.code2hack.eyeprojector.directhost.PhoneSessionController.get(context).userControl()) return@setOnClickListener
                 setupError.text = if (NotificationAccess.openSettings(context)) "" else context.getString(R.string.notification_access_settings_unavailable)
                 refresh()
             }

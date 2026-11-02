@@ -1,8 +1,8 @@
-# v0.3 draft implementation plan
+# v0.3 implementation plan
 
-Status: **Draft plan for Owner review, published alongside the v0.3 specification on 2026-10-31. Implementation has not started.** The [version specification](SPEC.md) records the Owner-defined behavior and explicitly marks the remaining completion/validation proposals. Publishing this plan does not approve those proposals or dispatch implementation.
+Status: **Owner-authorized for implementation on 2026-10-31.** The Owner requested publication of all 16 issues, execution of this plan and cleanup of former subagents. The [version specification](SPEC.md) records the behavior. Canonical issues are published in the [v0.3 milestone](https://github.com/code2hack/EyeProjector/milestone/3).
 
-Planning base: main `2085600efce27344f9849bf33b07a41f2da005b6`. The proposed integration branch is `version/v0.3`, to be created when execution is authorized. The IDs below are draft plan IDs with individual scope/acceptance outlines, not opened GitHub issues or assigned Workers.
+Planning base: main `2085600efce27344f9849bf33b07a41f2da005b6`. Integration branch: `version/v0.3`. The table links the canonical GitHub issues and their detailed scope/acceptance outlines; actual assignments and reservations are recorded in the private runtime.
 
 ## Goals
 
@@ -13,26 +13,26 @@ Planning base: main `2085600efce27344f9849bf33b07a41f2da005b6`. The proposed int
 
 ## Small issues and dependencies
 
-Every row links to a small proposed issue containing its objective, scope, acceptance/evidence and explicit blockers. All lanes also require authorization of the implementation plan.
+Every row links to a small issue containing its objective, scope, acceptance/evidence and explicit blockers. The Owner has authorized the plan; dependency integration and actual resource availability determine dispatch.
 
 | Plan ID | Deliverable | Blocked by |
 | --- | --- | --- |
-| [V03-01](issues/01-managed-ui-access.md) | Prove UI access on the managed projection display | — |
-| [V03-02](issues/02-native-gesture-evidence.md) | Identify native two-finger navigation reports | — |
-| [V03-03](issues/03-input-contracts.md) | Define shared input roles and original-operation delivery contracts | — |
-| [V03-04](issues/04-contextual-navigation.md) | Implement contextual Back, Home and Lock dispatch | V03-03 |
-| [V03-05](issues/05-native-navigation-adapter.md) | Route observed native gestures to navigation | V03-02, V03-03, V03-04 |
-| [V03-06](issues/06-hid-bindings-migration.md) | Expose navigation/Lock bindings and preserve saved HID configuration | V03-03, V03-04 |
-| [V03-07](issues/07-ui-target-reader.md) | Build the production display-scoped UI target reader and geometry mapping | V03-01 |
-| [V03-08](issues/08-anchor-target-resolution.md) | Define persistent target descriptors and resolve them in the current screen | V03-07 |
-| [V03-09](issues/09-anchor-preferences.md) | Persist one Anchor per app and add its settings entry | V03-08 |
-| [V03-10](issues/10-function-intent-grammar.md) | Replace Function navigation with short/long Anchor intentions | V03-03 |
-| [V03-11](issues/11-anchor-registration.md) | Implement hover registration and the explicit Click/Hold chooser | V03-07, V03-08, V03-09, V03-10 |
-| [V03-12](issues/12-anchor-click-owner.md) | Execute Click Anchors through one original-contact owner | V03-07, V03-08, V03-09, V03-10 |
-| [V03-13](issues/13-anchor-hold-toggle.md) | Extend the same owner with stationary Hold and complete retirement | V03-04, V03-12 |
-| [V03-14](issues/14-anchor-integration-regression.md) | Integrate Anchor feedback and verify cross-feature transitions | V03-04, V03-06, V03-11, V03-12, V03-13 |
-| [V03-15](issues/15-assembled-device-verification.md) | Verify the assembled native/HID and real-app paths | V03-05, V03-06, V03-11, V03-12, V03-13, V03-14 |
-| [V03-16](issues/16-owner-usability-acceptance.md) | Collect Owner usability decision and complete v0.3 | V03-15 |
+| [V03-01](issues/01-managed-ui-access.md) / [#111](https://github.com/code2hack/EyeProjector/issues/111) | Prove UI access on the managed projection display | — |
+| [V03-02](issues/02-native-gesture-evidence.md) / [#112](https://github.com/code2hack/EyeProjector/issues/112) | Identify native two-finger navigation reports | — |
+| [V03-03](issues/03-input-contracts.md) / [#113](https://github.com/code2hack/EyeProjector/issues/113) | Define shared input roles and original-operation delivery contracts | — |
+| [V03-04](issues/04-contextual-navigation.md) / [#114](https://github.com/code2hack/EyeProjector/issues/114) | Implement contextual Back, Home and Lock dispatch | V03-03 |
+| [V03-05](issues/05-native-navigation-adapter.md) / [#115](https://github.com/code2hack/EyeProjector/issues/115) | Route observed native gestures to navigation | V03-02, V03-03, V03-04 |
+| [V03-06](issues/06-hid-bindings-migration.md) / [#116](https://github.com/code2hack/EyeProjector/issues/116) | Expose navigation/Lock bindings and preserve saved HID configuration | V03-03, V03-04 |
+| [V03-07](issues/07-ui-target-reader.md) / [#117](https://github.com/code2hack/EyeProjector/issues/117) | Build the production display-scoped UI target reader and geometry mapping | V03-01 |
+| [V03-08](issues/08-anchor-target-resolution.md) / [#118](https://github.com/code2hack/EyeProjector/issues/118) | Define persistent target descriptors and resolve them in the current screen | V03-07 |
+| [V03-09](issues/09-anchor-preferences.md) / [#119](https://github.com/code2hack/EyeProjector/issues/119) | Persist one Anchor per app and add its settings entry | V03-08 |
+| [V03-10](issues/10-function-intent-grammar.md) / [#120](https://github.com/code2hack/EyeProjector/issues/120) | Replace Function navigation with short/long Anchor intentions | V03-03 |
+| [V03-11](issues/11-anchor-registration.md) / [#121](https://github.com/code2hack/EyeProjector/issues/121) | Implement hover registration and the explicit Click/Hold chooser | V03-07, V03-08, V03-09, V03-10 |
+| [V03-12](issues/12-anchor-click-owner.md) / [#122](https://github.com/code2hack/EyeProjector/issues/122) | Execute Click Anchors through one original-contact owner | V03-07, V03-08, V03-09, V03-10 |
+| [V03-13](issues/13-anchor-hold-toggle.md) / [#123](https://github.com/code2hack/EyeProjector/issues/123) | Extend the same owner with stationary Hold and complete retirement | V03-04, V03-12 |
+| [V03-14](issues/14-anchor-integration-regression.md) / [#124](https://github.com/code2hack/EyeProjector/issues/124) | Integrate Anchor feedback and verify cross-feature transitions | V03-04, V03-06, V03-11, V03-12, V03-13 |
+| [V03-15](issues/15-assembled-device-verification.md) / [#125](https://github.com/code2hack/EyeProjector/issues/125) | Verify the assembled native/HID and real-app paths | V03-05, V03-06, V03-11, V03-12, V03-13, V03-14 |
+| [V03-16](issues/16-owner-usability-acceptance.md) / [#126](https://github.com/code2hack/EyeProjector/issues/126) | Collect Owner usability decision and complete v0.3 | V03-15 |
 
 ## Parallel work and delivery contracts
 
@@ -48,13 +48,13 @@ Before each dispatch, the Manager refreshes current source/decisions and assigns
 
 Each implementation candidate includes the affected production-path checks and its own retirement behavior. Assembled verification covers the joins, rather than deferring meaningful cancellation tests until the final issue. Changed heads receive renewed review. Shared protocol/persistence changes assess Phone and Glasses consumers and old saved settings.
 
-## Decisions and authorization before execution
+## Owner decisions and execution policy
 
-The Owner has specified the controls, one Anchor per app, always-explicit Click/Hold registration and contextual Home destinations. Marked specification proposals still need disposition as part of plan approval: Home transition lifetimes/settings subpages, chooser/cancel behavior, missing/ambiguous-target feedback, held-contact cancellation details, Clear Anchor and app-removal preference retention. Proposed app/walking/regression test selection is also visible rather than silently made mandatory.
+The Owner specified the controls, one Anchor per app, always-explicit Click/Hold registration and contextual Home destinations, then authorized the published plan to start. This selects its documented completion behavior: Home transition lifetimes/settings subpages, chooser/cancel behavior, missing/ambiguous-target feedback, original held-contact cancellation, Clear Anchor and app-removal preference retention. Actual app/screens and walking/regression observations are selected for the concrete device window; no new numeric performance threshold or unrelated guard is inferred.
 
 Carry forward standing Owner concurrency/profile and material written-notification preferences where applicable. Reconcile the current alarm/human-step policy rather than silently renewing a historical sleep override. Foreseeable human steps are real Android UI-access consent/setup where required, physical native/HID gestures and the proposed usability trial. Source work and actual device verification remain separate.
 
-After execution authorization, record the version plan, issue dependencies, identities and resource reservations in the private runtime; create the version branch/canonical issues, register the verified Manager with the existing manager-watchdog and verify its route/timer using the manager-runtime procedure. Publishing requirements is not version implementation or release acceptance.
+The Manager records this execution authorization, issue dependencies, identities and resource reservations in the private runtime, registers its verified v0.3 assignment with the existing manager-watchdog, and verifies the configured route/timer. The shared interval and other projects are retained. Implementation progress is separate from final version acceptance.
 
 ## Evidence and completion
 

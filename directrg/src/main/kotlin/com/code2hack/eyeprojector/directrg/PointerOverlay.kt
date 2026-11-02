@@ -78,6 +78,9 @@ class PointerOverlay(context: Context, attrs: AttributeSet?=null) : View(context
         model.stop();publish();invalidate()
     }
 
+    /** Capture the same current model/age without publishing callbacks before a user-control decision. */
+    internal fun inputSnapshot(): PointerPosition = model.advance(SystemClock.elapsedRealtimeNanos())
+
     /** Recheck age at admission even if the stale Handler callback has been delayed. */
     internal fun inputPosition(): PointerPosition {
         model.advance(SystemClock.elapsedRealtimeNanos());publish()

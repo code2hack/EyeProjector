@@ -9,7 +9,7 @@ internal fun Fixture.fusionGeometry() {
     val size = Geometry(480, 640)
     @Suppress("UNCHECKED_CAST")
     (get("geometry") as AtomicReference<Geometry?>).set(size)
-    (get("inputControls") as PhoneTouchDispatcher).geometry(size)
+    (get("inputControls") as com.code2hack.eyeprojector.directhost.anchor.execution.AnchorSessionInput).geometry(size)
 }
 
 internal fun Fixture.receive(frame: Frame) {
@@ -60,11 +60,11 @@ fun fusionScenarios() {
                 if (f.peer.released || f.control.released) throw IOException("old closed transport")
             }
         }
-        if (stockBack) f.control.sink = blocked else f.set("output", DataOutputStream(blocked))
+        (f.session as com.code2hack.eyeprojector.directhost.input.FunctionIntentRoute).functionIntents.activate = { blocked.write(1) }
         try {
             val at = android.os.SystemClock.uptimeMillis()
             repeat(if (stockBack) 1 else 2) { n ->
-                val d = PhoneHidEdge(PhoneHidAction.FUNCTION, PhoneHidPhase.DOWN, 1, 67, 90, at + n * 50, at + n * 50)
+                val d = PhoneHidEdge(PhoneHidAction.ANCHOR, PhoneHidPhase.DOWN, 1, 67, 90, at + n * 50, at + n * 50)
                 f.hid(n.toLong(), d); f.hid(n.toLong(), d.copy(phase = PhoneHidPhase.UP, eventTimeMs = d.eventTimeMs + 1))
             }
             check(entered.await(2, TimeUnit.SECONDS))
@@ -74,7 +74,7 @@ fun fusionScenarios() {
             try { close.submit { f.closeSession() }.get(2, TimeUnit.SECONDS) } finally { close.shutdownNow() }
             check(f.peer.released && f.video.released && f.control.released && !f.child.alive)
             check(release.count == 1L)
-            println("PASS actual Session Function ${if (stockBack) "stock Back" else "TLS completed UI"} write blockage leaves shared timer and existing cleanup reachable")
+            println("PASS actual Session Function typed consumer (${if (stockBack) "projected" else "local"}) blockage leaves shared timer and existing cleanup reachable")
         } finally { release.countDown() }
     }
 }

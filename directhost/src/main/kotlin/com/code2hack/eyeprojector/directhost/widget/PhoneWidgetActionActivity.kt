@@ -22,9 +22,10 @@ class PhoneWidgetActionActivity : Activity() {
         // Activity recreation must not replay a command. App-scoped callbacks never retain this Activity.
         val action = PhoneWidgetIntents.read(intent)
         if (savedInstanceState != null || action == null) { finish(); return }
-        if (action.command == PhoneWidgetCommand.STATUS) { complete(PhoneWidgetRoute.OPEN_STATUS); return }
         val owner = PhoneSessionController.get(this)
         sessions = owner
+        if (!owner.userControl()) { complete(PhoneWidgetRoute.COMPLETE); return }
+        if (action.command == PhoneWidgetCommand.STATUS) { complete(PhoneWidgetRoute.OPEN_STATUS); return }
         val port = PhoneWidgetSessionAdapter(owner)
         val pending = PhoneWidgetActionTurn(port::snapshot,
             { PhoneWidgetUpdates.deliver(this, PhoneWidgetIntents.widgetId(intent), action) }, ::complete,
@@ -50,7 +51,7 @@ class PhoneWidgetActionActivity : Activity() {
     private fun complete(route: PhoneWidgetRoute) {
         sessions?.removeStateObserver(observer)
         try {
-            if (route == PhoneWidgetRoute.OPEN_STATUS) {
+            if (route == PhoneWidgetRoute.OPEN_STATUS && sessions?.userControl() == true) {
                 startActivity(Intent(this, HostActivity::class.java).addFlags(
                     Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
             }

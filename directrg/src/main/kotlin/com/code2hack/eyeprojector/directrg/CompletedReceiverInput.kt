@@ -23,7 +23,8 @@ internal class CompletedReceiverInput(
         if (event.revision != revision()) return
         when (event.kind) {
             ReceiverInputKind.PANEL, ReceiverInputKind.BACK, ReceiverInputKind.EXIT,
-            ReceiverInputKind.FUNCTION_DOUBLE, ReceiverInputKind.SLEEP -> {
+            ReceiverInputKind.FUNCTION_DOUBLE, ReceiverInputKind.SLEEP,
+            ReceiverInputKind.HOME, ReceiverInputKind.LOCK -> {
                 cancel(); if (event.revision == revision()) presentation(event.kind)
             }
             ReceiverInputKind.SCROLL -> {
@@ -58,8 +59,13 @@ internal class CompletedReceiverInput(
         }
     }
 
-    fun cancel() {
+    fun prepareCancel(releaseOriginal: () -> Unit = release): InputRetirement {
         generation++
-        if (held != null) { held = null; release() }
+        val old = held
+        held = null
+        val baseline = generation
+        return InputRetirement({ if (old != null) releaseOriginal() }, { generation != baseline })
     }
+
+    fun cancel() = prepareCancel().finishOriginal()
 }

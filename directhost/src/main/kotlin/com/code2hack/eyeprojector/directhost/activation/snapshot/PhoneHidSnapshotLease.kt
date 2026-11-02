@@ -11,6 +11,8 @@ internal interface PhoneHidSnapshotSource {
     fun current(): Boolean
     fun prepare(): NativeSnapshotReadLane.Prepared?
     fun route(down: PhoneHidEdge, regionId: String, word: Long): PhoneHidRoute?
+    fun route(down: PhoneHidEdge, regionId: String, word: Long,
+        original: com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal): PhoneHidRoute? = null
 }
 
 /** Installed/read/cleared solely on the actual key lane, outside fresh-DOWN setup work. */
@@ -42,7 +44,8 @@ internal class PhoneHidSnapshotLease {
         val observation = HidWakeRequest(disposition, original, region, word)
         // This closure captures only the original offer/word/region, not reader/address/mapping.
         return PhoneHidCapture(disposition, observation, if (disposition == PhoneHidDisposition.USABLE)
-            { down -> offer.route(down, region, word) } else null)
+            { down -> offer.route(down, region, word) } else null,
+            if (disposition == PhoneHidDisposition.USABLE) { down, raw -> offer.route(down, region, word, raw) } else null)
     }
 
     fun clear(): HidInputAuthority? {

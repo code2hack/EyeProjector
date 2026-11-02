@@ -9,7 +9,7 @@ import org.junit.Test
 
 /** Real control/scale models and encodings; no Android Session, display or physical-input claim. */
 class HeldGeometryScaleTest {
-    @Test fun rotationCancelsHeldPointerBeforePublishingAndCausalScaleUsesNewOrientation() {
+    @Test fun passiveRotationKeepsOriginalTerminalAndExplicitScaleUsesNewOrientation() {
         val controlLock = Any()
         val publicationLock = Any()
         val controls = mutableListOf<ByteArray>()
@@ -28,13 +28,9 @@ class HeldGeometryScaleTest {
         val landscape = Geometry(640, 480)
         scale.observe(ScrcpyRecord.Session(landscape, false), publicationLock) {
             touch.geometry(landscape)
-            // Check the terminal control at the publication boundary, before sending any new geometry.
-            assertEquals(2, controls.size)
-            val cancel = DataInputStream(controls.last().inputStream())
-            assertEquals(2, cancel.readUnsignedByte()); assertEquals(3, cancel.readUnsignedByte())
-            assertEquals(-2L, cancel.readLong()); assertEquals(320, cancel.readInt()); assertEquals(240, cancel.readInt())
-            assertEquals(640, cancel.readUnsignedShort()); assertEquals(480, cancel.readUnsignedShort())
-            assertEquals(0, cancel.readUnsignedShort()); assertFalse(touch.holding)
+            // Passive publication refreshes future mapping without ending the original.
+            assertEquals(1, controls.size)
+            assertTrue(touch.holding)
             Wire.writeFrame(output, Frame(Wire.GEOMETRY, payload = landscape.bytes()))
         }
         val input = DataInputStream(wire.toByteArray().inputStream())
@@ -43,13 +39,24 @@ class HeldGeometryScaleTest {
         assertEquals(Wire.SCALE_STATE, feedback.channel)
         assertEquals(landscape, ScaleState.from(feedback.payload).observed)
         assertEquals(0, input.available())
-        scale.request(9, 1.25)
-        assertEquals(listOf(Geometry(512, 384)), resizes)
-        for (phase in listOf(Touch.Phase.MOVE, Touch.Phase.UP)) {
-            assertFalse(touch.touch(Touch(phase, 1000, Tap(320, 240, landscape))))
-        }
-        assertEquals(2, controls.size)
+        assertTrue(touch.touch(Touch(Touch.Phase.UP, 1000, Tap(240, 320, portrait))))
+        assertFalse(touch.holding)
+        val originalUp=DataInputStream(controls.last().inputStream())
+        assertEquals(2,originalUp.readUnsignedByte());assertEquals(1,originalUp.readUnsignedByte())
+        assertEquals(-2L,originalUp.readLong());assertEquals(240,originalUp.readInt());assertEquals(320,originalUp.readInt())
+        assertEquals(480,originalUp.readUnsignedShort());assertEquals(640,originalUp.readUnsignedShort())
+        // A later ordinary pointer is admitted against the rotated geometry.
         assertTrue(touch.touch(Touch(Touch.Phase.DOWN, 2000, Tap(320, 240, landscape))))
+        scale.request(9, 1.25) // The explicit user scale callback still cancels ordinary input.
+        assertEquals(listOf(Geometry(512, 384)), resizes)
+        assertEquals(listOf(0,1,0,3),controls.map{it[1].toInt()})
+        val canceled=DataInputStream(controls.last().inputStream()).apply{skipBytes(10)}
+        assertEquals(320,canceled.readInt());assertEquals(240,canceled.readInt())
+        assertEquals(640,canceled.readUnsignedShort());assertEquals(480,canceled.readUnsignedShort())
+        for (phase in listOf(Touch.Phase.MOVE, Touch.Phase.UP))
+            assertFalse(touch.touch(Touch(phase, 2000, Tap(320, 240, landscape))))
+        assertFalse(touch.holding)
+        assertTrue(touch.touch(Touch(Touch.Phase.DOWN, 3000, Tap(320, 240, landscape))))
         touch.close()
     }
 }

@@ -1,5 +1,7 @@
 # Glasses interaction mapping
 
+The native table below records the historical v0.1 design. Current v0.3 controller input is Phone-only; the Glasses no longer implement local HID bindings. Follow the current version specification and Owner decisions for native mapping and semantic Anchor behavior.
+
 Owner design, 2026-10-20; [SPEC.md](../../SPEC.md#glasses-native-interaction) owns product behavior. This is an input translation reference, not an implementation or a claim that every listed channel is verified on the device.
 
 ## Rokid input to Android behavior
@@ -24,13 +26,11 @@ Tap, drag and scroll output operates the Phone virtual display during projection
 
 Android does not define separate touchscreen key codes for double tap or long press: the target app interprets the touch stream. Home is handled by the framework. Display routing must make projection Home restore the chosen-app grid on the Phone's virtual display. The Glasses' physical home is the explicit control-panel exit destination. [MotionEvent streams](https://developer.android.com/reference/android/view/MotionEvent), [Home key](https://developer.android.com/reference/android/view/KeyEvent#KEYCODE_HOME), [pinned backend controller](https://github.com/Genymobile/scrcpy/blob/a60891aea193d92e7e5c3942700eca63f9d19a5f/server/src/main/java/com/genymobile/scrcpy/control/Controller.java)
 
-## HID equivalents
+## Phone controller input
 
-The Owner selected HID attachment to the Glasses for v0.1. A **HID key bindings** entry in the local control panel opens four bindings: **Tap**, **Scroll down**, **Scroll up** and **Function button**. [Canonical requirements](../../SPEC.md#hid-interaction)
+Connect Bluetooth input controllers to the Phone. In the Phone HID panel, pin the actual device and learn Tap, Scroll down, Scroll up, Anchor and one combined Back / Lock / Home key. One click of the navigation key means Back, two Lock and three Home, with one committed action per sequence. Anchor is a semantic operation independent of the physical Rokid Function button: a Short activates the saved Anchor; a held press registers and its same release confirms the highlighted Click / Hold / Cancel choice.
 
-Tap and Function button each capture one physical button. Its actual press/release sequence feeds the corresponding gesture family: Tap includes ordinary single/double/multiple taps, long press and held-Tap/head-motion dragging; Function button includes single Back, double Home (main panel locally), the connected panel-return and local app-exit actions and long-press no-op. Scroll bindings invoke their corresponding pointer-targeted action. Normalize held-key repeats and clear pending input on focus loss or peripheral disconnect.
-
-Capture identifies and saves the physical button; runtime timing determines the gesture. Persist locally and restore the binding for the same peripheral after reconnection. This is the required behavior; stable device identification and event preservation still need implementation and device verification.
+The Glasses receive Phone-originated operations and retain their head pointer, native Rokid input and Anchor menu. They have no controller binding UI, preference store, learning flow or external-HID device listener. Native Bluetooth audio is unaffected. Actual input delivery and target effects are established only by real Phone/Glasses E2E.
 
 ## Translation details to implement and verify
 

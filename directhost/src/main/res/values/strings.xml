@@ -24,4 +24,10 @@
     <string name="host_stopping">Stopping the owned backend…</string>
     <string name="host_start_failed">Backend startup or execution failed. Check the private peer setup and Shizuku, then tap Start to retry.</string>
     <string name="host_unknown">Host state is unknown. Restore Shizuku and authorization, then use Stop to verify teardown or Start to retry.</string>
+    <string name="app_anchor_not_saved">Anchor: Not saved</string>
+    <string name="app_anchor_saved_click">Anchor: Saved · Click</string>
+    <string name="app_anchor_saved_hold">Anchor: Saved · Hold</string>
+    <string name="app_anchor_clear">Clear Anchor</string>
+    <string name="app_anchor_read_failed">Anchor could not be loaded.</string>
+    <string name="app_anchor_clear_failed">Anchor could not be cleared. Try again.</string>
 </resources>

@@ -41,6 +41,7 @@ class HostActivity : Activity() {
     private var launchEnabled = false
     private var launchContext = ProjectionContext()
     private fun launchChosenApp(app: ChosenApp, expected: ProjectionContext) {
+        if (!sessions.userControl(expected)) return
         val feedbackIntent = ++launchFeedbackIntent
         launcherStatus.text = getString(R.string.projected_home_opening, app.label)
         sessions.launchApp(app.packageName, expected) { result ->
@@ -54,6 +55,7 @@ class HostActivity : Activity() {
         }
     }
     private fun scaleChosenApp(app: ChosenApp, expected: ProjectionContext): com.code2hack.eyeprojector.directhost.scale.AppScaleTarget {
+        if (!sessions.userControl(expected)) return com.code2hack.eyeprojector.directhost.scale.AppScaleTarget("", app.packageName, ProjectionContext())
         val feedbackIntent = ++launchFeedbackIntent
         launcherStatus.text = getString(R.string.projected_home_opening, app.label)
         val target = sessions.launchAppForScale(app.packageName, expected) { result ->
@@ -125,7 +127,7 @@ class HostActivity : Activity() {
         chosenApps = ChosenAppsPanel(this).apply { appScales = sessions.appScales }
         notificationAccess = com.code2hack.eyeprojector.directhost.notifications.NotificationAccessPanel(this)
         launcherStatus = TextView(this).apply { setTextColor(Color.WHITE) }
-        val stop = button(R.string.host_stop) { switchingCameraSource = false; sessions.stop() }
+        val stop = button(R.string.host_stop) { sessions.stopFromUser() }
         pairingPanel = PairingPanel(this, PeerRole.PHONE, { paired ->
             start.visibility = if (paired) View.VISIBLE else View.GONE
             stop.visibility = if (paired) View.VISIBLE else View.GONE
@@ -134,7 +136,7 @@ class HostActivity : Activity() {
             switchingCameraSource = false
             start.isEnabled = false; stop.isEnabled = false
             sessions.stopBeforeForget { complete(); stop.isEnabled = true }
-        }, sessions.pairing)
+        }, sessions.pairing, { action -> if (sessions.userControl()) action() })
         pairingPanel.addView(start, 2)
         pairingPanel.addView(stop, 3)
         setContentView(ScrollView(this).apply {
@@ -181,6 +183,7 @@ class HostActivity : Activity() {
     }
 
     private fun selectCameraSource(useGlasses: Boolean) {
+        if (!sessions.userControl()) return
         CameraSourceSettings.setUseGlasses(this, useGlasses)
         val backend = bootstrap.status()
         val active = sessions.activationId() != null || sessions.state().phase.active ||
@@ -197,6 +200,7 @@ class HostActivity : Activity() {
     }
 
     private fun showPhoneHid(show: Boolean) {
+        if (!sessions.userControl()) return
         if (show) {
             phoneControls.visibility = View.GONE
             phoneHid.visibility = View.VISIBLE
@@ -223,7 +227,7 @@ class HostActivity : Activity() {
     }
 
     private fun button(label: Int, action: () -> Unit) = Button(this).apply {
-        setText(label); setOnClickListener { action() }
+        setText(label); setOnClickListener { if (sessions.userControl()) action() }
     }
     private fun openGuide() {
         runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://shizuku.rikka.app/guide/setup/"))) }

@@ -106,7 +106,7 @@ internal fun nativeTransportBackendScenarios(){
   val gate=CountDownLatch(1);val entered=CountDownLatch(1)
   if(delayed){f.timer.execute{entered.countDown();check(gate.await(3,TimeUnit.SECONDS))};check(entered.await(1,TimeUnit.SECONDS))}
   val first=c.receiverUsability();val now=android.os.SystemClock.uptimeMillis()
-  val edge=PhoneHidEdge(PhoneHidAction.FUNCTION,PhoneHidPhase.DOWN,1,2,3,now,now)
+  val edge=PhoneHidEdge(PhoneHidAction.ANCHOR,PhoneHidPhase.DOWN,1,2,3,now,now)
   c.phoneHidStampedEdge(1,edge,first.regionId!!,first.word);c.phoneHidStampedEdge(1,edge.copy(phase=PhoneHidPhase.UP,eventTimeMs=now+10),first.regionId!!,first.word)
   nativeReceive(f,Wire.RECEIVER_USABILITY,nativeFact(f,2,ReceiverUsabilityMode.NONE).bytes())
   nativeReceive(f,Wire.RECEIVER_USABILITY,nativeFact(f,3,ReceiverUsabilityMode.LOCAL_PANEL).bytes())
@@ -123,7 +123,7 @@ internal fun nativeTransportBackendScenarios(){
   nativeReceive(f,Wire.RECEIVER_USABILITY,nativeFact(f,1,ReceiverUsabilityMode.LOCAL_PANEL).bytes())
   nativeReceive(f,Wire.HEAD_POINTER,HeadPointerState(4,1,true,false,10f,20f,null,null).bytes())
   val before=c.receiverUsability();val at=android.os.SystemClock.uptimeMillis()
-  val e=PhoneHidEdge(PhoneHidAction.FUNCTION,PhoneHidPhase.DOWN,1,2,3,at,at)
+  val e=PhoneHidEdge(PhoneHidAction.ANCHOR,PhoneHidPhase.DOWN,1,2,3,at,at)
   c.phoneHidStampedEdge(1,e,before.regionId!!,before.word);c.phoneHidStampedEdge(1,e.copy(phase=PhoneHidPhase.UP,eventTimeMs=at+10),before.regionId!!,before.word)
   nativeReceive(f,Wire.RECEIVER_USABILITY,nativeFact(f,2,ReceiverUsabilityMode.NONE).bytes())
   c.phoneHidStampedEdge(1,e.copy(phase=PhoneHidPhase.CANCEL,eventTimeMs=at+20),before.regionId!!,before.word)
@@ -142,7 +142,7 @@ internal fun nativeTransportBackendScenarios(){
    val tick=CountDownLatch(1);f.timer.execute{tick.countDown()};check(tick.await(1,TimeUnit.SECONDS)){"Native setup occupied deadline scheduler"}
    nativeReceive(f,Wire.RECEIVER_USABILITY,nativeFact(f,1,ReceiverUsabilityMode.LOCAL_PANEL).bytes())
    nativeReceive(f,Wire.HEAD_POINTER,HeadPointerState(4,1,true,false,10f,20f,null,null).bytes())
-   val now=android.os.SystemClock.uptimeMillis();val edge=PhoneHidEdge(PhoneHidAction.FUNCTION,PhoneHidPhase.DOWN,1,2,3,now,now)
+   val now=android.os.SystemClock.uptimeMillis();val edge=PhoneHidEdge(PhoneHidAction.ANCHOR,PhoneHidPhase.DOWN,1,2,3,now,now)
    (f.session as CapturedProjection).phoneHidEdge(1,edge)
    f.session.phoneHidEdge(1,edge.copy(phase=PhoneHidPhase.UP,eventTimeMs=now+10))
    nativeAwait("actual Function quiet action progresses with native setup blocked"){f.peer.sink.size()>0}

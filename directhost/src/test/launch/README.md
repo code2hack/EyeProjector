@@ -20,3 +20,59 @@ R1 correction binds user intent before any executor hop. Fixed Home intents carr
 The ten Session/service cases compile actual `ShizukuHostService`, `OwnedHostLifecycle`, route metadata, `Bridge`, `Session` and launch/cleanup components. The original public Shizuku constructor retains Android provisioning; an internal constructor supplies temporary sessions and a real Bridge factory for host tests, with a modeled listener instead of provisioning/network. Tests cover late creation after Stop, old-owner and same-owner/new-Session requests, fresh positives, exact captured-target behavior and conditional retirement with repeated epoch text, retaining all four earlier cleanup cases. External Android APIs are doubled. These runs do not establish Android Binder/device execution.
 
 In a Manager-granted device window, the existing host instrumentation runner accepts `operation=projected-home` and an explicit `projectionDisplayId` from that exact backend. It checks Activity placement, isolated fixture preference updates, saved order/availability and icon callback routing without editing the real selection. Assembled-device launch/Home/switch cycles, absence of a system taskbar, physical Phone isolation and native app rendering still need evidence on the supported devices and four target apps.
+
+The Function intention composition uses a binary artifact emitted by the actual Glasses
+ProjectionSession test. After running `FunctionIntentTransportTest` with
+`EYEPROJECTOR_FUNCTION_PRODUCER_EVIDENCE` set to a private evidence directory, run:
+
+```sh
+EYEPROJECTOR_FUNCTION_PRODUCER_EVIDENCE=/absolute/evidence \
+  python3 directhost/src/test/launch/run.py --function-intents-only --output-dir /absolute/new/consumer-evidence
+```
+
+It decodes those exact producer bytes through the actual Phone Session, observes typed
+registration/activation hooks bound to that same Session, exercises actual Phone HID production,
+and verifies queued work cannot inherit a replacement context. The hook has no target,
+preference or output-contact implementation. This is a host transport composition, not a
+physical LAN, firmware or target-app result. The runner also supports `--navigation-only`,
+`--stop-race-only` and `--function-failure-only` to exercise retained navigation and retirement.
+All modes use the recorded compiled class closure from the focused Gradle build.
+
+The #117 reader/context join adds `--ui-targets-only` for actual Session/Bridge capture, valid
+immutable managed mapping, current foreground metadata, released locks and reader/provider
+composition. `--nav-context-only` checks the delegated #116 Session usability predicate with
+unavailable pointer positions while retaining all original context/native-word checks. These use
+modeled platform observations and the existing native-publication doubles; they establish no user
+permission, encoded/physical mapping or device behavior. The separately owned #116 merger supplies
+the nonspatial stamped navigation admission before the Session predicate is called.
+
+The precise delegated #116 composition has separate baseline and paired invocations:
+
+```sh
+python3 -B directhost/src/test/launch/run.py --stamped-nav-only --output-dir /private/evidence/baseline
+python3 -B directhost/src/test/launch/run.py --stamped-nav-only \
+  --paired116-manifest /private/evidence/copied-immutable116-manifest.json \
+  --output-dir /private/evidence/paired
+```
+
+The paired manifest comes from the Manager-assigned immutable #116 source slice. Its hashes are
+verified before compiling its Merger and Back/Lock/Home recognizer as test inputs. The resulting test
+jar precedes the SDK-compiled #117 baseline classes; the runner records the manifest, origins,
+hashes, archived compiler inputs and classpath precedence. Positive cases are labeled
+`PAIRED117+116 SOURCE JOIN`. The ordinary #117 production merger is unchanged, and its standalone
+test retains the inherited unavailable-pointer rejection. Final #116 must recheck the merged pair.
+# Final merged HID navigation check
+
+After the focused matched build, run the production stamped Session composition with
+the actual merged working-tree Merger, Back/Lock/Home recognizer and context-only authority:
+
+```sh
+python3 directhost/src/test/launch/run.py --stamped-nav-only --merged116 --output-dir /absolute/new/evidence/directory
+```
+
+This mode uses no private source overrides. It checks unavailable-pointer Back/Lock/Home and
+Lock in projected/local modes; spatial-action rejection; wrong, stale, retired and
+successor identities; actual stamped double Home app → grid → panel; and cancellation
+of the original released route during single/double arbitration. Android, socket,
+process, native-memory and platform launch boundaries remain modeled. It does not
+establish physical sleep, native gesture delivery or target-app behavior.

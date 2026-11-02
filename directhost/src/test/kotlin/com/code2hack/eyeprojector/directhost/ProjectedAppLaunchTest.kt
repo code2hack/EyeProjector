@@ -141,6 +141,64 @@ class ProjectedAppLaunchTest {
         } finally { finish.countDown(); launcher.close(); callers.shutdownNow() }
     }
 
+    @Test fun contextualHomeUsesActualSourceComponentAndRetiresContactBeforeGridOrPanel() {
+        val touch = PhoneTouchDispatcher { }
+        val size = Geometry(480, 640)
+        touch.geometry(size)
+        var component = "example.app/.Main"
+        val observations = mutableListOf<Int>()
+        val adapter = object : Adapter() {
+            override fun foregroundComponent(displayId: Int): String {
+                observations.add(displayId)
+                return component
+            }
+        }
+        var panels = 0
+        ProjectedAppLaunch("context:source", adapter, beforeLaunch = { touch.cancel() }).use { launcher ->
+            launcher.initialize(47); launcher.snapshot(true)
+            val callback = { assertFalse(touch.holding); panels++; Unit }
+            touch.touch(Touch(Touch.Phase.DOWN, 71, Tap(40, 50, size)))
+            launcher.contextualHome(callback); launcher.snapshot(true)
+            assertEquals(2, adapter.calls.size)
+            assertFalse(touch.holding); assertEquals(0, panels)
+            for (grid in listOf(ProjectionLaunchCommands.HOME_COMPONENT,
+                "${ProjectionLaunchCommands.HOME_PACKAGE}/${ProjectionLaunchCommands.HOME_PACKAGE}.ProjectedHomeActivity")) {
+                component = grid
+                touch.touch(Touch(Touch.Phase.DOWN, 72, Tap(40, 50, size)))
+                launcher.contextualHome(callback); launcher.snapshot(true)
+            }
+            assertEquals(2, panels); assertEquals(2, adapter.calls.size)
+            // The package alone is insufficient: another EyeProjector Activity is not the app grid.
+            component = "${ProjectionLaunchCommands.HOME_PACKAGE}/.HostActivity"
+            launcher.contextualHome(callback); launcher.snapshot(true)
+            assertEquals(3, adapter.calls.size); assertEquals(2, panels)
+            assertEquals(listOf(47, 47, 47, 47), observations)
+            assertTrue(adapter.calls.all { it.first == 47 && it.third })
+        }
+    }
+
+    @Test fun contextualHomeObservationReturningAfterCloseCannotOpenAnotherPanel() {
+        val entered = CountDownLatch(1); val finish = CountDownLatch(1)
+        val adapter = object : Adapter() {
+            override fun foregroundComponent(displayId: Int): String {
+                entered.countDown()
+                while (finish.count > 0) try { finish.await() } catch (_: InterruptedException) { }
+                return ProjectionLaunchCommands.HOME_COMPONENT
+            }
+            override fun close() { super.close(); finish.countDown() }
+        }
+        val panels = java.util.concurrent.atomic.AtomicInteger()
+        val launcher = ProjectedAppLaunch("retiring:source", adapter) {}
+        try {
+            launcher.initialize(47); launcher.snapshot(true)
+            launcher.contextualHome { panels.incrementAndGet() }
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            launcher.close()
+            assertEquals(0, panels.get())
+            assertEquals(ProjectionLaunchStatus.CLOSED, launcher.snapshot().status)
+        } finally { finish.countDown(); launcher.close() }
+    }
+
     @Test fun failedHelperReleaseIsRetriedAndConcurrentCloseWaitsForCompletion() {
         var attempts = 0
         val entered = CountDownLatch(1); val finish = CountDownLatch(1)

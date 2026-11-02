@@ -15,6 +15,7 @@ class PhoneHidFunctionCompositionTest {
         private val tasks = mutableListOf<Task>()
         private val lock = Any()
         val navigation = mutableListOf<Navigation>()
+        val intentions = mutableListOf<AnchorIntent>()
         val receiver = mutableListOf<ReceiverInput>()
         val routes = mutableListOf<PhoneHidRoute>()
         val binding = PhoneHidBinding(
@@ -29,7 +30,7 @@ class PhoneHidFunctionCompositionTest {
             val cancel: () -> Unit = { task.canceled = true }
             cancel
         }, { size }, controls::touch, controls::scroll,
-            { action, _ -> navigation.add(action) }, { controls.cancel() }, { receiver.add(it); Unit })
+            { action, _ -> navigation.add(action) }, { controls.cancel() }, { receiver.add(it); Unit }, anchorIntent = { intentions.add(it) })
         private var routeSequence = 0L
         val controller = PhoneHidController(store, object : PhoneHidRoutes {
             override fun capture(down: PhoneHidEdge): PhoneHidRoute {
@@ -45,8 +46,9 @@ class PhoneHidFunctionCompositionTest {
 
         init {
             controls.geometry(size)
-            merger.pointer(HeadPointerState(1, 1, true, true, 50f, 50f, Fit(0, 0, 100, 100), size))
-            assertTrue(store.assign(PhoneHidAction.FUNCTION, binding))
+            merger.pointer(HeadPointerState(1, 1, true, true, 50f, 50f, Fit(0, 0, 100, 100), size),
+                ReceiverUsability("owner", ReceiverIncarnation("receiver", 1), 1, 1, ReceiverUsabilityMode.PROJECTED))
+            assertTrue(store.assign(PhoneHidAction.ANCHOR, binding))
             controller.connection(true)
         }
 
@@ -69,7 +71,7 @@ class PhoneHidFunctionCompositionTest {
         }
     }
 
-    @Test fun phoneLocalRetirementCancelsReleasedFunctionAndFreshInputStillWorks() {
+    @Test fun phoneLocalRetirementPreservesCompletedIntentionAndFreshInputStillWorks() {
         val cases: List<Pair<String, (Harness) -> Unit>> = listOf(
             "reset" to { it.controller.resetAll() },
             "open page" to { it.controller.openPage() },
@@ -87,31 +89,35 @@ class PhoneHidFunctionCompositionTest {
             h.advance(600, runCanceled = true)
             assertEquals(name, emptyList<Navigation>(), h.navigation)
             assertEquals(name, emptyList<ReceiverInput>(), h.receiver)
+            assertEquals(name, listOf(AnchorIntentKind.ACTIVATE), h.intentions.map { it.kind })
             h.controller.closePage()
             h.controller.connection(true)
-            assertTrue(h.store.assign(PhoneHidAction.FUNCTION, h.binding))
+            assertTrue(h.store.assign(PhoneHidAction.ANCHOR, h.binding))
             h.press()
             h.advance(600)
-            assertEquals("$name must allow a fresh sequence", listOf(Navigation.BACK), h.navigation)
+            assertEquals("$name must allow a fresh gesture", List(2) { AnchorIntentKind.ACTIVATE }, h.intentions.map { it.kind })
+            assertTrue(h.navigation.isEmpty())
         }
     }
 
-    @Test fun retainingReleasedRouteDoesNotCancelAnOrdinaryDoublePress() {
+    @Test fun retainingReleasedRouteDoesNotCoalesceTwoActivations() {
         val h = Harness()
         h.press()
         h.advance(100)
         h.press()
         h.advance(600)
-        assertEquals(listOf(Navigation.HOME), h.navigation)
+        assertEquals(List(2) { AnchorIntentKind.ACTIVATE }, h.intentions.map { it.kind })
+        assertTrue(h.navigation.isEmpty())
         assertTrue(h.receiver.isEmpty())
     }
 
-    @Test fun retainingReleasedRouteDoesNotCancelTriplePanelResult() {
+    @Test fun threeFunctionPressesRemainThreeActivations() {
         val h = Harness()
         repeat(3) { h.press(); h.advance(100) }
         h.advance(600)
         assertTrue(h.navigation.isEmpty())
-        assertEquals(listOf(ReceiverInputKind.PANEL), h.receiver.map { it.kind })
+        assertEquals(List(3) { AnchorIntentKind.ACTIVATE }, h.intentions.map { it.kind })
+        assertTrue(h.receiver.isEmpty())
     }
 
     @Test fun cancelingAnOlderCompletedRouteCannotCancelANewerPendingSequence() {
@@ -119,10 +125,10 @@ class PhoneHidFunctionCompositionTest {
         h.press()
         val old = h.routes.single()
         h.advance(600)
-        assertEquals(listOf(Navigation.BACK), h.navigation)
+        assertEquals(listOf(AnchorIntentKind.ACTIVATE), h.intentions.map { it.kind })
         h.press()
         old.cancel(h.clock)
         h.advance(600)
-        assertEquals(listOf(Navigation.BACK, Navigation.BACK), h.navigation)
+        assertEquals(List(2) { AnchorIntentKind.ACTIVATE }, h.intentions.map { it.kind })
     }
 }

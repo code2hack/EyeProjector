@@ -13,6 +13,8 @@ import com.code2hack.eyeprojector.protocol.PhoneHidPhase
 internal interface PhoneHidRoutes {
     fun capture(down: PhoneHidEdge): PhoneHidRoute?
     fun capture(down: PhoneHidEdge, admission: PhoneHidCapture): PhoneHidRoute? = capture(down)
+    fun capture(down: PhoneHidEdge, admission: PhoneHidCapture,
+        original: com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal?): PhoneHidRoute? = capture(down, admission)
     fun submit(route: PhoneHidRoute, edge: PhoneHidEdge)
     fun cancel(route: PhoneHidRoute, eventTimeMs: Long)
 }
@@ -25,11 +27,15 @@ internal class PhoneHidController(
     private val now: () -> Long,
     private val changed: () -> Unit = {},
     internal var activation: PhoneHidActivation = PhoneHidActivation.Unwired,
+    private val userControl: () -> Boolean = { true },
+    private val recognizeInput: () -> Boolean = { true },
 ) {
     data class Event(
         val attachmentId: Int, val binding: PhoneHidBinding, val phase: PhoneHidPhase,
         val downTimeMs: Long, val eventTimeMs: Long, val repeatCount: Int = 0,
         val pressId: Long = downTimeMs,
+        val discarded: Boolean = false,
+        val original: com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal? = null,
     )
     private data class Raw(val attachment: Int, val key: Int, val scan: Int, val down: Long, val pressId: Long = down)
     private data class RawKey(val attachment: Int, val key: Int, val scan: Int)
@@ -46,8 +52,10 @@ internal class PhoneHidController(
     private val presses = mutableMapOf<Raw, Press>()
     private val admissions = mutableMapOf<Key, Press>()
     private var tapAdmission: Press? = null
-    // UP ends physical ownership; the latest submitted Function route still owns quiet recognition.
+    // UP ends physical ownership; retain the last Function route for original-route retirement.
     private var releasedFunction: Press? = null
+    // Back/Home may still be awaiting its double-press interval after physical UP.
+    private var releasedBackHome: Press? = null
     private var nextAdmission = 0L
     private val constructing = mutableSetOf<Press>()
     private val retired = mutableSetOf<Raw>()
@@ -68,6 +76,12 @@ internal class PhoneHidController(
     val capturing: Boolean get() = capture != null
 
     fun openPage() {
+        if (!userControl()) return
+        resumePage()
+    }
+
+    /** Activity restoration is presentation housekeeping; its user navigation already gates upstream. */
+    fun resumePage() {
         pageVisible = true
         selected = null
         observedDowns.clear(); receivedKey = null; receivedCount = 0; receivedText = ""
@@ -85,6 +99,7 @@ internal class PhoneHidController(
 
     fun select(action: PhoneHidAction) {
         if (!pageVisible) return
+        if (!userControl()) return
         selected = action // New selection is visible before old-route cancellation callbacks.
         cancelInput()
         publish()
@@ -97,6 +112,7 @@ internal class PhoneHidController(
     }
 
     fun resetAll() {
+        if (!userControl()) return
         selected = null
         val old = retireInput()
         // Queue this reset before an old-route callback can complete a newer assignment.
@@ -175,12 +191,13 @@ internal class PhoneHidController(
         capture?.takeIf { it.event.attachmentId == device }?.let {
             retired.add(raw(it.event)); capture = null
         }
-        val old = (presses.values + constructing + listOfNotNull(releasedFunction))
+        val old = (presses.values + constructing + listOfNotNull(releasedFunction, releasedBackHome))
             .filter { it.event.attachmentId == device }.distinct()
         presses.keys.removeAll { it.attachment == device }
         admissions.keys.removeAll { it.attachment == device }
         if (tapAdmission?.event?.attachmentId == device) tapAdmission = null
         if (releasedFunction?.event?.attachmentId == device) releasedFunction = null
+        if (releasedBackHome?.event?.attachmentId == device) releasedBackHome = null
         old.forEach { retired.add(raw(it.event)); it.canceled = true }
         old.forEach(::cancel)
         publish()
@@ -188,6 +205,8 @@ internal class PhoneHidController(
 
     fun accept(event: Event): Boolean {
         val raw = raw(event)
+        if (event.discarded || !recognizeInput())
+            return discardRaw(raw.attachment, raw.key, raw.scan, raw.down, event.phase, raw.pressId)
         if (consumeRetired(raw.attachment, raw.key, raw.scan, raw.down, event.phase, raw.pressId)) return true
         if (consumeWake(raw.attachment, raw.key, raw.scan, raw.down, event.phase, raw.pressId)) return true
         if (consumePassed(raw.attachment, raw.key, raw.scan, raw.down, event.phase, raw.pressId)) return false
@@ -195,9 +214,15 @@ internal class PhoneHidController(
         if (captured != null && raw(captured.event) == raw) {
             if (event.phase != PhoneHidPhase.DOWN) {
                 capture = null // A save/publication callback cannot revive this physical capture.
-                if (event.phase == PhoneHidPhase.UP && event.eventTimeMs >= event.downTimeMs)
-                    save { bindings.assign(captured.action, captured.event.binding) }
-                else { retired.add(raw); publish() }
+                val original = captured.event.original
+                if (event.phase == PhoneHidPhase.UP && event.eventTimeMs >= event.downTimeMs &&
+                    (original == null || original.consumeUserControl())) {
+                    save {
+                        // Persistence may run after another native/app control has acquired a Hold.
+                        if (original == null || original.consumeUserControl())
+                            bindings.assign(captured.action, captured.event.binding)
+                    }
+                } else { retired.add(raw); publish() }
             }
             return true
         }
@@ -208,7 +233,7 @@ internal class PhoneHidController(
             retired.add(raw)
             old.terminal = event
             if (event.phase == PhoneHidPhase.CANCEL || event.eventTimeMs < event.downTimeMs) cancel(old)
-            else old.route?.let { rememberReleasedFunction(old); submit(it, edge(old, event)) }
+            else old.route?.let { rememberReleasedRoute(old); submit(it, edge(old, event)) }
             return true
         }
         if (old != null) return true
@@ -217,8 +242,10 @@ internal class PhoneHidController(
         decision(raw)?.let { return it }
         wakeAdmissions.filter { sameButton(it.event, event) }.forEach { it.canceled = true }
         val activation = this.activation // Capture the original local port before cancellation/feedback reentry.
-        val qualification = activation.capture() // Exactly once, before feedback and binding lookup.
         val target = selected.takeIf { pageVisible }
+        if (target != null && !(event.original?.consumeUserControl() ?: userControl()))
+            return discardRaw(raw.attachment,raw.key,raw.scan,raw.down,event.phase,raw.pressId)
+        val qualification = activation.capture() // Exactly once, after learning admission and before feedback/binding lookup.
         if (target != null) {
             remember(raw, true)
             val previous = capture
@@ -230,17 +257,18 @@ internal class PhoneHidController(
             publish()
             return true
         }
-        if (qualification.disposition != PhoneHidDisposition.USABLE) {
+        if (qualification.disposition != PhoneHidDisposition.USABLE && event.original?.capturedAnchor != true) {
             remember(raw, true)
             waking.add(raw) // Before request/feedback, either of which may reenter with release or Stop.
             val wake = WakeAdmission(event).also(wakeAdmissions::add)
-            val previous = (presses.values + constructing + listOfNotNull(releasedFunction))
+            val previous = (presses.values + constructing + listOfNotNull(releasedFunction, releasedBackHome))
                 .filter { sameButton(it.event, event) }.distinct()
             previous.forEach { old ->
                 presses.remove(raw(old.event)); retired.add(raw(old.event)); old.canceled = true
                 if (admissions[key] === old) admissions.remove(key)
                 if (tapAdmission === old) tapAdmission = null
                 if (releasedFunction === old) releasedFunction = null
+                if (releasedBackHome === old) releasedBackHome = null
             }
             try {
                 previous.forEach(::cancel)
@@ -274,12 +302,12 @@ internal class PhoneHidController(
             retired.add(raw)
             return true
         }
-        val route = try { routes.capture(edge(press, event), qualification) } catch (_: Exception) { null }
+        val route = try { routes.capture(edge(press, event), qualification, event.original) } catch (_: Exception) { null }
         press.route = route
         constructing.remove(press)
         if (route != null) {
             if (!current()) cancel(press)
-            else press.terminal?.let { rememberReleasedFunction(press); submit(route, edge(press, it)) }
+            else press.terminal?.let { rememberReleasedRoute(press); submit(route, edge(press, it)) }
         }
         if (admissions[key] === press) admissions.remove(key)
         return true // Bound ownership is independent of projection availability/admission.
@@ -289,19 +317,41 @@ internal class PhoneHidController(
         retireInput().forEach(::cancel)
     }
 
-    fun presentationLost() { retireInput(preserveCapture = true).forEach(::cancel) }
+    /** Discard the action and retire only a route already created by this exact original DOWN. */
+    fun discardRaw(device: Int, key: Int, scan: Int, down: Long, phase: PhoneHidPhase, pressId: Long = down): Boolean {
+        val raw = Raw(device,key,scan,down,pressId)
+        remember(raw,true)
+        retired.add(raw)
+        capture?.takeIf { raw(it.event)==raw }?.let { capture=null }
+        val old=presses.remove(raw)
+        if(old!=null) {
+            old.canceled=true
+            admissions.entries.removeAll { it.value===old }
+            if(tapAdmission===old)tapAdmission=null
+            if(releasedFunction===old)releasedFunction=null
+            if(releasedBackHome===old)releasedBackHome=null
+            // The original proxy receives CANCEL metadata only: no new admission or Anchor action.
+            cancel(old)
+        }
+        if(phase!=PhoneHidPhase.DOWN)retired.remove(raw)
+        return true
+    }
 
-    private fun retireInput(preserveCapture: Boolean = false): List<Press> {
+    fun presentationLost() { retireInput(preserveCapture = true, preserveAnchor = true).forEach(::cancel) }
+
+    private fun retireInput(preserveCapture: Boolean = false, preserveAnchor: Boolean = false): List<Press> {
         wakeAdmissions.forEach { it.canceled = true }
         retired.addAll(waking); waking.clear()
         if (!preserveCapture) {
             capture?.let { retired.add(raw(it.event)) }
             capture = null
         }
-        val old = (presses.values + constructing + listOfNotNull(releasedFunction)).distinct()
-        presses.clear()
-        admissions.clear(); tapAdmission = null
-        releasedFunction = null
+        val old = (presses.values + constructing + listOfNotNull(releasedFunction, releasedBackHome)).distinct()
+            .filter { !preserveAnchor || it.action != PhoneHidAction.ANCHOR }
+        presses.entries.removeAll { it.value in old }
+        admissions.entries.removeAll { it.value in old }; tapAdmission = null
+        if (!preserveAnchor) releasedFunction = null
+        releasedBackHome = null
         old.forEach { retired.add(raw(it.event)); it.canceled = true }
         return old
     }
@@ -309,6 +359,7 @@ internal class PhoneHidController(
     private fun cancel(press: Press) {
         press.canceled = true
         if (releasedFunction === press) releasedFunction = null
+        if (releasedBackHome === press) releasedBackHome = null
         val route = press.route ?: return
         press.route = null
         try { routes.cancel(route, now()) } catch (_: Exception) { /* Ownership stays retired. */ }
@@ -316,9 +367,11 @@ internal class PhoneHidController(
     private fun submit(route: PhoneHidRoute, event: PhoneHidEdge) {
         try { routes.submit(route, event) } catch (_: Exception) { /* A failed route is never retargeted. */ }
     }
-    private fun rememberReleasedFunction(press: Press) {
-        if (press.action == PhoneHidAction.FUNCTION && press.route != null &&
+    private fun rememberReleasedRoute(press: Press) {
+        if (press.action == PhoneHidAction.ANCHOR && press.route != null &&
             (releasedFunction?.admission ?: Long.MIN_VALUE) < press.admission) releasedFunction = press
+        if (press.action == PhoneHidAction.NAVIGATION && press.route != null &&
+            (releasedBackHome?.admission ?: Long.MIN_VALUE) < press.admission) releasedBackHome = press
     }
     private fun save(operation: () -> Unit) {
         saving++

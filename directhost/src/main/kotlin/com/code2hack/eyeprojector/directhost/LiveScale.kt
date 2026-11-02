@@ -9,11 +9,14 @@ internal class LiveScale(
     private val resizePrecise: ((Geometry, Double) -> Unit)? = null,
     private val beforeRequestPublish: (() -> Unit)? = null,
 ) {
+    class RequestEffects(val current: () -> Boolean, val beforePublish: () -> Boolean, val publish: (ScaleState) -> Boolean,
+        val resize: (Geometry, Double) -> Unit)
     private var value = unavailable()
 
     @Synchronized fun state(): ScaleState = value
 
-    @Synchronized fun request(id: Long, scale: Double, publishUnavailable: Boolean = false): ScaleState {
+    @Synchronized fun request(id: Long, scale: Double, publishUnavailable: Boolean = false, effects: RequestEffects? = null): ScaleState {
+        if (effects != null && !effects.current()) return unavailable(id, scale)
         val observed = value.observed
         val target = LayoutScale.target(scale, observed?.let { it.width > it.height } == true)
         if (target == null || observed == null) {
@@ -21,16 +24,19 @@ internal class LiveScale(
                 status = if (target == null) ScaleStatus.REJECTED else ScaleStatus.UNAVAILABLE)
             // Keep replies ordered with observations. Local startup callers must not
             // emit a frame before the stream welcome; stream callers have read it.
-            if (observed != null || publishUnavailable) publish(reply)
+            if (observed != null || publishUnavailable) { if (effects != null) effects.publish(reply) else publish(reply) }
             return reply
         }
+        if (effects != null && !effects.beforePublish()) return unavailable(id, scale)
+        val previous = value
         value = value.copy(requestId = id, requested = scale, target = target, status = ScaleStatus.PENDING)
-        beforeRequestPublish?.invoke()
-        publish(value)
+        if (effects == null) { beforeRequestPublish?.invoke(); publish(value) }
+        else if (!effects.publish(value)) { value = previous; return unavailable(id, scale) }
         // Let stock's debouncer coalesce requests. Alignment can make a resize a no-op,
         // so a later request must never wait for a geometry event that may not arrive.
         // Even target == observed must be sent: it cancels a preceding pending resize.
-        if (resizePrecise != null) resizePrecise.invoke(target, scale) else resize(target)
+        if (effects != null) effects.resize(target, scale)
+        else if (resizePrecise != null) resizePrecise.invoke(target, scale) else resize(target)
         return value
     }
 

@@ -39,6 +39,7 @@ object PhoneWidgetUpdates {
 
     internal fun deliver(context: Context, widgetId: Int, action: PhoneWidgetAction): PhoneWidgetRoute {
         val sessions = PhoneSessionController.get(context)
+        if (!sessions.userControl()) return PhoneWidgetRoute.COMPLETE
         attach(context, sessions)
         val active = binding ?: return PhoneWidgetRoute.OPEN_STATUS
         if (widgetId !in active.ids()) return PhoneWidgetRoute.COMPLETE

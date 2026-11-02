@@ -13,6 +13,8 @@ internal data class ProjectionCommandResult(val exit: Int?, val output: String, 
 /** Fixed launch and observation operations, owned and closed by the existing Session. */
 internal interface ProjectionLaunchAdapter : Closeable {
     fun launch(displayId: Int, packageName: String, home: Boolean): ProjectionCommandResult
+    fun launchOriginal(displayId: Int, packageName: String, home: Boolean, current: () -> Boolean): ProjectionCommandResult =
+        if (current()) launch(displayId,packageName,home) else ProjectionCommandResult(null,"")
     fun foreground(displayId: Int): String?
     fun foregroundComponent(displayId: Int): String? = null
 }
@@ -98,12 +100,14 @@ internal class ProjectedAppLaunch(
         executor.execute { execute(0, ProjectionLaunchCommands.HOME_PACKAGE, true) }
     }
 
-    fun home() = synchronized(admission) {
-        if (!closed.get()) executor.execute { execute(0, ProjectionLaunchCommands.HOME_PACKAGE, true) }
+    fun home(commitOriginal: (() -> Boolean)? = null, currentOriginal: (() -> Boolean)? = null) = synchronized(admission) {
+        if (!closed.get()) executor.execute { execute(0, ProjectionLaunchCommands.HOME_PACKAGE, true, commitOriginal,currentOriginal) }
     }
 
     /** Decide against this display's real foreground, serialized with app/Home launches. */
-    fun functionDouble(onHome: () -> Unit) = synchronized(admission) {
+    fun contextualHome(onGrid: () -> Unit) = contextualHome(null, null, onGrid)
+
+    fun contextualHome(commitOriginal: (() -> Boolean)?, currentOriginal: (() -> Boolean)? = null, onGrid: () -> Unit) = synchronized(admission) {
         if (closed.get()) return@synchronized
         executor.execute {
             val display = state.get().displayId ?: return@execute
@@ -112,14 +116,21 @@ internal class ProjectedAppLaunch(
             if (closed.get()) return@execute
             val home = component == ProjectionLaunchCommands.HOME_COMPONENT ||
                 component == "${ProjectionLaunchCommands.HOME_PACKAGE}/${ProjectionLaunchCommands.HOME_PACKAGE}.ProjectedHomeActivity"
-            if (home) onHome() else execute(0, ProjectionLaunchCommands.HOME_PACKAGE, true)
+            if (home) {
+                if (commitOriginal != null) { if (!commitOriginal()) return@execute } else beforeLaunch()
+                if (!closed.get() && !Thread.currentThread().isInterrupted && currentOriginal?.invoke()!=false) onGrid()
+            } else execute(0, ProjectionLaunchCommands.HOME_PACKAGE, true, commitOriginal,currentOriginal)
         }
     }
 
-    fun launch(requestId: Long, packageName: String): ProjectionDisplayState {
+    /** Compatibility until the Function source migration replaces its old navigation. */
+    fun functionDouble(onHome: () -> Unit) = contextualHome(onHome)
+
+    fun launch(requestId: Long, packageName: String, commitOriginal: (() -> Boolean)? = null,
+        currentOriginal: (() -> Boolean)? = null): ProjectionDisplayState {
         val future = synchronized(admission) {
             if (closed.get()) return unavailable(requestId, packageName)
-            executor.submit<ProjectionDisplayState> { execute(requestId, packageName, false) }
+            executor.submit<ProjectionDisplayState> { execute(requestId, packageName, false, commitOriginal,currentOriginal) }
         }
         return await(future, requestId, packageName)
     }
@@ -138,13 +149,16 @@ internal class ProjectedAppLaunch(
         return await(future, state.get().requestId, state.get().requestedPackage.orEmpty())
     }
 
-    private fun execute(requestId: Long, packageName: String, home: Boolean): ProjectionDisplayState {
+    private fun execute(requestId: Long, packageName: String, home: Boolean,
+        commitOriginal: (() -> Boolean)? = null, currentOriginal: (() -> Boolean)? = null): ProjectionDisplayState {
         val display = state.get().displayId
         if (closed.get() || display == null) return unavailable(requestId, packageName)
         val result = try {
-            beforeLaunch()
+            if (commitOriginal != null) { if (!commitOriginal()) return unavailable(requestId, packageName) } else beforeLaunch()
             if (closed.get() || Thread.currentThread().isInterrupted) return unavailable(requestId, packageName)
-            adapter.launch(display, packageName, home)
+            adapter.launchOriginal(display,packageName,home) {
+                !closed.get()&&!Thread.currentThread().isInterrupted&&currentOriginal?.invoke()!=false
+            }
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
             return unavailable(requestId, packageName)

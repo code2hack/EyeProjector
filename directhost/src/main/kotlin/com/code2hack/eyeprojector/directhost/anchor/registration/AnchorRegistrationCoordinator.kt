@@ -1,0 +1,66 @@
+package com.code2hack.eyeprojector.directhost.anchor.registration
+
+import com.code2hack.eyeprojector.directhost.anchor.preferences.AnchorMode
+import com.code2hack.eyeprojector.directhost.anchor.preferences.AppAnchor
+import com.code2hack.eyeprojector.directhost.anchor.preferences.AppAnchorStore
+import com.code2hack.eyeprojector.directhost.anchor.target.AnchorTargetResolution
+import com.code2hack.eyeprojector.directhost.anchor.target.AnchorTargetResolver
+import com.code2hack.eyeprojector.directhost.uiaccess.UiTargetSnapshot
+import com.code2hack.eyeprojector.protocol.AnchorIntent
+
+sealed interface AnchorRegistrationCompletion {
+    data class Saved(val anchor: AppAnchor) : AnchorRegistrationCompletion
+    data object Canceled : AnchorRegistrationCompletion
+    data object ContextChanged : AnchorRegistrationCompletion
+    data object SaveFailed : AnchorRegistrationCompletion
+}
+
+/**
+ * Confined to the app's serialized Anchor worker. The shared bridge owns original Session/Binder
+ * admission, ordering and retirement, and supplies snapshots from that exact captured route. A
+ * chooser's intentional input-mode transition changes no saved source/window identity here.
+ * T is the bridge's opaque original transaction token; this helper never finds a latest Session.
+ */
+class AnchorRegistrationCoordinator<T : Any>(private val store: AppAnchorStore) {
+    private data class Pending<T>(val token: T, val target: AnchorRegistrationTarget)
+    private var pending: Pending<T>? = null
+    var lastFailure: Exception? = null
+        private set
+
+    fun begin(token: T, intent: AnchorIntent, snapshot: UiTargetSnapshot): AnchorRegistrationCapture {
+        return beginDetailed(token, intent, snapshot).capture
+    }
+
+    fun beginDetailed(token: T, intent: AnchorIntent, snapshot: UiTargetSnapshot): AnchorRegistrationInspection {
+        pending = null
+        lastFailure = null
+        return AnchorRegistrationTargets.inspect(intent, snapshot).also {
+            val capture = it.capture
+            if (capture is AnchorRegistrationCapture.Selected) pending = Pending(token, capture.target)
+        }
+    }
+
+    /** Cancel does no read, write, rollback or store-event publication. */
+    fun cancel(token: T): Boolean {
+        if (pending?.token != token) return false
+        pending = null
+        return true
+    }
+
+    /** Called only after the bridge admits this original transaction, never by a raw Function UP. */
+    fun choose(token: T, mode: AnchorMode): AnchorRegistrationCompletion {
+        lastFailure = null
+        val original = pending?.takeIf { it.token == token } ?: return AnchorRegistrationCompletion.Canceled
+        pending = null
+        val selected = original.target
+        val anchor = AppAnchor(selected.descriptor, mode)
+        return try {
+            store.replace(anchor)
+            AnchorRegistrationCompletion.Saved(anchor)
+        } catch (error: Exception) {
+            lastFailure = error
+            // The atomic store leaves its previous complete value in place on write failure.
+            AnchorRegistrationCompletion.SaveFailed
+        }
+    }
+}

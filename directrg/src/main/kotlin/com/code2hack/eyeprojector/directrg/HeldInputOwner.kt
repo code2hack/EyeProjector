@@ -25,7 +25,7 @@ internal class HeldInputOwner(private val dispatcher: HeldPointerDispatcher) {
     val holding: Boolean get() = dispatcher.holding
 
     /**
-     * [owner] is compared by reference; a HID adapter supplies a fresh token per physical press.
+     * [owner] is compared by reference; each input adapter supplies a fresh token per physical press.
      * A reentrant replacement is drained after the outer dispatcher call returns, and returns false
      * here because it has not acquired an output contact yet. Input consumption belongs to the adapter.
      */
@@ -105,7 +105,7 @@ internal class HeldInputOwner(private val dispatcher: HeldPointerDispatcher) {
         } finally { draining = false }
     }
 
-    /** The native source has one physical contact; a retired DOWN cannot reacquire after HID handoff. */
+    /** The native source has one physical contact; a retired DOWN cannot reacquire after another input source takes ownership. */
     fun acceptNative(event: PadGestureRecognizer.Event): Boolean {
         if (event.phase == PadGestureRecognizer.Phase.DOWN) {
             val old = nativePress
@@ -132,17 +132,30 @@ internal class HeldInputOwner(private val dispatcher: HeldPointerDispatcher) {
         dispatch { dispatcher.cancel(timeMs) }
     }
 
-    fun cancel(owner: Any, timeMs: Long) {
+    fun cancel(owner: Any, timeMs: Long): Boolean {
         val old = press
         val waiting = pending
-        if (old?.owner !== owner && waiting?.press?.owner !== owner) return
-        generation++
+        if (old?.owner !== owner && waiting?.press?.owner !== owner) return false
+        val originalGeneration = ++generation
         retire(old)
         retire(waiting?.press)
         press = null
         pending = null
         if (nativePress?.owner === owner) nativePress = null
         dispatch { dispatcher.cancel(timeMs) }
+        return generation == originalGeneration
+    }
+
+    /** Capture references only. A later pending/source transfer is never part of this obligation. */
+    fun captureCancellation(timeMs: Long, releaseOriginal: (() -> Unit)? = null): InputRetirement {
+        val old = press
+        val waiting = pending
+        retire(old); retire(waiting?.press)
+        press = null; pending = null; nativePress = null
+        val expected = ++generation
+        val output = dispatcher.prepareCancel(timeMs, releaseOriginal)
+        return InputRetirement({ dispatch { output.finishOriginal() } },
+            { generation != expected || output.superseded() })
     }
 
     private fun retire(old: Press?) {

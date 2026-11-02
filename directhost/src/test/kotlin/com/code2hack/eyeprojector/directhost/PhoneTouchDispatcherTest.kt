@@ -22,19 +22,21 @@ class PhoneTouchDispatcherTest {
         assertEquals(listOf(0, 2, 1), writes.map { it[1].toInt() })
         assertEquals(200, DataInputStream(writes.last().inputStream()).run { skipBytes(10); readInt() })
     }
-    @Test fun resizeAndCloseCancelAndNeverReplayHeldContact() {
-        val writes = mutableListOf<ByteArray>()
-        val host = PhoneTouchDispatcher { writes.add(it) }; host.geometry(geometry)
-        host.touch(event(Touch.Phase.DOWN, 240))
-        host.geometry(Geometry(640, 480))
-        assertEquals(listOf(0, 3), writes.map { it[1].toInt() }); assertFalse(host.holding)
-        val cancel = DataInputStream(writes.last().inputStream()).apply { skipBytes(10) }
-        assertEquals(320, cancel.readInt()); assertEquals(15, cancel.readInt())
-        assertEquals(640, cancel.readUnsignedShort()); assertEquals(480, cancel.readUnsignedShort())
+    @Test fun resizeKeepsOriginalTerminalAndActualCloseDoesNotFabricateCancellation() {
+        val writes=mutableListOf<ByteArray>()
+        val host=PhoneTouchDispatcher{writes.add(it)};host.geometry(geometry)
+        host.touch(event(Touch.Phase.DOWN,240));host.geometry(Geometry(640,480))
+        assertEquals(listOf(0),writes.map{it[1].toInt()});assertTrue(host.holding)
+        assertTrue(host.cancel())
+        assertEquals(listOf(0,3),writes.map{it[1].toInt()})
+        val cancel=DataInputStream(writes.last().inputStream()).apply{skipBytes(10)}
+        assertEquals(240,cancel.readInt());assertEquals(20,cancel.readInt())
+        assertEquals(480,cancel.readUnsignedShort());assertEquals(640,cancel.readUnsignedShort())
         assertFalse(host.touch(event(Touch.Phase.UP)))
-        host.geometry(geometry); host.touch(event(Touch.Phase.DOWN, id = 2000)); host.close(); host.close()
-        assertEquals(listOf(0, 3, 0, 3), writes.map { it[1].toInt() })
-        assertFalse(host.touch(event(Touch.Phase.DOWN, id = 3000)))
+        host.geometry(geometry);host.touch(event(Touch.Phase.DOWN,id=2000));host.close();host.close()
+        assertFalse(host.holding);assertEquals(listOf(0,3,0),writes.map{it[1].toInt()})
+        assertFalse(host.touch(event(Touch.Phase.UP,id=2000)))
+        assertFalse(host.touch(event(Touch.Phase.DOWN,id=3000)))
     }
     @Test fun ordinaryControlsTerminateHeldContactBeforeReusingScrcpyPointer() {
         val writes = mutableListOf<ByteArray>()
@@ -45,7 +47,7 @@ class PhoneTouchDispatcherTest {
         host.touch(event(Touch.Phase.DOWN, id = 2000)); host.scroll(Scroll(Tap(5, 6, geometry), 160))
         assertEquals(3, writes[writes.size - 2][1].toInt()); assertEquals(3, writes.last()[0].toInt())
     }
-    @Test fun closeWaitsForStartedDownAndSerializesCancelAfterIt() {
+    @Test fun closeWaitsForStartedDownAndDoesNotOutputToLostResource() {
         val started = CountDownLatch(1); val release = CountDownLatch(1)
         val writes = Collections.synchronizedList(mutableListOf<Int>())
         val host = PhoneTouchDispatcher {
@@ -56,6 +58,6 @@ class PhoneTouchDispatcherTest {
         assertTrue(started.await(2, TimeUnit.SECONDS))
         val close = Thread { host.close() }.apply { start() }
         release.countDown(); down.join(2000); close.join(2000)
-        assertFalse(down.isAlive); assertFalse(close.isAlive); assertEquals(listOf(0, 3), writes)
+        assertFalse(down.isAlive); assertFalse(close.isAlive); assertEquals(listOf(0), writes); assertFalse(host.holding)
     }
 }

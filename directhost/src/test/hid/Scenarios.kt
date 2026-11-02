@@ -100,12 +100,12 @@ private fun newerCaptureCompletionAndPageChangeSupersedeOuterFeedback() {
     equal(null, r.bindings.binding(PhoneHidAction.TAP), "older outer capture is never revived")
     equal(binding(key = 196, scan = 701), r.bindings.binding(PhoneHidAction.SCROLL_UP), "newer completed capture alone persists")
     equal(1, r.writes.size, "older late UP cannot enqueue persistence")
-    r.input.select(PhoneHidAction.FUNCTION)
+    r.input.select(PhoneHidAction.ANCHOR)
     r.once { r.input.closePage() }
     check(r.input.accept(event(1300, key = 197, scan = 702)))
     check(r.input.accept(event(1320, 1300, PhoneHidPhase.UP, key = 197, scan = 702)))
     r.flush()
-    equal(null, r.bindings.binding(PhoneHidAction.FUNCTION), "closing page during received feedback retires capture")
+    equal(null, r.bindings.binding(PhoneHidAction.ANCHOR), "closing page during received feedback retires capture")
     check(!r.input.pageVisible && r.calls.isEmpty())
     val canceled = Rig(); canceled.input.openPage(); canceled.input.select(PhoneHidAction.TAP)
     canceled.once {
@@ -161,7 +161,7 @@ private fun newerCompletedSharedTapPreventsOlderOuterRouteAndFunctionRemainsInde
     check(r.input.accept(event(1200, 1000, PhoneHidPhase.UP)))
     equal(listOf("capture", "submit"), r.calls.map { it.kind }, "newer completed shared TAP supersedes older pending DOWN")
     check(r.calls.all { it.edge!!.keyCode == 196 })
-    for (nested in listOf(PhoneHidAction.FUNCTION, PhoneHidAction.SCROLL_DOWN)) {
+    for (nested in listOf(PhoneHidAction.ANCHOR, PhoneHidAction.SCROLL_DOWN)) {
         val independent = Rig(); independent.seed(PhoneHidAction.TAP); independent.seed(nested, 196, 701)
         independent.input.openPage()
         independent.once {
@@ -184,12 +184,12 @@ private fun cancelDuringNormalFeedbackAndPendingCaptureSaveNeverReplay() {
     check(r.input.accept(event(1000)))
     check(r.input.accept(event(1020, 1000, PhoneHidPhase.UP)))
     check(r.calls.isEmpty()) { "canceled pending DOWN must never capture a route" }
-    r.input.select(PhoneHidAction.FUNCTION)
+    r.input.select(PhoneHidAction.ANCHOR)
     check(r.input.accept(event(1100, key = 196, scan = 701)))
     check(r.input.accept(event(1120, 1100, PhoneHidPhase.UP, key = 196, scan = 701)))
     equal(1, r.input.saving, "asynchronous save remains explicit")
     r.input.closePage(); r.writable = false; r.flush()
-    equal(null, r.bindings.binding(PhoneHidAction.FUNCTION), "failed queued save keeps effective assignments")
+    equal(null, r.bindings.binding(PhoneHidAction.ANCHOR), "failed queued save keeps effective assignments")
     equal("HID bindings could not be saved. Try again.", r.bindings.error, "queued failure remains truthful")
     check(r.calls.isEmpty())
 }
@@ -423,7 +423,7 @@ private fun ordinaryHostStopDoesNotCancelOperationalHidAndInterruptRetiresOldOwn
 
 private fun releasedFunctionCallerRouteRetiresAtEveryExplicitBoundary() {
     for (boundary in listOf("reset", "open", "select", "close", "disconnect", "removed", "cancel")) {
-        val r = Rig(); r.seed(PhoneHidAction.FUNCTION); r.input.openPage()
+        val r = Rig(); r.seed(PhoneHidAction.ANCHOR); r.input.openPage()
         check(r.input.accept(event(1000)))
         check(r.input.accept(event(1020, 1000, PhoneHidPhase.UP)))
         equal(listOf("capture", "submit"), r.calls.map { it.kind }, "Function release initially submits DOWN/UP without cancellation")
@@ -446,14 +446,14 @@ private fun releasedFunctionCallerRouteRetiresAtEveryExplicitBoundary() {
         equal(3, r.calls.size, "$boundary retirement is idempotent")
         r.flush()
     }
-    val pending = Rig(); pending.seed(PhoneHidAction.FUNCTION); pending.input.openPage()
+    val pending = Rig(); pending.seed(PhoneHidAction.ANCHOR); pending.input.openPage()
     pending.once { check(pending.input.accept(event(1020, 1000, PhoneHidPhase.UP))) }
     check(pending.input.accept(event(1000)))
     pending.clock = 1030
     pending.input.cancelInput()
     equal(listOf("capture", "submit", "cancel"), pending.calls.map { it.kind }, "UP during feedback retains released Function ownership after route construction")
     check(pending.calls.all { it.route === pending.calls[0].route })
-    val reentrant = Rig(); reentrant.seed(PhoneHidAction.FUNCTION)
+    val reentrant = Rig(); reentrant.seed(PhoneHidAction.ANCHOR)
     check(reentrant.input.accept(event(1000)))
     reentrant.onSubmit = { reentrant.onSubmit = {}; reentrant.clock = 1020; reentrant.input.cancelInput() }
     check(reentrant.input.accept(event(1020, 1000, PhoneHidPhase.UP)))
@@ -463,7 +463,7 @@ private fun releasedFunctionCallerRouteRetiresAtEveryExplicitBoundary() {
 private fun actualServiceFunctionSequenceKeepsOnlyLatestReleasedCallerRoute() {
     val runtime = routedRuntime(); val input = runtime.controller
     input.closePage(); input.cancelInput()
-    check(input.bindings.assign(PhoneHidAction.FUNCTION, binding(key = 198, scan = 798)))
+    check(input.bindings.assign(PhoneHidAction.ANCHOR, binding(key = 198, scan = 798)))
     val service = PhoneHidKeyService(); service.onServiceConnected()
     try {
         PhoneSessionController.fixture.clear()
@@ -541,7 +541,7 @@ private fun coldOrphanEdgesStayFalseWhileActualOwnedAndRetiredEdgesStayTrue() {
     r.clock = 1110; r.input.cancelInput()
     check(r.input.accept(event(1110, 1100, PhoneHidPhase.CANCEL)))
     check(r.input.accept(event(1120, 1100, PhoneHidPhase.UP))) { "owned canceled raw release stays true" }
-    r.input.openPage(); r.input.select(PhoneHidAction.FUNCTION)
+    r.input.openPage(); r.input.select(PhoneHidAction.ANCHOR)
     check(r.input.accept(event(1200, key = 196, scan = 701)))
     check(r.input.accept(event(1210, 1200, repeat = 1, key = 196, scan = 701)))
     r.input.cancelInput()
@@ -710,12 +710,12 @@ private fun wakeReentryAndCancellationNeverRestoreOldInput() {
 
 private fun wakeDuringStickyLearningPreservesConfigurationAndPassedGestures() {
     val port = WakePort(); val r = Rig(port)
-    r.input.openPage(); r.input.select(PhoneHidAction.FUNCTION)
+    r.input.openPage(); r.input.select(PhoneHidAction.ANCHOR)
     port.onRequest = { port.needed = false; check(r.input.accept(event(1020, 1000, PhoneHidPhase.UP))) }
     check(r.input.accept(event(1000)))
     r.flush()
-    equal(binding(), r.bindings.binding(PhoneHidAction.FUNCTION), "disconnected learning still saves its original row")
-    equal(PhoneHidAction.FUNCTION, r.input.selected, "sticky selection remains")
+    equal(binding(), r.bindings.binding(PhoneHidAction.ANCHOR), "disconnected learning still saves its original row")
+    equal(PhoneHidAction.ANCHOR, r.input.selected, "sticky selection remains")
     check(r.calls.isEmpty() && port.requests.size == 1)
 
     val passed = WakePort().apply { needed = false }; val p = Rig(passed)
@@ -772,15 +772,15 @@ private fun wakeScenarios(): Map<String, () -> Unit> = linkedMapOf(
 
 
 private fun newerWakeRetiresOldNormalAndConstructingOwners() {
-    for (action in listOf(PhoneHidAction.TAP, PhoneHidAction.FUNCTION)) {
+    for (action in listOf(PhoneHidAction.TAP, PhoneHidAction.ANCHOR)) {
         val port = WakePort().apply { needed = false }; val r = Rig(port); r.seed(action)
         check(r.input.accept(event(1000)))
-        if (action == PhoneHidAction.FUNCTION) check(r.input.accept(event(1020, 1000, PhoneHidPhase.UP)))
+        if (action == PhoneHidAction.ANCHOR) check(r.input.accept(event(1020, 1000, PhoneHidPhase.UP)))
         port.needed = true
         check(r.input.accept(event(1100)))
         check(r.input.accept(event(1120, 1000, PhoneHidPhase.UP)))
         check(r.input.accept(event(1130, 1100, PhoneHidPhase.UP)))
-        equal(if (action == PhoneHidAction.FUNCTION) listOf("capture", "submit", "cancel") else listOf("capture", "cancel"),
+        equal(if (action == PhoneHidAction.ANCHOR) listOf("capture", "submit", "cancel") else listOf("capture", "cancel"),
             r.calls.map { it.kind }, "wake supersedes exact old $action, including its quiet recognition")
         equal(1, port.requests.size, "one fresh wake request")
     }

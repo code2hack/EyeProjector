@@ -32,7 +32,18 @@ class ProjectionSession(
     private val expectedPhoneOwnerEpoch: String? = null,
     private val connectPeer: ((File) -> SSLSocket)? = null,
     private val tlsContextFactory: (File) -> SSLContext = Tls::context,
+    private val onAnchor: (ProjectionSession, AnchorMessage) -> Unit = { _, _ -> },
 ) : Closeable {
+    companion object {
+        private val anchorLogs = Executors.newSingleThreadExecutor {
+            Thread(it, "eyeprojector-anchor-log").apply { isDaemon = true }
+        }
+        /** Process-scoped, text-free copies; no Context/Session is retained by diagnostic work. */
+        internal fun anchorFlow(message: String) {
+            try { anchorLogs.execute { try { Log.i("EyeProjectorAnchor", message) } catch (_: Throwable) { } } }
+            catch (_: Throwable) { }
+        }
+    }
     private val running = AtomicBoolean(true)
     // TLS initialization stays on the connection worker. Camera roles retain this projection's
     // context without loading local identity material again for each connection.
@@ -43,6 +54,8 @@ class ProjectionSession(
     private val timer = Executors.newScheduledThreadPool(2)
     private val controls = OrderedControlDispatcher { error -> failure(error); closeWithState("DISCONNECTED") }
     private val scaleControls = OrderedControlDispatcher { error -> failure(error); closeWithState("DISCONNECTED") }
+    /** Feature consumers attach to this actual Session, never a latest-peer singleton. */
+    val anchorIntents = AnchorIntentConsumers<ProjectionSession>()
     private val inputLock = Any()
     private val heldTouch = HeldTouchTransport(controls,
         { running.get() && readyForTouch && it.target.geometry == geometry },
@@ -54,6 +67,10 @@ class ProjectionSession(
     @Volatile private var controlReady = false
     @Volatile private var sourceUsability: ReceiverUsability? = null
     private var serializedUsability: ReceiverUsability? = null
+    private class LocalControl(val intent: ReceiverControlIntent, val complete: (ReceiverControlDisposition) -> Unit)
+    private val localControlIds = AtomicLong()
+    private val localControls = java.util.concurrent.ConcurrentHashMap<Long, LocalControl>()
+    private val pendingAnchorOpen = java.util.concurrent.atomic.AtomicReference<AnchorMessage.Open?>()
     private var ownerUsabilityRevision = -1L
     // Separate from native timed input cancellation; both use the existing serialized stream writer.
     private val headPointer = LatestHeadPointer({ action ->
@@ -107,7 +124,7 @@ class ProjectionSession(
             sourceUsability?.let { fact ->
                 usability(fact.copy(mode = ReceiverUsabilityMode.NONE, revision = nextUsabilityRevision())) }
 
-            cancelPendingInput()
+            cancelPendingInput(preserveAnchor = true)
             lastHeadPointer?.let {
                 val unavailable = it.copy(available = false, sequence = ++pointerSequence)
                 lastHeadPointer = unavailable
@@ -209,6 +226,13 @@ class ProjectionSession(
     }
     private fun writeUsabilityLocked(fact: ReceiverUsability?) {
         if (controlReady && fact != null && fact != serializedUsability) {
+            pendingAnchorOpen.get()?.let { open ->
+                if (open.chooser.ownerEpoch == fact.ownerEpoch && open.chooser.incarnation == fact.incarnation &&
+                    open.chooser.inputRevision == fact.inputRevision && open.chooser.mode == fact.mode) {
+                    if (pendingAnchorOpen.compareAndSet(open, null)) writeFrameLocked(Frame(Wire.ANCHOR,
+                        payload = open.copy(chooser = fact).bytes()))
+                } else if (fact.revision >= open.chooser.revision) pendingAnchorOpen.compareAndSet(open, null)
+            }
             writeFrameLocked(Frame(Wire.RECEIVER_USABILITY, payload = fact.bytes()))
             serializedUsability = fact
         }
@@ -298,6 +322,11 @@ class ProjectionSession(
 
     internal fun receive(frame: Frame) {
         when (frame.channel) {
+            Wire.CONTROL_RESULT -> {
+                val result = ReceiverControlResult.from(frame.payload)
+                val original = localControls.remove(result.id) ?: return
+                original.complete(if (currentLocalControl(original.intent.context)) result.disposition else ReceiverControlDisposition.RETIRED)
+            }
             Wire.SCALE_STATE -> {
                 val next = ScaleState.from(frame.payload)
                 scaleState = next
@@ -328,7 +357,21 @@ class ProjectionSession(
                 }
             }
             Wire.END -> closeWithState("DISCONNECTED")
+            Wire.ANCHOR -> {
+                require(frame.stamp == 0L)
+                val message = AnchorMessage.from(frame.payload)
+                require(message is AnchorMessage.Feedback || message is AnchorMessage.Offer ||
+                    message is AnchorMessage.Result || message is AnchorMessage.HeldState || message is AnchorMessage.Release)
+                anchorFlow("anchor_received type=${message.javaClass.simpleName} transaction=${message.transactionId} source=${message.intent.source} kind=${message.intent.kind} gesture=${message.intent.gestureId}")
+                onAnchor(this, message)
+            }
             Wire.RECEIVER_INPUT -> onReceiverInput(this, ReceiverInput.from(frame.payload))
+            Wire.ANCHOR_INTENT -> {
+                require(frame.stamp == 0L)
+                val captured = CapturedAnchorIntent(AnchorIntent.from(frame.payload), this)
+                controls.submit(SystemClock.uptimeMillis(), { currentAnchor(captured.intent.context) },
+                    "anchor", preserveTiming = false) { anchorIntents.dispatch(captured) }
+            }
             Wire.CAMERA_USE -> { require(frame.stamp == 0L); cameraUses.observe(CameraFeed.readUseMessage(frame.payload)) }
             Wire.CAMERA_PROGRESS -> { require(frame.stamp == 0L); cameraUses.observeProgress(CameraFeed.readProgress(frame.payload)) }
             else -> error("Unnegotiated media")
@@ -347,7 +390,7 @@ class ProjectionSession(
                     val epoch = synchronized(inputLock) {
                         if (!running.get()) return
                         val next = videoReadiness.beginReplacement() ?: return
-                        cancelPendingInput()
+                        cancelPendingInput(preserveAnchor = true)
                         next
                     }
                     val old = synchronized(lifecycleLock) {
@@ -393,11 +436,143 @@ class ProjectionSession(
         }
     }
 
+    private data class AnchorKey(val incarnation: ReceiverIncarnation, val source: AnchorSource, val gesture: Long)
+    private val anchorOriginals = java.util.concurrent.ConcurrentHashMap<AnchorKey, AnchorOriginal>()
+    private fun anchorKey(source: AnchorSource, gesture: Long, context: AnchorIntentContext) =
+        AnchorKey(context.usability.incarnation, source, gesture)
+    private fun retainedAnchorSource(captured: AnchorIntentContext): Boolean {
+        val current = sourceUsability ?: return false
+        return running.get() && current.ownerEpoch == captured.usability.ownerEpoch &&
+            current.incarnation == captured.usability.incarnation
+    }
+    private fun retainedAnchor(original: AnchorOriginal): Boolean =
+        anchorOriginals[anchorKey(original.source, original.gestureId, original.context)] === original &&
+            retainedAnchorSource(original.context)
+
+    /** Initial capture checks current presentation once; later completion uses the original lease. */
+    fun captureAnchorContext(point: HeadPointerState): AnchorIntentContext? = synchronized(inputLock) {
+        val fact = sourceUsability ?: return null
+        AnchorIntentContext(fact, point).takeIf(::currentAnchor)
+    }
+
+    private fun currentAnchor(captured: AnchorIntentContext): Boolean {
+        val current = sourceUsability ?: return false
+        val original = captured.usability
+        val point = captured.pointer
+        return running.get() && current.ownerEpoch == original.ownerEpoch && current.incarnation == original.incarnation &&
+            current.inputRevision == original.inputRevision && current.mode == original.mode &&
+            point.available && point.revision == original.inputRevision && when (original.mode) {
+                ReceiverUsabilityMode.PROJECTED -> point.projected && readyForTouch && point.geometry == geometry
+                ReceiverUsabilityMode.LOCAL_PANEL -> !point.projected
+                ReceiverUsabilityMode.NONE -> false
+            }
+    }
+
+    /** Every accepted intention retains its original Session/context on the ordered writer. */
+    /** Bind the actual allocated chooser fact before any usability/head-pointer publication. */
+    fun openAnchorRegistration(offer: AnchorMessage.Offer, chooser: ReceiverUsability): Boolean {
+        var admitted = false
+        headPointer.sourceChanged {
+            if (retainedAnchorSource(offer.intent.context) &&
+                chooser.ownerEpoch == offer.intent.context.usability.ownerEpoch &&
+                chooser.incarnation == offer.intent.context.usability.incarnation) {
+                val fact = chooser.copy(revision = nextUsabilityRevision())
+                pendingAnchorOpen.set(AnchorMessage.Open(offer.transactionId, offer.intent, fact))
+                ownerUsabilityRevision = chooser.revision
+                sourceUsability = fact
+                admitted = true
+            }
+        }
+        return admitted
+    }
+
+    fun chooseAnchorRegistration(offer: AnchorMessage.Offer, choice: AnchorChoice): Boolean =
+        controls.submit(SystemClock.uptimeMillis(), { running.get() && sourceUsability?.incarnation == offer.intent.context.usability.incarnation },
+            "anchor-choice", preserveTiming = false) {
+            send(Frame(Wire.ANCHOR, payload = AnchorMessage.Choice(offer.transactionId, offer.intent, choice).bytes()))
+        }
+
+    fun anchorIntent(captured: CapturedAnchorIntent<ProjectionSession>): Boolean = synchronized(inputLock) {
+        val intent = captured.intent
+        val key = anchorKey(intent.source, intent.gestureId, intent.context)
+        val original = anchorOriginals[key]
+        if (captured.original !== this || original == null || original.context != intent.context || !retainedAnchor(original)) {
+            anchorFlow("intent_rejected gesture=${intent.gestureId} kind=${intent.kind} inputRevision=${intent.context.usability.inputRevision} currentRevision=${sourceUsability?.inputRevision} currentMode=${sourceUsability?.mode}")
+            return false
+        }
+        val queued = controls.submit(SystemClock.uptimeMillis(), {
+            retainedAnchor(original).also { if (!it) anchorFlow("intent_queue_retired gesture=${intent.gestureId} kind=${intent.kind}") }
+        },
+            "anchor", preserveTiming = false) {
+            synchronized(outputLock) {
+                // Source mode may change while the queued writer waits for this exact output lock.
+                if (retainedAnchor(original)) {
+                    send(Frame(Wire.ANCHOR_INTENT, payload = intent.bytes()))
+                    anchorOriginals.remove(key, original)
+                    anchorFlow("intent_written source=${intent.source} gesture=${intent.gestureId} kind=${intent.kind}")
+                } else anchorFlow("intent_writer_retired gesture=${intent.gestureId} kind=${intent.kind}")
+            }
+        }
+        anchorFlow("intent_queued source=${intent.source} gesture=${intent.gestureId} kind=${intent.kind} accepted=$queued")
+        queued
+    }
+
+    /** Same source grammar identity as its later intention, on the same ordered original writer. */
+    fun beginAnchor(original: AnchorOriginal): Boolean = synchronized(inputLock) {
+        if (!currentAnchor(original.context)) {
+            anchorFlow("original_rejected source=${original.source} gesture=${original.gestureId}")
+            return false
+        }
+        queueAnchorOriginal(original)
+    }
+
+    /** A new semantic press can end the reported original Hold without a live head position.
+     * The Phone still chooses Short/Long disposition on its own FIFO. */
+    internal fun beginAnchorFromHeld(original: AnchorOriginal, held: AnchorMessage.HeldState): Boolean = synchronized(inputLock) {
+        if (held.state != AnchorHoldState.HELD || original.context != held.intent.context ||
+            !retainedAnchorSource(original.context)) return@synchronized false
+        queueAnchorOriginal(original)
+    }
+
+    private fun queueAnchorOriginal(original: AnchorOriginal): Boolean {
+        val key = anchorKey(original.source, original.gestureId, original.context)
+        val previous = anchorOriginals.putIfAbsent(key, original)
+        if (previous != null) return previous == original
+        val queued = controls.submit(SystemClock.uptimeMillis(), {
+            retainedAnchor(original).also { if (!it) anchorFlow("original_queue_retired gesture=${original.gestureId}") }
+        }, "anchor-original", preserveTiming = false) {
+            synchronized(outputLock) {
+                if (retainedAnchor(original)) {
+                    writeUsabilityLocked(original.context.usability)
+                    writeFrameLocked(Frame(Wire.ANCHOR_ORIGINAL,payload=original.bytes()))
+                    anchorFlow("original_written source=${original.source} gesture=${original.gestureId} inputRevision=${original.context.usability.inputRevision}")
+                } else anchorFlow("original_writer_retired gesture=${original.gestureId}")
+            }
+        }
+        anchorFlow("original_queued source=${original.source} gesture=${original.gestureId} accepted=$queued")
+        if (!queued) anchorOriginals.remove(key, original)
+        return queued
+    }
+
+    fun retireAnchor(original: AnchorOriginal): Boolean {
+        val key = anchorKey(original.source, original.gestureId, original.context)
+        anchorOriginals[key]?.takeIf { it.context == original.context }?.let { anchorOriginals.remove(key, it) }
+        return scaleControls.submit(SystemClock.uptimeMillis(),
+        {running.get()},"anchor-retire",preserveTiming=false) {
+        synchronized(outputLock) {
+            if(running.get()) {
+                writeFrameLocked(Frame(Wire.ANCHOR_ORIGINAL,payload=original.copy(retired=true).bytes()))
+                anchorFlow("original_retire_written source=${original.source} gesture=${original.gestureId}")
+            }
+        }
+    }
+    }
+
     /** True means queued, not an acknowledgment from the Phone's target widget. */
     fun tap(tap: Tap, eventTimeMs: Long = System.nanoTime() / 1_000_000): Boolean =
         input(Wire.TAP, tap.geometry, tap.bytes(), eventTimeMs)
     fun scroll(scroll: Scroll, eventTimeMs: Long = System.nanoTime() / 1_000_000, headMotion: Boolean = false): Boolean =
-        input(Wire.SCROLL, scroll.target.geometry, scroll.bytes(), eventTimeMs, if (headMotion) "head-scroll" else "input")
+        input(if (headMotion) Wire.PASSIVE_SCROLL else Wire.SCROLL, scroll.target.geometry, scroll.bytes(), eventTimeMs, if (headMotion) "head-scroll" else "input")
     fun navigate(action: Navigation): Boolean {
         val size = geometry ?: return false
         return input(Wire.NAVIGATE, size, Navigate(action, size).bytes(), System.nanoTime() / 1_000_000)
@@ -409,11 +584,44 @@ class ProjectionSession(
         }
     }
 
-    fun cancelPendingInput() = synchronized(inputLock) {
-        controls.cancelPending()
+    fun cancelPendingInput(preserveAnchor: Boolean = false) = synchronized(inputLock) {
+        if (preserveAnchor) controls.cancelPendingExcept(setOf("anchor", "anchor-original", "anchor-choice"))
+        else {
+            controls.cancelPending()
+            anchorOriginals.values.toList().forEach { retireAnchor(it) }
+        }
         heldTouch.cancel(0)
     }
     fun cancelHeadScroll() = controls.cancelPending("head-scroll")
+
+    private fun currentLocalControl(original: ReceiverUsability): Boolean {
+        val current = sourceUsability ?: return false
+        return running.get() && current.ownerEpoch == original.ownerEpoch && current.incarnation == original.incarnation &&
+            current.inputRevision == original.inputRevision && current.mode == original.mode
+    }
+
+    /** Dedicated original writer: no cleanup, latest-mode substitution or local effect before reply. */
+    fun localControl(source: ReceiverControlSource, complete: (ReceiverControlDisposition) -> Unit): Boolean {
+        if (!running.get()) { complete(ReceiverControlDisposition.RETIRED); return false }
+        // No Function can establish Anchor before this Session has its first source fact.
+        val fact = sourceUsability ?: run { complete(ReceiverControlDisposition.NORMAL); return true }
+        val intent = ReceiverControlIntent(localControlIds.getAndIncrement(), source, fact)
+        val original = LocalControl(intent, complete)
+        localControls[intent.id] = original
+        val accepted = scaleControls.submit(SystemClock.uptimeMillis(), { running.get() }, "control-intent", preserveTiming = false) {
+            val written = synchronized(outputLock) {
+                if (!currentLocalControl(fact)) false
+                else {
+                    writeUsabilityLocked(fact)
+                    writeFrameLocked(Frame(Wire.CONTROL_INTENT, payload = intent.bytes()))
+                    true
+                }
+            }
+            if (!written && localControls.remove(intent.id, original)) complete(ReceiverControlDisposition.RETIRED)
+        }
+        if (!accepted && localControls.remove(intent.id, original)) complete(ReceiverControlDisposition.RETIRED)
+        return accepted
+    }
     fun headPointer(state: HeadPointerState, sourceExpiresAtNs: Long): Boolean = synchronized(inputLock) {
         if (!running.get() || geometry == null) return false
         val current = state.copy(sequence = ++pointerSequence, available = state.available && presentationUsable)
@@ -430,7 +638,7 @@ class ProjectionSession(
             send(Frame(channel, payload = payload))
             synchronized(this) { when (channel) {
                 Wire.TAP -> touches++
-                Wire.SCROLL -> scrolls++
+                Wire.SCROLL, Wire.PASSIVE_SCROLL -> scrolls++
                 Wire.NAVIGATE -> navigations++
             } }
         }
@@ -461,6 +669,8 @@ class ProjectionSession(
             } finally { closingThread = null }
         }
         // Callbacks may synchronously close again or wait for another close caller.
+        val pendingControls = localControls.values.toList()
+        pendingControls.forEach { if (localControls.remove(it.intent.id, it)) it.complete(ReceiverControlDisposition.RETIRED) }
         state(value)
     }
     override fun close() = closeWithState("STOPPED")

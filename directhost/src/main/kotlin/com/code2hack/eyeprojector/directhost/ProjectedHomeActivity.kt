@@ -33,6 +33,7 @@ class ProjectedHomeActivity : Activity() {
         homeContext = expected
         home.onAppSelected = selected@{ app ->
             if (homeContext != expected || launchFeedbackIntent != boundFeedbackIntent) return@selected
+            if (!sessions.userControl(expected)) return@selected
             val feedbackIntent = ++launchFeedbackIntent
             boundFeedbackIntent = feedbackIntent
             if (homeContext == expected) home.showStatus(getString(R.string.projected_home_opening, app.label))
