@@ -134,13 +134,18 @@ internal class PhoneInputMerger(
 
     fun pointer(next: HeadPointerState, source: ReceiverUsability? = null, accepts: () -> Boolean = { true }) = transaction { out ->
         if (!active() || !accepts()) return@transaction
+        val sourceContextChanged = pointerSource?.let { old -> source != null &&
+            (old.ownerEpoch != source.ownerEpoch || old.incarnation != source.incarnation ||
+                old.inputRevision != source.inputRevision || old.mode != source.mode) } == true
         if (pointerSource != null && source != null && pointerSource!!.incarnation != source.incarnation) {
-            retire(out, false) // A new incarnation can restart numeric pointer sequence/revision.
+            // Session already retired Anchor before publishing this accepted usability context.
+            // Pointer cleanup must not retire an Anchor birth received after that publication.
+            retire(out, false, passive = true)
         }
         val old = point
         if (old != null && next.sequence <= old.sequence) return@transaction
         if (old != null && (old.revision != next.revision || old.projected != next.projected || old.geometry != next.geometry))
-            retire(out, false, preserveRegistration = anchorInput.registration?.second?.context?.let { original ->
+            retire(out, false, passive = sourceContextChanged, preserveRegistration = anchorInput.registration?.second?.context?.let { original ->
                 source != null && source.ownerEpoch == original.usability.ownerEpoch &&
                     source.incarnation == original.usability.incarnation && source.mode == ReceiverUsabilityMode.LOCAL_PANEL &&
                     !next.projected && next.available && next.geometry == original.pointer.geometry

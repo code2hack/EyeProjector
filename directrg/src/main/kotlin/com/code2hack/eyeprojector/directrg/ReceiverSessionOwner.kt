@@ -355,6 +355,7 @@ internal class ReceiverSessionOwner(
                 }
             } }, nextUsabilityRevision = usabilityRevision::incrementAndGet, expectedPhoneOwnerEpoch = epoch,
                 onAnchor = { source, message -> deliver {
+                    ProjectionSession.anchorFlow("anchor_route type=${message.javaClass.simpleName} transaction=${message.transactionId} closed=$closed sameSession=${session === source} uiUsable=$uiUsable")
                     if (!closed && session === source && uiUsable &&
                         (message !is AnchorMessage.Feedback || currentAnchorFeedback(source, message))) {
                         if (message is AnchorMessage.HeldState) listener?.anchorHeld(source, message)

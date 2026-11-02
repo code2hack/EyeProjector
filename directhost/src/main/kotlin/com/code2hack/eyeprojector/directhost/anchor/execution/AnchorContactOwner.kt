@@ -93,6 +93,8 @@ internal class AnchorContactOwner(
     private val handled = mutableMapOf<String, AnchorSettingContext>()
     val holding: Boolean get() = cancellation != null || synchronized(lock) { contact != null }
     val discardingControls: Boolean get() = cancellation != null
+    /** Diagnostic copy only; it never grants admission or refreshes an original. */
+    internal val observationGeneration: Long get() = generation
 
     /** First ingress observation, before the merger/Binder/FIFO can wait. This records lifetime;
      * completed Short still selects its release contact only on the original app FIFO. */

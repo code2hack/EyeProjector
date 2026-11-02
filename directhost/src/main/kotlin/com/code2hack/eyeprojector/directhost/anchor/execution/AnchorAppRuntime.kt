@@ -107,6 +107,7 @@ internal class AnchorAppRuntime(context: Context, registrationProviderName: Stri
             }
             override fun onIntent(transactionId: Long, anchorIntent: ByteArray, original: IAnchorSession) {
                 val intent = AnchorIntent.from(anchorIntent)
+                flow("app_intent transaction=$transactionId source=${intent.source} kind=${intent.kind} gesture=${intent.gestureId} bindingCurrent=${bindingGeneration.get() == generation}")
                 coordinator.accept(Route(transactionId, intent, original) { bindingGeneration.get() == generation })
             }
             override fun onRegistration(message: ByteArray, original: IAnchorSession) {
@@ -143,6 +144,12 @@ internal class AnchorAppRuntime(context: Context, registrationProviderName: Stri
         // One app-process logger, never a worker or retained Binder per Session/transaction.
         private val registrationLogs = Executors.newSingleThreadExecutor {
             Thread(it, "eyeprojector-registration-log").apply { isDaemon = true }
+        }
+        /** Copy text-free stage metadata before enqueue; no logging I/O on ingress/contact locks. */
+        internal fun flow(message: String) {
+            try { registrationLogs.execute {
+                try { android.util.Log.i("EyeProjectorAnchor", message) } catch (_: Throwable) { }
+            } } catch (_: Throwable) { }
         }
     }
 }

@@ -768,14 +768,20 @@ private class Session(
 
     private fun acceptAnchor(intent: AnchorIntent,
         original: com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlAdmission?) {
-        val admission = inputControls.anchor.capture(intent, original) ?: return
+        val admission = inputControls.anchor.capture(intent, original)
+        com.code2hack.eyeprojector.directhost.anchor.execution.AnchorAppRuntime.flow(
+            "root_capture source=${intent.source} kind=${intent.kind} gesture=${intent.gestureId} admitted=${admission != null} birthGeneration=${original?.anchorGeneration} currentGeneration=${inputControls.anchor.observationGeneration} disposition=${original?.disposition}")
+        if (admission == null) return
         val captured = CapturedAnchorIntent<CapturedProjection>(intent, this)
         anchorWork.submit {
             try {
                 val context = captured.intent.context
-                if (captured.original === this && running.get() &&
+                val current = captured.original === this && running.get() &&
                     receiverUsability.acceptsPointer(context.usability, context.pointer) &&
-                    (!context.pointer.projected || context.pointer.geometry == geometry.get())) {
+                    (!context.pointer.projected || context.pointer.geometry == geometry.get())
+                com.code2hack.eyeprojector.directhost.anchor.execution.AnchorAppRuntime.flow(
+                    "root_fifo source=${intent.source} kind=${intent.kind} gesture=${intent.gestureId} current=$current")
+                if (current) {
                     // False means no feature consumer is installed, not a completed Anchor action.
                     executingAnchor = admission
                     try { anchorIntents.dispatch(captured) } finally { executingAnchor = null }
@@ -1384,6 +1390,8 @@ private class Session(
                 val intent = AnchorIntent.from(frame.payload)
                 val key = RemoteAnchorKey(intent.context.usability.incarnation,intent.source,intent.gestureId)
                 val original = remoteAnchorOriginals.remove(key)
+                com.code2hack.eyeprojector.directhost.anchor.execution.AnchorAppRuntime.flow(
+                    "intent_received source=${intent.source} kind=${intent.kind} gesture=${intent.gestureId} originalPresent=${original != null} contextMatch=${original?.first?.context == intent.context}")
                 if (original != null && original.first.context == intent.context) acceptAnchor(intent,original.second)
             }
             Wire.ANCHOR_ORIGINAL -> {
@@ -1412,6 +1420,8 @@ private class Session(
                         }
                     }
                 }
+                com.code2hack.eyeprojector.directhost.anchor.execution.AnchorAppRuntime.flow(
+                    "original_received source=${original.source} gesture=${original.gestureId} retired=${original.retired} retained=${remoteAnchorOriginals.containsKey(key)} inputRevision=${original.context.usability.inputRevision} currentGeneration=${inputControls.anchor.observationGeneration}")
             }
             Wire.ANCHOR -> { require(frame.stamp == 0L); anchorSession.receive(AnchorMessage.from(frame.payload)) }
             Wire.CAMERA_PROGRESS -> { require(frame.stamp == 0L); cameraRoles.observeProgress(CameraFeed.readProgress(frame.payload)) }

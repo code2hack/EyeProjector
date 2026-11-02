@@ -34,6 +34,16 @@ class ProjectionSession(
     private val tlsContextFactory: (File) -> SSLContext = Tls::context,
     private val onAnchor: (ProjectionSession, AnchorMessage) -> Unit = { _, _ -> },
 ) : Closeable {
+    companion object {
+        private val anchorLogs = Executors.newSingleThreadExecutor {
+            Thread(it, "eyeprojector-anchor-log").apply { isDaemon = true }
+        }
+        /** Process-scoped, text-free copies; no Context/Session is retained by diagnostic work. */
+        internal fun anchorFlow(message: String) {
+            try { anchorLogs.execute { try { Log.i("EyeProjectorAnchor", message) } catch (_: Throwable) { } } }
+            catch (_: Throwable) { }
+        }
+    }
     private val running = AtomicBoolean(true)
     // TLS initialization stays on the connection worker. Camera roles retain this projection's
     // context without loading local identity material again for each connection.
@@ -352,6 +362,7 @@ class ProjectionSession(
                 val message = AnchorMessage.from(frame.payload)
                 require(message is AnchorMessage.Feedback || message is AnchorMessage.Offer ||
                     message is AnchorMessage.Result || message is AnchorMessage.HeldState || message is AnchorMessage.Release)
+                anchorFlow("anchor_received type=${message.javaClass.simpleName} transaction=${message.transactionId} source=${message.intent.source} kind=${message.intent.kind} gesture=${message.intent.gestureId}")
                 onAnchor(this, message)
             }
             Wire.RECEIVER_INPUT -> onReceiverInput(this, ReceiverInput.from(frame.payload))
@@ -469,34 +480,55 @@ class ProjectionSession(
         }
 
     fun anchorIntent(captured: CapturedAnchorIntent<ProjectionSession>): Boolean = synchronized(inputLock) {
-        if (captured.original !== this || !currentAnchor(captured.intent.context)) return false
-        controls.submit(SystemClock.uptimeMillis(), { currentAnchor(captured.intent.context) },
+        val intent = captured.intent
+        if (captured.original !== this || !currentAnchor(intent.context)) {
+            anchorFlow("intent_rejected gesture=${intent.gestureId} kind=${intent.kind} inputRevision=${intent.context.usability.inputRevision} currentRevision=${sourceUsability?.inputRevision} currentMode=${sourceUsability?.mode}")
+            return false
+        }
+        val queued = controls.submit(SystemClock.uptimeMillis(), {
+            currentAnchor(intent.context).also { if (!it) anchorFlow("intent_queue_retired gesture=${intent.gestureId} kind=${intent.kind}") }
+        },
             "anchor", preserveTiming = false) {
             synchronized(outputLock) {
                 // Source mode may change while the queued writer waits for this exact output lock.
-                if (currentAnchor(captured.intent.context))
-                    send(Frame(Wire.ANCHOR_INTENT, payload = captured.intent.bytes()))
+                if (currentAnchor(intent.context)) {
+                    send(Frame(Wire.ANCHOR_INTENT, payload = intent.bytes()))
+                    anchorFlow("intent_written source=${intent.source} gesture=${intent.gestureId} kind=${intent.kind}")
+                } else anchorFlow("intent_writer_retired gesture=${intent.gestureId} kind=${intent.kind}")
             }
         }
+        anchorFlow("intent_queued source=${intent.source} gesture=${intent.gestureId} kind=${intent.kind} accepted=$queued")
+        queued
     }
 
     /** Same source grammar identity as its later intention, on the same ordered original writer. */
     fun beginAnchor(original: AnchorOriginal): Boolean = synchronized(inputLock) {
-        if (!currentAnchor(original.context)) return false
-        controls.submit(SystemClock.uptimeMillis(), { currentAnchor(original.context) }, "anchor-original", preserveTiming = false) {
+        if (!currentAnchor(original.context)) {
+            anchorFlow("original_rejected source=${original.source} gesture=${original.gestureId}")
+            return false
+        }
+        val queued = controls.submit(SystemClock.uptimeMillis(), {
+            currentAnchor(original.context).also { if (!it) anchorFlow("original_queue_retired gesture=${original.gestureId}") }
+        }, "anchor-original", preserveTiming = false) {
             synchronized(outputLock) {
                 if (currentAnchor(original.context)) {
                     writeUsabilityLocked(original.context.usability)
                     writeFrameLocked(Frame(Wire.ANCHOR_ORIGINAL,payload=original.bytes()))
-                }
+                    anchorFlow("original_written source=${original.source} gesture=${original.gestureId} inputRevision=${original.context.usability.inputRevision}")
+                } else anchorFlow("original_writer_retired gesture=${original.gestureId}")
             }
         }
+        anchorFlow("original_queued source=${original.source} gesture=${original.gestureId} accepted=$queued")
+        queued
     }
 
     fun retireAnchor(original: AnchorOriginal): Boolean = scaleControls.submit(SystemClock.uptimeMillis(),
         {running.get()},"anchor-retire",preserveTiming=false) {
         synchronized(outputLock) {
-            if(running.get())writeFrameLocked(Frame(Wire.ANCHOR_ORIGINAL,payload=original.copy(retired=true).bytes()))
+            if(running.get()) {
+                writeFrameLocked(Frame(Wire.ANCHOR_ORIGINAL,payload=original.copy(retired=true).bytes()))
+                anchorFlow("original_retire_written source=${original.source} gesture=${original.gestureId}")
+            }
         }
     }
 

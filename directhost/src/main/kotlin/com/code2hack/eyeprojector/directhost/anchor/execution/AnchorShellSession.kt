@@ -97,7 +97,9 @@ internal class AnchorShellSession(
     fun accept(admission: AnchorAdmission) {
         val original = binding.get()
         val id = sequence.incrementAndGet()
-        if (!input.anchor.isCurrent(admission)) return
+        val current = input.anchor.isCurrent(admission)
+        AnchorAppRuntime.flow("shell_handoff transaction=$id source=${admission.intent.source} kind=${admission.intent.kind} gesture=${admission.intent.gestureId} current=$current appBound=${original != null} closed=$closed")
+        if (!current) return
         if (admission.intent.kind == AnchorIntentKind.REGISTER &&
             input.anchor.consumeHeldControl(admission, captureNormal = false) != AnchorControlDisposition.NORMAL) return
         if (original == null || closed) {

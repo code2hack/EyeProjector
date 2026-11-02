@@ -262,6 +262,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     private var edgeScheduled = false
     private var padUps = 0L
     private var inputGeneration = 0L
+    private var layoutRotation: Int? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -347,7 +348,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         pointer = PointerOverlay(this).apply {
             sensitivity(settings.pointerXGain, settings.pointerYGain)
             onPositionChanged = {
-                if (!position.available) cancelInput()
+                if (!position.available) cancelInputOperation(reason = "pointer-unavailable")
                 else if (::heldInput.isInitialized) heldInput.move(SystemClock.uptimeMillis())
                 updateEdgeScroll()
                 publishHeadPointer()
@@ -439,7 +440,13 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         nativeSwipeInput = NativeSwipeNavigationInput(this) { action ->
             if (usable()) dispatchNavigation(action, ReceiverControlSource.NATIVE_SWIPE)
         }
-        root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> resize() }
+        root.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            val rotation = display?.rotation ?: 0
+            if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop || layoutRotation != rotation) {
+                layoutRotation = rotation
+                resize()
+            }
+        }
         setContentView(root)
         shellPadContact.start()
         showStatus(getString(R.string.disconnected))
@@ -467,7 +474,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
 
     private fun resize() {
         if (root.width <= 0 || root.height <= 0) return
-        val retirement = cancelInputOperation()?.second ?: return
+        val retirement = cancelInputOperation(reason = "resize")?.second ?: return
         val geometry = currentGeometry
         val fit = geometry?.let { Fit.inside(root.width, root.height, it) }
         if (fit != null) {
@@ -553,7 +560,8 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         runCatching { Log.i("EyeProjectorAnchor", "classified source=$source kind=${gesture.kind} gesture=${gesture.gestureId} sequence=${gesture.sequence} physicalHeld=${gesture.physicalHeld}") }
         if (intent.kind == AnchorIntentKind.REGISTER)
             anchorRegistration.registration(captured.source, intent, gesture.physicalHeld)
-        captured.source.anchorIntent(CapturedAnchorIntent(intent, captured.source))
+        val queued = captured.source.anchorIntent(CapturedAnchorIntent(intent, captured.source))
+        ProjectionSession.anchorFlow("activity_dispatch source=$source kind=${gesture.kind} gesture=${gesture.gestureId} queued=$queued")
     }
 
     private fun usable() = resumed && hasWindowFocus()
@@ -600,20 +608,24 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
                 val old = anchorOffer
                 if (registrationActive() && anchorRegistration.offer?.source === source &&
                     old?.transactionId == message.transactionId && old.intent == message.intent) return true
-                if (!currentRegistrationIntent(source, message.intent.context)) {
+                val current = currentRegistrationIntent(source, message.intent.context)
+                ProjectionSession.anchorFlow("offer_activity transaction=${message.transactionId} gesture=${message.intent.gestureId} current=$current inputRevision=$inputGeneration originalRevision=${message.intent.context.usability.inputRevision}")
+                if (!current) {
                     source.chooseAnchorRegistration(message, AnchorChoice.CANCEL)
                     return true
                 }
                 anchorOffer = message
                 val bounds = message.highlight
-                if (!anchorRegistration.show(source, message.transactionId, message.intent.context,
-                        AnchorRegistrationHighlight(bounds.left, bounds.top, bounds.right, bounds.bottom), message.intent)) {
+                val shown = anchorRegistration.show(source, message.transactionId, message.intent.context,
+                        AnchorRegistrationHighlight(bounds.left, bounds.top, bounds.right, bounds.bottom), message.intent)
+                ProjectionSession.anchorFlow("offer_show transaction=${message.transactionId} gesture=${message.intent.gestureId} accepted=$shown")
+                if (!shown) {
                     if (anchorOffer === message) anchorOffer = null
                     source.chooseAnchorRegistration(message, AnchorChoice.CANCEL)
                     return true
                 }
                 // Reserve before cancellation; advanceInputRevision allocates without publication.
-                val operation = cancelInputOperation(dismissChooser = false, publish = false)
+                val operation = cancelInputOperation(dismissChooser = false, publish = false, reason = "chooser-open")
                 if (operation == null) {
                     retireRegistration(source, message)
                     return true
@@ -1058,9 +1070,10 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun cancelInputOperation(dismissChooser: Boolean = true, publish: Boolean = true,
-        originalSession: ProjectionSession? = session, originalOwner: ReceiverSessionOwner? = owner): Pair<Long, InputRetirement>? {
+        originalSession: ProjectionSession? = session, originalOwner: ReceiverSessionOwner? = owner,
+        reason: String = "input"): Pair<Long, InputRetirement>? {
         val dismissed = dismissChooser && registrationActive()
-        val result = prepareInputCancellation(originalSession, originalOwner, dismissChooser)
+        val result = prepareInputCancellation(originalSession, originalOwner, dismissChooser, reason)
         val retirement = result.second
         retirement.finishOriginal()
         if (retirement.superseded()) return null
@@ -1072,10 +1085,11 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
 
     /** All original metadata/obligations are secured before the first queue, scheduler or UI effect. */
     private fun prepareInputCancellation(originalSession: ProjectionSession?, originalOwner: ReceiverSessionOwner?,
-                                         dismissChooser: Boolean): Pair<Long, InputRetirement> {
+                                         dismissChooser: Boolean, reason: String): Pair<Long, InputRetirement> {
         val at = SystemClock.uptimeMillis()
         val revision = originalOwner?.advanceInputRevision() ?: (inputGeneration + 1)
         inputGeneration = revision // Exactly once, before any callback can install a successor.
+        ProjectionSession.anchorFlow("activity_retire reason=$reason inputRevision=$revision chooser=${registrationActive()} transaction=${anchorOffer?.transactionId} dismiss=$dismissChooser")
         nativePadMotionInput.retire()
         val motionAdmission = nativePadMotionInput.admission
         padControlInput.retire()
