@@ -66,3 +66,27 @@ These host checks establish source behavior against modeled platform responses. 
 actual user accessibility enablement, managed-display production access, screen/encoder landmarks,
 IME/rotation/scale on devices and physical-Phone-off/locked behavior require separate scheduled
 validation. The raw registration cases cover represented matching/save behavior, not physical input delivery.
+
+The same reader connection is exercised across app A -> B -> A with changing window IDs. Each
+window snapshot retains counts from its one traversal before visible/enabled/bounds filtering,
+plus the selected root's metadata/child count and any pruned root package. The existing app
+registration logger emits these values with the original transaction/display/window. A READ with
+zero exported targets can therefore be distinguished from NO_ROOT, package pruning or failure.
+Counts describe visited handles; they do not claim to enumerate descendants of a pruned package.
+
+Each target also carries the actual Android `drawingOrder` and a shared immutable root-to-self
+`drawingOrderPath`. Path entries retain read-local branch identity, sibling-relative drawing order,
+and the actual accessibility child index, including filtered ancestors and null child slots. The
+adapter cases preserve ties and skipped values; a behind branch with leaf order100 and a front
+branch with leaf order1 retain their parent orders for the selector's first-divergent comparison.
+Child index and ordinal do not establish a Z-order tie breaker. See the
+[Android API](https://developer.android.com/reference/android/view/accessibility/AccessibilityNodeInfo#getDrawingOrder())
+and [CTS drawing-order cases](https://android.googlesource.com/platform/cts/+/4080d986eb09d4c07e3f12be8537e1fd9839dbd2/tests/accessibilityservice/src/android/accessibilityservice/cts/AccessibilityViewTreeReportingTest.java).
+
+A root with no children, class or positive bounds receives one public `refresh()` on that same
+handle before traversal. The existing summary retains its initial metadata and refresh outcome;
+the traversal supplies the resulting root/counts. Adapter checks model recovered live children,
+persistently empty provider output, an obsolete result and an exception, with one root acquisition
+and cleanup. False/exception adds no rejection rule. `--android-adapter-ref <exact-sha>` freezes the
+old adapter for the same reproduction. These checks do not establish a WeChat cache bug: reference
+AOSP `getRoot()` already bypasses its cache, and a refresh success may still return an empty node.

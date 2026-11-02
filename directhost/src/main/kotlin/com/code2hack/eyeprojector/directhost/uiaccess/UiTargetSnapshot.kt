@@ -68,6 +68,9 @@ data class UiWindowMetadata(
     val bounds: UiBounds,
 )
 
+/** One actual hierarchy edge in this read. Index/ordinal are identity, not drawing-order substitutes. */
+data class UiDrawingOrderStep(val ordinal: Int, val drawingOrder: Int?, val childIndex: Int)
+
 /** Values only. The ordinal is local to one observation, and resource IDs may be null or repeated. */
 data class UiTargetObservation(
     val ordinal: Int,
@@ -83,15 +86,39 @@ data class UiTargetObservation(
     val enabled: Boolean,
     /** This read's hierarchy edges only; never a saved selector or ordered fallback. */
     val ancestorOrdinals: List<Int> = emptyList(),
+    /** Actual Android sibling-relative order, including ties/skipped values; null means unobserved. */
+    val drawingOrder: Int? = null,
+    /** Root through self, including ancestors omitted from targets; root childIndex is -1. */
+    val drawingOrderPath: List<UiDrawingOrderStep> = emptyList(),
 )
 
 enum class UiWindowReadStatus { READ, OTHER_PACKAGE, NO_ROOT, WINDOW_MISMATCH, FAILED }
+/** One refresh of the same sparse root; success does not assert that the provider exposes children. */
+data class UiRootRefresh(
+    val before: UiTargetObservation,
+    val beforeChildCount: Int,
+    val succeeded: Boolean?,
+    val failureClass: String? = null,
+)
+/** Counts from this traversal, before target filtering; a pruned subtree is not an empty tree. */
+data class UiWindowTraversal(
+    val visitedNodes: Int,
+    val selectedPackageNodes: Int,
+    val invisibleNodes: Int,
+    val disabledNodes: Int,
+    val nonPositiveBoundsNodes: Int,
+    val rootPackageName: String?,
+    val root: UiTargetObservation?,
+    val rootChildCount: Int?,
+    val rootRefresh: UiRootRefresh? = null,
+)
 data class UiWindowSnapshot(
     val window: UiWindowMetadata,
     val status: UiWindowReadStatus,
     val targets: List<UiTargetObservation> = emptyList(),
     val failureClass: String? = null,
     internal val failure: Exception? = null,
+    val traversal: UiWindowTraversal? = null,
 )
 
 enum class UiTargetReadStatus { READ, ACCESS_REQUIRED, SOURCE_UNAVAILABLE, SOURCE_CHANGED, DISPLAY_ABSENT, WINDOW_ABSENT, FAILED }

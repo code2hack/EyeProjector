@@ -50,6 +50,13 @@ private fun readerScenarios() {
     check(listOf(defaultWindow, targetWindow, otherWindow).all { it.closed == 1 })
     check(root.closed == 1 && children.filterNotNull().all { it.closed == 1 })
     check(snapshot.windows[0].targets.all { it.visible && it.enabled && it.bounds.hasArea })
+    val traversal = checkNotNull(snapshot.windows[0].traversal)
+    check(traversal.visitedNodes == 11 && traversal.selectedPackageNodes == 10)
+    check(traversal.invisibleNodes == 1 && traversal.disabledNodes == 1 && traversal.nonPositiveBoundsNodes == 2)
+    check(traversal.rootPackageName == "selected.app" && traversal.rootChildCount == children.size)
+    check(traversal.root?.bounds == UiBounds(24, 95, 1224, 221))
+    check(snapshot.windows[1].traversal?.rootPackageName == "other.app")
+    check(snapshot.windows[1].traversal?.let { it.visitedNodes == 1 && it.selectedPackageNodes == 0 } == true)
 
     check(read(mapOf(0 to listOf(Window(displayId = 0)))).status == UiTargetReadStatus.DISPLAY_ABSENT)
     check(read(mapOf(34 to emptyList()), UiTargetRequest(source(), "selected.app", 99)).status == UiTargetReadStatus.WINDOW_ABSENT)
@@ -68,6 +75,7 @@ private fun readerScenarios() {
     val failure = read(mapOf(34 to listOf(Window(node = parent)))).windows.single()
     check(failure.status == UiWindowReadStatus.FAILED && failure.targets.isEmpty())
     check(failure.failureClass == "java.lang.IllegalStateException" && parent.closed == 1 && throwing.closed == 1)
+    check(failure.traversal?.let { it.visitedNodes == 2 && it.selectedPackageNodes == 2 } == true)
     val unavailable = AccessibilityService(AccessibilityServiceInfo(flags = 0))
     check(UiTargetReader(AndroidUiAccess(unavailable), { 1 }).read(UiTargetRequest(source(), "selected.app")).status == UiTargetReadStatus.ACCESS_REQUIRED)
     unavailable.serviceInfo = AccessibilityServiceInfo(capabilities = 0)
@@ -76,9 +84,127 @@ private fun readerScenarios() {
     var deep = Node()
     val nodes = ArrayList<Node>(); nodes.add(deep)
     repeat(12000) { deep = Node(isClickable = false, children = listOf(deep)); nodes.add(deep) }
-    check(read(mapOf(34 to listOf(Window(node = deep)))).windows.single().targets.size == 12001)
+    val deepTargets = read(mapOf(34 to listOf(Window(node = deep)))).windows.single().targets
+    check(deepTargets.size == 12001)
+    check(deepTargets.last().drawingOrderPath.size == 12001)
+    check(deepTargets.last().drawingOrderPath.first().ordinal == 1)
+    check(deepTargets.last().drawingOrderPath.last().ordinal == 12001)
     check(nodes.all { it.closed == 1 })
     println("PASS actual reader + Android adapter: exact display/window, static properties, usable bounds, null/repeated IDs, deep tree, stale failure and owned-handle cleanup")
+}
+
+private fun drawingOrderScenarios() {
+    val behindChild = Node(viewIdResourceName = "behind", drawingOrder = 100)
+    val behind = Node(isEnabled = false, drawingOrder = 2, children = listOf(behindChild))
+    val frontChild = Node(viewIdResourceName = "front", drawingOrder = 1)
+    val front = Node(screen = Rect(0, 0, 0, 0), drawingOrder = 11, children = listOf(frontChild))
+    val tiedFirst = Node(viewIdResourceName = "tied-first", drawingOrder = 7)
+    val tiedSecond = Node(viewIdResourceName = "tied-second", drawingOrder = 7)
+    val root = Node(isVisibleToUser = false, children = listOf(null, behind, front, tiedFirst, tiedSecond))
+    val window = Window(node = root)
+    val observed = read(mapOf(34 to listOf(window))).windows.single().targets.associateBy { it.resourceId }
+    val behindPath = observed.getValue("behind").drawingOrderPath
+    val frontPath = observed.getValue("front").drawingOrderPath
+    check(behindPath.map { it.drawingOrder } == listOf(0, 2, 100))
+    check(frontPath.map { it.drawingOrder } == listOf(0, 11, 1))
+    check(behindPath.map { it.childIndex } == listOf(-1, 1, 0))
+    check(frontPath.map { it.childIndex } == listOf(-1, 2, 0))
+    check(behindPath.first() == frontPath.first() && behindPath[1].ordinal != frontPath[1].ordinal)
+    check(observed.getValue("front").ancestorOrdinals == frontPath.dropLast(1).map { it.ordinal })
+    check(observed.getValue("front").drawingOrder == 1 && observed.getValue("behind").drawingOrder == 100)
+    val ties = listOf(observed.getValue("tied-first"), observed.getValue("tied-second"))
+    check(ties.map { it.drawingOrder } == listOf(7, 7))
+    check(ties.map { it.drawingOrderPath.last().childIndex } == listOf(3, 4))
+    check(ties[0].drawingOrderPath.last().ordinal != ties[1].drawingOrderPath.last().ordinal)
+    check(root.childrenRead == 5 && behind.childrenRead == 1 && front.childrenRead == 1)
+    check(listOf(root, behind, behindChild, front, frontChild, tiedFirst, tiedSecond).all { it.closed == 1 })
+    check(window.rootsRead == 1 && window.closed == 1)
+    println("PASS actual Android drawingOrder: sibling-relative ties/skips, filtered ancestors, first-divergent branch context, actual child indices and one owned traversal")
+}
+
+private fun rootRefreshScenarios() {
+    fun sparse(refresh: ((Node) -> Boolean)? = null) = Node(className = null,
+        screen = Rect(0, 0, 0, 0), isClickable = false, isVisibleToUser = false,
+        isEnabled = false, onRefresh = refresh)
+    val child = Node(viewIdResourceName = "selected.app:id/current", isClickable = false)
+    val initial = sparse { root ->
+        root.className = "android.widget.FrameLayout"
+        root.screen = Rect(0, 0, 1248, 1664)
+        root.isVisibleToUser = true; root.isEnabled = true; root.children = listOf(child)
+        true
+    }
+    val window = Window(node = initial)
+    val recovered = read(mapOf(34 to listOf(window))).windows.single()
+    check(recovered.targets.any { it.resourceId == "selected.app:id/current" }) {
+        "One refresh of the same sparse root must expose the live child before traversal"
+    }
+    val traversal = checkNotNull(recovered.traversal)
+    val refresh = checkNotNull(traversal.rootRefresh)
+    check(refresh.succeeded == true && refresh.before.className == null && refresh.beforeChildCount == 0)
+    check(!refresh.before.bounds.hasArea && !refresh.before.visible && !refresh.before.enabled)
+    check(traversal.visitedNodes == 2 && traversal.rootChildCount == 1 && traversal.root?.visible == true)
+    check(initial.refreshes == 1 && child.refreshes == 0 && initial.childrenRead == 1)
+    check(window.rootsRead == 1 && initial.closed == 1 && child.closed == 1 && window.closed == 1)
+
+    for (outcome in listOf("empty", "obsolete", "exception")) {
+        val root = sparse {
+            when (outcome) {
+                "exception" -> throw IllegalStateException("private provider detail")
+                "obsolete" -> false
+                else -> true
+            }
+        }
+        val currentWindow = Window(node = root)
+        val current = read(mapOf(34 to listOf(currentWindow))).windows.single()
+        check(current.status == UiWindowReadStatus.READ && current.targets.isEmpty())
+        val facts = checkNotNull(current.traversal)
+        val attempt = checkNotNull(facts.rootRefresh)
+        check(facts.visitedNodes == 1 && facts.rootChildCount == 0)
+        check(attempt.succeeded == when (outcome) { "empty" -> true; "obsolete" -> false; else -> null })
+        check(attempt.failureClass == if (outcome == "exception") "java.lang.IllegalStateException" else null)
+        check(!attempt.toString().contains("private provider detail"))
+        check(root.refreshes == 1 && root.childrenRead == 0 && currentWindow.rootsRead == 1)
+        check(root.closed == 1 && currentWindow.closed == 1)
+    }
+    val normal = Node(children = listOf(Node()))
+    val normalWindow = Window(node = normal)
+    check(read(mapOf(34 to listOf(normalWindow))).windows.single().traversal?.rootRefresh == null)
+    check(normal.refreshes == 0 && normalWindow.rootsRead == 1)
+    val changedWindow = sparse { it.windowId = 99; true }
+    check(read(mapOf(34 to listOf(Window(node = changedWindow)))).windows.single().status == UiWindowReadStatus.WINDOW_MISMATCH)
+    check(changedWindow.closed == 1 && changedWindow.refreshes == 1)
+    val throwingRoot = Node(className = null, failBounds = true)
+    val failedWindow = Window(node = throwingRoot)
+    check(read(mapOf(34 to listOf(failedWindow))).windows.single().status == UiWindowReadStatus.FAILED)
+    check(throwingRoot.closed == 1 && failedWindow.closed == 1 && throwingRoot.refreshes == 0)
+    println("PASS sparse original root: one public refresh recovers modeled live children; persistent empty/obsolete/exception stay distinct, no new rejection, one root/walk and exact cleanup")
+}
+
+private fun crossAppReadScenarios() {
+    val service = AccessibilityService()
+    val reader = UiTargetReader(AndroidUiAccess(service)) { 100L }
+    // Reuse the actual connection/reader while both current app and window change, then return.
+    for ((index, app) in listOf("first.app", "second.app", "first.app").withIndex()) {
+        val id = 20 + index
+        val child = Node(packageName = app, windowId = id, viewIdResourceName = "$app:id/target")
+        val root = Node(packageName = app, windowId = id, children = listOf(child), isVisibleToUser = false)
+        val window = Window(id = id, node = root)
+        service.windowsOnAllDisplays = SparseArray(mapOf(34 to listOf(window)))
+        val request = UiTargetRequest(source().copy(foregroundPackage = app), app)
+        val current = reader.read(request).windows.single()
+        check(current.targets.single().resourceId == "$app:id/target")
+        check(current.traversal?.let { it.visitedNodes == 2 && it.invisibleNodes == 1 && it.rootChildCount == 1 } == true)
+        check(root.closed == 1 && child.closed == 1 && window.closed == 1)
+    }
+    val hiddenChild = Node(isVisibleToUser = false)
+    val hiddenRoot = Node(isVisibleToUser = false, children = listOf(hiddenChild))
+    val filtered = read(mapOf(34 to listOf(Window(node = hiddenRoot)))).windows.single()
+    check(filtered.status == UiWindowReadStatus.READ && filtered.targets.isEmpty())
+    check(filtered.traversal?.let { it.visitedNodes == 2 && it.selectedPackageNodes == 2 && it.invisibleNodes == 2 } == true)
+    check(hiddenRoot.closed == 1 && hiddenChild.closed == 1)
+    val absent = read(mapOf(34 to listOf(Window()))).windows.single()
+    check(absent.status == UiWindowReadStatus.NO_ROOT && absent.traversal == null)
+    println("PASS reused production reader A -> B -> A: current package/window, single-traversal raw counts distinguish filtered nodes, package pruning, NO_ROOT and partial failure")
 }
 
 private fun geometryScenarios() {
@@ -195,4 +321,4 @@ private fun serviceScenarios() {
     println("PASS actual HID service: retrieval/view-ID/key flags, modeled key result/pin coexistence, interrupt/unbind/destroy/replacement lifecycle")
 }
 
-fun main() { readerScenarios(); geometryScenarios(); providerScenarios(); connectionScenarios(); serviceScenarios() }
+fun main() { readerScenarios(); drawingOrderScenarios(); rootRefreshScenarios(); crossAppReadScenarios(); geometryScenarios(); providerScenarios(); connectionScenarios(); serviceScenarios() }
