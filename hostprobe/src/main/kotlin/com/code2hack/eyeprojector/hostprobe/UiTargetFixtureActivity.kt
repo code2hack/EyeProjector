@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.AtomicFile
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowInsets
@@ -28,6 +29,13 @@ class UiTargetFixtureActivity : Activity() {
     private var ups = 0
     private var cancels = 0
     private var holding = false
+    private var touchDowns = 0
+    private var touchUps = 0
+    private var touchCancels = 0
+    private var touchMoves = 0
+    private var backDowns = 0
+    private var backUps = 0
+    private var backCallbacks = 0
     private var runId = "unspecified"
     private var revision = 0L
     private var lastEdge = "NONE"
@@ -130,6 +138,34 @@ class UiTargetFixtureActivity : Activity() {
         super.onDestroy()
     }
 
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> touchDowns++
+            MotionEvent.ACTION_UP -> touchUps++
+            MotionEvent.ACTION_CANCEL -> touchCancels++
+            MotionEvent.ACTION_MOVE -> touchMoves++
+        }
+        return try { super.dispatchTouchEvent(event) }
+        finally { if (::root.isInitialized) scheduleObservation() }
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+            when (event.action) {
+                KeyEvent.ACTION_DOWN -> backDowns++
+                KeyEvent.ACTION_UP -> backUps++
+            }
+        }
+        return try { super.dispatchKeyEvent(event) }
+        finally { if (::root.isInitialized) scheduleObservation() }
+    }
+
+    @Deprecated("Observe the ordinary Back callback without changing its behavior")
+    override fun onBackPressed() {
+        backCallbacks++
+        super.onBackPressed()
+    }
+
     private fun edge(value: String) {
         lastEdge = value
         lastEdgeTimeMs = SystemClock.elapsedRealtime()
@@ -171,6 +207,10 @@ class UiTargetFixtureActivity : Activity() {
             .put("controls", JSONArray().put(geometry(click)).put(geometry(hold)))
             .put("clickCount", clicks).put("holdDownCount", downs).put("holdUpCount", ups)
             .put("holdCancelCount", cancels).put("holding", holding)
+            .put("activityTouchDownCount", touchDowns).put("activityTouchUpCount", touchUps)
+            .put("activityTouchCancelCount", touchCancels).put("activityTouchMoveCount", touchMoves)
+            .put("activityBackDownCount", backDowns).put("activityBackUpCount", backUps)
+            .put("activityBackCallbackCount", backCallbacks)
             .put("lastEdge", lastEdge).put("lastEdgeElapsedRealtimeMs", lastEdgeTimeMs ?: JSONObject.NULL)
             .put("coordinateSpace", "View.getLocationOnScreen plus untransformed width/height; no encoded-frame association")
         val file = AtomicFile(File(filesDir, "ui-target-fixture.json"))
