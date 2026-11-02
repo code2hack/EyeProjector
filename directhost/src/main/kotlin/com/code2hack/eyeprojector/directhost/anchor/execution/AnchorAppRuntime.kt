@@ -57,7 +57,14 @@ internal class AnchorAppRuntime(context: Context, registrationProviderName: Stri
     init {
         coordinator.registrationDiagnostic = { observation ->
             registrationLogs.execute {
-                try { android.util.Log.i("AnchorRegistration", observation.render()) }
+                try {
+                    android.util.Log.i("AnchorRegistration", observation.render())
+                    observation.inspection?.hoverTargets?.forEach { target ->
+                        android.util.Log.i("AnchorRegistration", "stage=HOVER_TARGET transaction=${observation.transactionId} " +
+                            "functionSource=${observation.intent.source} gesture=${observation.intent.gestureId} " +
+                            "display=${observation.source?.displayId} target=$target")
+                    }
+                }
                 catch (_: Exception) { /* Logging cannot change the original operation. */ }
             }
         }

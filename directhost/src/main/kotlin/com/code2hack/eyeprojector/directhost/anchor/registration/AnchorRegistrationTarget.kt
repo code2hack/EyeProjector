@@ -36,6 +36,7 @@ data class AnchorRegistrationHoverTarget(
     val bounds: UiBounds,
     val ancestorOrdinals: List<Int>,
     val leaf: Boolean,
+    val drawingOrderPath: List<UiDrawingOrderStep> = emptyList(),
 )
 
 /** Copied evidence from the same selection pass; it never supplies a fallback target. */
@@ -109,18 +110,21 @@ object AnchorRegistrationTargets {
         }
         targetCount = targets.size
         if (targets.isEmpty()) return reject(AnchorRegistrationFailure.HOVER_ABSENT)
-        // Ancestors and descendants are one hit branch; siblings/overlays compete. These
-        // edges come from this traversal, never numeric order, area, depth or saved paths.
+        // Ancestors and descendants are one hit branch. These edges come from this
+        // traversal, never numeric order, area, depth or saved paths.
         val selectedBranches = targets.filter { parent -> targets.none { child ->
             child !== parent && parent.ordinal in child.ancestorOrdinals
         } }
         hoverTargets = targets.map { item -> AnchorRegistrationHoverTarget(item.ordinal, item.windowId,
             item.resourceId, item.className, item.bounds, item.ancestorOrdinals.toList(),
-            selectedBranches.any { it === item }) }
+            selectedBranches.any { it === item }, item.drawingOrderPath.toList()) }
         if (selectedBranches.isEmpty()) return reject(AnchorRegistrationFailure.HOVER_ABSENT)
-        if (selectedBranches.size > 1) return reject(AnchorRegistrationFailure.HOVER_AMBIGUOUS)
+        // Android drawing order is sibling-relative: compare the first divergent branch,
+        // not unrelated leaf numbers. Equal/unavailable platform order supplies no winner.
+        val element = selectedBranches.singleOrNull() ?: selectedBranches.singleOrNull { candidate ->
+            selectedBranches.all { other -> other === candidate || inFrontOf(candidate, other) }
+        } ?: return reject(AnchorRegistrationFailure.HOVER_AMBIGUOUS)
         // Advertised actions do not infer an activation mode or activate the target.
-        val element = selectedBranches.single()
         // An ID-less label may be part of an identified parent region. Bind the nearest
         // actual containing ancestor, never another branch or a persisted tree position.
         val chosen = if (!element.resourceId.isNullOrBlank()) element else
@@ -138,5 +142,19 @@ object AnchorRegistrationTargets {
                 reject(AnchorRegistrationFailure.TARGET_UNAVAILABLE)
             }
         }
+    }
+
+    private fun inFrontOf(candidate: UiTargetObservation, other: UiTargetObservation): Boolean {
+        val left = candidate.drawingOrderPath
+        val right = other.drawingOrderPath
+        for (index in 0 until minOf(left.size, right.size)) {
+            if (left[index].ordinal == right[index].ordinal) continue
+            // Different roots have no shared parent from which these numbers can be compared.
+            if (index == 0) return false
+            val candidateOrder = left[index].drawingOrder ?: return false
+            val otherOrder = right[index].drawingOrder ?: return false
+            return candidateOrder > otherOrder
+        }
+        return right.isNotEmpty() && left.size > right.size
     }
 }
