@@ -6,13 +6,18 @@ import com.code2hack.eyeprojector.protocol.SessionControl
 internal enum class RemoteControlKind { INTENT, CANCEL_TRIGGER, CANCEL_ACTIVATION, START, STOP }
 internal data class RemoteControlKey(val kind: RemoteControlKind, val id: String, val admission: String = "")
 
-internal fun SessionControl.Request.remoteControlKey(): RemoteControlKey? = when {
-    cancelTrigger != null -> RemoteControlKey(RemoteControlKind.CANCEL_TRIGGER, cancelTrigger.triggerId)
-    cancelActivation != null -> RemoteControlKey(RemoteControlKind.CANCEL_ACTIVATION, cancelActivation.activationId)
-    intent != null -> RemoteControlKey(RemoteControlKind.INTENT, intent.triggerId)
-    operation == SessionControl.Operation.START -> RemoteControlKey(RemoteControlKind.START, epoch, startEpoch)
-    operation == SessionControl.Operation.STOP -> RemoteControlKey(RemoteControlKind.STOP, epoch, startEpoch)
-    else -> null
+internal fun SessionControl.Request.remoteControlKey(): RemoteControlKey? {
+    val canceledTrigger = cancelTrigger
+    val canceledActivation = cancelActivation
+    val incomingIntent = intent
+    return when {
+        canceledTrigger != null -> RemoteControlKey(RemoteControlKind.CANCEL_TRIGGER, canceledTrigger.triggerId)
+        canceledActivation != null -> RemoteControlKey(RemoteControlKind.CANCEL_ACTIVATION, canceledActivation.activationId)
+        incomingIntent != null -> RemoteControlKey(RemoteControlKind.INTENT, incomingIntent.triggerId)
+        operation == SessionControl.Operation.START -> RemoteControlKey(RemoteControlKind.START, epoch, startEpoch)
+        operation == SessionControl.Operation.STOP -> RemoteControlKey(RemoteControlKind.STOP, epoch, startEpoch)
+        else -> null
+    }
 }
 
 /** Captured before the feature FIFO. False is terminal; true is rechecked against the SAME
