@@ -27,6 +27,17 @@ sealed interface AnchorRegistrationCapture {
     data class Rejected(val reason: AnchorRegistrationFailure) : AnchorRegistrationCapture
 }
 
+/** Metadata from this capture's existing hit list; ancestry is local evidence, never a selector. */
+data class AnchorRegistrationHoverTarget(
+    val ordinal: Int,
+    val windowId: Int,
+    val resourceId: String?,
+    val className: String?,
+    val bounds: UiBounds,
+    val ancestorOrdinals: List<Int>,
+    val leaf: Boolean,
+)
+
 /** Copied evidence from the same selection pass; it never supplies a fallback target. */
 data class AnchorRegistrationInspection(
     val capture: AnchorRegistrationCapture,
@@ -37,6 +48,7 @@ data class AnchorRegistrationInspection(
     val identityMatchCount: Int?,
     val selected: UiTargetObservation?,
     val resolution: AnchorTargetResolution?,
+    val hoverTargets: List<AnchorRegistrationHoverTarget> = emptyList(),
 )
 
 /** Select only under the original hover, then use #118's persistent-identity capture. */
@@ -51,6 +63,7 @@ object AnchorRegistrationTargets {
         var targetCount = 0
         var selected: UiTargetObservation? = null
         var resolution: AnchorTargetResolution? = null
+        var hoverTargets = emptyList<AnchorRegistrationHoverTarget>()
         fun finish(capture: AnchorRegistrationCapture): AnchorRegistrationInspection {
             val count = when (val value = resolution) {
                 is AnchorTargetResolution.Unique -> 1
@@ -60,7 +73,7 @@ object AnchorRegistrationTargets {
                 else -> null
             }
             return AnchorRegistrationInspection(capture, videoHover, sourceHover, windowCount,
-                targetCount, count, selected, resolution)
+                targetCount, count, selected, resolution, hoverTargets)
         }
         fun reject(reason: AnchorRegistrationFailure) = finish(AnchorRegistrationCapture.Rejected(reason))
         val fact = intent.context.usability
@@ -101,6 +114,9 @@ object AnchorRegistrationTargets {
         val selectedBranches = targets.filter { parent -> targets.none { child ->
             child !== parent && parent.ordinal in child.ancestorOrdinals
         } }
+        hoverTargets = targets.map { item -> AnchorRegistrationHoverTarget(item.ordinal, item.windowId,
+            item.resourceId, item.className, item.bounds, item.ancestorOrdinals.toList(),
+            selectedBranches.any { it === item }) }
         if (selectedBranches.isEmpty()) return reject(AnchorRegistrationFailure.HOVER_ABSENT)
         if (selectedBranches.size > 1) return reject(AnchorRegistrationFailure.HOVER_AMBIGUOUS)
         // Advertised actions do not infer an activation mode or activate the target.
