@@ -398,7 +398,7 @@ class ProjectionSession(
 
     /** Native Mode shares the same ordered writer as Tap/contact/navigation. */
     fun cycleMode(): Boolean = controls.submit(SystemClock.uptimeMillis(),
-        { running.get() && sourceUsability?.mode == ReceiverUsabilityMode.PROJECTED },"mode",preserveTiming=false) {
+        { running.get() && (sourceUsability?.let { it.mode == ReceiverUsabilityMode.PROJECTED } ?: presentationActive) },"mode",preserveTiming=false) {
         send(Frame(Wire.MODE_CYCLE))
     }
 
