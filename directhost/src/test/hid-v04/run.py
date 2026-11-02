@@ -17,7 +17,7 @@ protocol = root / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
 host = root / 'directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost'
 files = [protocol / (n + '.kt') for n in [
     'PhoneHidGestureRecognizer', 'Wire', 'PhoneInput', 'Touch', 'ReceiverUsability',
-    'CameraFeed', 'ActivationControl', 'ReceiverControlIntent', 'CoordinateAnchors', 'CoordinateMode']]
+    'CameraFeed', 'ActivationControl', 'ReceiverControlSource', 'CoordinateAnchors', 'CoordinateMode']]
 files += [host / n for n in [
     'hid/PhoneHidBindings.kt', 'hid/PhoneHidController.kt', 'input/PhoneHidRoute.kt',
     'input/PhoneInputMerger.kt', 'PhoneTouchDispatcher.kt', 'activation/PhoneHidActivation.kt', 'activation/PhoneHidDisposition.kt']]
@@ -25,12 +25,15 @@ files += [root / 'directhost/src/test/hidnavigation/ActivationBoundary.kt',
           root / 'directhost/src/test/kotlin/com/code2hack/eyeprojector/directhost/PhoneInputMergerTest.kt',
           root / 'protocol/src/test/kotlin/com/code2hack/eyeprojector/protocol/PhoneInputTest.kt']
 files += [host / n for n in [
-    'input/PhoneHidOriginal.kt','input/PhoneModeOwner.kt','input/CoordinateInputRouter.kt',
+    'input/PhoneHidOriginal.kt','input/PhoneModeOwner.kt','input/CoordinateInputRouter.kt','input/InputWork.kt',
+    'ProjectedAppLaunch.kt','ProjectionDisplayState.kt','OwnedRelease.kt',
     'anchor/position/CoordinateAnchorController.kt','anchor/position/AnchorPositionStorage.kt',
     'anchor/position/FileAnchorPositionStorage.kt','anchor/position/CoordinateAnchorPreferences.kt']]
 files += [root / 'directhost/src/test/anchor-position/doubles/Context.kt']
 files += sorted((root / 'directhost/src/test/mode-routing/doubles').glob('*.kt'))
-files += [root / 'directhost/src/test/mode-routing/ModeRoutingTest.kt']
+files += [root / 'directhost/src/test/mode-routing/ModeRoutingTest.kt',
+          root / 'directhost/src/test/kotlin/com/code2hack/eyeprojector/directhost/input/InputWorkTest.kt',
+          root / 'directhost/src/test/kotlin/com/code2hack/eyeprojector/directhost/PhoneTouchDispatcherTest.kt']
 files += [root / 'directhost/src/test/kotlin/com/code2hack/eyeprojector/directhost/hid' / n for n in [
     'PhoneHidBindingsTest.kt', 'PhoneHidV04Test.kt']]
 cache = Path(os.environ.get('GRADLE_USER_HOME', Path.home() / '.gradle')) / 'caches/modules-2/files-2.1'
@@ -68,7 +71,9 @@ commands = {
             'com.code2hack.eyeprojector.directhost.hid.PhoneHidV04Test',
             'com.code2hack.eyeprojector.directhost.PhoneInputMergerTest',
             'com.code2hack.eyeprojector.protocol.PhoneInputTest',
-            'com.code2hack.eyeprojector.directhost.input.ModeRoutingTest'],
+            'com.code2hack.eyeprojector.directhost.input.ModeRoutingTest',
+            'com.code2hack.eyeprojector.directhost.input.InputWorkTest',
+            'com.code2hack.eyeprojector.directhost.PhoneTouchDispatcherTest'],
 }
 result = {'scope': 'Actual v0.4 store/controller/route/merger/gesture/PhoneInput codec. Actual app-process mode owner/router/merger and real concurrent blocked Mode regression. Only Context/Binder transport is doubled; no Android or physical HID/GL/Shell claim.',
           'inputs': inputs, 'runnerSha256': sha(Path(__file__)),

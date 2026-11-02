@@ -340,6 +340,10 @@ internal class PhoneInputMerger(
     /** Launch/resize/release already invalidate Receiver context; do not send under output/publication locks. */
     fun invalidate() = transaction { out -> retire(out, false) }
     fun invalidateOrdinary() = transaction { out -> retire(out, false, passive = true, ordinaryOnly = true) }
+    fun invalidateForLaunch() = transaction { out ->
+        check(active())
+        retire(out,false,passive=true,ordinaryOnly=true)
+    }
     fun sourceLost() = transaction {
         generation++
         held = null; nativeContact = null; point = null; pointerSource = null

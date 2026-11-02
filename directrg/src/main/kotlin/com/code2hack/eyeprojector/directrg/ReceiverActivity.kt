@@ -33,7 +33,6 @@ import android.widget.Toast
 import com.code2hack.eyeprojector.protocol.ReceiverUsabilityMode
 import com.code2hack.eyeprojector.protocol.Touch
 import com.code2hack.eyeprojector.protocol.ReceiverControlSource
-import com.code2hack.eyeprojector.protocol.ReceiverControlDisposition
 import com.code2hack.eyeprojector.protocol.CoordinateModeResult
 import com.code2hack.eyeprojector.protocol.CoordinateAnchorState
 import com.code2hack.eyeprojector.protocol.AnchorInteractionMode
@@ -492,6 +491,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
     }
 
     /** Presentation follows the current original input context, never a saved/contact toggle. */
+    private fun usable() = resumed && hasWindowFocus()
     private fun localInputVisible() = connectionView.visibility == View.VISIBLE
     private fun projectedInput() = streaming && presentation.projectedInput
 

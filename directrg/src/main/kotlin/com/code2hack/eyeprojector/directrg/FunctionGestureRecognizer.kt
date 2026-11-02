@@ -42,5 +42,6 @@ internal class FunctionGestureRecognizer(
             }
         }
     }
+    fun retireReports() { cancel();terminalUntil=now()+500 }
     fun cancel() { revision++; val old=cancelTimer;cancelTimer=null;owner=null;downAt=null;shorts=0;old?.invoke() }
 }
