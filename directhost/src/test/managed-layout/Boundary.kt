@@ -1,8 +1,6 @@
 package com.code2hack.eyeprojector.directhost
 
 import com.code2hack.eyeprojector.protocol.*
-import com.code2hack.eyeprojector.directhost.uiaccess.*
-import com.code2hack.eyeprojector.directhost.anchor.execution.*
 import com.code2hack.eyeprojector.directhost.input.*
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -41,17 +39,9 @@ internal class ManagedProjectionDisplay {
 internal class LayoutFlow(val source: ManagedProjectionDisplay) : AutoCloseable {
     val controlLock = Any()
     val geometry = AtomicReference<Geometry?>(Geometry(480, 640))
-    val inputControls = AnchorSessionInput(controlLock) { error("Unexpected stock output") }
-    private val cancellationWork = InputWork("actual-layout-cancellation")
-    private val cancellationEnded = java.util.concurrent.CountDownLatch(1)
-    val failures = java.util.concurrent.CopyOnWriteArrayList<Throwable>()
+    val inputControls = PhoneTouchDispatcher(controlLock) { error("Unexpected stock output") }
     val phoneInput = PhoneInputMerger(controlLock, { 1000L }, { _, _ -> {} }, { geometry.get() },
-        inputControls::touch, inputControls::scroll, { _, _ -> }, { inputControls.cancel() }, {},
-        anchorControl = inputControls::consumeHeldControl,
-        cancelPassiveControl = inputControls::cancelOrdinary,
-        captureHeldControl = inputControls.anchor::captureHeldControl,
-        receiveControl = inputControls.anchor::receiveControl,
-        passiveAllowed = { !inputControls.anchor.holding })
+        inputControls::touch,inputControls::scroll,{ _,_-> },{ inputControls.cancel() },{})
     val events = mutableListOf<Touch>()
     var taps = 0
     val managed = ManagedProjectionInput(source)
@@ -60,12 +50,9 @@ internal class LayoutFlow(val source: ManagedProjectionDisplay) : AutoCloseable 
     var managedInputSource = source.sourceObservation()
 
     init {
-        cancellationWork.whenTerminated { cancellationEnded.countDown() }
-        inputControls.cancellation(cancellationWork::submit, failures::add)
         inputControls.bindMotionTarget(object : PhoneTouchDispatcher.MotionTarget {
             override fun geometry(next: Geometry) = managed.geometry(next)
             override fun touch(event: Touch): Boolean = managed.touch(event).also { if (it) events.add(event) }
-            override fun anchorDown(event: Touch, source: ManagedUiSource): Boolean = managed.anchorDown(event,source).also { if(it)events.add(event) }
             override fun tap(event: Tap): Boolean = managed.tap(event).also { if (it) taps++ }
             override fun scroll(event: Scroll): Boolean = managed.scroll(event)
         })
@@ -81,17 +68,8 @@ internal class LayoutFlow(val source: ManagedProjectionDisplay) : AutoCloseable 
         }
     }
     private fun recordManagedProjection() = Unit // Status journal only.
-    fun drainCancellation() {
-        val done = java.util.concurrent.CountDownLatch(1)
-        cancellationWork.submit { done.countDown() }
-        check(done.await(3, java.util.concurrent.TimeUnit.SECONDS))
-    }
-    override fun close() {
-        inputControls.close()
-        drainCancellation()
-        cancellationWork.close()
-        check(cancellationEnded.await(3, java.util.concurrent.TimeUnit.SECONDS))
-    }
+    override fun close() { inputControls.close() }
+
 }
 
 internal class PhoneInputTrace {

@@ -10,6 +10,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.View
+import com.code2hack.eyeprojector.protocol.*
 
 /** Local projector cursor. Never captures touches or waits for a remote video frame. */
 class PointerOverlay(context: Context, attrs: AttributeSet?=null) : View(context,attrs) {
@@ -20,11 +21,25 @@ class PointerOverlay(context: Context, attrs: AttributeSet?=null) : View(context
     private var pendingFrame=false
     private val paint=Paint(Paint.ANTI_ALIAS_FLAG)
     private val radius=6f
-    val position get() = model.position
+    private var coordinateMode=CoordinateAnchorState()
+    private var canvasGeometry: Geometry?=null
+    internal val anchorMode get() = coordinateMode.mode == AnchorInteractionMode.ANCHOR
+    val position get() = coordinateMode.selectedPosition?.let(::canvasPosition) ?: model.position
+    internal fun coordinateState(state: CoordinateAnchorState,geometry: Geometry?,projected: Boolean) {
+        val next=if(projected) state else CoordinateAnchorState()
+        if(next == coordinateMode && geometry == canvasGeometry) return
+        coordinateMode=next;canvasGeometry=geometry
+        publish();invalidate()
+    }
+    private fun canvasPosition(point: AnchorPosition): PointerPosition {
+        val size=canvasGeometry ?: return model.position
+        return PointerPosition(visibleBounds.left+point.x.toFloat().coerceIn(0f,(size.width-1).toFloat())*visibleBounds.width/size.width,
+            visibleBounds.top+point.y.toFloat().coerceIn(0f,(size.height-1).toFloat())*visibleBounds.height/size.height,true)
+    }
     internal var visibleBounds = PointerBounds(0f,0f,0f,0f)
         private set
     internal val cursorVisible get() = position.y>=visibleBounds.top && position.y<visibleBounds.bottom
-    internal val expiresAtNs get() = model.expiresAtNs
+    internal val expiresAtNs get() = if(anchorMode) Long.MAX_VALUE else model.expiresAtNs
     internal var onPositionChanged: (() -> Unit)? = null
     internal fun sensitivity(xGain: Double, yGain: Double) {
         model.sensitivity(xGain,yGain,SystemClock.elapsedRealtimeNanos());publish();requestFrame()
@@ -79,7 +94,7 @@ class PointerOverlay(context: Context, attrs: AttributeSet?=null) : View(context
     }
 
     /** Capture the same current model/age without publishing callbacks before a user-control decision. */
-    internal fun inputSnapshot(): PointerPosition = model.advance(SystemClock.elapsedRealtimeNanos())
+    internal fun inputSnapshot(): PointerPosition { model.advance(SystemClock.elapsedRealtimeNanos());return position }
 
     /** Recheck age at admission even if the stale Handler callback has been delayed. */
     internal fun inputPosition(): PointerPosition {
@@ -111,6 +126,14 @@ class PointerOverlay(context: Context, attrs: AttributeSet?=null) : View(context
     }
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        if(coordinateMode.mode == AnchorInteractionMode.ANCHOR_SETTINGS) {
+            coordinateMode.positions.forEachIndexed { index,saved ->
+                val marker=canvasPosition(saved)
+                paint.style=Paint.Style.FILL;paint.color=Color.YELLOW;paint.textSize=22f
+                canvas.drawCircle(marker.x,marker.y,4f,paint)
+                canvas.drawText((index+1).toString(),marker.x+7f,marker.y-7f,paint)
+            }
+        }
         val point=position
         drawCount++;lastDrawElapsedNs=SystemClock.elapsedRealtimeNanos()
         if (!cursorVisible) return

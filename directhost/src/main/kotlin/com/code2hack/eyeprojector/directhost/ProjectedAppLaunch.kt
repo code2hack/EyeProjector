@@ -91,6 +91,7 @@ internal class ProjectedAppLaunch(
     private val release = OwnedRelease()
     private val state = AtomicReference(ProjectionDisplayState(generation = generation, context = context))
     private val executor = Executors.newSingleThreadExecutor()
+    @Volatile private var foregroundIsHome = false
 
     fun initialize(displayId: Int) = synchronized(admission) {
         if (closed.get()) return@synchronized
@@ -123,9 +124,6 @@ internal class ProjectedAppLaunch(
         }
     }
 
-    /** Compatibility until the Function source migration replaces its old navigation. */
-    fun functionDouble(onHome: () -> Unit) = contextualHome(onHome)
-
     fun launch(requestId: Long, packageName: String, commitOriginal: (() -> Boolean)? = null,
         currentOriginal: (() -> Boolean)? = null): ProjectionDisplayState {
         val future = synchronized(admission) {
@@ -141,12 +139,20 @@ internal class ProjectedAppLaunch(
             if (closed.get()) return state.get()
             executor.submit<ProjectionDisplayState> {
                 val previous = state.get()
-                val foreground = adapter.foreground(previous.displayId!!)
+                val component = adapter.foregroundComponent(previous.displayId!!)
+                foregroundIsHome = component == ProjectionLaunchCommands.HOME_COMPONENT ||
+                    component == "${ProjectionLaunchCommands.HOME_PACKAGE}/${ProjectionLaunchCommands.HOME_PACKAGE}.ProjectedHomeActivity"
+                val foreground = component?.substringBefore('/') ?: adapter.foreground(previous.displayId!!)
                 state.updateAndGet { current -> if (closed.get()) current else previous.copy(foregroundPackage = foreground) }
                 state.get()
             }
         }
         return await(future, state.get().requestId, state.get().requestedPackage.orEmpty())
+    }
+
+    fun currentModePackage(): String? {
+        val observed = snapshot(observe=true)
+        return if (foregroundIsHome) null else observed.foregroundPackage
     }
 
     private fun execute(requestId: Long, packageName: String, home: Boolean,

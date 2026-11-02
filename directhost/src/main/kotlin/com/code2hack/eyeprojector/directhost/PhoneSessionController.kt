@@ -610,15 +610,13 @@ class PhoneSessionController private constructor(context: Context) {
 
     /** Fresh DOWN is captured and submitted once. UP/CANCEL retain this exact original route. */
     fun capturePhoneHidRoute(down: PhoneHidEdge): PhoneHidRoute? = bootstrap.capturePhoneHidRoute(down)
-    internal fun captureOriginalAnchorRoute(down: PhoneHidEdge, original: com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal) =
-        bootstrap.captureOriginalAnchorRoute(down, original)
     fun submitPhoneHid(route: PhoneHidRoute, edge: PhoneHidEdge) = route.submit(edge)
     fun cancelPhoneHid(route: PhoneHidRoute, eventTimeMs: Long) = route.cancel(eventTimeMs)
 
     /** The existing root original-control port captures disposition/lifetime before any writer wait.
-     * No HID edge is submitted: this is the same ordinary receipt used by non-Anchor controls. */
+     * No HID edge is submitted; the receipt retains the original session. */
     private fun captureRemoteControl(request: SessionControl.Request): RemoteControlReceipt {
-        val original = bootstrap.anchorRuntime.capturePhoneHidOriginal(false)
+        val original = bootstrap.modeOwner.captureOriginal()
         return RemoteControlReceipt(request, original::consumeUserControl)
     }
 

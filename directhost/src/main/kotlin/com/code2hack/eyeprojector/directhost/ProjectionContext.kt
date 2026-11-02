@@ -13,7 +13,6 @@ data class ProjectionContext(val ownerEpoch: String = "", val projectionToken: S
 internal interface CapturedProjection {
     /** Authoritative original Phone control entry; never a client held-label decision. */
     fun consumeUserControl(): Boolean = false
-    fun uiTargetContext(): com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiSource? = null
     fun receiverUsability(): SessionUsabilitySnapshot = SessionUsabilitySnapshot(ProjectionContext(), retired = true)
     fun phoneHidSnapshot(): com.code2hack.eyeprojector.directhost.activation.snapshot.NativeSnapshotDescriptor? = null
     fun phoneHidStampedEdge(routeId: Long, edge: com.code2hack.eyeprojector.protocol.PhoneHidEdge,

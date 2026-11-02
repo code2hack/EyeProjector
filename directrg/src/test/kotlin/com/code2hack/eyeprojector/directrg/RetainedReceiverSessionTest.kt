@@ -24,15 +24,17 @@ class RetainedReceiverSessionTest {
         override fun state(snapshot: ReceiverSessionOwner.Snapshot) { states.add(snapshot) }
         override fun input(source: ProjectionSession, event: ReceiverInput) { inputs.add(event) }
     }
-    internal inner class Fixture(withFeature: Boolean = false) : AutoCloseable {
-        val feature = if (withFeature) ReceiverActivationStore(temporary.newFolder().resolve("feature.properties")).also {
+    internal inner class Fixture(withFeature: Boolean = false, directFeature: Boolean = false) : AutoCloseable {
+        val feature = if (withFeature || directFeature) ReceiverActivationStore(temporary.newFolder().resolve("feature.properties")).also {
             it.startIncarnation()
-            val first = ReceiverLaunchScope("old-scope", "old-trigger", 7)
-            it.launch(first, "old-admission")
-            it.accept(ActivationReply(ActivationDirective("H1", true, 1, "old-owner"), TriggerReceipt("old-trigger", "H1", TriggerDisposition.MAPPED)))
-            val current = ReceiverLaunchScope("current-scope", "current-trigger", 8)
-            it.launch(current, "current-admission")
-            it.accept(ActivationReply(ActivationDirective("H2", true, 1, "retained-phone-owner"), TriggerReceipt("current-trigger", "H2", TriggerDisposition.MAPPED)))
+            if (withFeature) {
+                val first = ReceiverLaunchScope("old-scope", "old-trigger", 7)
+                it.launch(first, "old-admission")
+                it.accept(ActivationReply(ActivationDirective("H1", true, 1, "old-owner"), TriggerReceipt("old-trigger", "H1", TriggerDisposition.MAPPED)))
+                val current = ReceiverLaunchScope("current-scope", "current-trigger", 8)
+                it.launch(current, "current-admission")
+                it.accept(ActivationReply(ActivationDirective("H2", true, 1, "retained-phone-owner"), TriggerReceipt("current-trigger", "H2", TriggerDisposition.MAPPED)))
+            }
         } else null
         val queue = LinkedBlockingQueue<() -> Unit>()
         val commands = LinkedBlockingQueue<SessionControl.Request>()
@@ -99,94 +101,94 @@ class RetainedReceiverSessionTest {
         buildList{while(input.available()>0)add(Wire.readFrame(input))}
     }
 
-    @Test fun publishedNativeCaptureSurvivesQueuedWriterDetachAndNewViewHover() {
-        Fixture(withFeature=true).use { f ->
-            f.streaming();f.owner.presentation(f.view,true,false)
-            val session=f.owner.session!!;val fact=mode(session)
-            val point=HeadPointerState(fact.inputRevision,1,true,true,120f,230f,Fit(0,0,480,640),size)
-            f.owner.nativeAnchorObservation(session,point)
-            val capture=f.owner.javaClass.getDeclaredMethod("captureNativeOriginal",Any::class.java,
-                Long::class.javaPrimitiveType,java.lang.Long::class.java).apply{isAccessible=true}
-            val outputLock=session.javaClass.getDeclaredField("outputLock").apply{isAccessible=true}.get(session)
-            val original: ReceiverAnchorOriginal
-            synchronized(outputLock) {
-                original=capture.invoke(f.owner,f.owner.nativeAnchorContext(),88L,null) as ReceiverAnchorOriginal
-                f.owner.detach(f.view)
-                f.owner.advanceInputRevision()
-                val next=View();f.owner.attach(next,Surface());f.owner.presentation(next,true,true)
-                val latest=mode(session)
-                f.owner.nativeAnchorObservation(session,point.copy(revision=latest.inputRevision,projected=false,x=350f))
-                session.receive(Frame(Wire.GEOMETRY,payload=Geometry(640,480).bytes()))
-                assertTrue(session.anchorIntent(CapturedAnchorIntent(AnchorIntent(AnchorIntentKind.REGISTER,
-                    AnchorSource.GLASSES_NATIVE,88,0,original.context),session)))
+    @Test fun directAndDemandOwnersWriteModeThenTapThroughActualSessionWriter() {
+        for (source in listOf("legacy", "direct", "demand")) Fixture(withFeature=source=="demand", directFeature=source=="direct").use { f ->
+            val session=f.owner.session!!
+            f.owner.presentation(f.view,true,false)
+            if (source!="legacy") assertEquals(ReceiverUsabilityMode.NONE,mode(session).mode)
+            f.streaming()
+            if (source=="legacy") assertNull(session.observationUsability())
+            else assertEquals(ReceiverUsabilityMode.PROJECTED,mode(session).mode)
+            if (source=="direct") {
+                assertNull(f.owner.currentDemand())
+                assertNull(f.feature!!.presentation) // Direct readiness does not invent an activation report.
             }
+            assertTrue(session.cycleMode())
+            assertTrue(session.tap(Tap(20,30,size)))
             drainControls(session)
-            val frames=outputFrames(f.bytes)
-            val sent=frames.filter{it.channel==Wire.ANCHOR_INTENT}.map{AnchorIntent.from(it.payload)}.single()
-            assertEquals(point,sent.context.pointer);assertSame(session,original.source)
-            assertEquals(88L,sent.gestureId)
-            assertTrue(frames.indexOfFirst{it.channel==Wire.ANCHOR_ORIGINAL}<frames.indexOfFirst{it.channel==Wire.ANCHOR_INTENT})
+            assertEquals(listOf(Wire.MODE_CYCLE,Wire.TAP),outputFrames(f.bytes).filter { it.channel in listOf(Wire.MODE_CYCLE,Wire.TAP) }.map { it.channel })
+            assertEquals(2L,controls(session).snapshot().written)
+            assertEquals(0L,controls(session).snapshot().canceled)
         }
     }
 
-    @Test fun nativeSecondShortKeepsReportedHoldContextWhenPresentationAndMappingChange() {
-        Fixture(withFeature=true).use { f ->
-            f.streaming();f.owner.presentation(f.view,true,false)
-            val session=f.owner.session!!;val fact=mode(session)
-            val context=AnchorIntentContext(fact,HeadPointerState(fact.inputRevision,1,true,true,120f,230f,
-                Fit(0,0,480,640),size))
-            val first=AnchorIntent(AnchorIntentKind.ACTIVATE,AnchorSource.PHONE_HID,1,1,context)
-            session.receive(Frame(Wire.ANCHOR,payload=AnchorMessage.HeldState(5,first,1,AnchorHoldState.HELD).bytes()));f.pump()
-            f.owner.detach(f.view);session.receive(Frame(Wire.GEOMETRY,payload=Geometry(640,480).bytes()))
-            val capture=f.owner.javaClass.getDeclaredMethod("captureNativeOriginal",Any::class.java,
-                Long::class.javaPrimitiveType,java.lang.Long::class.java).apply{isAccessible=true}
-            val original=capture.invoke(f.owner,f.owner.nativeAnchorContext(),92L,null) as ReceiverAnchorOriginal
-            assertEquals(context,original.context)
-            val second=AnchorIntent(AnchorIntentKind.ACTIVATE,AnchorSource.GLASSES_NATIVE,92,2,original.context)
-            assertTrue(session.anchorIntent(CapturedAnchorIntent(second,session)));drainControls(session)
-            assertEquals(listOf(second),outputFrames(f.bytes).filter{it.channel==Wire.ANCHOR_INTENT}.map{AnchorIntent.from(it.payload)})
-            session.receive(Frame(Wire.ANCHOR,payload=AnchorMessage.HeldState(6,second,2,AnchorHoldState.RELEASED).bytes()));f.pump()
-            assertNull(capture.invoke(f.owner,f.owner.nativeAnchorContext(),93L,null))
+    @Test fun directOwnerNoneAndLocalPanelNeverDeliverModeOrBypassExplicitNone() {
+        Fixture(directFeature=true).use { f ->
+            val session=f.owner.session!!
+            assertEquals(ReceiverUsabilityMode.NONE,mode(session).mode)
+            session.presentation(true) // A legacy Boolean cannot override original explicit NONE.
+            assertTrue(session.cycleMode());drainControls(session)
+            f.owner.presentation(f.view,true,true)
+            assertEquals(ReceiverUsabilityMode.LOCAL_PANEL,mode(session).mode)
+            assertTrue(session.cycleMode());drainControls(session)
+            assertEquals(2L,controls(session).snapshot().canceled)
+            assertTrue(outputFrames(f.bytes).none { it.channel==Wire.MODE_CYCLE })
+            f.owner.presentation(f.view,true,false);f.streaming()
+            assertEquals(ReceiverUsabilityMode.PROJECTED,mode(session).mode)
+            assertTrue(session.cycleMode());drainControls(session)
+            assertEquals(1,outputFrames(f.bytes).count { it.channel==Wire.MODE_CYCLE })
         }
     }
 
-    @Test fun nativeReleaseUsesLocalRetainedChooserAcrossViewDetachWithoutPhoneWireRelease() {
-        for(detach in listOf(false,true)) Fixture(withFeature=true).use { f ->
-            f.streaming();val session=f.owner.session!!
-            lateinit var original: AnchorIntent
-            var localReleases=0
-            val view=object:ReceiverSessionOwner.View {
-                override fun state(snapshot:ReceiverSessionOwner.Snapshot)=Unit
-                override fun input(source:ProjectionSession,event:ReceiverInput)=Unit
-                override fun anchor(source:ProjectionSession,message:AnchorMessage):Boolean {
-                    if(message is AnchorMessage.Offer){
-                        f.owner.anchorRegistration.registration(source,message.intent,true)
-                        assertTrue(f.owner.anchorRegistration.show(source,message.transactionId,message.intent.context,
-                            AnchorRegistrationHighlight(message.highlight.left,message.highlight.top,message.highlight.right,message.highlight.bottom),message.intent))
-                        f.owner.anchorRegistration.presented();f.owner.anchorRegistration.highlight(AnchorRegistrationAction.HOLD)
+    private fun controls(session: ProjectionSession) = session.javaClass.getDeclaredField("controls").apply { isAccessible=true }.get(session) as OrderedControlDispatcher
+
+    @Test fun queuedModeRetiresWithOriginalDetachDecoderReplacementAndCloseWithoutReplay() {
+        for (source in listOf("legacy", "direct", "demand")) for (loss in listOf("detach", "decoder", "close", "owner", "panel")) {
+            if(source=="legacy" && loss=="panel") continue // Legacy Boolean sources have no explicit panel fact.
+            Fixture(withFeature=source=="demand", directFeature=source=="direct").use { f ->
+                f.owner.presentation(f.view,true,false);f.streaming()
+                val original=f.owner.session!!;val lane=controls(original)
+                val entered=java.util.concurrent.CountDownLatch(1);val release=java.util.concurrent.CountDownLatch(1)
+                assertTrue(lane.submit(0,{true},"test-blocker",false) {
+                    entered.countDown()
+                    var interrupted=false
+                    while(true) try { release.await();break } catch (_:InterruptedException) { interrupted=true }
+                    if(interrupted) Thread.currentThread().interrupt()
+                })
+                assertTrue(entered.await(2,TimeUnit.SECONDS))
+                try {
+                    assertTrue(original.cycleMode())
+                    when(loss) {
+                        "detach" -> f.owner.detach(f.view)
+                        "decoder" -> original.receive(Frame(Wire.GEOMETRY,payload=Geometry(640,480).bytes()))
+                        "close" -> original.close()
+                        "owner" -> f.observation(SessionState("replacement-phone-owner",SessionPhase.AVAILABLE))
+                        "panel" -> f.owner.presentation(f.view,true,true)
                     }
-                    return true
-                }
-                override fun anchorReleased(source:ProjectionSession,intent:AnchorIntent,canceled:Boolean):Boolean {
-                    localReleases++;return f.owner.anchorRegistration.released(source,intent,canceled)
+                    if(loss=="owner") assertNotSame(original,f.owner.session)
+                } finally { release.countDown() }
+                drainControls(original)
+                assertEquals("$source/$loss",1L,lane.snapshot().canceled)
+                assertTrue(outputFrames(f.bytes).none { it.channel==Wire.MODE_CYCLE })
+                if(loss=="close" || loss=="owner") assertFalse("closed original cannot admit later Mode",original.cycleMode())
+                if(loss=="detach") {
+                    f.owner.presentation(f.view,true,false) // Retired view cannot restore readiness.
+                    val recreated=View();f.owner.attach(recreated,Surface());f.owner.presentation(recreated,true,false)
+                    f.pumpUntil("current original presents again") { f.owner.snapshot().state=="STREAMING" }
+                    drainControls(original)
+                    assertTrue("canceled Mode never replays after attachment",outputFrames(f.bytes).none { it.channel==Wire.MODE_CYCLE })
+                    assertTrue(original.cycleMode());drainControls(original)
+                    assertEquals(1,outputFrames(f.bytes).count { it.channel==Wire.MODE_CYCLE })
                 }
             }
-            f.owner.attach(view,Surface());f.owner.presentation(view,true,true)
-            val fact=mode(session)
-            val context=AnchorIntentContext(fact,HeadPointerState(fact.inputRevision,1,true,false,100f,200f,
-                Fit(0,0,480,640),size))
-            original=AnchorIntent(AnchorIntentKind.REGISTER,AnchorSource.GLASSES_NATIVE,33,4,context)
-            session.receive(Frame(Wire.ANCHOR,payload=AnchorMessage.Offer(7,original,AnchorHighlight(90.0,190.0,130.0,230.0)).bytes()))
-            f.pump();assertTrue(f.owner.anchorRegistration.active)
-            if(detach)f.owner.detach(view)
-            f.owner.nativeRegistrationReleased(session,original,false)
-            f.owner.nativeRegistrationReleased(session,original,false)
-            drainControls(session)
-            val choices=outputFrames(f.bytes).filter{it.channel==Wire.ANCHOR}.map{AnchorMessage.from(it.payload)}.filterIsInstance<AnchorMessage.Choice>()
-            assertEquals(listOf(AnchorMessage.Choice(7,original,AnchorChoice.HOLD)),choices)
-            if(detach)assertEquals(0,localReleases)else assertEquals(2,localReleases)
         }
     }
+
+
+
+
+
+
 
     @Test fun revisionOnlyPublicationDoesNotRecursivelyRedeliverUiSnapshot() {
         Fixture(withFeature=true).use { f ->

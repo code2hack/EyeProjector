@@ -35,7 +35,7 @@ internal class PhoneHidPinRuntime(
     private val changed: () -> Unit,
     private val userControl: () -> Boolean = { true },
     private val recognizeInput: () -> Boolean = { true },
-    private val captureOriginal: (Boolean) -> com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal? = { null },
+    private val captureOriginal: () -> com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal? = { null },
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val lane = Executors.newSingleThreadExecutor()
@@ -85,17 +85,12 @@ internal class PhoneHidPinRuntime(
         // A preliminary Boolean followed by another capture could silently bind a later Hold.
         val token = command // Preserve the native command lifetime across that first Binder call too.
         val json = JSONObject(value)
-        // Read the immutable assignment snapshot at arrival. Ordinary controls never acquire
-        // Anchor's generation or Short FIFO lifetime, even before the native/main queues.
-        val anchorOperation = controller.bindings.action(inputBinding(json).button) == PhoneHidAction.ANCHOR
         val key = RawOriginal(epoch, token, json.getString("deviceKey"), json.getLong("generation"),
             json.getInt("sourceId"), json.getString("collectionKey"), json.getInt("code"), json.getLong("downTimeMs"), json.getLong("pressId"))
         val phase = PhoneHidPhase.valueOf(json.getString("phase"))
         val existing = originals[key]
-        // Only the initial DOWN captures a hover/mapping. A terminal still observes the
-        // central CANCELING gate, but cannot replace its original with a new pointer read.
-        val captured = captureOriginal(anchorOperation && existing == null &&
-            phase == PhoneHidPhase.DOWN && json.getInt("repeatCount") == 0)
+        // Retain the initial original route through its terminal; never substitute a new Session.
+        val captured = existing?.original ?: captureOriginal()
         val discarded = captured?.discarded ?: !recognizeInput()
         val received = existing ?: if (phase == PhoneHidPhase.DOWN && json.getInt("repeatCount") == 0) {
             val fresh = Received(captured, discarded, token, key)
