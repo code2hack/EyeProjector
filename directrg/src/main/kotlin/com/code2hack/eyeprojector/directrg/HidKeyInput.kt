@@ -2,7 +2,7 @@ package com.code2hack.eyeprojector.directrg
 
 import com.code2hack.eyeprojector.directrg.HidDecisionTrace.Step
 import com.code2hack.eyeprojector.directrg.HidDecisionTrace.observed
-import com.code2hack.eyeprojector.protocol.BackHomeGestureRecognizer
+import com.code2hack.eyeprojector.protocol.HidNavigationGestureRecognizer
 
 /** Actual HID edges stay separate from Rokid marker/summary normalization. */
 internal class HidKeyInput(
@@ -21,6 +21,7 @@ internal class HidKeyInput(
     private val navigation: (ContextualNavigationAction) -> Unit = {},
     functionCaptureOriginal: ((Any, Long, Long?) -> Any?)? = null,
     functionRetireOriginal: ((Long, Any) -> Unit)? = null,
+    registrationRelease: (FunctionGestureRecognizer.Gesture, Boolean) -> Unit = { _, _ -> },
 ) {
     companion object { private val functionIdentities = FunctionGestureRecognizer.Identity() }
 
@@ -45,6 +46,7 @@ internal class HidKeyInput(
     private var captureAttempt: Any? = null
     val selected: HidAction? get() = capture?.action
     private var functionAttachment: Int? = null
+    private var registrationPress: Event? = null
     private var generation = 0L
     private var admission = 0L // Actual Press publication, including a later completed Scroll.
     private var retiring: MutableList<() -> Unit>? = null
@@ -60,11 +62,15 @@ internal class HidKeyInput(
         retireOriginal = functionRetireOriginal?.let { retire -> { id, original ->
             val effect: () -> Unit = {retire(id,original)}
             retiring?.add(effect) ?: effect()
-        } })
-    private val backHome = BackHomeGestureRecognizer<Any>(now, { context() == it }, originalSchedule,
+        } }, registrationRelease = { gesture, canceled ->
+            val effect: () -> Unit = { registrationRelease(gesture, canceled) }
+            retiring?.add(effect) ?: effect()
+        })
+    private val backHome = HidNavigationGestureRecognizer<Any>(now, { context() == it }, originalSchedule,
         { action, _ -> navigation(when (action) {
-            BackHomeGestureRecognizer.Action.BACK -> ContextualNavigationAction.BACK
-            BackHomeGestureRecognizer.Action.HOME -> ContextualNavigationAction.HOME
+            HidNavigationGestureRecognizer.Action.BACK -> ContextualNavigationAction.BACK
+            HidNavigationGestureRecognizer.Action.HOME -> ContextualNavigationAction.HOME
+            HidNavigationGestureRecognizer.Action.LOCK -> ContextualNavigationAction.LOCK
         }) })
 
     /** Pure current binding/captured-route observation before the adapter's central admission. */
@@ -97,6 +103,8 @@ internal class HidKeyInput(
     }
 
     fun accept(event: Event, trace: HidDecisionTrace.Event? = null): Boolean {
+        if (consumeRegistrationRelease(event.attachmentId, event.binding.button.keyCode,
+                event.binding.button.scanCode, event.phase, event.downTimeMs)) return true
         val key = Key(event.attachmentId, event.binding.button)
         val retired = Retired(key, event.downTimeMs)
         if (retired in suppressed) {
@@ -191,15 +199,15 @@ internal class HidKeyInput(
             if (!currentAdmission(key, press, admitted)) { abandon(key, press); return true }
             presses[key] = press // Output may synchronously cancel/change the view.
             admission++
-            if (action == HidAction.BACK_HOME || action == HidAction.LOCK) navigationDowns[key] = event.downTimeMs
+            if (action == HidAction.NAVIGATION) navigationDowns[key] = event.downTimeMs
             when (action) {
                 HidAction.TAP -> contact(press.owner, edge(event, PadGestureRecognizer.Phase.DOWN, point))
-                HidAction.FUNCTION -> {
+                HidAction.ANCHOR -> {
                     if (functionAttachment != event.attachmentId) recognizer.cancel()
                     functionAttachment = event.attachmentId
                     recognizer.accept(FunctionGestureRecognizer.Report.DOWN, event.downTimeMs)
                 }
-                HidAction.BACK_HOME -> backHome.down(retired, key, press.context)
+                HidAction.NAVIGATION -> backHome.down(retired, key, press.context)
                 else -> Unit
             }
             return true
@@ -225,15 +233,28 @@ internal class HidKeyInput(
             HidAction.TAP -> contact(old.owner, edge(event, PadGestureRecognizer.Phase.UP, point))
             HidAction.SCROLL_DOWN -> if (point?.available == true) scroll(160, point, event.timeMs)
             HidAction.SCROLL_UP -> if (point?.available == true) scroll(-160, point, event.timeMs)
-            HidAction.FUNCTION -> if (functionAttachment == event.attachmentId)
+            HidAction.ANCHOR -> if (functionAttachment == event.attachmentId)
                 recognizer.accept(FunctionGestureRecognizer.Report.UP, event.timeMs)
-            HidAction.BACK_HOME -> backHome.up(retired, event.timeMs)
-            HidAction.LOCK -> navigation(ContextualNavigationAction.LOCK)
+            HidAction.NAVIGATION -> backHome.up(retired, event.timeMs)
+        }
+        return true
+    }
+
+    private fun consumeRegistrationRelease(attachmentId: Int, keyCode: Int, scanCode: Int,
+        phase: Phase, downTimeMs: Long): Boolean {
+        val original = registrationPress ?: return false
+        if (original.attachmentId != attachmentId || original.binding.button.keyCode != keyCode ||
+            original.binding.button.scanCode != scanCode || original.downTimeMs != downTimeMs) return false
+        if (phase != Phase.DOWN) {
+            registrationPress = null
+            if (phase == Phase.UP) recognizer.accept(FunctionGestureRecognizer.Report.UP)
+            else recognizer.cancel()
         }
         return true
     }
 
     fun consumeRetired(attachmentId: Int, keyCode: Int, scanCode: Int, phase: Phase, downTimeMs: Long): Boolean {
+        if (consumeRegistrationRelease(attachmentId,keyCode,scanCode,phase,downTimeMs)) return true
         val retired = suppressed.firstOrNull { it.key.attachment == attachmentId &&
             it.key.button.keyCode == keyCode && it.key.button.scanCode == scanCode && it.downTimeMs == downTimeMs } ?: return false
         if (phase == Phase.UP) suppressed.remove(retired)
@@ -278,13 +299,13 @@ internal class HidKeyInput(
         // Fresh presses carry no old pending action; each retired release keeps its exact downTime.
     }
 
-    fun prepareCancel(): InputRetirement = prepareRetirement(null, null)
+    fun prepareCancel(preserveRegistration: Boolean = false): InputRetirement = prepareRetirement(null, null, preserveRegistration)
 
     fun cancel() = prepareCancel().finishOriginal()
 
     private fun retire(nextCapture: Capture?, attempt: Any?) = prepareRetirement(nextCapture, attempt).finishOriginal()
 
-    private fun prepareRetirement(nextCapture: Capture?, attempt: Any?): InputRetirement {
+    private fun prepareRetirement(nextCapture: Capture?, attempt: Any?, preserveRegistration: Boolean = false): InputRetirement {
         val at = now()
         generation++
         captureAttempt = attempt
@@ -293,12 +314,15 @@ internal class HidKeyInput(
         capture = nextCapture
         if (oldCapture != null) suppressed.add(Retired(Key(oldCapture.event.attachmentId, oldCapture.event.binding.button), oldCapture.event.downTimeMs))
         val old = presses.values.toList()
-        admissions.forEach { (key, press) -> suppressed.add(Retired(key, press.event.downTimeMs)) }
+        if (preserveRegistration && recognizer.awaitingRegistrationRelease)
+            registrationPress = old.firstOrNull { it.action == HidAction.ANCHOR }?.event ?: registrationPress
+        else registrationPress = null
+        admissions.forEach { (key, press) -> if (press.event !== registrationPress) suppressed.add(Retired(key, press.event.downTimeMs)) }
         admissions.clear()
         presses.clear()
         val effects = mutableListOf<() -> Unit>()
         retiring = effects
-        try { recognizer.cancel(); functionAttachment = null; backHome.cancel() }
+        try { recognizer.cancel(preserveRegistration); if (!preserveRegistration) functionAttachment = null; backHome.cancel() }
         finally { retiring = null }
         val originalGeneration = generation
         val originalAdmission = admission
@@ -325,8 +349,8 @@ internal class HidKeyInput(
     private fun cancelPress(press: Press, at: Long) {
         when (press.action) {
             HidAction.TAP -> cancelContact(press.owner, at)
-            HidAction.FUNCTION -> if (functionAttachment == press.event.attachmentId) recognizer.cancel()
-            HidAction.BACK_HOME -> backHome.cancel(Retired(Key(press.event.attachmentId, press.event.binding.button), press.event.downTimeMs))
+            HidAction.ANCHOR -> if (functionAttachment == press.event.attachmentId) recognizer.cancel()
+            HidAction.NAVIGATION -> backHome.cancel(Retired(Key(press.event.attachmentId, press.event.binding.button), press.event.downTimeMs))
             else -> Unit
         }
     }

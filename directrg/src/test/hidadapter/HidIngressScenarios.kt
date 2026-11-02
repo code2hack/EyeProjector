@@ -515,10 +515,10 @@ internal object HidIngressScenarios {
         d.hid(HidKeyInput.Phase.DOWN, down = 1_000)
         check(d.hidInput.selected == HidAction.SCROLL_UP)
         val hitTestsAtDown = d.hidPanel.hitTests
-        d.hover(HidAction.FUNCTION)
+        d.hover(HidAction.ANCHOR)
         d.hid(HidKeyInput.Phase.UP, down = 1_000, at = 1_050)
         check(d.bindings.binding(HidAction.SCROLL_UP) == binding)
-        check(d.bindings.binding(HidAction.FUNCTION) == null)
+        check(d.bindings.binding(HidAction.ANCHOR) == null)
         check(d.bindings.binding(HidAction.TAP) == null)
         check(d.hidPanel.hitTests == hitTestsAtDown) { "capture UP chose a different hovered row" }
         check(d.root.events.isEmpty() && !d.heldInput.holding)
@@ -526,11 +526,11 @@ internal object HidIngressScenarios {
         // An already held normal press retains its output lease when a row appears before UP.
         val normal = driver()
         normal.hid(HidKeyInput.Phase.DOWN, down = 2_000)
-        normal.hover(HidAction.FUNCTION)
+        normal.hover(HidAction.ANCHOR)
         val heldHitTests = normal.hidPanel.hitTests
         normal.hid(HidKeyInput.Phase.UP, down = 2_000, at = 2_050)
         check(normal.bindings.binding(HidAction.TAP) == binding)
-        check(normal.bindings.binding(HidAction.FUNCTION) == null && normal.hidInput.selected == null)
+        check(normal.bindings.binding(HidAction.ANCHOR) == null && normal.hidInput.selected == null)
         check(normal.hidPanel.hitTests == heldHitTests) { "owned held release was sent to learning" }
         assertOutputTrace(normal, null, "normal held release while a HID row is hovered",
             Triple(Touch.Phase.DOWN, 2_000L, 2_000L), Triple(Touch.Phase.UP, 2_000L, 2_050L))
@@ -541,14 +541,14 @@ internal object HidIngressScenarios {
         for (change in listOf("cancel", "unusable", "session", "projection", "panel-instance", "panel", "connection", "stale-point", "outside-row")) {
             val d = driver()
             check(d.hidInput.resetAllBindings())
-            d.hover(HidAction.FUNCTION)
+            d.hover(HidAction.ANCHOR)
             d.pointer.onRefresh = {
                 when (change) {
                     "cancel" -> d.cancelAll()
                     "unusable" -> d.available = false
                     "session" -> d.session = IngressSession()
                     "projection" -> { d.session = IngressSession(); d.connectionView.visibility = View.GONE }
-                    "panel-instance" -> d.hidPanel = IngressPanel().apply { row = HidAction.FUNCTION; visibility = View.VISIBLE }
+                    "panel-instance" -> d.hidPanel = IngressPanel().apply { row = HidAction.ANCHOR; visibility = View.VISIBLE }
                     "panel" -> d.hidPanel.visibility = View.GONE
                     "connection" -> d.connectionView.visibility = View.GONE
                     "stale-point" -> d.pointer.position = d.pointer.position.copy(available = false)

@@ -95,7 +95,7 @@ fun main() {
             // Real Phone HID short pair enters the same installed consumer and app FIFO.
             f.pointer(sequence = 10)
             val at = android.os.SystemClock.uptimeMillis()
-            val down = PhoneHidEdge(PhoneHidAction.FUNCTION, PhoneHidPhase.DOWN, 1, 67, 90, at, at)
+            val down = PhoneHidEdge(PhoneHidAction.ANCHOR, PhoneHidPhase.DOWN, 1, 67, 90, at, at)
             f.hid(8, down); f.hid(8, down.copy(phase = PhoneHidPhase.UP, eventTimeMs = at + 20))
             f.functions(); runtime.drain(); check(events.size == 6)
             runtime.store.clear("app"); runtime.drain()

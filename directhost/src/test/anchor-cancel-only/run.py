@@ -91,10 +91,10 @@ activity = activity_path.read_text()
 boundary = rg_suite / 'CompositionBoundary.kt'
 fixture = boundary.read_text().replace('// ACTUAL_METHODS', '    private fun runOnUiThread(action: () -> Unit) { action() }\n// ACTUAL_METHODS')
 fixture = fixture.replace('    val confirmTap = Runnable {}','    private var confirmTap: Runnable = newConfirmTap()').replace('    val edgeTick = Runnable {}','    private var edgeTick: Runnable = newEdgeTick()')
-fixture = fixture.replace('}, capture = ::captureFunction)', '}, capture = ::captureFunction, captureOriginal = { expected, id, parent -> captureFunctionOriginal(expected,id,FunctionSource.GLASSES_NATIVE,parent) }, retireOriginal = { id, original -> retireFunctionOriginal(id,original,FunctionSource.GLASSES_NATIVE) })')
+fixture = fixture.replace('}, capture = ::captureFunction)', '}, capture = ::captureFunction, captureOriginal = { expected, id, parent -> captureFunctionOriginal(expected,id,FunctionSource.GLASSES_NATIVE,parent) }, retireOriginal = { id, original -> retireFunctionOriginal(id,original,FunctionSource.GLASSES_NATIVE) }, registrationRelease = { gesture, canceled -> releaseFunctionRegistration(FunctionSource.GLASSES_NATIVE, gesture, canceled) })')
 fixture = fixture.replace('    val edgeMotion = HeldNode()', '    val edgeMotion = HeldNode()\n    private val settings = object { val scrollSpeed = 100 }')
 fixture = fixture.replace('    private fun nativeInputStage(stage: String) = Unit', '    private fun nativeInputStage(stage: String, due: Long? = null) = Unit')
-fixture = fixture.replace('    fun cancel() = Unit', """    fun prepareCancel() = InputRetirement({}, { false })
+fixture = fixture.replace('    fun cancel() = Unit', """    fun prepareCancel(preserveRegistration: Boolean = false) = InputRetirement({}, { false })
     fun prepareCancel(time: Long) = InputRetirement({}, { false })
     fun captureCancellation() = InputRetirement({}, { false })
     fun prepareDismiss() = InputRetirement({}, { false })
@@ -107,7 +107,7 @@ fixture = fixture.replace('    fun cancel() = Unit', """    fun prepareCancel() 
     fun cancel() = Unit""")
 names = ['currentRegistrationIntent', 'anchorMessage', 'chooseAnchorRegistration', 'retireRegistration', 'cancelAnchorRegistration',
          'cancelInput', 'cancelInputState', 'updatePointerBounds', 'publishHeadPointer', 'updateAnchorHeldContext',
-         'contextualBack', 'contextualHome', 'showControlPanel', 'showHidBindings', 'dispatchNavigation', 'localControl', 'admitLocalControl', 'showControlPanelAdmitted', 'showHidBindingsAdmitted', 'contextualBackAdmitted', 'contextualHomeAdmitted', 'sleepGlassesAdmitted', 'exitToLauncherAdmitted', 'completedNavigation', 'sleepGlasses', 'exitToLauncher', 'finishProjection', 'cancelOriginalOnExit', 'remoteBack', 'remoteTap', 'remoteScroll', 'resize', 'captureFunction', 'captureFunctionOriginal', 'retireFunctionOriginal', 'dispatchFunction', 'showSnapshot']
+         'contextualBack', 'contextualHome', 'showControlPanel', 'showHidBindings', 'dispatchNavigation', 'localControl', 'admitLocalControl', 'showControlPanelAdmitted', 'showHidBindingsAdmitted', 'contextualBackAdmitted', 'contextualHomeAdmitted', 'sleepGlassesAdmitted', 'exitToLauncherAdmitted', 'completedNavigation', 'sleepGlasses', 'exitToLauncher', 'finishProjection', 'cancelOriginalOnExit', 'remoteBack', 'remoteTap', 'remoteScroll', 'resize', 'captureFunction', 'captureFunctionOriginal', 'retireFunctionOriginal', 'dispatchFunction', 'releaseFunctionRegistration', 'registrationReleased', 'showSnapshot']
 names += ['currentNavigation', 'cancelInputRevision', 'prepareInputCancellation', 'cancelInputOperation', 'newEdgeTick', 'newConfirmTap', 'schedulePadConfirmation']
 blocks = {name: parser.block(activity, rf'^    (?:private|internal) fun {name}\(') for name in names}
 blocks['nativePadMotionInput'] = '    private var nativePadMotionAdmitted = false\n' + parser.block(activity,r'^    private val nativePadMotionInput by lazy ').replace('try { if (::padContact.isInitialized) padContact.accept(event) }','try { Unit }')
@@ -125,6 +125,7 @@ anchor = parser.block(activity, r'^        anchorRegistration = AnchorRegistrati
 completed = re.search(r'^        completedInput = CompletedReceiverInput\(.*?::completedNavigation\)', activity, re.M | re.S).group()
 held = parser.block(activity, r'^        anchorHeldLabel = TextView\(this\).apply ') + '\n' + \
     re.search(r'^        root.addView\(anchorHeldLabel,.*$', activity, re.M).group()
+fixture = fixture.replace('    fun waiting() = Unit', '    fun waiting() = Unit\n    fun pointer(x:Float,y:Float,available:Boolean)=Unit')
 capture = re.search(r'^    private data class FunctionCapture.*$', activity, re.M).group()
 native = parser.block(activity, r'^        nativeSwipeInput = NativeSwipeNavigationInput\(this\) ')
 generated = out / 'HeldActivityWiring.kt'
@@ -182,6 +183,22 @@ for index,file in enumerate(sources):
         text=text.replace('companion object { @JvmField val NULL = Any() }','companion object { private val registry=java.util.concurrent.ConcurrentHashMap<String,Map<String,Any?>>() ; @JvmField val NULL = Any() }')
         text=text.replace('class JSONArray {','class JSONArray() {\n    constructor(text:String):this(){error("array parser not used by controlled Pin ingress")}\n    fun length()=values.size\n    fun getJSONObject(i:Int)=values[i] as JSONObject\n    fun getString(i:Int)=values[i] as String')
         copy=out/'PinJson.kt';copy.write_text(text);sources[index]=copy
+# Exact public raw fixture, with the actual Android adapter and explicit framework handle doubles.
+import json as fixture_json
+raw_fixture=root/'directhost/src/test/uiaccess/fixtures/doubao-voice306.json'
+raw=fixture_json.loads(raw_fixture.read_text())['nodes']
+def kotlin_value(v):
+    if v is None:return 'null'
+    if isinstance(v,bool):return str(v).lower()
+    if isinstance(v,str):return fixture_json.dumps(v)
+    if isinstance(v,list):return 'listOf('+','.join(kotlin_value(x) for x in v)+')'
+    return str(v)
+raw_generated=out/'RawVoiceFixture.kt'
+raw_generated.write_text('package com.code2hack.eyeprojector.directhost.uiaccess\ninternal fun capturedVoiceNodes()=listOf(\n'+',\n'.join('RawVoiceNode('+','.join(kotlin_value(n.get(k)) for k in ['ordinal','parentOrdinal','childIndex','childCount','resourceId','className','bounds','actionIds','clickable','longClickable','visible','enabled'])+')' for n in raw)+'\n)\n')
+raw_generated.write_text(raw_generated.read_text().replace('RawVoiceNode(0,null,null,','RawVoiceNode(0,null,0,'))
+sources += [raw_generated,host/'uiaccess/AndroidUiAccess.kt',root/'directhost/src/test/uiaccess/RegistrationScenarios.kt',suite/'RawRegistrationScenarios.kt']
+sources += [root/'directhost/src/test/uiaccess/doubles'/(n+'.kt') for n in ['AndroidAccessibility','AndroidService','AndroidSparseArray','AndroidRect']]
+(out/'raw-fixture.json').write_bytes(raw_fixture.read_bytes())
 sources = list(dict.fromkeys(sources))
 before_sources = {}
 if a.phone_before_result:
@@ -285,7 +302,7 @@ if r.returncode == 0:
         'com.code2hack.eyeprojector.directrg.PadGestureRecognizer',
         'com.code2hack.eyeprojector.directhost.PhoneInputTrace',
         'com.code2hack.eyeprojector.directhost.input.FunctionWork',
-        'com.code2hack.eyeprojector.protocol.BackHomeGestureRecognizer',
+        'com.code2hack.eyeprojector.protocol.HidNavigationGestureRecognizer',
         'com.code2hack.eyeprojector.protocol.ReceiverControlIntent',
         'com.code2hack.eyeprojector.protocol.ReceiverControlResult',
         'com.code2hack.eyeprojector.protocol.FunctionOriginal',

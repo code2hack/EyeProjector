@@ -77,7 +77,7 @@ data class Frame(val channel: Int, val stamp: Long = 0, val payload: ByteArray =
 
 object Wire {
     const val MAGIC = 0x50415631
-    const val VERSION = 12
+    const val VERSION = 13
     const val SCRCPY_VERSION = "5.0.1"
     const val H264 = 0x68323634
     const val MAX_PAYLOAD = 1024 * 1024

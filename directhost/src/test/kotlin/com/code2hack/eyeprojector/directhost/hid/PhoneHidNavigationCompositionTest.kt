@@ -78,7 +78,7 @@ class PhoneHidNavigationCompositionTest {
             merger.pointer(HeadPointerState(revision, ++sequence, available, projected,
                 -500f, 10000f, Fit(0, 0, 100, 100), size), fact)
         }
-        fun down(action: PhoneHidAction = PhoneHidAction.BACK_HOME): PhoneHidController.Event {
+        fun down(action: PhoneHidAction = PhoneHidAction.NAVIGATION): PhoneHidController.Event {
             val event = PhoneHidController.Event(9, bindings.getValue(action), PhoneHidPhase.DOWN, now, now)
             assertTrue(controller.accept(event)); return event
         }
@@ -86,7 +86,7 @@ class PhoneHidNavigationCompositionTest {
             now += 10
             assertTrue(controller.accept(event.copy(phase = PhoneHidPhase.UP, eventTimeMs = now)))
         }
-        fun press(action: PhoneHidAction = PhoneHidAction.BACK_HOME) = up(down(action))
+        fun press(action: PhoneHidAction = PhoneHidAction.NAVIGATION) = up(down(action))
         fun advance(at: Long, canceledToo: Boolean = false) {
             now = at
             while (true) {
@@ -100,26 +100,26 @@ class PhoneHidNavigationCompositionTest {
     }
 
     @Test fun nonspatialSingleAndDoubleUseDedicatedProjectedAndLocalDestinations() {
-        for (projected in listOf(true, false)) for (count in 1..2) {
+        for (projected in listOf(true, false)) for (count in 1..3) {
             val h = Harness(projected)
             repeat(count) { h.press(); h.now += 100 }
             h.advance(2000)
             assertTrue(h.touches.isEmpty()); assertTrue(h.functions.isEmpty())
-            if (projected) {
+            if (projected && count != 2) {
                 assertEquals(listOf(if (count == 1) Navigation.BACK else Navigation.CONTEXTUAL_HOME), h.navigation())
                 assertTrue(h.receiver().isEmpty())
             } else {
-                assertEquals(listOf(if (count == 1) ReceiverInputKind.BACK else ReceiverInputKind.HOME), h.receiver())
+                assertEquals(listOf(if (count == 1) ReceiverInputKind.BACK else if (count == 2) ReceiverInputKind.LOCK else ReceiverInputKind.HOME), h.receiver())
                 assertTrue(h.navigation().isEmpty())
             }
-            assertTrue(h.events.indexOf("cancel") < h.events.indexOf(if (projected) "navigate" else "receiver"))
+            assertTrue(h.events.indexOf("cancel") < h.events.indexOf(if (projected && count != 2) "navigate" else "receiver"))
         }
     }
 
     @Test fun lockWithoutAimRetiresInputThenUsesDedicatedReceiverLockInBothModes() {
         for (projected in listOf(true, false)) {
             val h = Harness(projected)
-            h.press(PhoneHidAction.LOCK); h.advance(2000)
+            h.press(); h.now += 100; h.press(); h.advance(2000)
             assertEquals(listOf(ReceiverInputKind.LOCK), h.receiver())
             assertTrue(h.navigation().isEmpty() && h.touches.isEmpty() && h.functions.isEmpty())
             assertTrue(h.running)
@@ -135,7 +135,8 @@ class PhoneHidNavigationCompositionTest {
             h.pointer(false); h.pointer(false)
             if (second != null) h.up(second)
             h.advance(2000)
-            assertEquals(listOf(if (double) Navigation.CONTEXTUAL_HOME else Navigation.BACK), h.navigation())
+            if (double) { assertEquals(listOf(ReceiverInputKind.LOCK), h.receiver()); assertTrue(h.navigation().isEmpty()) }
+            else assertEquals(listOf(Navigation.BACK), h.navigation())
         }
     }
 
@@ -174,7 +175,7 @@ class PhoneHidNavigationCompositionTest {
         val old = h.routes.single()
         h.press(); old.cancel(h.now); h.advance(2200)
         assertEquals(listOf(Navigation.BACK, Navigation.BACK), h.navigation())
-        val canceled = h.down(PhoneHidAction.LOCK)
+        val canceled = h.down(PhoneHidAction.NAVIGATION)
         h.controller.accept(canceled.copy(phase = PhoneHidPhase.CANCEL, eventTimeMs = h.now + 1))
         h.up(canceled); h.advance(3000)
         assertTrue(h.receiver().isEmpty())
@@ -183,7 +184,7 @@ class PhoneHidNavigationCompositionTest {
     @Test fun lockCancelsPendingBackAndOriginalHeldTouchWithoutProducingSuccessfulUp() {
         val h = Harness(available = true)
         h.merger.nativeTouch(Touch(Touch.Phase.DOWN, 500, Tap(10, 10, h.size)))
-        h.press(); h.press(PhoneHidAction.LOCK); h.advance(2000, canceledToo = true)
+        h.press(); h.now += 100; h.press(); h.advance(2000, canceledToo = true)
         assertFalse(h.controls.holding)
         assertTrue(h.navigation().isEmpty())
         assertEquals(listOf(ReceiverInputKind.LOCK), h.receiver())
@@ -192,7 +193,7 @@ class PhoneHidNavigationCompositionTest {
 
     @Test fun functionKeepsEveryAcceptedActivationAndNeverBecomesNavigation() {
         val h = Harness(available = true)
-        h.press(PhoneHidAction.FUNCTION); h.now += 100; h.press(PhoneHidAction.FUNCTION)
+        h.press(PhoneHidAction.ANCHOR); h.now += 100; h.press(PhoneHidAction.ANCHOR)
         h.advance(2000)
         assertEquals(List(2) { FunctionIntentKind.ACTIVATE }, h.functions.map { it.kind })
         assertTrue(h.frames.isEmpty())

@@ -122,7 +122,7 @@ object AnchorTargetResolver {
         return WindowLookup.Current(source, window)
     }
 
-    // UiTargetReader already restricts observations to actionable controls and omits hidden/disabled
-    // nodes. Recheck usability without interpreting advertised actions as Click versus Hold intent.
+    // Reader retains visible metadata independently of advertised activation actions.
+    // Recheck current geometry/visibility; Click/Hold is always the user's explicit choice.
     private fun UiTargetObservation.usable() = visible && enabled && bounds.hasArea
 }

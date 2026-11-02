@@ -7,7 +7,7 @@ import android.os.Looper
 import android.view.InputDevice
 import android.view.KeyEvent
 import com.code2hack.eyeprojector.protocol.Touch
-import com.code2hack.eyeprojector.protocol.BackHomeGestureRecognizer
+import com.code2hack.eyeprojector.protocol.HidNavigationGestureRecognizer
 import android.os.SystemClock
 import com.code2hack.eyeprojector.directrg.HidDecisionTrace.Step
 import com.code2hack.eyeprojector.directrg.HidDecisionTrace.observed
@@ -43,7 +43,7 @@ internal class AndroidHidInput(
         }
     }
     private data class Learning(val event: HidKeyInput.Event, val original: KeyEvent, val trace: HidDecisionTrace.Event?, val context: Any?, val decision: Decision)
-    private val backHomeReceipts = BackHomeGestureRecognizer.Receipts<Decision>()
+    private val backHomeReceipts = HidNavigationGestureRecognizer.Receipts<Decision>()
     private var receivingDecision: Decision? = null
     private fun raw(event: KeyEvent) = Raw(event.deviceId,event.keyCode,event.scanCode,event.downTime)
     private fun raw(event: HidKeyInput.Event) = Raw(event.attachmentId,event.binding.button.keyCode,event.binding.button.scanCode,event.downTimeMs)
@@ -128,15 +128,15 @@ internal class AndroidHidInput(
         // FLAG_LONG_PRESS is another DOWN of the same physical hold, never a CANCEL.
         val actual = HidKeyInput.Event(event.deviceId, binding, phase, event.downTime, event.eventTime, event.repeatCount)
         val action = input.actionFor(actual)
-        if (action == HidAction.BACK_HOME && phase != HidKeyInput.Phase.DOWN) {
+        if (action == HidAction.NAVIGATION && phase != HidKeyInput.Phase.DOWN) {
             if (phase == HidKeyInput.Phase.UP) backHomeReceipts.up(raw, event.eventTime) else backHomeReceipts.cancel(raw)
         }
         // Raw Function keeps its existing classifier/FIFO original lifetime; Short must reach UP.
-        val operational = action != null && action != HidAction.FUNCTION
+        val operational = action != null && action != HidAction.ANCHOR
         if (learningInput.contains(raw) || actual.phase == HidKeyInput.Phase.DOWN && actual.repeat == 0 && (learning() || operational)) {
             val first=learningInput.original(raw)
             val originalContext=if(first!=null) first.context else current()
-            val decision = first?.decision ?: if (action == HidAction.BACK_HOME && !learning())
+            val decision = first?.decision ?: if (action == HidAction.NAVIGATION && !learning())
                 backHomeReceipts.down(raw, Triple(event.deviceId,event.keyCode,event.scanCode), Decision(), SystemClock.uptimeMillis())
                 else Decision()
             val previous = receivingDecision

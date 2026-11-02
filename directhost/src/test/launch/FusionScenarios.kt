@@ -64,7 +64,7 @@ fun fusionScenarios() {
         try {
             val at = android.os.SystemClock.uptimeMillis()
             repeat(if (stockBack) 1 else 2) { n ->
-                val d = PhoneHidEdge(PhoneHidAction.FUNCTION, PhoneHidPhase.DOWN, 1, 67, 90, at + n * 50, at + n * 50)
+                val d = PhoneHidEdge(PhoneHidAction.ANCHOR, PhoneHidPhase.DOWN, 1, 67, 90, at + n * 50, at + n * 50)
                 f.hid(n.toLong(), d); f.hid(n.toLong(), d.copy(phase = PhoneHidPhase.UP, eventTimeMs = d.eventTimeMs + 1))
             }
             check(entered.await(2, TimeUnit.SECONDS))

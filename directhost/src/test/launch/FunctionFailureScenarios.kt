@@ -54,7 +54,7 @@ fun functionFailureScenarios() {
             check(off.off == PanelSubmission.SUBMITTED)
             val at = android.os.SystemClock.uptimeMillis()
             repeat(if (stockBack) 1 else 2) { n ->
-                val down = PhoneHidEdge(PhoneHidAction.FUNCTION, PhoneHidPhase.DOWN,
+                val down = PhoneHidEdge(PhoneHidAction.ANCHOR, PhoneHidPhase.DOWN,
                     1, 67, 90, at + n * 30, at + n * 30)
                 f.hid(n.toLong(), down)
                 f.hid(n.toLong(), down.copy(phase = PhoneHidPhase.UP, eventTimeMs = down.eventTimeMs + 1))

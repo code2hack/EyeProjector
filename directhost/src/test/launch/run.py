@@ -35,7 +35,7 @@ sources += [actual/'uiaccess'/n for n in ['UiTargetSnapshot.kt','UiSourceGeometr
 sources += [actual/'activation/snapshot'/n for n in ['NativeSnapshotRegion.kt','SnapshotWord.kt']]
 sources += sorted((suite.parent/'snapshot/transport/doubles').glob('*.kt'))
 sources += [actual/'input/PhoneInputMerger.kt',actual/'input/FunctionWork.kt',actual/'input/FunctionIntentRoute.kt']
-sources += [root/'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'/n for n in ['Wire.kt', 'ActivationControl.kt', 'ReceiverUsability.kt','PhoneInput.kt','Touch.kt','LayoutScale.kt','FunctionIntent.kt','AnchorMessage.kt','BackHomeGestureRecognizer.kt']]
+sources += [root/'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'/n for n in ['Wire.kt', 'ActivationControl.kt', 'ReceiverUsability.kt','PhoneInput.kt','Touch.kt','LayoutScale.kt','FunctionIntent.kt','AnchorMessage.kt','HidNavigationGestureRecognizer.kt']]
 if a.registration_only:
     import importlib.util,re
     ps=importlib.util.spec_from_file_location('activity_source_blocks',root/'directhost/src/test/hid/run.py')

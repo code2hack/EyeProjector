@@ -14,6 +14,11 @@ Scenarios exercise exact display/window selection, no physical-display root read
 release after success and a stale-node failure, excluded-package subtrees, a deep tree, absent
 display/window/root/access, enabled/visible/positive-area filtering, absent/repeated IDs, source
 replacement during reading and exact service connection retirement.
+Node metadata is retained independently of clickable/longClickable/advertised actions; these facts
+never grant or deny Anchor selection or choose its mode. The raw306 fixture exercises the actual
+Android adapter/reader and original integer hover transform, hierarchy selection, repeated identity,
+incomparable overlap, flag-only invariance, and explicit Click/Hold saving. Hierarchy positions stay
+snapshot-local; saved identity never contains coordinates, ordinals or paths.
 Actual service callbacks retain key filtering alongside retrieval/view-ID flags and retire access
 on unbind/destroy without retiring a replacement service's connection.
 
@@ -60,4 +65,4 @@ navigation route also depends on the separately owned #116 merger integration.
 These host checks establish source behavior against modeled platform responses. Android compilation,
 actual user accessibility enablement, managed-display production access, screen/encoder landmarks,
 IME/rotation/scale on devices and physical-Phone-off/locked behavior require separate scheduled
-validation. They establish no target matching, persistent Anchor identity or input delivery.
+validation. The raw registration cases cover represented matching/save behavior, not physical input delivery.

@@ -138,7 +138,7 @@ internal fun coreUnitScenarios(run:(String,()->Unit)->Unit) {
             edge(PadGestureRecognizer.Key.CONTACT,PadGestureRecognizer.Phase.DOWN,5000,5000);edge(PadGestureRecognizer.Key.CONTACT,PadGestureRecognizer.Phase.UP,5000,5020);pad.confirm(6020)
             check(actions.size==1&&r.ordinary==listOf("tap"))
         }}
-    for(action in listOf(PhoneHidAction.TAP,PhoneHidAction.SCROLL_DOWN,PhoneHidAction.LOCK))
+    for(action in listOf(PhoneHidAction.TAP,PhoneHidAction.SCROLL_DOWN))
         for(stale in listOf(PhoneHidPhase.UP,PhoneHidPhase.CANCEL))for(consumed in listOf(false,true))
             run("C143-stale-$action-$stale-after-route-reuse-preserves-B-consumed-$consumed") {CoreRig().use {r->
                 fun records(name:String)=r.merger.javaClass.getDeclaredField(name).apply{isAccessible=true}.get(r.merger) as Map<*,*>
@@ -157,7 +157,7 @@ internal fun coreUnitScenarios(run:(String,()->Unit)->Unit) {
                 r.up(143,b)
                 check(records("receivedPresses").isEmpty()&&records("presses").isEmpty())
             }}
-    for(action in listOf(PhoneHidAction.TAP,PhoneHidAction.SCROLL_DOWN,PhoneHidAction.LOCK))
+    for(action in listOf(PhoneHidAction.TAP,PhoneHidAction.SCROLL_DOWN))
         for(end in listOf(PhoneHidPhase.UP,PhoneHidPhase.CANCEL)) run("C134-terminal-$action-$end-disposes-exact-original-and-allows-route-reuse") {CoreRig().use {r->
             fun records(name:String)=r.merger.javaClass.getDeclaredField(name).apply{isAccessible=true}.get(r.merger) as Map<*,*>
             r.hold();val original=r.down(136,action)
@@ -172,7 +172,6 @@ internal fun coreUnitScenarios(run:(String,()->Unit)->Unit) {
             check(records("presses").isEmpty()&&records("receivedPresses").isEmpty())
             when(action){
                 PhoneHidAction.TAP->check(r.events.takeLast(2).map{it.phase}==listOf(Touch.Phase.DOWN,Touch.Phase.UP))
-                PhoneHidAction.LOCK->check(r.controls.single().kind==ReceiverInputKind.LOCK)
                 else->check(r.ordinary==listOf("scroll"))
             }
         }}
@@ -188,7 +187,7 @@ internal fun coreUnitScenarios(run:(String,()->Unit)->Unit) {
     }}
     for (h2 in listOf(false,true)) for (classification in listOf("timer","up")) {
         run("original-Function-Long-$classification-H1-canceled-H2-$h2-stays-terminal") {CoreRig().use {r->
-            r.hold();val original=r.down(1,PhoneHidAction.FUNCTION)
+            r.hold();val original=r.down(1,PhoneHidAction.ANCHOR)
             check(!r.merger.nativeAction {r.input.tap(Tap(20,30,r.size))})
             if(h2) check(r.hold()==AnchorExecutionStatus.HOLD_SUBMITTED)
             val before=r.events.toList()
@@ -198,7 +197,7 @@ internal fun coreUnitScenarios(run:(String,()->Unit)->Unit) {
                 "Old Long changed successor or registered: functions=${r.functions}; events=${r.events}"
             }
             if(h2) r.input.anchor.retire()
-            r.time=3000;val fresh=r.down(2,PhoneHidAction.FUNCTION);r.advance(3800);r.up(2,fresh)
+            r.time=3000;val fresh=r.down(2,PhoneHidAction.ANCHOR);r.advance(3800);r.up(2,fresh)
             check(r.functions.single().kind==FunctionIntentKind.REGISTER)
         }}
     }
@@ -226,7 +225,7 @@ internal fun coreUnitScenarios(run:(String,()->Unit)->Unit) {
     }
     run("accessor-membership-is-pure-through-first-up-second-and-completion") {
         var now=1000L;var reads=0;var schedules=0;var cancels=0;val delivered=mutableListOf<String>()
-        val grammar=BackHomeGestureRecognizer<String>({now},{reads++;true},{_,_->schedules++;{cancels++}},
+        val grammar=HidNavigationGestureRecognizer<String>({now},{reads++;true},{_,_->schedules++;{cancels++}},
             {action,captured->delivered.add("$action:$captured")})
         check(grammar.capturedSequence("a")==null)
         grammar.down("a","source","original");val before=listOf(reads,schedules,cancels)
@@ -235,19 +234,22 @@ internal fun coreUnitScenarios(run:(String,()->Unit)->Unit) {
         grammar.up("a",1010);check(grammar.capturedSequence("a")=="original")
         now=1100;grammar.down("b","source","second")
         check(grammar.capturedSequence("a")=="original"&&grammar.capturedSequence("b")=="original")
-        grammar.up("b",1110);check(grammar.capturedSequence("a")==null&&grammar.capturedSequence("b")==null)
+        grammar.up("b",1110);check(delivered.isEmpty())
+        now=1200;grammar.down("c","source","third")
+        check(grammar.capturedSequence("b")=="original")
+        grammar.up("c",1210);check(grammar.capturedSequence("a")==null&&grammar.capturedSequence("b")==null)
         check(delivered==listOf("HOME:original"))
     }
     run("accessor-expired-dispatch-cannot-attach-old-press-to-reentrant-successor") {
         var now=1000L
-        lateinit var grammar:BackHomeGestureRecognizer<String>
-        grammar=BackHomeGestureRecognizer({now},{true},{_,_->{}},{_,_->grammar.down("successor","source","new")})
+        lateinit var grammar:HidNavigationGestureRecognizer<String>
+        grammar=HidNavigationGestureRecognizer({now},{true},{_,_->{}},{_,_->grammar.down("successor","source","new")})
         grammar.down("old","source","original");grammar.up("old",1010)
         now=2000;grammar.down("requested","source","requested capture")
         check(grammar.capturedSequence("requested")==null&&grammar.capturedSequence("old")==null)
         check(grammar.capturedSequence("successor")=="new")
     }
-    for (action in listOf(PhoneHidAction.TAP,PhoneHidAction.SCROLL_UP,PhoneHidAction.SCROLL_DOWN,PhoneHidAction.LOCK)) {
+    for (action in listOf(PhoneHidAction.TAP,PhoneHidAction.SCROLL_UP,PhoneHidAction.SCROLL_DOWN)) {
         run("held-HID-$action-whole-press-preserves-successor-and-fresh-control-recovers") {CoreRig().use {r->
             check(r.hold()==AnchorExecutionStatus.HOLD_SUBMITTED)
             val e=r.down(1,action);check(r.events.map{it.phase}==listOf(Touch.Phase.DOWN,Touch.Phase.CANCEL))
@@ -259,7 +261,6 @@ internal fun coreUnitScenarios(run:(String,()->Unit)->Unit) {
             r.time+=1000;val fresh=r.down(3,action);r.up(3,fresh)
             when(action){
                 PhoneHidAction.TAP->check(r.events.takeLast(2).map{it.phase}==listOf(Touch.Phase.DOWN,Touch.Phase.UP))
-                PhoneHidAction.LOCK->check(r.controls.single().kind==ReceiverInputKind.LOCK)
                 else->check(r.ordinary==listOf("scroll"))
             }
         }}
@@ -276,11 +277,11 @@ internal fun coreUnitScenarios(run:(String,()->Unit)->Unit) {
         check(r.merger.nativeTouch(down.copy(contactId=101,phase=Touch.Phase.UP)))
     }}
     run("held-backhome-double-consumes-both-presses-and-fresh-sequence-is-normal") {CoreRig().use {r->
-        r.hold();val first=r.down(1,PhoneHidAction.BACK_HOME);r.up(1,first)
-        r.time+=100;val second=r.down(2,PhoneHidAction.BACK_HOME);r.up(2,second);r.advance(2000)
+        r.hold();val first=r.down(1,PhoneHidAction.NAVIGATION);r.up(1,first)
+        r.time+=100;val second=r.down(2,PhoneHidAction.NAVIGATION);r.up(2,second);r.advance(2000)
         check(r.events.map{it.phase}==listOf(Touch.Phase.DOWN,Touch.Phase.CANCEL))
         check(r.ordinary.isEmpty()&&r.controls.isEmpty())
-        val fresh=r.down(3,PhoneHidAction.BACK_HOME);r.up(3,fresh);r.advance(2600)
+        val fresh=r.down(3,PhoneHidAction.NAVIGATION);r.up(3,fresh);r.advance(2600)
         check(r.ordinary==listOf("navigation"))
     }}
     for(releaseDuring in listOf(false,true)) run("BackHome-first-received-CANCELING-second-after-finish-is-same-consumed-sequence-$releaseDuring") {CoreRig().use {r->
@@ -289,20 +290,20 @@ internal fun coreUnitScenarios(run:(String,()->Unit)->Unit) {
         r.onTouch={event->if(event.phase==Touch.Phase.CANCEL){entered.countDown();check(finish.await(3,TimeUnit.SECONDS))};true}
         val cancel=Thread{r.input.consumeHeldControl(AnchorControlAdmission())};cancel.start()
         lateinit var first:PhoneHidEdge
-        try {check(entered.await(2,TimeUnit.SECONDS));first=r.down(801,PhoneHidAction.BACK_HOME);if(releaseDuring)r.up(801,first)}
+        try {check(entered.await(2,TimeUnit.SECONDS));first=r.down(801,PhoneHidAction.NAVIGATION);if(releaseDuring)r.up(801,first)}
         finally {finish.countDown();cancel.join(2000)}
         check(!cancel.isAlive)
         r.onTouch={true};if(!releaseDuring)r.up(801,first)
         r.hold();val successor=r.events.last();r.time+=100
-        val second=r.down(802,PhoneHidAction.BACK_HOME);r.up(802,second);r.advance(2000)
+        val second=r.down(802,PhoneHidAction.NAVIGATION);r.up(802,second);r.advance(2000)
         check(r.input.anchor.holding&&r.events.last()===successor&&r.ordinary.isEmpty()) {"CANCELING BackHome tail canceled H2 or navigated: ${r.events} ${r.ordinary}"}
-        r.time=3000;r.input.anchor.retire();val fresh=r.down(803,PhoneHidAction.BACK_HOME);r.up(803,fresh);r.advance(4000)
+        r.time=3000;r.input.anchor.retire();val fresh=r.down(803,PhoneHidAction.NAVIGATION);r.up(803,fresh);r.advance(4000)
         check(r.ordinary==listOf("navigation"))
     }}
     run("consumed-backhome-second-press-cannot-cancel-successor-Hold") {CoreRig().use {r->
-        r.hold();val first=r.down(1,PhoneHidAction.BACK_HOME);r.up(1,first)
+        r.hold();val first=r.down(1,PhoneHidAction.NAVIGATION);r.up(1,first)
         r.hold();val successor=r.events.last();r.time+=100
-        val second=r.down(2,PhoneHidAction.BACK_HOME);r.up(2,second);r.advance(2000)
+        val second=r.down(2,PhoneHidAction.NAVIGATION);r.up(2,second);r.advance(2000)
         check(r.input.anchor.holding&&r.events.last()===successor&&r.ordinary.isEmpty())
     }}
     run("passive-head-loss-preserves-stationary-Hold-and-context-qualified-Tap-cancels-only") {CoreRig().use {r->

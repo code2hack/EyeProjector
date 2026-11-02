@@ -6,6 +6,7 @@ import com.code2hack.eyeprojector.directhost.anchor.execution.AnchorExecutionSta
 import com.code2hack.eyeprojector.directhost.anchor.execution.AnchorOriginalRoute
 import com.code2hack.eyeprojector.directhost.anchor.execution.AnchorRegistrationInstaller
 import com.code2hack.eyeprojector.directhost.anchor.execution.CapturedAnchorRequest
+import com.code2hack.eyeprojector.directhost.anchor.execution.AnchorRegistrationDiagnostic
 import com.code2hack.eyeprojector.directhost.anchor.preferences.AnchorMode
 import com.code2hack.eyeprojector.directhost.uiaccess.ManagedUiSource
 import com.code2hack.eyeprojector.protocol.*
@@ -32,10 +33,15 @@ internal class AnchorRegistrationProvider : AnchorRegistrationInstaller {
         if (pending?.let { it.token == token && it.source == request.source } == true) return
         cancelPending()
         if (request.snapshot.request?.source != request.source || original.source() != request.source) {
+            runtime.coordinator.reportRegistration(original, AnchorRegistrationDiagnostic.Stage.SOURCE_CHANGED,
+                request.source, request.snapshot, detail = "CAPTURE_SOURCE_CHANGED")
             original.feedback(AnchorExecutionStatus.UNAVAILABLE)
             return
         }
-        val capture = coordinator.begin(token, original.intent, request.snapshot)
+        val inspection = coordinator.beginDetailed(token, original.intent, request.snapshot)
+        runtime.coordinator.reportRegistration(original, AnchorRegistrationDiagnostic.Stage.CAPTURE,
+            request.source, request.snapshot, inspection)
+        val capture = inspection.capture
         if (capture !is AnchorRegistrationCapture.Selected) {
             original.feedback(AnchorExecutionStatus.UNAVAILABLE)
             return
@@ -79,6 +85,8 @@ internal class AnchorRegistrationProvider : AnchorRegistrationInstaller {
                 if (selected.route.source() != selected.source) {
                     coordinator.cancel(selected.token)
                     pending = null
+                    runtime.coordinator.reportRegistration(selected.route, AnchorRegistrationDiagnostic.Stage.SOURCE_CHANGED,
+                        selected.source, snapshot, detail = "CHOICE_SOURCE_CHANGED")
                     result(selected.route, AnchorRegistrationResult.UNAVAILABLE)
                     return
                 }
@@ -88,6 +96,8 @@ internal class AnchorRegistrationProvider : AnchorRegistrationInstaller {
                     AnchorChoice.HOLD -> AnchorMode.HOLD
                     AnchorChoice.CANCEL -> error("Cancel already handled")
                 }, snapshot)
+                runtime.coordinator.reportRegistration(selected.route, AnchorRegistrationDiagnostic.Stage.COMPLETION,
+                    selected.source, snapshot, detail = outcome.javaClass.simpleName, failure = coordinator.lastFailure)
                 result(selected.route, when (outcome) {
                     is AnchorRegistrationCompletion.Saved -> when (outcome.anchor.mode) {
                         AnchorMode.CLICK -> AnchorRegistrationResult.SAVED_CLICK

@@ -42,9 +42,9 @@ private fun readerScenarios() {
     val otherWindow = Window(id = 8, node = Node(packageName = "other.app", windowId = 8))
     val snapshot = read(mapOf(0 to listOf(defaultWindow), 34 to listOf(targetWindow, otherWindow)))
     check(snapshot.status == UiTargetReadStatus.READ && snapshot.request?.source?.context == context)
-    check(snapshot.windows[0].targets.size == 4)
-    check(snapshot.windows[0].targets.map { it.resourceId } == listOf(duplicate, duplicate, null, null))
-    check(snapshot.windows[0].targets.map { it.ordinal }.distinct().size == 4)
+    check(snapshot.windows[0].targets.size == 6)
+    check(snapshot.windows[0].targets.map { it.resourceId } == listOf(null, duplicate, duplicate, null, null, null))
+    check(snapshot.windows[0].targets.map { it.ordinal }.distinct().size == 6)
     check(snapshot.windows[1].status == UiWindowReadStatus.OTHER_PACKAGE)
     check(defaultWindow.rootsRead == 0 && defaultNode.closed == 0 && excludedChild.childrenRead == 0)
     check(listOf(defaultWindow, targetWindow, otherWindow).all { it.closed == 1 })
@@ -76,7 +76,7 @@ private fun readerScenarios() {
     var deep = Node()
     val nodes = ArrayList<Node>(); nodes.add(deep)
     repeat(12000) { deep = Node(isClickable = false, children = listOf(deep)); nodes.add(deep) }
-    check(read(mapOf(34 to listOf(Window(node = deep)))).windows.single().targets.size == 1)
+    check(read(mapOf(34 to listOf(Window(node = deep)))).windows.single().targets.size == 12001)
     check(nodes.all { it.closed == 1 })
     println("PASS actual reader + Android adapter: exact display/window, static properties, usable bounds, null/repeated IDs, deep tree, stale failure and owned-handle cleanup")
 }

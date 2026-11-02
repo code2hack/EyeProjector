@@ -48,7 +48,7 @@ class PhoneHidFunctionCompositionTest {
             controls.geometry(size)
             merger.pointer(HeadPointerState(1, 1, true, true, 50f, 50f, Fit(0, 0, 100, 100), size),
                 ReceiverUsability("owner", ReceiverIncarnation("receiver", 1), 1, 1, ReceiverUsabilityMode.PROJECTED))
-            assertTrue(store.assign(PhoneHidAction.FUNCTION, binding))
+            assertTrue(store.assign(PhoneHidAction.ANCHOR, binding))
             controller.connection(true)
         }
 
@@ -92,7 +92,7 @@ class PhoneHidFunctionCompositionTest {
             assertEquals(name, listOf(FunctionIntentKind.ACTIVATE), h.intentions.map { it.kind })
             h.controller.closePage()
             h.controller.connection(true)
-            assertTrue(h.store.assign(PhoneHidAction.FUNCTION, h.binding))
+            assertTrue(h.store.assign(PhoneHidAction.ANCHOR, h.binding))
             h.press()
             h.advance(600)
             assertEquals("$name must allow a fresh gesture", List(2) { FunctionIntentKind.ACTIVATE }, h.intentions.map { it.kind })

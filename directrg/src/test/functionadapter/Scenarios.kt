@@ -32,7 +32,7 @@ fun main() {
     scenario("actual Activity Glasses HID initializer emits each matching short UP through typed callback") {
         val a = ActivityFunctionWiring(); val source = a.session!!
         val binding = HidBinding(HidButton(HidDeviceIdentity("fixture", 1, 2), 30, 40), "Fixture", "Function")
-        check(a.hidBindings.assign(HidAction.FUNCTION, binding))
+        check(a.hidBindings.assign(HidAction.ANCHOR, binding))
         repeat(3) { n ->
             val at = 1000L + n * 100
             SystemClock.time = at

@@ -32,43 +32,20 @@ class PhoneHidBindingsTest {
         assertEquals(0, storage.writes)
     }
 
-    @Test fun legacyFourRoleRecordKeepsFunctionAndLeavesNavigationUnassignedWithoutWriting() {
-        val legacy = listOf("TAP", "SCROLL_DOWN", "SCROLL_UP", "FUNCTION").mapIndexed { id, name ->
-            name to binding(20 + id, 80 + id)
-        }
-        val record = wireRecord(legacy)
-        val storage = Storage(record)
-        val loaded = storage.open()
-        legacy.forEachIndexed { id, (name, value) ->
-            val action = PhoneHidAction.valueOf(name)
-            assertEquals(id, action.ordinal)
-            assertEquals(value, loaded.binding(action))
-            assertEquals(action, loaded.action(value.button))
-        }
-        assertNull(loaded.binding(PhoneHidAction.BACK_HOME))
-        assertNull(loaded.binding(PhoneHidAction.LOCK))
-        assertEquals(0, storage.writes)
-        assertEquals(record, storage.record)
-        assertNull(loaded.error)
-    }
-
-    @Test fun explicitlyLearningNavigationAfterLegacyReloadRetainsAllUnrelatedAssignments() {
-        val legacy = PhoneHidAction.entries.take(4).mapIndexed { id, action ->
-            action.name to binding(20 + id, 80 + id)
-        }
-        val storage = Storage(wireRecord(legacy))
+    @Test fun semanticRolesReloadAndResetWithoutRepopulatingOldBindings() {
+        assertEquals(listOf("TAP", "SCROLL_DOWN", "SCROLL_UP", "ANCHOR", "NAVIGATION"), PhoneHidAction.entries.map { it.name })
+        val storage = Storage()
         val first = storage.open()
-        assertEquals(0, storage.writes)
-        val backHome = binding(30, 90)
-        val lock = binding(31, 91)
-        assertTrue(first.assign(PhoneHidAction.BACK_HOME, backHome))
-        val reconnect = storage.open()
-        assertTrue(reconnect.assign(PhoneHidAction.LOCK, lock))
-        val reopened = storage.open()
-        legacy.forEach { (name, value) -> assertEquals(value, reopened.binding(PhoneHidAction.valueOf(name))) }
-        assertEquals(backHome, reopened.binding(PhoneHidAction.BACK_HOME))
-        assertEquals(lock, reopened.binding(PhoneHidAction.LOCK))
-        assertEquals(2, storage.writes)
+        assertTrue(first.assign(PhoneHidAction.ANCHOR, binding(30, 90)))
+        assertTrue(first.assign(PhoneHidAction.NAVIGATION, binding(31, 91)))
+        val loaded = storage.open()
+        assertEquals(binding(30, 90), loaded.binding(PhoneHidAction.ANCHOR))
+        assertEquals(binding(31, 91), loaded.binding(PhoneHidAction.NAVIGATION))
+        assertTrue(loaded.resetAll())
+        val writes = storage.writes
+        val empty = storage.open()
+        PhoneHidAction.entries.forEach { assertNull(empty.binding(it)) }
+        assertEquals(writes, storage.writes)
     }
 
     @Test fun allActionsAndActualMetadataSurviveRestartInOneVersionedRecord() {
@@ -99,16 +76,16 @@ class PhoneHidBindingsTest {
         val function = binding(24, 29)
         val scroll = binding(25, 30)
         assertTrue(model.assign(PhoneHidAction.TAP, tap))
-        assertTrue(model.assign(PhoneHidAction.FUNCTION, function))
+        assertTrue(model.assign(PhoneHidAction.ANCHOR, function))
         assertTrue(model.assign(PhoneHidAction.SCROLL_DOWN, scroll))
         val renamed = tap.copy(deviceName = "Renamed peripheral", keyLabel = "Renamed button")
-        assertTrue(model.assign(PhoneHidAction.FUNCTION, renamed))
+        assertTrue(model.assign(PhoneHidAction.ANCHOR, renamed))
         assertEquals(4, storage.writes)
         val loaded = storage.open()
         assertNull(loaded.binding(PhoneHidAction.TAP))
         assertNull(loaded.action(function.button))
-        assertEquals(PhoneHidAction.FUNCTION, loaded.action(tap.button))
-        assertEquals(renamed, loaded.binding(PhoneHidAction.FUNCTION))
+        assertEquals(PhoneHidAction.ANCHOR, loaded.action(tap.button))
+        assertEquals(renamed, loaded.binding(PhoneHidAction.ANCHOR))
         assertEquals(scroll, loaded.binding(PhoneHidAction.SCROLL_DOWN))
     }
 
@@ -127,9 +104,9 @@ class PhoneHidBindingsTest {
             observedAgain.copy(scanCode = 29),
         )
         different.forEach { assertNull(loaded.action(it)) }
-        assertTrue(loaded.assign(PhoneHidAction.FUNCTION, value.copy(deviceName = "New display name")))
+        assertTrue(loaded.assign(PhoneHidAction.ANCHOR, value.copy(deviceName = "New display name")))
         assertNull(loaded.binding(PhoneHidAction.TAP))
-        assertEquals(PhoneHidAction.FUNCTION, loaded.action(observedAgain))
+        assertEquals(PhoneHidAction.ANCHOR, loaded.action(observedAgain))
     }
 
     @Test fun absentDescriptorIsRetainedWithoutInventingAnIdentity() {
@@ -147,23 +124,23 @@ class PhoneHidBindingsTest {
         val tap = binding()
         val function = binding(24, 29)
         assertTrue(model.assign(PhoneHidAction.TAP, tap))
-        assertTrue(model.assign(PhoneHidAction.FUNCTION, function))
+        assertTrue(model.assign(PhoneHidAction.ANCHOR, function))
         val saved = storage.record
         storage.writable = false
-        assertFalse(model.assign(PhoneHidAction.FUNCTION, tap))
+        assertFalse(model.assign(PhoneHidAction.ANCHOR, tap))
         assertEquals(3, storage.writes)
         assertNotNull(model.error)
         assertEquals(saved, storage.record)
         assertEquals(tap, model.binding(PhoneHidAction.TAP))
-        assertEquals(function, model.binding(PhoneHidAction.FUNCTION))
+        assertEquals(function, model.binding(PhoneHidAction.ANCHOR))
         assertEquals(tap, storage.open().binding(PhoneHidAction.TAP))
-        assertEquals(function, storage.open().binding(PhoneHidAction.FUNCTION))
+        assertEquals(function, storage.open().binding(PhoneHidAction.ANCHOR))
         storage.writable = true
-        assertTrue(model.assign(PhoneHidAction.FUNCTION, tap))
+        assertTrue(model.assign(PhoneHidAction.ANCHOR, tap))
         assertEquals(4, storage.writes)
         assertNull(model.error)
         assertNull(storage.open().binding(PhoneHidAction.TAP))
-        assertEquals(tap, storage.open().binding(PhoneHidAction.FUNCTION))
+        assertEquals(tap, storage.open().binding(PhoneHidAction.ANCHOR))
     }
 
     @Test fun resetAllRemovesEveryAssignmentInOneEmptyMapWriteAndReloadsEmpty() {
@@ -184,8 +161,8 @@ class PhoneHidBindingsTest {
         assertNull(model.error)
         assertNull(loaded.error)
         val fresh = binding(27, 32)
-        assertTrue(loaded.assign(PhoneHidAction.FUNCTION, fresh))
-        assertEquals(fresh, storage.open().binding(PhoneHidAction.FUNCTION))
+        assertTrue(loaded.assign(PhoneHidAction.ANCHOR, fresh))
+        assertEquals(fresh, storage.open().binding(PhoneHidAction.ANCHOR))
     }
 
     @Test fun failedResetAllRetainsEveryEffectiveAndPersistedAssignmentUntilRetry() {
@@ -219,12 +196,12 @@ class PhoneHidBindingsTest {
             assertTrue(model.assign(PhoneHidAction.TAP, value))
             val saved = storage.record
             storage.throwing = true
-            val success = if (reset) model.resetAll() else model.assign(PhoneHidAction.FUNCTION, value)
+            val success = if (reset) model.resetAll() else model.assign(PhoneHidAction.ANCHOR, value)
             assertFalse(success)
             assertEquals(2, storage.writes)
             assertEquals(saved, storage.record)
             assertEquals(value, model.binding(PhoneHidAction.TAP))
-            assertNull(model.binding(PhoneHidAction.FUNCTION))
+            assertNull(model.binding(PhoneHidAction.ANCHOR))
             assertNotNull(model.error)
             assertEquals(value, storage.open().binding(PhoneHidAction.TAP))
         }
@@ -280,7 +257,7 @@ class PhoneHidBindingsTest {
             "eyeprojector.hid-bindings.1:" + Base64.getEncoder().encodeToString(payload.copyOf(payload.size - 1)),
             "eyeprojector.hid-bindings.1:" + Base64.getEncoder().encodeToString(payload + byteArrayOf(0)),
             wireRecord(listOf("TAP" to binding(), "TAP" to binding(24, 29))),
-            wireRecord(listOf("TAP" to binding(), "FUNCTION" to binding())),
+            wireRecord(listOf("TAP" to binding(), "ANCHOR" to binding())),
             wireRecord(listOf("UNKNOWN_ACTION" to binding())),
         )
         corrupt.forEachIndexed { index, prior ->

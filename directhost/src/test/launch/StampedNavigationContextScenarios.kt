@@ -45,14 +45,14 @@ fun main(args: Array<String>) {
     val merged = args.single() == "merged"
     val paired = merged || args.single() == "paired"
     val label = if (merged) "ACTUAL MERGED116+117" else if (paired) "PAIRED117+116 SOURCE JOIN" else "STANDALONE117 BASELINE"
-    for (projected in listOf(false, true)) for (action in listOf(PhoneHidAction.BACK_HOME, PhoneHidAction.LOCK)) {
+    for (projected in listOf(false, true)) for (action in listOf(PhoneHidAction.NAVIGATION, PhoneHidAction.LOCK)) {
         Fixture().use { f ->
             val context = f.noPoint(projected)
             val at = android.os.SystemClock.uptimeMillis()
             f.edge(1, action, context, at = at)
             check(f.presses() == if (paired) 1 else 0)
             f.edge(1, action, context, PhoneHidPhase.UP, at + 1, at)
-            if (paired && action == PhoneHidAction.BACK_HOME) {
+            if (paired && action == PhoneHidAction.NAVIGATION) {
                 // The actual shared Back/Home recognizer's existing500ms interval, not a new product timer.
                 val passed = CountDownLatch(1)
                 f.timer.schedule({ passed.countDown() }, 600, TimeUnit.MILLISECONDS)
@@ -74,7 +74,7 @@ fun main(args: Array<String>) {
         (f.session as FunctionIntentRoute).functionIntents.activate = { functions++ }
         (f.session as FunctionIntentRoute).functionIntents.register = { functions++ }
         for ((index, action) in listOf(PhoneHidAction.TAP, PhoneHidAction.SCROLL_DOWN,
-            PhoneHidAction.SCROLL_UP, PhoneHidAction.FUNCTION).withIndex()) {
+            PhoneHidAction.SCROLL_UP, PhoneHidAction.ANCHOR).withIndex()) {
             val at = android.os.SystemClock.uptimeMillis()
             f.edge(index.toLong(), action, context, at = at)
             check(f.presses() == 0)
@@ -94,7 +94,7 @@ fun main(args: Array<String>) {
                 mode = if (wrong == "NONE") ReceiverUsabilityMode.NONE else fact.mode).bytes()))
             if (wrong == "retired") f.closeSession()
             val at = android.os.SystemClock.uptimeMillis()
-            for ((index, action) in listOf(PhoneHidAction.BACK_HOME, PhoneHidAction.LOCK).withIndex()) {
+            for ((index, action) in listOf(PhoneHidAction.NAVIGATION, PhoneHidAction.LOCK).withIndex()) {
                 f.edge(index.toLong(), action, original, at = at,
                     region = if (wrong == "region") "unrelated-original" else original.regionId!!,
                     word = when (wrong) { "stamp" -> original.word + 4; "zero-stamp" -> original.word and 3; else -> original.word })
@@ -130,10 +130,10 @@ private fun mergedNavigationCompletionScenarios(label: String) {
         fun double(firstRoute: Long) {
             val context = f.noPoint(projected = true)
             val at = android.os.SystemClock.uptimeMillis()
-            f.edge(firstRoute, PhoneHidAction.BACK_HOME, context, at = at)
-            f.edge(firstRoute, PhoneHidAction.BACK_HOME, context, PhoneHidPhase.UP, at + 1, at)
-            f.edge(firstRoute + 1, PhoneHidAction.BACK_HOME, context, at = at + 100)
-            f.edge(firstRoute + 1, PhoneHidAction.BACK_HOME, context, PhoneHidPhase.UP, at + 101, at + 100)
+            f.edge(firstRoute, PhoneHidAction.NAVIGATION, context, at = at)
+            f.edge(firstRoute, PhoneHidAction.NAVIGATION, context, PhoneHidPhase.UP, at + 1, at)
+            f.edge(firstRoute + 1, PhoneHidAction.NAVIGATION, context, at = at + 100)
+            f.edge(firstRoute + 1, PhoneHidAction.NAVIGATION, context, PhoneHidPhase.UP, at + 101, at + 100)
             launches.snapshot(true)
             check(!f.peer.released && !f.control.released && !f.video.released && f.child.alive)
         }
@@ -148,12 +148,12 @@ private fun mergedNavigationCompletionScenarios(label: String) {
     for (heldDouble in listOf(false, true)) Fixture().use { f ->
         val context = f.noPoint()
         val at = android.os.SystemClock.uptimeMillis()
-        f.edge(40, PhoneHidAction.BACK_HOME, context, at = at)
-        f.edge(40, PhoneHidAction.BACK_HOME, context, PhoneHidPhase.UP, at + 1, at)
-        if (heldDouble) f.edge(41, PhoneHidAction.BACK_HOME, context, at = at + 100)
+        f.edge(40, PhoneHidAction.NAVIGATION, context, at = at)
+        f.edge(40, PhoneHidAction.NAVIGATION, context, PhoneHidPhase.UP, at + 1, at)
+        if (heldDouble) f.edge(41, PhoneHidAction.NAVIGATION, context, at = at + 100)
         // Cancellation still addresses the first physical route after its UP.
-        f.edge(40, PhoneHidAction.BACK_HOME, context, PhoneHidPhase.CANCEL, at + 110, at)
-        if (heldDouble) f.edge(41, PhoneHidAction.BACK_HOME, context, PhoneHidPhase.UP, at + 120, at + 100)
+        f.edge(40, PhoneHidAction.NAVIGATION, context, PhoneHidPhase.CANCEL, at + 110, at)
+        if (heldDouble) f.edge(41, PhoneHidAction.NAVIGATION, context, PhoneHidPhase.UP, at + 120, at + 100)
         val passed = CountDownLatch(1)
         f.timer.schedule({ passed.countDown() }, 600, TimeUnit.MILLISECONDS)
         check(passed.await(2, TimeUnit.SECONDS)); f.drain()

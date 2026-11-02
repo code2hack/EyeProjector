@@ -135,7 +135,7 @@ add(actual/'InputRetirement.kt',(actual/'InputRetirement.kt').read_text())
 for name in names:add(actual/(name+'.kt'),source(actual/(name+'.kt')))
 for name in ['Point.kt','Rect.kt']:
     path=root/'directrg/src/test/hidframework/doubles'/name;add(path,path.read_text())
-for name in ['Wire','PhoneInput','Touch','LayoutScale','ReceiverUsability','ActivationControl','CameraFeed','FunctionIntent','AnchorMessage','BackHomeGestureRecognizer','ReceiverControlIntent']:add(protocol/(name+'.kt'),source(protocol/(name+'.kt')))
+for name in ['Wire','PhoneInput','Touch','LayoutScale','ReceiverUsability','ActivationControl','CameraFeed','FunctionIntent','AnchorMessage','HidNavigationGestureRecognizer','ReceiverControlIntent']:add(protocol/(name+'.kt'),source(protocol/(name+'.kt')))
 for name in ['RetirementBehaviorScenarios.kt']+([] if a.source_ref else ['RetirementReceiptScenarios.kt']):
     path=suite/name;add(path,path.read_text())
 main='''package com.code2hack.eyeprojector.directrg

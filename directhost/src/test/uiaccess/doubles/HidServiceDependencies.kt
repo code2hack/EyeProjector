@@ -11,6 +11,7 @@ class PhoneHidController {
         val downTime: Long, val eventTime: Long, val repeats: Int)
     val events = ArrayList<Event>()
     var acceptResult = false
+    fun discardRaw(deviceId: Int, key: Int, scan: Int, down: Long, phase: PhoneHidPhase) = false
     fun consumeRetired(deviceId: Int, key: Int, scan: Int, down: Long, phase: PhoneHidPhase) = false
     fun consumeWake(deviceId: Int, key: Int, scan: Int, down: Long, phase: PhoneHidPhase) = false
     fun consumePassed(deviceId: Int, key: Int, scan: Int, down: Long, phase: PhoneHidPhase) = false
@@ -22,10 +23,11 @@ class PhoneHidController {
     fun cancelInput() {}
 }
 class PhoneHidRuntime {
-    class Pin { var ownsRoute = false }
+    class Pin { var ownsRoute = false; fun recognizeInput() = ownsRoute }
     val pin = Pin()
     val controller = PhoneHidController()
     val connections = ArrayList<Boolean>()
+    fun recognizeInput() = true
     fun refresh() {}
     fun accessibilityConnection(connected: Boolean) { connections.add(connected) }
     companion object {

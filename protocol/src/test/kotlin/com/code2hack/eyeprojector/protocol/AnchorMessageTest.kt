@@ -12,11 +12,13 @@ class AnchorMessageTest {
         val values = listOf<AnchorMessage>(AnchorMessage.Feedback(1, original, AnchorFeedback.NO_ANCHOR),
             AnchorMessage.Offer(2, original, AnchorHighlight(100.0, 200.0, 140.0, 240.0)),
             AnchorMessage.Open(2, original, original.context.usability.copy(revision = 3, inputRevision = 6, mode = ReceiverUsabilityMode.LOCAL_PANEL)),
-            AnchorMessage.Choice(2, original, AnchorChoice.CLICK), AnchorMessage.Result(2, original, AnchorRegistrationResult.SAVED_CLICK))
+            AnchorMessage.Choice(2, original, AnchorChoice.CLICK),
+            AnchorMessage.Release(2, original.copy(source = FunctionSource.PHONE_HID), false),
+            AnchorMessage.Release(2, original.copy(source = FunctionSource.PHONE_HID), true), AnchorMessage.Result(2, original, AnchorRegistrationResult.SAVED_CLICK))
         val buffer = ByteArrayOutputStream(); val out = DataOutputStream(buffer)
         Wire.writeWelcome(out); values.forEach { Wire.writeFrame(out, Frame(Wire.ANCHOR, payload = it.bytes())) }
         val input = DataInputStream(buffer.toByteArray().inputStream()); Wire.readWelcome(input)
-        assertEquals(12, Wire.VERSION)
+        assertEquals(13, Wire.VERSION)
         assertEquals(values, values.map { AnchorMessage.from(Wire.readFrame(input).payload) })
         assertEquals(0, input.available())
     }

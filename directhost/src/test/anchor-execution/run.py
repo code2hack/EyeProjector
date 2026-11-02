@@ -35,7 +35,7 @@ sources += [actual / 'uiaccess' / (name + '.kt') for name in
             ['UiTargetSnapshot', 'UiSourceGeometry', 'UiTargetReader', 'UiTargetSnapshotProvider']]
 sources += [actual / 'ProjectionContext.kt', actual / 'PhoneTouchDispatcher.kt', actual / 'input/PhoneInputMerger.kt']
 sources += [protocol / (name + '.kt') for name in
-            ['Wire', 'Touch', 'PhoneInput', 'ReceiverUsability', 'CameraFeed', 'ActivationControl', 'FunctionIntent', 'AnchorMessage', 'BackHomeGestureRecognizer']]
+            ['Wire', 'Touch', 'PhoneInput', 'ReceiverUsability', 'CameraFeed', 'ActivationControl', 'FunctionIntent', 'AnchorMessage', 'HidNavigationGestureRecognizer']]
 # Only unused CapturedProjection return types are doubled; all snapshot/geometry/identity models are real.
 sources += [suite.parent / 'uiaccess/doubles/ProjectionDependencies.kt', suite.parent / 'uiaccess/doubles/SnapshotDescriptor.kt']
 sources += [suite.parent / 'kotlin/com/code2hack/eyeprojector/directhost/anchor/execution/AnchorExecutionTest.kt']

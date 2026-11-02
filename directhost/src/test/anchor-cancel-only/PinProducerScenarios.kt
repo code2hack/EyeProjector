@@ -12,7 +12,7 @@ import org.json.*
 /** Full actual native listener/connect/queue/controller/route -> real original Phone Binder/merger.
  * Android service transport and JSON registry are named boundaries; publication uses actual region/word. */
 internal fun pinProducerScenarios(run:(String,(Joined)->Unit)->Unit) {
-    val modes=if(System.getenv("EYEPROJECTOR_C206_NATIVE_ONLY")=="1")listOf("first-observation")else listOf("H1-Long-H2","first-observation","canceling-first-result","empty-Long-H2","normal-Short","normal-Long","two-Shorts","learning-H1-H2","learning-UP-H2","learning-persist-H2","learning-normal","binding-retired","state-before-DOWN","routed-binding-retired","routed-CANCELING-UP","routed-CANCELING-CANCEL","routed-CANCELING-REPEAT")
+    val modes=if(System.getenv("EYEPROJECTOR_C206_NATIVE_ONLY")=="1")listOf("first-observation")else listOf("H1-Long-H2","first-observation","canceling-first-result","empty-Long-H2","normal-Short","normal-Long","held-menu-Click","held-menu-Hold","held-menu-Cancel","two-Shorts","learning-H1-H2","learning-UP-H2","learning-persist-H2","learning-normal","binding-retired","state-before-DOWN","routed-binding-retired","routed-CANCELING-UP","routed-CANCELING-CANCEL","routed-CANCELING-REPEAT")
     for(queue in listOf("lane","main")) for(mode in modes)
         run("R187-3-actual-native-$queue-$mode") { j ->
         var listener:IHidCaptureListener?=null
@@ -22,7 +22,7 @@ internal fun pinProducerScenarios(run:(String,(Joined)->Unit)->Unit) {
         rikka.shizuku.Shizuku.capture=remote
         val binding=PhoneHidBinding(PhoneHidButton(PhoneHidDeviceIdentity(PhoneHidPinRuntime.NATIVE_PREFIX+JSONArray().put("pin").put("keys").toString(),2,3),195,0),"Pin","Function")
         var writes=0
-        val bindings=PhoneHidBindings({null},{writes++;true});check(bindings.assign(PhoneHidAction.FUNCTION,binding))
+        val bindings=PhoneHidBindings({null},{writes++;true});check(bindings.assign(PhoneHidAction.ANCHOR,binding))
         val usability=j.phone.get("receiverUsability") as SessionUsability
         usability.prepareRegion();val snapshot=usability.snapshot();check(snapshot.regionId!=null)
         val ids=AtomicLong(700)
@@ -39,7 +39,7 @@ internal fun pinProducerScenarios(run:(String,(Joined)->Unit)->Unit) {
         },{android.os.SystemClock.uptimeMillis()},
             userControl={j.runtime.userControl()})
         controller.connection(true)
-        if(mode.startsWith("learning")){controller.openPage();controller.select(PhoneHidAction.FUNCTION)}
+        if(mode.startsWith("learning")){controller.openPage();controller.select(PhoneHidAction.ANCHOR)}
         val firstObserved=CountDownLatch(1);val finishObservation=CountDownLatch(1)
         val firstPhase=java.util.concurrent.atomic.AtomicReference<String>()
         fun observeFirst(phase:String) {
@@ -108,7 +108,7 @@ internal fun pinProducerScenarios(run:(String,(Joined)->Unit)->Unit) {
             if(mode.startsWith("H1")||mode in listOf("first-observation","canceling-first-result")||mode=="learning-H1-H2"||mode=="binding-retired")j.hold()
             val entered=CountDownLatch(1);val release=CountDownLatch(1)
             if(queue=="lane"){lane.execute{entered.countDown();check(release.await(4,TimeUnit.SECONDS))};check(entered.await(2,TimeUnit.SECONDS))}
-            if(mode=="normal-Long"){j.wiring.move(320f,420f);j.pump()}
+            if(mode=="normal-Long"||mode.startsWith("held-menu")){j.wiring.move(320f,420f);j.pump()}
             var inputGeneration=1
             val at=android.os.SystemClock.uptimeMillis()
             fun event(phase:String,down:Long=at,time:Long=down,press:Long=81)=JSONObject().put("deviceKey","pin").put("generation",inputGeneration).put("sourceId",3).put("collectionKey","keys").put("vendorId",2).put("productId",3).put("code",195).put("deviceName","Pin").put("label","Function").put("phase",phase).put("downTimeMs",down).put("eventTimeMs",time).put("repeatCount",0).put("pressId",press).retain("event-$queue-$mode-$phase-$press")
@@ -159,7 +159,22 @@ internal fun pinProducerScenarios(run:(String,(Joined)->Unit)->Unit) {
                 check((field("originals").get(pin) as Map<*,*>).size==1){"queued state erased successor DOWN original"}
                 listener!!.onInput(event("UP",time=at+100));drain()
             }
-            if(mode=="routed-binding-retired"){
+            if(mode.startsWith("held-menu")) {
+                val until=System.nanoTime()+TimeUnit.SECONDS.toNanos(3)
+                while(!j.wiring.active()&&System.nanoTime()<until){j.pump();Thread.yield()}
+                check(j.wiring.active()&&j.messages.any{it is AnchorMessage.Offer}) {"Held original did not show menu before UP"}
+                val choice=when(mode.substringAfterLast('-')){"Click"->com.code2hack.eyeprojector.directrg.AnchorRegistrationAction.CLICK
+                    "Hold"->com.code2hack.eyeprojector.directrg.AnchorRegistrationAction.HOLD
+                    else->com.code2hack.eyeprojector.directrg.AnchorRegistrationAction.CANCEL}
+                j.wiring.highlight(choice)
+                val before=j.runtime.store.snapshot("app")
+                listener!!.onInput(event("UP",time=at+900));drain();j.pump()
+                check(!j.wiring.active()&&j.events.isEmpty()&&j.ordinary.isEmpty()) {"Registration activated target or failed to finish"}
+                val after=j.runtime.store.snapshot("app")
+                if(choice==com.code2hack.eyeprojector.directrg.AnchorRegistrationAction.CANCEL)check(before==after)
+                else check(after.anchor?.mode==if(choice==com.code2hack.eyeprojector.directrg.AnchorRegistrationAction.CLICK)
+                    com.code2hack.eyeprojector.directhost.anchor.preferences.AnchorMode.CLICK else com.code2hack.eyeprojector.directhost.anchor.preferences.AnchorMode.HOLD)
+            } else if(mode=="routed-binding-retired"){
                 val merger=j.phone.get("phoneInput")!!
                 fun count()=(merger.javaClass.getDeclaredField("receivedPresses").apply{isAccessible=true}.get(merger) as Map<*,*>).size
                 check(count()==1)
@@ -169,7 +184,8 @@ internal fun pinProducerScenarios(run:(String,(Joined)->Unit)->Unit) {
             }else if(mode !in listOf("normal-Short","two-Shorts","state-before-DOWN","learning-UP-H2","learning-persist-H2","learning-normal")){listener!!.onInput(event("UP",time=at+900));drain()}
             j.pump()
             when(mode){
-                "normal-Long"->check(j.wiring.active()&&!j.input.anchor.holding&&j.messages.any{it is AnchorMessage.Offer}) {"current original Long lost registration"}
+                "normal-Long"->check(!j.wiring.active()&&!j.input.anchor.holding&&j.events.isEmpty()&&j.messages.any{it is AnchorMessage.Offer}) {"Already-released Long must cancel before a ready menu"}
+                "held-menu-Click","held-menu-Hold","held-menu-Cancel"->Unit
                 "normal-Short","state-before-DOWN"->{check(j.input.anchor.holding&&j.events.map{it.phase}==listOf(Touch.Phase.DOWN));j.press();check(j.events.last().phase==Touch.Phase.UP)}
                 "two-Shorts"->check(!j.input.anchor.holding&&j.events.map{it.phase}==listOf(Touch.Phase.DOWN,Touch.Phase.UP)){"raw distinct Shorts lost FIFO toggle: ${j.events}"}
                 "empty-Long-H2"->check(j.input.anchor.holding&&j.events.map{it.phase}==listOf(Touch.Phase.DOWN)){"empty-born Long adopted H2: ${j.events}"}

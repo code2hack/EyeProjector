@@ -341,7 +341,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             })
         }
         root.addView(connectionView, FrameLayout.LayoutParams(-1, -1))
-        anchorOverlay = AnchorRegistrationOverlay(this, ::chooseAnchorRegistration)
+        anchorOverlay = AnchorRegistrationOverlay(this, anchorRegistration::highlight)
         root.addView(anchorOverlay, FrameLayout.LayoutParams(-1, -1))
         pointer = PointerOverlay(this).apply {
             sensitivity(settings.pointerXGain, settings.pointerYGain)
@@ -430,6 +430,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             capture = ::captureFunction,
             captureOriginal = { expected, id, parent -> captureFunctionOriginal(expected,id,FunctionSource.GLASSES_NATIVE,parent) },
             retireOriginal = { id, original -> retireFunctionOriginal(id,original,FunctionSource.GLASSES_NATIVE) },
+            registrationRelease = { gesture, canceled -> releaseFunctionRegistration(FunctionSource.GLASSES_NATIVE, gesture, canceled) },
         )
         nativeSwipeInput = NativeSwipeNavigationInput(this) { action ->
             if (usable()) dispatchNavigation(action, ReceiverControlSource.NATIVE_SWIPE)
@@ -468,6 +469,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             navigation = { action -> dispatchNavigation(action, ReceiverControlSource.GLASSES_HID) },
             functionCaptureOriginal = { expected, id, parent -> captureFunctionOriginal(expected,id,FunctionSource.GLASSES_HID,parent) },
             functionRetireOriginal = { id, original -> retireFunctionOriginal(id,original,FunctionSource.GLASSES_HID) },
+            registrationRelease = { gesture, canceled -> releaseFunctionRegistration(FunctionSource.GLASSES_HID, gesture, canceled) },
         )
         hidDevices = AndroidHidInput(this, hidInput, learning = ::hidLearningPage,
             admit = ::admitHidLearning, unhandled = ::unhandledHid, current = ::hidLearningContext) { event ->
@@ -536,6 +538,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         val source = session ?: return
         if (!::pointer.isInitialized || root.width <= 0 || root.height <= 0) return
         val position = pointer.position
+        if (registrationActive()) anchorOverlay.pointer(position.x, position.y, position.available)
         val size = currentGeometry
         val fit = size?.let { Fit.inside(root.width, root.height, it) }
         val projected = !localInputVisible()
@@ -588,10 +591,35 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
         val captured = gesture.original as FunctionCapture
         if (!usable() || session !== captured.source || inputGeneration != captured.context.pointer.revision) return
         val intent = FunctionIntent(gesture.kind, source, gesture.gestureId, gesture.sequence, captured.context)
+        if (intent.kind == FunctionIntentKind.REGISTER)
+            anchorRegistration.registration(captured.source, intent, gesture.physicalHeld)
         captured.source.functionIntent(CapturedFunctionIntent(intent, captured.source))
     }
 
     private fun usable() = resumed && hasWindowFocus()
+    private fun releaseFunctionRegistration(source: FunctionSource, gesture: FunctionGestureRecognizer.Gesture, canceled: Boolean) {
+        val captured = gesture.original as FunctionCapture
+        val intent = FunctionIntent(gesture.kind, source, gesture.gestureId, gesture.sequence, captured.context)
+        registrationReleased(captured.source, intent, canceled)
+    }
+
+    private fun registrationReleased(source: ProjectionSession, intent: FunctionIntent, canceled: Boolean, transactionId: Long? = null) {
+        if (session !== source) return
+        val original = anchorRegistration.offer
+        val message = anchorOffer
+        val position = pointer.position
+        if (original?.intent == intent) anchorOverlay.pointer(position.x, position.y, position.available)
+        if (!anchorRegistration.released(source, intent, canceled || !usable(), transactionId)) return
+        if (anchorOffer !== message) return
+        if (anchorRegistration.offer === original) anchorOverlay.waiting()
+        else if (!registrationActive()) {
+            anchorOffer = null
+            val overlay = anchorOverlay.prepareDismiss()
+            val operation = try { cancelInputOperation(dismissChooser = false) } finally { overlay.finishOriginal() }
+            if (operation != null && !operation.second.superseded() && !overlay.superseded()) updatePointerBounds()
+        }
+    }
+
     private fun registrationActive() = ::anchorRegistration.isInitialized && anchorRegistration.active
     private fun localInputVisible() = connectionView.visibility == View.VISIBLE || registrationActive()
     private fun projectedInput() = streaming && presentation.projectedInput && !registrationActive()
@@ -619,7 +647,7 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
                 anchorOffer = message
                 val bounds = message.highlight
                 if (!anchorRegistration.show(source, message.transactionId, message.intent.context,
-                        AnchorRegistrationHighlight(bounds.left, bounds.top, bounds.right, bounds.bottom))) {
+                        AnchorRegistrationHighlight(bounds.left, bounds.top, bounds.right, bounds.bottom), message.intent)) {
                     if (anchorOffer === message) anchorOffer = null
                     source.chooseAnchorRegistration(message, AnchorChoice.CANCEL)
                     return true
@@ -638,13 +666,19 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
                     return true
                 }
                 if (operation.second.superseded() || anchorOffer !== message) return true
-                anchorRegistration.offer?.let { anchorOverlay.show(it.highlight) }
+                anchorRegistration.offer?.let {
+                    anchorOverlay.show(it.highlight)
+                    val current = pointer.position
+                    anchorOverlay.pointer(current.x, current.y, current.available)
+                    anchorRegistration.presented()
+                }
                 // OPEN is registered before bounds callbacks can publish the exact new local mode.
                 if (operation.second.superseded() || anchorOffer !== message) return true
                 updatePointerBounds()
                 if (!operation.second.superseded() && anchorOffer === message) publishHeadPointer()
                 return true
             }
+            is AnchorMessage.Release -> { registrationReleased(source, message.intent, message.canceled, message.transactionId); return true }
             is AnchorMessage.Result -> {
                 val offer = anchorOffer
                 if (offer?.intent == message.intent && anchorRegistration.completed(source, message.transactionId)) {
@@ -1160,8 +1194,8 @@ class ReceiverActivity : Activity(), SurfaceHolder.Callback {
             completedInput.prepareCancel { local?.finishOriginal?.invoke() }
         } else null
         val detector = if (::screen.isInitialized) acquire { screen.prepareCancel() } else null
-        val hid = if (::hidInput.isInitialized) acquire { hidInput.prepareCancel() } else null
-        val nativeFunction = if (::functionInput.isInitialized) acquire { functionInput.prepareCancel() } else null
+        val hid = if (::hidInput.isInitialized) acquire { hidInput.prepareCancel(preserveRegistration = !dismissChooser && registrationActive()) } else null
+        val nativeFunction = if (::functionInput.isInitialized) acquire { functionInput.prepareCancel(preserveRegistration = !dismissChooser && registrationActive()) } else null
         val classified = if (::classifiedPadLongPress.isInitialized) acquire { classifiedPadLongPress.prepareCancel() } else null
         val shell = if (::shellPadContact.isInitialized) acquire { shellPadContact.prepareCancel() } else null
         val pad = if (::gestures.isInitialized) acquire { gestures.prepareCancel(at) } else null

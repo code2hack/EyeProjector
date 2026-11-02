@@ -109,7 +109,7 @@ files += [glass / (n + '.kt') for n in ['HidKeyInput', 'AndroidHidInput', 'HidBi
     'FunctionGestureRecognizer', 'ContextualNavigation', 'CompletedReceiverInput', 'SessionPresentation',
     'HeadPointerModel', 'HeadOrientation', 'PadGestureRecognizer', 'HeldPointerDispatcher', 'OrderedControlDispatcher']]
 files += [protocol / (n + '.kt') for n in ['Wire', 'PhoneInput', 'Touch', 'ReceiverUsability', 'ActivationControl',
-    'CameraFeed', 'FunctionIntent', 'BackHomeGestureRecognizer']]
+    'CameraFeed', 'FunctionIntent', 'HidNavigationGestureRecognizer']]
 files += [host / n for n in ['hid/PhoneHidController.kt', 'hid/PhoneHidBindings.kt', 'input/PhoneHidRoute.kt',
     'input/PhoneInputMerger.kt', 'activation/PhoneHidActivation.kt', 'activation/PhoneHidDisposition.kt']]
 files += [root / 'directhost/src/test/hidnavigation/ActivationBoundary.kt']

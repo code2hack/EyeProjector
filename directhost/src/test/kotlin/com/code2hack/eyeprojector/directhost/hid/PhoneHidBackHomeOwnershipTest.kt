@@ -13,7 +13,7 @@ class PhoneHidBackHomeOwnershipTest {
         data class Edge(val route: PhoneHidRoute, val value: PhoneHidEdge)
         var now = 1000L
         var context = Any()
-        val actions = mutableListOf<Pair<BackHomeGestureRecognizer.Action, Capture>>()
+        val actions = mutableListOf<Pair<HidNavigationGestureRecognizer.Action, Capture>>()
         val completedFunctions = mutableListOf<PhoneHidEdge>()
         val deliveries = mutableListOf<Edge>()
         val routes = mutableListOf<PhoneHidRoute>()
@@ -22,7 +22,7 @@ class PhoneHidBackHomeOwnershipTest {
         val binding = PhoneHidBinding(PhoneHidButton(PhoneHidDeviceIdentity("original device", 1, 2), 42, 84), "Remote", "Learned button")
         val functionBinding = binding.copy(button = binding.button.copy(keyCode = 43, scanCode = 85))
         val store = PhoneHidBindings({ null }) { true }
-        val grammar = BackHomeGestureRecognizer<Capture>({ now }, { it.context === context }, { at, action ->
+        val grammar = HidNavigationGestureRecognizer<Capture>({ now }, { it.context === context }, { at, action ->
             val task = Task(at, action).also(tasks::add)
             val cancel: () -> Unit = { task.canceled = true }; cancel
         }, { action, captured -> actions.add(action to captured) })
@@ -34,13 +34,13 @@ class PhoneHidBackHomeOwnershipTest {
                 fun send(edge: PhoneHidEdge) {
                     deliveries.add(Edge(route, edge))
                     when (edge.action) {
-                        PhoneHidAction.BACK_HOME -> when (edge.phase) {
+                        PhoneHidAction.NAVIGATION -> when (edge.phase) {
                             PhoneHidPhase.DOWN -> grammar.down(token, Triple(edge.attachmentId, edge.keyCode, edge.scanCode), captured)
                             PhoneHidPhase.UP -> grammar.up(token, edge.eventTimeMs)
                             PhoneHidPhase.CANCEL -> grammar.cancel(token)
                         }
                         // Completed Function consumer boundary only. No Function grammar is replaced or tested here.
-                        PhoneHidAction.FUNCTION -> if (edge.phase == PhoneHidPhase.UP) completedFunctions.add(edge)
+                        PhoneHidAction.ANCHOR -> if (edge.phase == PhoneHidPhase.UP) completedFunctions.add(edge)
                         else -> Unit
                     }
                 }
@@ -54,8 +54,8 @@ class PhoneHidBackHomeOwnershipTest {
             override fun cancel(route: PhoneHidRoute, eventTimeMs: Long) = route.cancel(eventTimeMs)
         }, { operation, complete -> operation(); complete() }, { now })
         init {
-            store.assign(PhoneHidAction.BACK_HOME, binding)
-            store.assign(PhoneHidAction.FUNCTION, functionBinding)
+            store.assign(PhoneHidAction.NAVIGATION, binding)
+            store.assign(PhoneHidAction.ANCHOR, functionBinding)
             controller.connection(true)
         }
         fun down(value: PhoneHidBinding = binding): PhoneHidController.Event {
@@ -101,9 +101,9 @@ class PhoneHidBackHomeOwnershipTest {
             h.advance(2000, runCanceled = true)
             assertTrue(name, h.actions.isEmpty())
             h.controller.closePage(); h.controller.connection(true)
-            h.store.assign(PhoneHidAction.BACK_HOME, h.binding)
+            h.store.assign(PhoneHidAction.NAVIGATION, h.binding)
             h.press(); h.advance(2600)
-            assertEquals(name, listOf(BackHomeGestureRecognizer.Action.BACK), h.actions.map { it.first })
+            assertEquals(name, listOf(HidNavigationGestureRecognizer.Action.BACK), h.actions.map { it.first })
         }
     }
 
@@ -122,12 +122,12 @@ class PhoneHidBackHomeOwnershipTest {
         }
     }
 
-    @Test fun completedDoubleHasOnlyOneHomeAndRetirementNeverProducesAnExtraBack() {
+    @Test fun completedTripleHasOnlyOneHomeAndRetirementNeverProducesAnExtraAction() {
         val h = Harness()
         val original = h.context
-        h.press(); h.now = 1100; h.press()
+        h.press(); h.now = 1100; h.press(); h.now = 1200; h.press()
         h.controller.cancelInput(); h.advance(2000, runCanceled = true)
-        assertEquals(listOf(BackHomeGestureRecognizer.Action.HOME), h.actions.map { it.first })
+        assertEquals(listOf(HidNavigationGestureRecognizer.Action.HOME), h.actions.map { it.first })
         assertSame(original, h.actions.single().second.context)
     }
 
@@ -156,7 +156,7 @@ class PhoneHidBackHomeOwnershipTest {
         val old = h.routes.single()
         h.advance(1600)
         h.press(); old.cancel(h.now); h.advance(2200)
-        assertEquals(listOf(BackHomeGestureRecognizer.Action.BACK, BackHomeGestureRecognizer.Action.BACK), h.actions.map { it.first })
+        assertEquals(listOf(HidNavigationGestureRecognizer.Action.BACK, HidNavigationGestureRecognizer.Action.BACK), h.actions.map { it.first })
         assertEquals(2, h.routes.size)
     }
 
@@ -189,13 +189,13 @@ class PhoneHidBackHomeOwnershipTest {
     @Test fun bindingPublicationDuringPressCannotChangeItsActionOrReleasedRouteOwner() {
         val h = Harness()
         val first = h.down()
-        h.store.assign(PhoneHidAction.FUNCTION, h.binding)
+        h.store.assign(PhoneHidAction.ANCHOR, h.binding)
         h.up(first)
-        assertEquals(listOf(PhoneHidAction.BACK_HOME, PhoneHidAction.BACK_HOME), h.deliveries.map { it.value.action })
+        assertEquals(listOf(PhoneHidAction.NAVIGATION, PhoneHidAction.NAVIGATION), h.deliveries.map { it.value.action })
         h.controller.cancelInput(); h.advance(2000, runCanceled = true)
         assertTrue(h.completedFunctions.isEmpty())
         assertTrue(h.actions.isEmpty())
-        assertEquals(PhoneHidAction.BACK_HOME, h.deliveries.last().value.action)
+        assertEquals(PhoneHidAction.NAVIGATION, h.deliveries.last().value.action)
         assertEquals(PhoneHidPhase.CANCEL, h.deliveries.last().value.phase)
     }
 }

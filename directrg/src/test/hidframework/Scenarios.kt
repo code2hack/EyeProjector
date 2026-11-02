@@ -23,7 +23,7 @@ private fun equal(expected: Any?, actual: Any?, reason: String) {
 
 private val visibleHidRoles = HidAction.entries
 private val displayedHidRoles = listOf(HidAction.TAP, HidAction.SCROLL_DOWN, HidAction.SCROLL_UP,
-    HidAction.BACK_HOME, HidAction.LOCK, HidAction.FUNCTION)
+    HidAction.NAVIGATION, HidAction.LOCK, HidAction.ANCHOR)
 private fun rowIndex(action: HidAction) = displayedHidRoles.indexOf(action)
 
 private class Rig(initialRecord: String? = null, save: Boolean = true) {
@@ -163,7 +163,7 @@ private fun actual379Record(): String {
         }
         check(r.bindings.assign(action, r.binding(joyCon379, codes.first, codes.second).copy(keyLabel = label)))
     }
-    check(r.bindings.assign(HidAction.FUNCTION,
+    check(r.bindings.assign(HidAction.ANCHOR,
         r.binding(nativePad379, 83, 204).copy(keyLabel = "KEYCODE_NOTIFICATION")))
     return checkNotNull(r.record)
 }
@@ -253,7 +253,7 @@ private fun canceledAndUnsupportedAndroidEventsDoNotReleaseIntoTargets() {
 private fun listenerLifecycleCancelsAndReconnectRetainsBindings() {
     val r = Rig()
     r.assign(HidAction.TAP)
-    r.assign(HidAction.FUNCTION, key = 196, scan = 701)
+    r.assign(HidAction.ANCHOR, key = 196, scan = 701)
     val stored = r.record
     val manager = r.android.inputManager
     r.adapter.start(); r.adapter.start()
@@ -299,7 +299,7 @@ private fun listenerLifecycleCancelsAndReconnectRetainsBindings() {
 private fun actualFunctionAndScrollCallbacksUseAndroidEdges() {
     for (presses in 1..3) {
         val r = Rig()
-        r.assign(HidAction.FUNCTION)
+        r.assign(HidAction.ANCHOR)
         repeat(presses) { index ->
             val down = 1000L + index * 100
             check(r.edge(KeyEvent.ACTION_DOWN, at = down))
@@ -410,7 +410,7 @@ private fun panelSavedMoveAndErrorsRefreshFromActualStore() {
     check(failed.edge(KeyEvent.ACTION_DOWN))
     check(failed.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000))
     equal("HID bindings could not be saved. Try again.", failed.message, "save error display")
-    equal("Function button: Unassigned", failedPanel.buttons[rowIndex(HidAction.FUNCTION)].text.toString(), "failed assignment is not displayed as saved")
+    equal("Function button: Unassigned", failedPanel.buttons[rowIndex(HidAction.ANCHOR)].text.toString(), "failed assignment is not displayed as saved")
     equal(null, failed.record, "failed write leaves persistence unchanged")
     failed.noOutput()
 }
@@ -490,7 +490,7 @@ private fun missingDeviceAfterRemovalConsumesOnlyActualCapturedEdges() {
     equal(null, r.input.selected, "unowned missing-device DOWN cannot begin capture")
     check(r.edge(KeyEvent.ACTION_DOWN, at = 1100, key = 4, scan = 158, device = reattached))
     check(r.edge(KeyEvent.ACTION_UP, at = 1120, down = 1100, key = 4, scan = 158, device = reattached))
-    equal(r.binding(reattached, 4, 158), r.bindings.binding(HidAction.FUNCTION), "fresh readdition facts bind")
+    equal(r.binding(reattached, 4, 158), r.bindings.binding(HidAction.ANCHOR), "fresh readdition facts bind")
     r.noOutput()
     r.leaveRows()
     check(r.edge(KeyEvent.ACTION_DOWN, at = 1200, key = 4, scan = 158, device = reattached))
@@ -596,7 +596,7 @@ private fun changedFactsBeforeListenerRetireOnlyTheCapturedGesture(
     r.hover(visibleHidRoles[3])
     check(r.edge(KeyEvent.ACTION_DOWN, at = 1100, key = 4, scan = 158, device = changed))
     check(r.edge(KeyEvent.ACTION_UP, at = 1120, down = 1100, key = 4, scan = 158, device = changed))
-    equal(r.binding(changed, 4, 158), r.bindings.binding(HidAction.FUNCTION), "fresh DOWN captures actual changed facts")
+    equal(r.binding(changed, 4, 158), r.bindings.binding(HidAction.ANCHOR), "fresh DOWN captures actual changed facts")
     equal(null, r.bindings.binding(HidAction.TAP), "retired original capture stays unassigned")
     equal(null, r.input.selected, "fresh changed-facts capture completes")
     r.noOutput()
@@ -850,7 +850,7 @@ private fun resetCancelsHeldCaptureAndPendingFunctionWorkEvenWhenSaveFails() {
         capture.noOutput()
 
         val function = Rig()
-        function.assign(HidAction.FUNCTION)
+        function.assign(HidAction.ANCHOR)
         val functionPanel = function.showPanel()
         check(function.edge(KeyEvent.ACTION_DOWN))
         val staleTimers = function.timers.toList()
@@ -860,7 +860,7 @@ private fun resetCancelsHeldCaptureAndPendingFunctionWorkEvenWhenSaveFails() {
         staleTimers.forEach { it.callback() }
         function.advance(3000)
         function.noOutput()
-        equal(if (writable) null else function.binding(), function.bindings.binding(HidAction.FUNCTION),
+        equal(if (writable) null else function.binding(), function.bindings.binding(HidAction.ANCHOR),
             "pending Function effective binding reflects store result")
         if (!writable) equal(functionBefore, function.record, "failed Reset retains pending Function record")
     }
@@ -936,14 +936,14 @@ private fun excludedDeviceCannotLearnOrDispatchHid(device: InputDevice) {
         "excluded ${device.name} DOWN must remain available to native dispatch"
     }
     check(!capture.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000, key = 83, scan = 204, device = device))
-    equal(null, capture.bindings.binding(HidAction.FUNCTION), "excluded device is never learned")
+    equal(null, capture.bindings.binding(HidAction.ANCHOR), "excluded device is never learned")
     equal(null, capture.record, "excluded capture does not create a saved binding")
     capture.advance(3000)
     capture.noOutput()
 
     // Replaying legacy saved bytes is distinct from trying to learn a new assignment.
     val seeded = Rig()
-    seeded.assign(HidAction.FUNCTION, key = 83, scan = 204, device = device)
+    seeded.assign(HidAction.ANCHOR, key = 83, scan = 204, device = device)
     val saved = Rig(seeded.record)
     check(!saved.edge(KeyEvent.ACTION_DOWN, key = 83, scan = 204, device = device))
     check(!saved.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000, key = 83, scan = 204, device = device))
@@ -959,9 +959,9 @@ private fun startupRepairRemovesOnlyTheRecordedNativeFunctionAndPreservesJoyCon(
     r.android.inputManager.install(virtual379)
     r.android.inputManager.install(joyCon379)
     r.adapter.start()
-    equal(null, r.bindings.binding(HidAction.FUNCTION), "startup repairs actual saved native key83 Function binding")
+    equal(null, r.bindings.binding(HidAction.ANCHOR), "startup repairs actual saved native key83 Function binding")
     check(r.record != original)
-    equal(null, HidBindings({ r.record }) { false }.binding(HidAction.FUNCTION), "native repair persists")
+    equal(null, HidBindings({ r.record }) { false }.binding(HidAction.ANCHOR), "native repair persists")
     assertJoyCon379Preserved(r)
     r.adapter.stop()
     r.noOutput()
@@ -984,7 +984,7 @@ private fun listenerRepairBlocksNativeAndPreservesAllThreeJoyConActions() {
         if (change) r.android.inputManager.change(nativePad379.id) else r.android.inputManager.add(nativePad379.id)
         check(!r.edge(KeyEvent.ACTION_DOWN, key = 83, scan = 204, device = nativePad379))
         check(!r.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000, key = 83, scan = 204, device = nativePad379))
-        equal(null, r.bindings.binding(HidAction.FUNCTION), "observed attachment add/change repairs native mapping")
+        equal(null, r.bindings.binding(HidAction.ANCHOR), "observed attachment add/change repairs native mapping")
         assertJoyCon379Preserved(r)
         r.noOutput()
         check(r.edge(KeyEvent.ACTION_DOWN, at = 1100, key = 103, scan = 311, device = joyCon379))
@@ -1022,11 +1022,11 @@ private fun failedLegacyRepairKeepsRecordAndErrorButNeverDispatchesNativeHid() {
         check(!r.edge(KeyEvent.ACTION_DOWN, key = 83, scan = 204, device = nativePad379))
         check(!r.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000, key = 83, scan = 204, device = nativePad379))
         equal(original, r.record, "failed native repair preserves persisted bytes")
-        check(r.bindings.binding(HidAction.FUNCTION) != null)
+        check(r.bindings.binding(HidAction.ANCHOR) != null)
         equal("HID bindings could not be saved. Try again.", r.bindings.error, "failed native repair reports error")
         panel.refresh()
         equal(r.bindings.error, r.message, "failed repair error remains visible")
-        check(!panel.buttons[rowIndex(HidAction.FUNCTION)].text.toString().endsWith(": Unassigned"))
+        check(!panel.buttons[rowIndex(HidAction.ANCHOR)].text.toString().endsWith(": Unassigned"))
         assertJoyCon379Preserved(r)
         r.advance(2000)
         r.noOutput()
@@ -1048,7 +1048,7 @@ private fun receiverNativeKey83RetainsContactMarkerRoute(capturing: Boolean, sav
         r.adapter.start()
         equal("HID bindings could not be saved. Try again.", r.bindings.error, "failed startup repair remains observable")
     }
-    check(r.bindings.binding(HidAction.FUNCTION) != null) { "native legacy assignment must exist before the Receiver dispatch probe" }
+    check(r.bindings.binding(HidAction.ANCHOR) != null) { "native legacy assignment must exist before the Receiver dispatch probe" }
     if (capturing) check(r.hover(visibleHidRoles[0]))
     val receiver = ExtractedReceiverKeyIngress(r.input, r.adapter)
     equal(PadGestureRecognizer.Key.CONTACT, nativePadKey(nativePad379.name, 0x101, 83),
@@ -1076,7 +1076,7 @@ private fun receiverNativeKey83RetainsContactMarkerRoute(capturing: Boolean, sav
     equal(103, r.bindings.binding(HidAction.TAP)?.button?.keyCode,
         "native key83 cannot replace the saved Joy-Con TAP during capture")
     equal(original, r.record, "native key dispatch itself does not rewrite the saved record")
-    check(r.bindings.binding(HidAction.FUNCTION) != null) { "excluded saved mapping remains harmless before successful startup repair" }
+    check(r.bindings.binding(HidAction.ANCHOR) != null) { "excluded saved mapping remains harmless before successful startup repair" }
     if (saveFailure) r.adapter.stop()
 }
 
@@ -1090,12 +1090,12 @@ private fun startupRepairPreservesUnrelatedActiveExternalHoldAndCapture() {
             check(r.edge(KeyEvent.ACTION_DOWN, key = 195, scan = 700))
         } else check(r.edge(KeyEvent.ACTION_DOWN, key = 103, scan = 311, device = joyCon379))
         r.adapter.start()
-        equal(null, r.bindings.binding(HidAction.FUNCTION), "startup removes only the unrelated saved native Function assignment")
+        equal(null, r.bindings.binding(HidAction.ANCHOR), "startup removes only the unrelated saved native Function assignment")
         check(r.cancels.isEmpty()) { "repair of another identity canceled an actual external hold/capture" }
         if (capture) {
-            equal(HidAction.FUNCTION, r.input.selected, "in-progress external capture survives unrelated native repair")
+            equal(HidAction.ANCHOR, r.input.selected, "in-progress external capture survives unrelated native repair")
             check(r.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000, key = 195, scan = 700))
-            equal(r.binding(), r.bindings.binding(HidAction.FUNCTION), "surviving capture saves its own external DOWN facts")
+            equal(r.binding(), r.bindings.binding(HidAction.ANCHOR), "surviving capture saves its own external DOWN facts")
             r.noOutput()
         } else {
             check(r.edge(KeyEvent.ACTION_UP, at = 1020, down = 1000, key = 103, scan = 311, device = joyCon379))
@@ -1160,7 +1160,7 @@ private fun receiverExternalSameKeyCodeRemainsEligibleForCaptureAndFunction() {
     }
     edge(capture, receiver, KeyEvent.ACTION_DOWN, 1000, 1000)
     edge(capture, receiver, KeyEvent.ACTION_UP, 1020, 1000)
-    equal(capture.binding(key = 83, scan = 204), capture.bindings.binding(HidAction.FUNCTION),
+    equal(capture.binding(key = 83, scan = 204), capture.bindings.binding(HidAction.ANCHOR),
         "an actual external device with key83 can still be learned")
     capture.noOutput()
     check(receiver.nativeActions.isEmpty() && receiver.scheduled.isEmpty() && receiver.fallthrough.isEmpty())
@@ -1243,10 +1243,10 @@ private fun rowClicksNeverLatchAndEveryActualDownCanReplaceOrMoveBindings() {
     equal(null, r.record, "click followed by outside DOWN does not leave sticky selection")
     r.hover(HidAction.TAP)
     check(r.edge(KeyEvent.ACTION_DOWN, at = 1100))
-    r.hover(HidAction.FUNCTION)
+    r.hover(HidAction.ANCHOR)
     check(r.edge(KeyEvent.ACTION_UP, at = 1120, down = 1100))
     equal(r.binding(), r.bindings.binding(HidAction.TAP), "A-DOWN B-UP remains pinned to A")
-    equal(null, r.bindings.binding(HidAction.FUNCTION), "release hover does not retarget")
+    equal(null, r.bindings.binding(HidAction.ANCHOR), "release hover does not retarget")
     r.hover(HidAction.TAP)
     check(r.edge(KeyEvent.ACTION_DOWN, at = 1200, key = 196, scan = 701))
     check(r.edge(KeyEvent.ACTION_UP, at = 1220, down = 1200, key = 196, scan = 701))
@@ -1515,7 +1515,7 @@ private fun throwingReceivedStatusSinkLeavesOriginalHeldRoutingAndCountsUntouche
 private fun dedicatedNavigationUsesActualAndroidEdgesWithoutSpatialReads() {
     for (count in 1..2) {
         val r = Rig()
-        r.assign(HidAction.BACK_HOME)
+        r.assign(HidAction.NAVIGATION)
         r.point = PointerPosition(-500f, 10000f, false)
         repeat(count) { index ->
             val down = 1000L + index * 100
@@ -1552,7 +1552,7 @@ private fun pendingNavigationRetiresOnContextOrSourceLossIncludingHeldDouble() {
         "lost context" to { it.context = null },
     )
     for ((name, retire) in retirements) for (double in listOf(false, true)) {
-        val r = Rig(); r.assign(HidAction.BACK_HOME)
+        val r = Rig(); r.assign(HidAction.NAVIGATION)
         check(r.edge(KeyEvent.ACTION_DOWN))
         check(r.edge(KeyEvent.ACTION_UP, at = 1010, down = 1000))
         if (double) check(r.edge(KeyEvent.ACTION_DOWN, at = 1100))
@@ -1567,15 +1567,15 @@ private fun pendingNavigationRetiresOnContextOrSourceLossIncludingHeldDouble() {
 
 private fun dedicatedCapturePreservesFunctionAndCanceledLockNeverDispatches() {
     val r = Rig()
-    r.assign(HidAction.FUNCTION, key = 196, scan = 701)
-    val original = r.bindings.binding(HidAction.FUNCTION)
+    r.assign(HidAction.ANCHOR, key = 196, scan = 701)
+    val original = r.bindings.binding(HidAction.ANCHOR)
     r.showPanel()
-    for (role in listOf(HidAction.BACK_HOME, HidAction.LOCK)) {
+    for (role in listOf(HidAction.NAVIGATION, HidAction.LOCK)) {
         r.hover(role)
         val down = 1000L + role.ordinal * 100
         check(r.edge(KeyEvent.ACTION_DOWN, at = down, key = 200 + role.ordinal, scan = 800 + role.ordinal))
         check(r.edge(KeyEvent.ACTION_UP, at = down + 10, down = down, key = 200 + role.ordinal, scan = 800 + role.ordinal))
-        equal(original, r.bindings.binding(HidAction.FUNCTION), "learning $role preserves Function")
+        equal(original, r.bindings.binding(HidAction.ANCHOR), "learning $role preserves Function")
     }
     r.noOutput()
     r.leaveRows()
@@ -1686,7 +1686,7 @@ private fun operationalHidBeforeLocalEffects(role:HidAction) {
 }
 
 private fun operationalBackHomeConsumedSequenceAndFreshFunction() {
-    val r=Rig();r.assign(HidAction.BACK_HOME);r.context="operational";r.captureTarget={null}
+    val r=Rig();r.assign(HidAction.NAVIGATION);r.context="operational";r.captureTarget={null}
     val pending=mutableListOf<(Boolean)->Unit>();var feedback=0
     val adapter=AndroidHidInput(r.android,r.input,{false},{pending.add(it)},{_,_->error("bound BackHome fallthrough")},current={r.context}){feedback++}
     fun edge(phase:Int,down:Long,at:Long) {r.now=at;SystemClock.now=at;check(adapter.accept(KeyEvent(r.device,phase,195,700,down,at)))}
@@ -1695,7 +1695,7 @@ private fun operationalBackHomeConsumedSequenceAndFreshFunction() {
     check(pending.size==1&&feedback==0&&r.targetReads==0&&r.navigation.isEmpty()) {"consumed BackHome tail re-admitted or entered handler"}
     edge(KeyEvent.ACTION_DOWN,3000,3000);edge(KeyEvent.ACTION_UP,3000,3010);check(pending.size==2);pending[1](true);r.advance(4000)
     check(r.navigation==listOf(ContextualNavigationAction.BACK))
-    val f=Rig();f.assign(HidAction.FUNCTION);f.captureTarget={null}
+    val f=Rig();f.assign(HidAction.ANCHOR);f.captureTarget={null}
     var gateCalls=0
     val function=AndroidHidInput(f.android,f.input,{false},{gateCalls++;it(false)}){}
     f.now=5000;function.accept(KeyEvent(f.device,KeyEvent.ACTION_DOWN,195,700,5000,5000))

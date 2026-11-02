@@ -142,7 +142,7 @@ def main():
     )]
     protocol = root / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
     production_paths += [protocol / n for n in ('Wire.kt', 'Touch.kt', 'PhoneInput.kt', 'ReceiverUsability.kt',
-        'ActivationControl.kt', 'CameraFeed.kt', 'FunctionIntent.kt', 'BackHomeGestureRecognizer.kt', 'AnchorMessage.kt', 'ReceiverControlIntent.kt')]
+        'ActivationControl.kt', 'CameraFeed.kt', 'FunctionIntent.kt', 'HidNavigationGestureRecognizer.kt', 'AnchorMessage.kt', 'ReceiverControlIntent.kt')]
     suite_paths = sorted((suite / 'doubles').glob('*.kt')) + [suite / 'Scenarios.kt']
     extraction_paths = [production / 'ReceiverActivity.kt', production / 'NativePadInput.kt']
     metadata_paths = [suite / 'run.py', suite / 'README.md']

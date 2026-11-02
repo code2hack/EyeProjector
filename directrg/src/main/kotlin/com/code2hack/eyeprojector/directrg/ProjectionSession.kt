@@ -351,7 +351,7 @@ class ProjectionSession(
                 require(frame.stamp == 0L)
                 val message = AnchorMessage.from(frame.payload)
                 require(message is AnchorMessage.Feedback || message is AnchorMessage.Offer ||
-                    message is AnchorMessage.Result || message is AnchorMessage.HeldState)
+                    message is AnchorMessage.Result || message is AnchorMessage.HeldState || message is AnchorMessage.Release)
                 onAnchor(this, message)
             }
             Wire.RECEIVER_INPUT -> onReceiverInput(this, ReceiverInput.from(frame.payload))

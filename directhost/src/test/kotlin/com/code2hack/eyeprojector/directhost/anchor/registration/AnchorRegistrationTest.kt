@@ -3,6 +3,9 @@ package com.code2hack.eyeprojector.directhost.anchor.registration
 import com.code2hack.eyeprojector.directhost.ProjectionContext
 import com.code2hack.eyeprojector.directhost.anchor.preferences.*
 import com.code2hack.eyeprojector.directhost.anchor.target.AnchorTargetDescriptor
+import com.code2hack.eyeprojector.directhost.anchor.target.AnchorTargetResolution
+import com.code2hack.eyeprojector.directhost.anchor.target.AnchorTargetUnavailableReason
+import com.code2hack.eyeprojector.directhost.anchor.target.AnchorTargetAmbiguity
 import com.code2hack.eyeprojector.directhost.uiaccess.*
 import com.code2hack.eyeprojector.protocol.*
 import org.junit.Assert.*
@@ -88,6 +91,76 @@ class AnchorRegistrationTest {
             snapshot(targets = listOf(target.copy(resourceId = null))), snapshot(status = UiTargetReadStatus.ACCESS_REQUIRED))) {
             assertTrue(AnchorRegistrationTargets.capture(intent(), s) is AnchorRegistrationCapture.Rejected)
         }
+    }
+
+    @Test fun identicalProductRejectionsRetainDifferentActualResolverReasonsAndOriginalMapping() {
+        val missing = AnchorRegistrationTargets.inspect(intent(), snapshot(targets = listOf(target.copy(resourceId = null))))
+        val duplicate = AnchorRegistrationTargets.inspect(intent(), snapshot(targets = listOf(target,
+            target.copy(ordinal = 2, bounds = UiBounds(100, 100, 200, 200)))))
+        assertEquals(missing.capture, duplicate.capture) // Product outcome remains unchanged.
+        assertEquals(AnchorTargetUnavailableReason.IDENTITY_UNAVAILABLE,
+            (missing.resolution as AnchorTargetResolution.Unavailable).reason)
+        assertEquals(AnchorTargetAmbiguity.TARGET_IDENTITY,
+            (duplicate.resolution as AnchorTargetResolution.Ambiguous).kind)
+        assertEquals(2, duplicate.identityMatchCount)
+        assertEquals(1, missing.currentWindowCount); assertEquals(1, missing.hoverTargetCount)
+        assertEquals(1, duplicate.currentWindowCount); assertEquals(1, duplicate.hoverTargetCount)
+        assertEquals(UiPoint(40.0, 40.0), missing.sourceHover)
+        assertEquals(missing.sourceHover, duplicate.sourceHover)
+        assertNull(missing.selected!!.resourceId)
+        assertEquals(target.resourceId, duplicate.selected!!.resourceId)
+    }
+
+    @Test fun readAndHoverWindowRejectionsStayDistinctWithoutSavingAnyTarget() {
+        val store = AppAnchorStore(Storage(old)); val coordinator = AnchorRegistrationCoordinator<String>(store)
+        val unread = coordinator.beginDetailed("unread", intent(), snapshot(status = UiTargetReadStatus.ACCESS_REQUIRED))
+        assertEquals(AnchorRegistrationCapture.Rejected(AnchorRegistrationFailure.TARGET_UNAVAILABLE), unread.capture)
+        assertNull(unread.sourceHover)
+        assertEquals(AnchorRegistrationCompletion.Canceled, coordinator.choose("unread", AnchorMode.HOLD, snapshot()))
+        val windows = snapshot().copy(windows = listOf(snapshot().windows.single(), snapshot().windows.single().copy(
+            window = window.copy(windowId = 8))))
+        val ambiguous = coordinator.beginDetailed("windows", intent(), windows)
+        assertEquals(2, ambiguous.currentWindowCount)
+        assertEquals(0, ambiguous.hoverTargetCount)
+        assertEquals(AnchorRegistrationCapture.Rejected(AnchorRegistrationFailure.TARGET_UNAVAILABLE), ambiguous.capture)
+        assertEquals(old, store.read(app))
+    }
+
+    @Test fun failedSaveRetainsOriginalExceptionAndLeavesExistingValue() {
+        val original = java.io.IOException("private failure detail must not be logged")
+        val storage = object : AppAnchorStorage {
+            override fun read(packageName: String) = old
+            override fun write(packageName: String, anchor: AppAnchor?) { throw original }
+        }
+        val store = AppAnchorStore(storage); val coordinator = AnchorRegistrationCoordinator<String>(store)
+        assertTrue(coordinator.begin("original", intent(), snapshot()) is AnchorRegistrationCapture.Selected)
+        assertEquals(AnchorRegistrationCompletion.SaveFailed, coordinator.choose("original", AnchorMode.HOLD, snapshot()))
+        assertSame(original, coordinator.lastFailure)
+        assertEquals(old, store.read(app))
+    }
+
+    @Test fun retainedOwnerHoverUsesIntegerDisplayFitAndCannotSelectNeighborFromFilteredSnapshot() {
+        // Non-content metadata from retained failed request303; owner/token/package anonymized.
+        val video = Geometry(840, 1120)
+        val original = source.copy(displayId = 57, foregroundActivity = null,
+            geometry = UiSourceGeometry(Geometry(1248, 1663), video, 420, 0, false, video))
+        val originalFact = fact.copy(inputRevision = 107, mode = ReceiverUsabilityMode.PROJECTED)
+        val originalIntent = FunctionIntent(FunctionIntentKind.REGISTER, FunctionSource.GLASSES_NATIVE, 13, 13,
+            FunctionIntentContext(originalFact, HeadPointerState(107, 0, true, true,
+                201.89757f, 609.461f, Fit(0, 0, 480, 640), video)))
+        val metadata = window.copy(displayId = 57, windowId = 4160, bounds = UiBounds(0, 0, 1248, 1663))
+        val neighbors = listOf(
+            target.copy(windowId = 4160, resourceId = "$app:id/action_entrance", bounds = UiBounds(32, 1484, 148, 1631)),
+            target.copy(windowId = 4160, resourceId = "$app:id/action_input", bounds = UiBounds(984, 1484, 1100, 1631)),
+            target.copy(windowId = 4160, resourceId = "$app:id/action_menu_entrance", bounds = UiBounds(1100, 1484, 1216, 1631)),
+        )
+        val captured = AnchorRegistrationTargets.inspect(originalIntent, snapshot(original, neighbors, metadata))
+        assertEquals(UiPoint(353.0, 1066.0), captured.videoHover)
+        assertEquals(524.4571428571429, captured.sourceHover!!.x, 0.0000001)
+        assertEquals(1584.2341376228776, captured.sourceHover.y, 0.0000001)
+        assertEquals(1, captured.currentWindowCount)
+        assertEquals(0, captured.hoverTargetCount)
+        assertEquals(AnchorRegistrationCapture.Rejected(AnchorRegistrationFailure.HOVER_ABSENT), captured.capture)
     }
 
     @Test fun wrongOriginalGeometryOwnerInputRevisionModeOrIntentIsRejected() {

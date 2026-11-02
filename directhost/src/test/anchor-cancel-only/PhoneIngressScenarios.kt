@@ -48,7 +48,7 @@ internal fun phoneIngressScenarios(run:(String,(Joined)->Unit)->Unit) {
             override fun cancel(route:PhoneHidRoute,eventTimeMs:Long)=error("No per-action cancellation")
         },{operation,complete->operation();complete()},{1000},
             userControl={j.runtime.userControl()},recognizeInput={j.runtime.userControl(recognitionOnly=true)})
-        input.openPage();input.select(PhoneHidAction.FUNCTION)
+        input.openPage();input.select(PhoneHidAction.ANCHOR)
         val binding=PhoneHidBinding(PhoneHidButton(PhoneHidDeviceIdentity("source",1,2),66,30),"Host","Function")
         val down=PhoneHidController.Event(7,binding,PhoneHidPhase.DOWN,1000,1000,discarded=true)
         // This immutable receipt represents the Binder listener's pre-queue CANCELING observation.

@@ -125,7 +125,7 @@ class HidDecisionTraceTest {
             val trace = event { calls++; throw failure }
             trace.record(Step.ARRIVAL)
             assertFalse(HidDecisionTrace.observed(trace, Step.ADAPTER_INPUT, false))
-            assertTrue(HidDecisionTrace.observed(trace, Step.HIT_RESULT, true, HidAction.FUNCTION))
+            assertTrue(HidDecisionTrace.observed(trace, Step.HIT_RESULT, true, HidAction.ANCHOR))
             assertEquals(3, calls)
         }
         assertFalse(HidDecisionTrace.observed(null, Step.HIT_RESULT, false))

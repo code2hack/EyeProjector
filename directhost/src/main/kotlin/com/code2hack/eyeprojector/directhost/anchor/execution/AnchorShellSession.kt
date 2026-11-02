@@ -37,7 +37,7 @@ internal class AnchorShellSession(
                 override fun edge(routeId: Long, typedEdge: ByteArray, regionId: String, word: Long) {
                     val edge = runCatching { PhoneHidEdge.from(typedEdge) }.getOrNull() ?: return
                     if (closed) return
-                    if (edge.action != PhoneHidAction.FUNCTION) original.ordinary()
+                    if (edge.action != PhoneHidAction.ANCHOR) original.ordinary()
                     rawEdge(original, routeId, edge, regionId, word)
                 }
             }
@@ -104,6 +104,10 @@ internal class AnchorShellSession(
             send(AnchorMessage.Feedback(id, admission.intent, AnchorFeedback.UNAVAILABLE)); return
         }
         val operation = Operation(id, admission, original)
+        if (admission.intent.kind == FunctionIntentKind.REGISTER) {
+            cancelRegistration(registration.get(), deferred = true)
+            registration.set(operation)
+        }
         try { original.client.onIntent(id, admission.intent.bytes(), operation) }
         catch (_: Exception) { operation.retire(); send(AnchorMessage.Feedback(id, admission.intent, AnchorFeedback.UNAVAILABLE)) }
     }
@@ -203,14 +207,22 @@ internal class AnchorShellSession(
                 is AnchorMessage.Offer -> {
                     val current = source.invoke() ?: return
                     if (!input.anchor.isCurrent(admission) || !accepts(admission.intent, current)) return
-                    registration.set(this)
+                    if (registration.get() !== this) return
                 }
                 is AnchorMessage.Result -> if (!registration.compareAndSet(this, null)) return
-                is AnchorMessage.Feedback -> Unit
+                is AnchorMessage.Feedback -> if (admission.intent.kind == FunctionIntentKind.REGISTER) registration.compareAndSet(this, null) else Unit
                 else -> error("Invalid app Anchor response")
             }
             send.invoke(message)
         }
+    }
+
+    /** Captured physical Phone Anchor terminal; no new context or input admission is consulted. */
+    fun release(intent: FunctionIntent, canceled: Boolean) {
+        val original = registration.get() ?: return
+        if (closed || binding.get() !== original.original || original.admission.intent != intent ||
+            intent.source != FunctionSource.PHONE_HID) return
+        send(AnchorMessage.Release(original.id, intent, canceled || !original.chooserObserved))
     }
 
     /** OPEN precedes publication of exactly this chooser fact; unrelated revisions cannot adopt it. */

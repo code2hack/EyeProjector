@@ -123,6 +123,62 @@ class AnchorExecutionTest {
         assertEquals(listOf(AnchorExecutionStatus.CLICK_SUBMITTED), route.feedback); assertEquals(1, route.clicks)
     }
 
+    @Test fun unavailableRegistrationProviderReportsActualReadWithoutClickOrObserverSideEffects() {
+        val store = AppAnchorStore(Storage()); val queue = ArrayDeque<() -> Unit>()
+        val app = AnchorAppCoordinator(store, { UiTargetReader(Access()) { 0 } }, { 0 }, { queue.add(it) })
+        val i = intent().copy(kind = FunctionIntentKind.REGISTER)
+        val route = Route(i)
+        app.registrationDiagnostic = { throw IllegalStateException("diagnostic sink failed") }
+        app.accept(route)
+        assertNull(app.lastRegistrationDiagnostic)
+        while (queue.isNotEmpty()) queue.removeFirst()()
+        assertEquals(listOf(AnchorExecutionStatus.UNAVAILABLE), route.feedback)
+        assertEquals(0, route.clicks)
+        val event = app.lastRegistrationDiagnostic!!
+        assertEquals(AnchorRegistrationDiagnostic.Stage.PROVIDER_UNAVAILABLE, event.stage)
+        assertEquals(i, event.intent); assertEquals(source, event.source)
+        assertEquals(UiTargetReadStatus.READ, event.snapshot!!.status)
+        assertEquals(node.resourceId, event.snapshot.windows.single().targets.single().resourceId)
+        assertNull(store.read("app"))
+    }
+
+    @Test fun originalRegistrationExceptionSurvivesFailingDiagnosticObserverWithoutMessageLogging() {
+        val original = java.io.IOException("private application content")
+        val store = AppAnchorStore(Storage()); val queue = ArrayDeque<() -> Unit>()
+        val app = AnchorAppCoordinator(store, { UiTargetReader(Access()) { 0 } }, { 0 }, { queue.add(it) })
+        val route = Route(intent().copy(kind = FunctionIntentKind.REGISTER))
+        val failing = object : AnchorOriginalRoute by route {
+            override fun source(): ManagedUiSource? = throw original
+        }
+        app.registrationDiagnostic = { throw IllegalArgumentException("observer failed") }
+        app.accept(failing); while (queue.isNotEmpty()) queue.removeFirst()()
+        assertSame(original, app.lastFailure)
+        val event = app.lastRegistrationDiagnostic!!
+        assertSame(original, event.failure)
+        assertEquals(AnchorRegistrationDiagnostic.Stage.EXCEPTION, event.stage)
+        assertTrue(event.render().contains(original.javaClass.name))
+        assertFalse(event.render().contains("private application content"))
+        assertEquals(listOf(AnchorExecutionStatus.UNAVAILABLE), route.feedback)
+        assertEquals(0, route.clicks)
+    }
+
+    @Test fun actualReaderAndSourceFailureSnapshotsRetainOriginalExceptionsWithoutChangingReadStatus() {
+        val original = java.io.IOException("application content is not diagnostic output")
+        val access = Access().apply { duringRead = { throw original } }
+        val reader = UiTargetReader(access) { 0 }
+        val read = reader.read(UiTargetRequest(source, "app"))
+        assertEquals(UiTargetReadStatus.FAILED, read.status)
+        assertSame(original, read.failure)
+        val provider = UiTargetSnapshotProvider(ManagedUiSourceProvider { throw original }, { reader }, { 0 })
+        val failedSource = provider.read(source.context, "app")
+        assertEquals(UiTargetReadStatus.FAILED, failedSource.status)
+        assertSame(original, failedSource.failure)
+        val event = AnchorRegistrationDiagnostic(51, intent().copy(kind = FunctionIntentKind.REGISTER),
+            AnchorRegistrationDiagnostic.Stage.CAPTURE, source, read)
+        assertTrue(event.render().contains(original.javaClass.name))
+        assertFalse(event.render().contains("application content is not diagnostic output"))
+    }
+
     @Test fun clearDuringTraversalSendsNoClickEvenBeforeObserverQueueRuns() {
         val store = AppAnchorStore(Storage()); store.replace(anchor)
         val access = Access().apply { duringRead = { store.clear("app") } }; val queue = ArrayDeque<() -> Unit>()

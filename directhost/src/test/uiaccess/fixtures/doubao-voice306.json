@@ -1,0 +1,1507 @@
+{
+  "schema": 1,
+  "qualification": "Non-content public metadata from fresh raw306, correlated same source/window with historical original failed request303. No original owner/session/user/process identifiers or app text. Original hover mapping uses integer frame840x1119.",
+  "packageName": "com.larus.nova",
+  "window": {
+    "displayId": 57,
+    "windowId": 4160,
+    "type": 1,
+    "layer": 0,
+    "active": true,
+    "focused": true,
+    "bounds": [
+      0,
+      0,
+      1248,
+      1663
+    ]
+  },
+  "geometry": {
+    "logical": [
+      1248,
+      1663
+    ],
+    "physical": [
+      840,
+      1120
+    ],
+    "video": [
+      840,
+      1120
+    ],
+    "densityDpi": 420,
+    "rotation": 0,
+    "scalingDisabled": false
+  },
+  "pointer": {
+    "x": 201.89757,
+    "y": 609.461,
+    "fit": [
+      0,
+      0,
+      480,
+      640
+    ]
+  },
+  "nodes": [
+    {
+      "ordinal": 0,
+      "parentOrdinal": null,
+      "childIndex": null,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": null,
+      "className": "android.widget.FrameLayout",
+      "bounds": [
+        0,
+        0,
+        1248,
+        1663
+      ],
+      "actionIds": [
+        4,
+        8,
+        64,
+        16908342
+      ],
+      "clickable": false,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 1
+    },
+    {
+      "ordinal": 1,
+      "parentOrdinal": 0,
+      "childIndex": 0,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/side_bar_layout",
+      "className": "androidx.drawerlayout.widget.DrawerLayout",
+      "bounds": [
+        0,
+        0,
+        1248,
+        1663
+      ],
+      "actionIds": [
+        4,
+        8,
+        64,
+        16908342
+      ],
+      "clickable": false,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 1
+    },
+    {
+      "ordinal": 2,
+      "parentOrdinal": 1,
+      "childIndex": 0,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/draggable_container",
+      "className": "android.widget.FrameLayout",
+      "bounds": [
+        0,
+        0,
+        1248,
+        1663
+      ],
+      "actionIds": [
+        4,
+        8,
+        64,
+        16908342
+      ],
+      "clickable": false,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 1
+    },
+    {
+      "ordinal": 3,
+      "parentOrdinal": 2,
+      "childIndex": 0,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/chat_root",
+      "className": "android.view.ViewGroup",
+      "bounds": [
+        0,
+        0,
+        1248,
+        1663
+      ],
+      "actionIds": [
+        4,
+        8,
+        64,
+        16908342
+      ],
+      "clickable": false,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 17
+    },
+    {
+      "ordinal": 4,
+      "parentOrdinal": 3,
+      "childIndex": 0,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/tab_layout",
+      "className": "android.widget.HorizontalScrollView",
+      "bounds": [
+        0,
+        94,
+        0,
+        173
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        64,
+        16908342
+      ],
+      "clickable": false,
+      "longClickable": false,
+      "visible": false,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 5,
+      "parentOrdinal": 3,
+      "childIndex": 1,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/back_icon",
+      "className": "android.widget.ImageView",
+      "bounds": [
+        21,
+        115,
+        137,
+        231
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        16,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": true,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 6,
+      "parentOrdinal": 3,
+      "childIndex": 2,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/main_container",
+      "className": "android.view.ViewGroup",
+      "bounds": [
+        478,
+        124,
+        771,
+        223
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        16,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": true,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 2
+    },
+    {
+      "ordinal": 7,
+      "parentOrdinal": 6,
+      "childIndex": 0,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/title",
+      "className": "android.widget.TextView",
+      "bounds": [
+        572,
+        124,
+        646,
+        180
+      ],
+      "actionIds": [
+        4,
+        8,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": false,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 8,
+      "parentOrdinal": 6,
+      "childIndex": 1,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/subtitle",
+      "className": "android.widget.TextView",
+      "bounds": [
+        478,
+        180,
+        771,
+        223
+      ],
+      "actionIds": [
+        4,
+        8,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": false,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 9,
+      "parentOrdinal": 3,
+      "childIndex": 3,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/real_time_call_ic_container",
+      "className": "android.widget.FrameLayout",
+      "bounds": [
+        995,
+        115,
+        1111,
+        231
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        16,
+        64,
+        16908342
+      ],
+      "clickable": true,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 1
+    },
+    {
+      "ordinal": 10,
+      "parentOrdinal": 9,
+      "childIndex": 0,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/real_time_call",
+      "className": "android.widget.ImageView",
+      "bounds": [
+        995,
+        115,
+        1111,
+        231
+      ],
+      "actionIds": [
+        4,
+        8,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": false,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 11,
+      "parentOrdinal": 3,
+      "childIndex": 4,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/tts",
+      "className": "android.widget.FrameLayout",
+      "bounds": [
+        1111,
+        115,
+        1227,
+        231
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        16,
+        32,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": true,
+      "longClickable": true,
+      "visible": true,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 12,
+      "parentOrdinal": 3,
+      "childIndex": 5,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/message_list",
+      "className": "androidx.recyclerview.widget.RecyclerView",
+      "bounds": [
+        0,
+        252,
+        1248,
+        1317
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        64,
+        4096,
+        8192,
+        16908342
+      ],
+      "clickable": false,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 1
+    },
+    {
+      "ordinal": 13,
+      "parentOrdinal": 12,
+      "childIndex": 0,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": null,
+      "className": "android.view.ViewGroup",
+      "bounds": [
+        0,
+        252,
+        1248,
+        1317
+      ],
+      "actionIds": [
+        4,
+        8,
+        64,
+        16908342
+      ],
+      "clickable": false,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 1
+    },
+    {
+      "ordinal": 14,
+      "parentOrdinal": 13,
+      "childIndex": 0,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/content_view",
+      "className": "android.widget.LinearLayout",
+      "bounds": [
+        32,
+        252,
+        1216,
+        1317
+      ],
+      "actionIds": [
+        4,
+        8,
+        32,
+        64,
+        16908342
+      ],
+      "clickable": false,
+      "longClickable": true,
+      "visible": true,
+      "enabled": true,
+      "childCount": 7
+    },
+    {
+      "ordinal": 15,
+      "parentOrdinal": 14,
+      "childIndex": 0,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/ll_reference_title",
+      "className": "android.widget.LinearLayout",
+      "bounds": [
+        32,
+        252,
+        704,
+        -248
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        16,
+        32,
+        64,
+        16908342
+      ],
+      "clickable": true,
+      "longClickable": true,
+      "visible": false,
+      "enabled": true,
+      "childCount": 1
+    },
+    {
+      "ordinal": 16,
+      "parentOrdinal": 15,
+      "childIndex": 0,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/tv_reference_title",
+      "className": "android.widget.TextView",
+      "bounds": [
+        74,
+        252,
+        619,
+        -248
+      ],
+      "actionIds": [
+        4,
+        8,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": false,
+      "longClickable": false,
+      "visible": false,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 17,
+      "parentOrdinal": 14,
+      "childIndex": 1,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": null,
+      "className": "android.widget.TextView",
+      "bounds": [
+        32,
+        252,
+        1216,
+        1317
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        16,
+        32,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": true,
+      "longClickable": true,
+      "visible": true,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 18,
+      "parentOrdinal": 14,
+      "childIndex": 2,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/msg_action_copy",
+      "className": "android.widget.LinearLayout",
+      "bounds": [
+        74,
+        1568,
+        169,
+        1317
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        16,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": true,
+      "longClickable": false,
+      "visible": false,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 19,
+      "parentOrdinal": 14,
+      "childIndex": 3,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/msg_action_re_tts",
+      "className": "android.widget.LinearLayout",
+      "bounds": [
+        190,
+        1568,
+        285,
+        1317
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        16,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": true,
+      "longClickable": false,
+      "visible": false,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 20,
+      "parentOrdinal": 14,
+      "childIndex": 4,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/msg_action_single_collect",
+      "className": "android.widget.LinearLayout",
+      "bounds": [
+        306,
+        1568,
+        401,
+        1317
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        16,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": true,
+      "longClickable": false,
+      "visible": false,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 21,
+      "parentOrdinal": 14,
+      "childIndex": 5,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/msg_action_share",
+      "className": "android.widget.LinearLayout",
+      "bounds": [
+        422,
+        1568,
+        517,
+        1317
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        16,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": true,
+      "longClickable": false,
+      "visible": false,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 22,
+      "parentOrdinal": 14,
+      "childIndex": 6,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/msg_action_regenerate",
+      "className": "android.widget.LinearLayout",
+      "bounds": [
+        1079,
+        1568,
+        1174,
+        1317
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        16,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": true,
+      "longClickable": false,
+      "visible": false,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 23,
+      "parentOrdinal": 3,
+      "childIndex": 6,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/action_bar",
+      "className": "androidx.recyclerview.widget.RecyclerView",
+      "bounds": [
+        0,
+        1352,
+        1248,
+        1452
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        64,
+        4096,
+        16908342
+      ],
+      "clickable": false,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 5
+    },
+    {
+      "ordinal": 24,
+      "parentOrdinal": 23,
+      "childIndex": 0,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": null,
+      "className": "android.view.ViewGroup",
+      "bounds": [
+        32,
+        1352,
+        248,
+        1452
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        16,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": true,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 1
+    },
+    {
+      "ordinal": 25,
+      "parentOrdinal": 24,
+      "childIndex": 0,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/tv_item_name",
+      "className": "android.widget.TextView",
+      "bounds": [
+        117,
+        1375,
+        187,
+        1429
+      ],
+      "actionIds": [
+        4,
+        8,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": false,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 26,
+      "parentOrdinal": 23,
+      "childIndex": 1,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": null,
+      "className": "android.view.ViewGroup",
+      "bounds": [
+        269,
+        1352,
+        500,
+        1452
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        16,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": true,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 1
+    },
+    {
+      "ordinal": 27,
+      "parentOrdinal": 26,
+      "childIndex": 0,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/tv_item_name",
+      "className": "android.widget.TextView",
+      "bounds": [
+        354,
+        1375,
+        468,
+        1429
+      ],
+      "actionIds": [
+        4,
+        8,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": false,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 28,
+      "parentOrdinal": 23,
+      "childIndex": 2,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": null,
+      "className": "android.view.ViewGroup",
+      "bounds": [
+        521,
+        1352,
+        820,
+        1452
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        16,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": true,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 1
+    },
+    {
+      "ordinal": 29,
+      "parentOrdinal": 28,
+      "childIndex": 0,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/tv_item_name",
+      "className": "android.widget.TextView",
+      "bounds": [
+        606,
+        1375,
+        788,
+        1429
+      ],
+      "actionIds": [
+        4,
+        8,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": false,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 30,
+      "parentOrdinal": 23,
+      "childIndex": 3,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": null,
+      "className": "android.view.ViewGroup",
+      "bounds": [
+        841,
+        1352,
+        1098,
+        1452
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        16,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": true,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 1
+    },
+    {
+      "ordinal": 31,
+      "parentOrdinal": 30,
+      "childIndex": 0,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/tv_item_name",
+      "className": "android.widget.TextView",
+      "bounds": [
+        926,
+        1375,
+        1066,
+        1429
+      ],
+      "actionIds": [
+        4,
+        8,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": false,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 32,
+      "parentOrdinal": 23,
+      "childIndex": 4,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": null,
+      "className": "android.view.ViewGroup",
+      "bounds": [
+        1119,
+        1352,
+        1248,
+        1452
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        16,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": true,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 1
+    },
+    {
+      "ordinal": 33,
+      "parentOrdinal": 32,
+      "childIndex": 0,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/tv_item_name",
+      "className": "android.widget.TextView",
+      "bounds": [
+        1204,
+        1375,
+        1248,
+        1429
+      ],
+      "actionIds": [
+        4,
+        8,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": false,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 34,
+      "parentOrdinal": 3,
+      "childIndex": 7,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/focus_holder",
+      "className": "android.widget.EditText",
+      "bounds": [
+        32,
+        1484,
+        32,
+        1484
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        16,
+        32,
+        64,
+        2097152,
+        16908342
+      ],
+      "clickable": true,
+      "longClickable": true,
+      "visible": false,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 35,
+      "parentOrdinal": 3,
+      "childIndex": 8,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/speak_area",
+      "className": "android.view.ViewGroup",
+      "bounds": [
+        32,
+        1484,
+        1216,
+        1631
+      ],
+      "actionIds": [
+        4,
+        8,
+        64,
+        16908342
+      ],
+      "clickable": false,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 1
+    },
+    {
+      "ordinal": 36,
+      "parentOrdinal": 35,
+      "childIndex": 0,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/speak_normal",
+      "className": "android.widget.TextView",
+      "bounds": [
+        295,
+        1523,
+        953,
+        1592
+      ],
+      "actionIds": [
+        4,
+        8,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": false,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 37,
+      "parentOrdinal": 3,
+      "childIndex": 9,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/action_entrance",
+      "className": "android.widget.FrameLayout",
+      "bounds": [
+        32,
+        1484,
+        148,
+        1631
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        16,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": true,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 38,
+      "parentOrdinal": 3,
+      "childIndex": 10,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/action_input",
+      "className": "android.widget.ImageView",
+      "bounds": [
+        984,
+        1484,
+        1100,
+        1631
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        16,
+        32,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": true,
+      "longClickable": true,
+      "visible": true,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 39,
+      "parentOrdinal": 3,
+      "childIndex": 11,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/action_menu_entrance",
+      "className": "android.widget.FrameLayout",
+      "bounds": [
+        1100,
+        1484,
+        1216,
+        1631
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        16,
+        64,
+        16908342
+      ],
+      "clickable": true,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 1
+    },
+    {
+      "ordinal": 40,
+      "parentOrdinal": 39,
+      "childIndex": 0,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/iv_action_menu_entrance",
+      "className": "android.widget.ImageView",
+      "bounds": [
+        1100,
+        1484,
+        1184,
+        1631
+      ],
+      "actionIds": [
+        4,
+        8,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": false,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 41,
+      "parentOrdinal": 3,
+      "childIndex": 12,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/fast_button_icon",
+      "className": "android.widget.ImageView",
+      "bounds": [
+        564,
+        1181,
+        684,
+        1301
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        16,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": true,
+      "longClickable": false,
+      "visible": true,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 42,
+      "parentOrdinal": 3,
+      "childIndex": 13,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/layout_menu_item",
+      "className": "android.widget.LinearLayout",
+      "bounds": [
+        21,
+        1668,
+        323,
+        1663
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        16,
+        64,
+        16908342
+      ],
+      "clickable": true,
+      "longClickable": false,
+      "visible": false,
+      "enabled": true,
+      "childCount": 1
+    },
+    {
+      "ordinal": 43,
+      "parentOrdinal": 42,
+      "childIndex": 0,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/layout_menu_item_name",
+      "className": "android.widget.TextView",
+      "bounds": [
+        140,
+        1827,
+        204,
+        1663
+      ],
+      "actionIds": [
+        4,
+        8,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": false,
+      "longClickable": false,
+      "visible": false,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 44,
+      "parentOrdinal": 3,
+      "childIndex": 14,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/layout_menu_item",
+      "className": "android.widget.LinearLayout",
+      "bounds": [
+        323,
+        1668,
+        624,
+        1663
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        16,
+        64,
+        16908342
+      ],
+      "clickable": true,
+      "longClickable": false,
+      "visible": false,
+      "enabled": true,
+      "childCount": 1
+    },
+    {
+      "ordinal": 45,
+      "parentOrdinal": 44,
+      "childIndex": 0,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/layout_menu_item_name",
+      "className": "android.widget.TextView",
+      "bounds": [
+        441,
+        1827,
+        505,
+        1663
+      ],
+      "actionIds": [
+        4,
+        8,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": false,
+      "longClickable": false,
+      "visible": false,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 46,
+      "parentOrdinal": 3,
+      "childIndex": 15,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/layout_menu_item",
+      "className": "android.widget.LinearLayout",
+      "bounds": [
+        624,
+        1668,
+        926,
+        1663
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        16,
+        64,
+        16908342
+      ],
+      "clickable": true,
+      "longClickable": false,
+      "visible": false,
+      "enabled": true,
+      "childCount": 1
+    },
+    {
+      "ordinal": 47,
+      "parentOrdinal": 46,
+      "childIndex": 0,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/layout_menu_item_name",
+      "className": "android.widget.TextView",
+      "bounds": [
+        743,
+        1827,
+        807,
+        1663
+      ],
+      "actionIds": [
+        4,
+        8,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": false,
+      "longClickable": false,
+      "visible": false,
+      "enabled": true,
+      "childCount": 0
+    },
+    {
+      "ordinal": 48,
+      "parentOrdinal": 3,
+      "childIndex": 16,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/layout_menu_item",
+      "className": "android.widget.LinearLayout",
+      "bounds": [
+        926,
+        1668,
+        1227,
+        1663
+      ],
+      "actionIds": [
+        1,
+        4,
+        8,
+        16,
+        64,
+        16908342
+      ],
+      "clickable": true,
+      "longClickable": false,
+      "visible": false,
+      "enabled": true,
+      "childCount": 1
+    },
+    {
+      "ordinal": 49,
+      "parentOrdinal": 48,
+      "childIndex": 0,
+      "windowId": 4160,
+      "packageName": "com.larus.nova",
+      "resourceId": "com.larus.nova:id/layout_menu_item_name",
+      "className": "android.widget.TextView",
+      "bounds": [
+        1028,
+        1827,
+        1124,
+        1663
+      ],
+      "actionIds": [
+        4,
+        8,
+        64,
+        256,
+        512,
+        131072,
+        16908342
+      ],
+      "clickable": false,
+      "longClickable": false,
+      "visible": false,
+      "enabled": true,
+      "childCount": 0
+    }
+  ]
+}

@@ -40,7 +40,7 @@ else:
 cp = os.pathsep.join(map(str, jars))
 java = str(Path(os.environ['JAVA_HOME']) / 'bin/java') if os.environ.get('JAVA_HOME') else shutil.which('java')
 sources = [protocol / (n + '.kt') for n in ['Wire', 'Touch', 'PhoneInput', 'ReceiverUsability', 'CameraFeed',
-           'ActivationControl', 'FunctionIntent', 'AnchorMessage', 'BackHomeGestureRecognizer']]
+           'ActivationControl', 'FunctionIntent', 'AnchorMessage', 'HidNavigationGestureRecognizer']]
 sources += [root / 'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/AnchorHeldIndicator.kt',
             root / 'directrg/src/test/anchor-hold/AnchorHeldIndicatorTest.kt']
 tests = ['com.code2hack.eyeprojector.directrg.AnchorHeldIndicatorTest']

@@ -30,8 +30,15 @@ sealed class AnchorMessage(open val transactionId: Long, open val intent: Functi
         init { require(revision >= 0) }
     }
 
+    /** Physical Phone HID Anchor terminal, correlated to its original registration transaction.
+     * Canceled includes release before the original chooser OPEN was observed. */
+    data class Release(override val transactionId: Long, override val intent: FunctionIntent,
+        val canceled: Boolean) : AnchorMessage(transactionId, intent) {
+        init { require(intent.kind == FunctionIntentKind.REGISTER && intent.source == FunctionSource.PHONE_HID) }
+    }
+
     fun bytes(): ByteArray = bytes {
-        writeByte(when (this@AnchorMessage) { is Feedback -> 0; is Offer -> 1; is Open -> 2; is Choice -> 3; is Result -> 4; is HeldState -> 5 })
+        writeByte(when (this@AnchorMessage) { is Feedback -> 0; is Offer -> 1; is Open -> 2; is Choice -> 3; is Result -> 4; is HeldState -> 5; is Release -> 6 })
         require(transactionId >= 0); writeLong(transactionId)
         val original = intent.bytes(); writeInt(original.size); write(original)
         when (val message = this@AnchorMessage) {
@@ -41,6 +48,7 @@ sealed class AnchorMessage(open val transactionId: Long, open val intent: Functi
             is Choice -> writeByte(message.choice.ordinal)
             is Result -> writeByte(message.result.ordinal)
             is HeldState -> { writeLong(message.revision); writeByte(message.state.ordinal) }
+            is Release -> writeBoolean(message.canceled)
         }
     }
     companion object {
@@ -62,6 +70,7 @@ sealed class AnchorMessage(open val transactionId: Long, open val intent: Functi
                 3 -> Choice(id, intent, AnchorChoice.entries[input.readUnsignedByte()])
                 4 -> Result(id, intent, AnchorRegistrationResult.entries[input.readUnsignedByte()])
                 5 -> HeldState(id, intent, input.readLong(), AnchorHoldState.entries[input.readUnsignedByte()])
+                6 -> { val canceled = input.readUnsignedByte(); require(canceled in 0..1); Release(id, intent, canceled == 1) }
                 else -> error("Unknown Anchor message")
             }
             require(input.available() == 0)

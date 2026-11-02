@@ -69,7 +69,7 @@ private fun scenario(name: String, run: (Fixture) -> Unit) {
 
 fun main() {
     scenario("Phone HID capture submits fresh DOWN once and retains original proxy/context/time for UP and post-UP CANCEL") { f ->
-        val down = PhoneHidEdge(PhoneHidAction.FUNCTION, PhoneHidPhase.DOWN, 3, 66, 88, 12345, 12345)
+        val down = PhoneHidEdge(PhoneHidAction.ANCHOR, PhoneHidPhase.DOWN, 3, 66, 88, 12345, 12345)
         check(f.host.capturePhoneHidRoute(down) == null && Shizuku.binds == 0)
         f.host.start(); f.drain()
         val old = FakeService().apply { state = "STREAMING" }; f.attach(old)

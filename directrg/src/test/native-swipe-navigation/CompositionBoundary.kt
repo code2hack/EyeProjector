@@ -112,7 +112,11 @@ internal class HeldActivityWiring(val feature: ReceiverActivationStore, director
     fun scroll(x: Float, y: Float) = remoteScroll(x, y, 120)
     fun layout(width: Int, height: Int) { root.width = width; root.height = height; resize() }
     fun publish() = publishHeadPointer()
-    fun choose(action: AnchorRegistrationAction) = chooseAnchorRegistration(action)
+    fun highlight(action: AnchorRegistrationAction) { anchorRegistration.highlight(action) }
+    fun choose(action: AnchorRegistrationAction) {
+        anchorRegistration.highlight(action)
+        grammar.accept(FunctionGestureRecognizer.Report.UP, clock + 10)
+    }
     fun back() = contextualBack()
     fun retire() = cancelInput()
     fun active() = registrationActive()

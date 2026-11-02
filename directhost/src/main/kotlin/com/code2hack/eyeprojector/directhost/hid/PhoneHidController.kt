@@ -367,9 +367,9 @@ internal class PhoneHidController(
         try { routes.submit(route, event) } catch (_: Exception) { /* A failed route is never retargeted. */ }
     }
     private fun rememberReleasedRoute(press: Press) {
-        if (press.action == PhoneHidAction.FUNCTION && press.route != null &&
+        if (press.action == PhoneHidAction.ANCHOR && press.route != null &&
             (releasedFunction?.admission ?: Long.MIN_VALUE) < press.admission) releasedFunction = press
-        if (press.action == PhoneHidAction.BACK_HOME && press.route != null &&
+        if (press.action == PhoneHidAction.NAVIGATION && press.route != null &&
             (releasedBackHome?.admission ?: Long.MIN_VALUE) < press.admission) releasedBackHome = press
     }
     private fun save(operation: () -> Unit) {

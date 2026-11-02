@@ -81,6 +81,8 @@ data class UiTargetObservation(
     val longClickable: Boolean,
     val visible: Boolean,
     val enabled: Boolean,
+    /** This read's hierarchy edges only; never a saved selector or ordered fallback. */
+    val ancestorOrdinals: List<Int> = emptyList(),
 )
 
 enum class UiWindowReadStatus { READ, OTHER_PACKAGE, NO_ROOT, WINDOW_MISMATCH, FAILED }
@@ -89,6 +91,7 @@ data class UiWindowSnapshot(
     val status: UiWindowReadStatus,
     val targets: List<UiTargetObservation> = emptyList(),
     val failureClass: String? = null,
+    internal val failure: Exception? = null,
 )
 
 enum class UiTargetReadStatus { READ, ACCESS_REQUIRED, SOURCE_UNAVAILABLE, SOURCE_CHANGED, DISPLAY_ABSENT, WINDOW_ABSENT, FAILED }
@@ -99,4 +102,5 @@ data class UiTargetSnapshot(
     val finishedUptimeMs: Long,
     val windows: List<UiWindowSnapshot> = emptyList(),
     val failureClass: String? = null,
+    internal val failure: Exception? = null,
 )

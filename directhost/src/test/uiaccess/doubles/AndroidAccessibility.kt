@@ -2,7 +2,7 @@ package android.view.accessibility
 
 import android.graphics.Rect
 
-class AccessibilityEvent
+class AccessibilityEvent(val eventType: Int = 0, val windowChanges: Int = 0, val displayId: Int = 0, val windowId: Int = 0) { companion object { const val TYPE_WINDOW_STATE_CHANGED = 32; const val TYPE_WINDOWS_CHANGED = 4194304; const val WINDOWS_CHANGE_ACTIVE = 32; const val WINDOWS_CHANGE_FOCUSED = 64; const val WINDOWS_CHANGE_REMOVED = 2; const val WINDOWS_CHANGE_BOUNDS = 8 } }
 
 class AccessibilityNodeInfo(
     val packageName: CharSequence? = "selected.app",

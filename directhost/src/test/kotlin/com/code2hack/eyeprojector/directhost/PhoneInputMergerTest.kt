@@ -74,12 +74,12 @@ class PhoneInputMergerTest {
 
     @Test fun sourceExpiryAndCoalescedContextChangeRetireContactAndPendingFunction() {
         val f = Fixture(); val d = f.down(); f.merger.edge(1, d)
-        val fn = f.down(PhoneHidAction.FUNCTION, 67); f.merger.edge(2, fn)
+        val fn = f.down(PhoneHidAction.ANCHOR, 67); f.merger.edge(2, fn)
         f.pointer(revision = 2) // latest state can coalesce an unavailable transition.
         assertFalse(f.dispatcher.holding)
         f.merger.edge(1, d.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1030))
         f.advance(2000); assertTrue(f.intents.isEmpty()); assertTrue(f.nav.isEmpty())
-        val fresh = f.down(PhoneHidAction.FUNCTION, 67); f.merger.edge(3, fresh)
+        val fresh = f.down(PhoneHidAction.ANCHOR, 67); f.merger.edge(3, fresh)
         f.pointer(revision = 2, available = false); f.pointer(revision = 2)
         f.advance(3000); assertTrue(f.nav.isEmpty()); assertTrue(f.intents.isEmpty())
     }
@@ -87,7 +87,7 @@ class PhoneInputMergerTest {
     @Test fun phoneShortsEmitAllOrderedIntentionsAndLongReleaseEmitsNoActivation() {
         for (projected in listOf(true, false)) for (count in 1..3) {
             val f = Fixture(); f.pointer(projected = projected)
-            repeat(count) { i -> f.now = 1000L + i * 100; val d = f.down(PhoneHidAction.FUNCTION)
+            repeat(count) { i -> f.now = 1000L + i * 100; val d = f.down(PhoneHidAction.ANCHOR)
                 f.merger.edge(i.toLong(), d); f.merger.edge(i.toLong(), d.copy(phase = PhoneHidPhase.UP, eventTimeMs = f.now + 20)) }
             f.advance(2000)
             assertEquals(List(count) { FunctionIntentKind.ACTIVATE }, f.intents.map { it.kind })
@@ -96,7 +96,7 @@ class PhoneInputMergerTest {
             assertTrue(f.intents.all { it.source == FunctionSource.PHONE_HID && it.context.pointer.projected == projected })
             assertTrue(f.nav.isEmpty()); assertTrue(f.ui.isEmpty()); assertTrue(f.records.isEmpty())
         }
-        val f = Fixture(); val d = f.down(PhoneHidAction.FUNCTION); f.merger.edge(1, d)
+        val f = Fixture(); val d = f.down(PhoneHidAction.ANCHOR); f.merger.edge(1, d)
         f.advance(1799); assertTrue(f.intents.isEmpty())
         f.advance(1800); f.merger.edge(1, d.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1800)); f.advance(2500)
         assertEquals(listOf(FunctionIntentKind.REGISTER), f.intents.map { it.kind })
@@ -104,7 +104,7 @@ class PhoneInputMergerTest {
     }
 
     @Test fun aCanceledTimerCannotRegisterAnAlreadyCompletedShort() {
-        val f = Fixture(); val d = f.down(PhoneHidAction.FUNCTION); f.merger.edge(1, d)
+        val f = Fixture(); val d = f.down(PhoneHidAction.ANCHOR); f.merger.edge(1, d)
         val old = f.jobs.single().action
         f.merger.edge(1, d.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1020))
         f.now = 1850; old()
@@ -112,16 +112,16 @@ class PhoneInputMergerTest {
     }
 
     @Test fun longReleaseWithoutTimerDeliveryRegistersOnceAndNextShortWorks() {
-        val f = Fixture(); val first = f.down(PhoneHidAction.FUNCTION)
+        val f = Fixture(); val first = f.down(PhoneHidAction.ANCHOR)
         f.merger.edge(1, first); f.merger.edge(1, first.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1800))
-        f.now = 1900; val next = f.down(PhoneHidAction.FUNCTION)
+        f.now = 1900; val next = f.down(PhoneHidAction.ANCHOR)
         f.merger.edge(2, next); f.merger.edge(2, next.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1920))
         f.advance(3000)
         assertEquals(listOf(FunctionIntentKind.REGISTER, FunctionIntentKind.ACTIVATE), f.intents.map { it.kind })
     }
 
     @Test fun originalHoverIsCapturedAtDownAndDoesNotBecomeLatestPointerAtCompletion() {
-        val f = Fixture(); val d = f.down(PhoneHidAction.FUNCTION); f.merger.edge(1, d)
+        val f = Fixture(); val d = f.down(PhoneHidAction.ANCHOR); f.merger.edge(1, d)
         f.pointer(x = 400f, y = 500f)
         f.merger.edge(1, d.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1020))
         assertEquals(200f, f.intents.single().context.pointer.x)
@@ -139,20 +139,20 @@ class PhoneInputMergerTest {
     }
 
     @Test fun releasedFunctionCannotBeUndoneByCancellationAndOldCancelCannotAffectNewerPress() {
-        val f = Fixture(); val first = f.down(PhoneHidAction.FUNCTION)
+        val f = Fixture(); val first = f.down(PhoneHidAction.ANCHOR)
         f.merger.edge(1, first); f.merger.edge(1, first.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1020))
         f.merger.edge(1, first.copy(phase = PhoneHidPhase.CANCEL, eventTimeMs = 1021))
         f.advance(2000); assertEquals(1, f.intents.size); assertTrue(f.nav.isEmpty())
-        val fresh = f.down(PhoneHidAction.FUNCTION)
+        val fresh = f.down(PhoneHidAction.ANCHOR)
         f.merger.edge(2, fresh); f.merger.edge(2, fresh.copy(phase = PhoneHidPhase.UP, eventTimeMs = 2020))
         f.merger.edge(1, first.copy(phase = PhoneHidPhase.CANCEL, eventTimeMs = 2021))
         f.advance(2520); assertEquals(List(2) { FunctionIntentKind.ACTIVATE }, f.intents.map { it.kind }); assertTrue(f.nav.isEmpty())
     }
 
     @Test fun ordinaryNextFunctionPressAndIndependentScrollRetainBothCompletedIntentions() {
-        val f = Fixture(); val first = f.down(PhoneHidAction.FUNCTION)
+        val f = Fixture(); val first = f.down(PhoneHidAction.ANCHOR)
         f.merger.edge(1, first); f.merger.edge(1, first.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1020))
-        f.now = 1100; val second = f.down(PhoneHidAction.FUNCTION)
+        f.now = 1100; val second = f.down(PhoneHidAction.ANCHOR)
         f.merger.edge(2, second); f.merger.edge(2, second.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1120))
         f.merger.edge(1, first.copy(phase = PhoneHidPhase.CANCEL, eventTimeMs = 1121))
         val scroll = f.down(PhoneHidAction.SCROLL_DOWN, 90)
@@ -197,7 +197,7 @@ class PhoneInputMergerTest {
     @Test(timeout = 7000) fun functionBackpressureRetainsBothOriginalsInCommittedOrder() {
         val f = Fixture(); val entered = CountDownLatch(1); val release = CountDownLatch(1)
         f.onIntent = { if (it.sequence == 0L) { entered.countDown(); check(release.await(4, TimeUnit.SECONDS)) } }
-        val first = f.down(PhoneHidAction.FUNCTION)
+        val first = f.down(PhoneHidAction.ANCHOR)
         f.merger.edge(1, first)
         val a = Thread { f.merger.edge(1, first.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1020)) }
         val b = Thread {
@@ -218,10 +218,10 @@ class PhoneInputMergerTest {
     @Test fun functionCallbackCanReenterWithoutWaitingOnItsOwnEmission() {
         val f = Fixture()
         f.onIntent = { if (it.sequence == 0L) {
-            val next = f.down(PhoneHidAction.FUNCTION)
+            val next = f.down(PhoneHidAction.ANCHOR)
             f.merger.edge(2, next); f.merger.edge(2, next.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1020))
         } }
-        val first = f.down(PhoneHidAction.FUNCTION)
+        val first = f.down(PhoneHidAction.ANCHOR)
         f.merger.edge(1, first); f.merger.edge(1, first.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1020))
         assertEquals(listOf(0L, 1L), f.intents.map { it.sequence })
     }

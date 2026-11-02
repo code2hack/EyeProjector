@@ -23,7 +23,7 @@ class UiTargetReader internal constructor(private val access: UiAccess, private 
     fun read(request: UiTargetRequest): UiTargetSnapshot {
         val started = uptime()
         fun result(status: UiTargetReadStatus, windows: List<UiWindowSnapshot> = emptyList(), error: Exception? = null) =
-            UiTargetSnapshot(request, status, started, uptime(), windows, error?.javaClass?.name)
+            UiTargetSnapshot(request, status, started, uptime(), windows, error?.javaClass?.name, error)
         return try {
             if (!access.canRead) return result(UiTargetReadStatus.ACCESS_REQUIRED)
             val all = access.windowsOnAllDisplays()
@@ -49,17 +49,40 @@ class UiTargetReader internal constructor(private val access: UiAccess, private 
             val status = collect(root, request.selectedPackage, metadata.windowId, targets)
             UiWindowSnapshot(metadata, status, targets.toList())
         } catch (error: Exception) {
-            UiWindowSnapshot(metadata, UiWindowReadStatus.FAILED, failureClass = error.javaClass.name)
+            UiWindowSnapshot(metadata, UiWindowReadStatus.FAILED, failureClass = error.javaClass.name, failure = error)
         }
     }
 
-    private class Frame(val node: UiAccessNode, var entered: Boolean = false, var nextChild: Int = 0, var children: Int = 0)
+    /** Immutable shared ancestry links keep even very deep snapshots linear in storage. */
+    private class Ancestors(val parent: List<Int>, val ordinal: Int) : AbstractList<Int>() {
+        override val size = parent.size + 1
+        override fun get(index: Int): Int {
+            if (index !in 0 until size) throw IndexOutOfBoundsException()
+            var path: List<Int> = this
+            while (path is Ancestors) {
+                if (index == path.size - 1) return path.ordinal
+                path = path.parent
+            }
+            return path[index]
+        }
+        override fun contains(element: Int): Boolean {
+            var path: List<Int> = this
+            while (path is Ancestors) {
+                if (path.ordinal == element) return true
+                path = path.parent
+            }
+            return element in path
+        }
+    }
+
+    private class Frame(val node: UiAccessNode, val ancestors: List<Int>, var ordinal: Int = 0,
+        var entered: Boolean = false, var nextChild: Int = 0, var children: Int = 0)
 
     /** Iterative traversal owns root/children even after a stale-node exception; no depth/count cap. */
     private fun collect(root: UiAccessNode, packageName: String, windowId: Int,
         targets: MutableList<UiTargetObservation>): UiWindowReadStatus {
         val pending = java.util.ArrayDeque<Frame>()
-        pending.push(Frame(root))
+        pending.push(Frame(root, emptyList()))
         var ordinal = 0
         var selectedRoot = false
         try {
@@ -73,13 +96,17 @@ class UiTargetReader internal constructor(private val access: UiAccess, private 
                     }
                     selectedRoot = true
                     if (frame.node.windowId != windowId) return UiWindowReadStatus.WINDOW_MISMATCH.also { targets.clear() }
-                    frame.node.observation(++ordinal)?.let { item ->
-                        if (item.visible && item.enabled && item.bounds.hasArea) targets.add(item)
+                    frame.ordinal = ++ordinal
+                    frame.node.observation(frame.ordinal)?.let { item ->
+                        if (item.visible && item.enabled && item.bounds.hasArea)
+                            targets.add(item.copy(ancestorOrdinals = frame.ancestors))
                     }
                     frame.children = frame.node.childCount
                 }
                 if (frame.nextChild == frame.children) pending.pop().node.close()
-                else frame.node.child(frame.nextChild++)?.let { pending.push(Frame(it)) }
+                else frame.node.child(frame.nextChild++)?.let {
+                    pending.push(Frame(it, Ancestors(frame.ancestors, frame.ordinal)))
+                }
             }
         } finally {
             while (pending.isNotEmpty()) pending.pop().node.close()

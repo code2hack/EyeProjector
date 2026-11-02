@@ -21,6 +21,7 @@ internal class FunctionGestureRecognizer(
     private val identity: Identity = Identity(),
     private val captureOriginal: ((Any, Long, Long?) -> Any?)? = null,
     private val retireOriginal: ((Long, Any) -> Unit)? = null,
+    private val registrationRelease: (Gesture, Boolean) -> Unit = { _, _ -> },
 ) {
     /** Source adapters retain this across Activity recreation within the Receiver incarnation. */
     class Identity {
@@ -31,7 +32,7 @@ internal class FunctionGestureRecognizer(
     }
     enum class Report { DOWN, UP, CLICK, DOUBLE, TRIPLE, LONG }
     data class Timing(val quietMs: Long = 500, val longMs: Long = 800)
-    data class Gesture(val kind: FunctionIntentKind, val gestureId: Long, val sequence: Long, val original: Any)
+    data class Gesture(val kind: FunctionIntentKind, val gestureId: Long, val sequence: Long, val original: Any, val physicalHeld: Boolean = false)
     private class Original(val id: Long, val captured: Any) {
         var kind = FunctionIntentKind.ACTIVATE
         var hasEdge = false
@@ -48,11 +49,27 @@ internal class FunctionGestureRecognizer(
     private var ownershipGeneration = 0L
     private var retiredUntil = Long.MIN_VALUE
     private var retiredHeld = false
+    private var registrationHold: Gesture? = null
+    val awaitingRegistrationRelease: Boolean get() = registrationHold != null
 
     /** Read-only existing ownership/schedule identity, including sequences which already finished. */
-    internal fun retirementState(): Any = Triple(sequence, ownershipGeneration, timerGeneration)
+    internal fun retirementState(): Any = listOf(sequence, ownershipGeneration, timerGeneration, registrationHold)
 
     fun accept(report: Report, at: Long = now()) {
+        // This original terminal edge survives only the intentional chooser transition.
+        // Summaries are never evidence that the physical button was released.
+        registrationHold?.let { original ->
+            if (report == Report.UP) {
+                registrationHold = null; retiredHeld = false; retiredUntil = at + timing.quietMs
+                registrationRelease(original, false)
+                return
+            }
+            if (report != Report.DOWN) return
+            registrationHold = null
+            registrationRelease(original, true)
+            retiredHeld = false; retiredUntil = at + timing.quietMs
+            return // A new press cancels this chooser; its UP is not a fresh Short.
+        }
         val owner = context()
         if (owner == null) { cancel(); return }
         if (sequence?.owner?.let { it != owner } == true) cancel()
@@ -110,13 +127,14 @@ internal class FunctionGestureRecognizer(
     }
 
     /** A fresh DOWN can acquire ownership after cancellation, even if the old UP never arrives. */
-    fun cancel() {
+    fun cancel(preserveRegistration: Boolean = false) {
         ownershipGeneration++
         retiredHeld = false
         if (sequence != null) retiredUntil = now() + timing.quietMs
+        val registered = if (preserveRegistration) null else registrationHold.also { registrationHold = null }
         val originals=sequence?.originals?.toList().orEmpty()
         sequence = null
-        InputRetirement.finishAll(listOf<() -> Unit>({cancelScheduled()})+
+        InputRetirement.finishAll(listOf<() -> Unit>({cancelScheduled()}, { registered?.let { registrationRelease(it, true) }; Unit })+
             originals.map { original -> {retireOriginal?.invoke(original.id,original.captured);Unit} })
     }
 
@@ -153,7 +171,10 @@ internal class FunctionGestureRecognizer(
         var next=0
         try { for (original in s.originals) {
             if (generation != ownershipGeneration || context() != s.owner) return
-            dispatch(Gesture(original.kind, original.id, identity.delivery(), original.captured));next++
+            val gesture = Gesture(original.kind, original.id, identity.delivery(), original.captured,
+                original.kind == FunctionIntentKind.REGISTER && s.held === original && original.hasEdge)
+            if (gesture.physicalHeld) registrationHold = gesture
+            dispatch(gesture);next++
         } } finally {
             InputRetirement.finishAll(s.originals.drop(next).map { original ->
                 {retireOriginal?.invoke(original.id,original.captured);Unit}

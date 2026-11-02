@@ -33,6 +33,9 @@ fun main() {
             println("RESULT panel-final $passed passed; ${failures.size} failed")
             check(failures.isEmpty()){failures.joinToString()};return
         }
+        if (System.getenv("EYEPROJECTOR_RAW_VOICE_ONLY")=="1") {
+            rawRegistrationScenarios(::scenario);println("RESULT raw $passed passed; ${failures.size} failed");check(failures.isEmpty());return
+        }
         scenario("C206-2-actual-panel-final-writer-after-first-NORMAL",::panelFinalReceiptScenario)
         scenario("C206-2-actual-panel-final-writer-wait-and-FIFO-H2",::panelFinalWaitScenario)
         if (System.getenv("EYEPROJECTOR_PENDING_LAUNCH") == "1") {
@@ -43,6 +46,7 @@ fun main() {
             check(failures.isEmpty()) { failures.joinToString() }
             return
         }
+        rawRegistrationScenarios(::scenario)
         bridgeReceiptScenarios(::scenario)
         pinProducerScenarios(::scenario)
         scenario("held-wire-tap-cancels-only-and-distinct-tap-recovers") { j ->
@@ -82,7 +86,7 @@ fun main() {
         for(h2 in listOf(false,true)) scenario("raw-Short-lifetime-H1-canceled-H2-$h2") { j ->
             j.hold();val at=android.os.SystemClock.uptimeMillis()
             val source=j.phone.session as CapturedProjection
-            val down=PhoneHidEdge(PhoneHidAction.FUNCTION,PhoneHidPhase.DOWN,7,195,700,at,at)
+            val down=PhoneHidEdge(PhoneHidAction.ANCHOR,PhoneHidPhase.DOWN,7,195,700,at,at)
             source.phoneHidEdge(99,down);frame(j,Wire.TAP,Tap(20,30,geometry).bytes())
             if(h2) j.press()
             val before=j.events.toList()
@@ -107,7 +111,7 @@ fun main() {
         for (h2 in listOf(false,true)) scenario("actual-Session-original-Long-cannot-register-or-cancel-H2-$h2") { j ->
             j.hold()
             val at=android.os.SystemClock.uptimeMillis()
-            val down=PhoneHidEdge(PhoneHidAction.FUNCTION,PhoneHidPhase.DOWN,7,195,700,at,at)
+            val down=PhoneHidEdge(PhoneHidAction.ANCHOR,PhoneHidPhase.DOWN,7,195,700,at,at)
             val source=j.phone.session as CapturedProjection
             source.phoneHidEdge(88,down)
             frame(j,Wire.TAP,Tap(20,30,geometry).bytes())
@@ -179,6 +183,42 @@ fun main() {
             check(j.ordinary == listOf("tap", "scroll"))
             j.register(); check(j.wiring.active() && j.messages.any { it is AnchorMessage.Offer })
         }
+        for (mode in listOf("missing-id", "ambiguous-window", "missing-display", "selected"))
+            scenario("registration-original-production-diagnostic-$mode") { j ->
+                when (mode) {
+                    "missing-id" -> j.windows.current = listOf(Windows.Window(resource = null))
+                    "ambiguous-window" -> j.windows.current = listOf(Windows.Window(), Windows.Window(id = 8))
+                    "missing-display" -> com.code2hack.eyeprojector.directhost.uiaccess.UiTargetAccess.currentReader =
+                        com.code2hack.eyeprojector.directhost.uiaccess.UiTargetReader(object : com.code2hack.eyeprojector.directhost.uiaccess.UiAccess {
+                            override val canRead = true
+                            override fun windowsOnAllDisplays() = emptyMap<Int, List<com.code2hack.eyeprojector.directhost.uiaccess.UiAccessWindow>>()
+                        }, { 0 })
+                }
+                j.register()
+                val event = runtime.coordinator.lastRegistrationDiagnostic!!
+                check(event.stage == AnchorRegistrationDiagnostic.Stage.CAPTURE)
+                check(event.transactionId > 0 && event.intent.kind == FunctionIntentKind.REGISTER)
+                check(event.source == event.snapshot!!.request!!.source)
+                check(event.inspection != null && event.inspection.videoHover != null)
+                check(j.events.isEmpty() && j.ordinary.isEmpty()) { "Registration emitted app input" }
+                when (mode) {
+                    "missing-id" -> {
+                        val resolution = event.inspection.resolution as com.code2hack.eyeprojector.directhost.anchor.target.AnchorTargetResolution.Unavailable
+                        check(resolution.reason == com.code2hack.eyeprojector.directhost.anchor.target.AnchorTargetUnavailableReason.IDENTITY_UNAVAILABLE)
+                        check(event.inspection.currentWindowCount == 1 && event.inspection.hoverTargetCount == 1)
+                    }
+                    "ambiguous-window" -> check(event.inspection.currentWindowCount == 2 && event.inspection.hoverTargetCount == 0)
+                    "missing-display" -> check(event.snapshot.status == com.code2hack.eyeprojector.directhost.uiaccess.UiTargetReadStatus.DISPLAY_ABSENT)
+                    "selected" -> check(event.inspection.identityMatchCount == 1 && event.inspection.selected?.resourceId == "app:id/action")
+                }
+                if (mode == "selected") {
+                    check(j.wiring.active() && j.messages.any { it is AnchorMessage.Offer })
+                    j.wiring.choose(AnchorRegistrationAction.CANCEL); j.pump()
+                } else {
+                    check(!j.wiring.active() && j.messages.none { it is AnchorMessage.Offer })
+                    check(j.messages.any { it is AnchorMessage.Feedback && it.status == AnchorFeedback.UNAVAILABLE })
+                }
+            }
         scenario("registration-observer-yields-to-real-activation-and-setting-change-retires-Hold") { j ->
             j.register(); j.wiring.choose(AnchorRegistrationAction.CANCEL); j.pump()
             check(!j.wiring.active())

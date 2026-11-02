@@ -15,11 +15,11 @@ out = a.output_dir.resolve()
 out.mkdir(parents=True, exist_ok=False)
 protocol = 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol/'
 files = [root / (protocol + n + '.kt') for n in [
-    'BackHomeGestureRecognizer', 'Wire', 'PhoneInput', 'Touch', 'ReceiverUsability', 'CameraFeed', 'ActivationControl', 'FunctionIntent']]
+    'HidNavigationGestureRecognizer', 'Wire', 'PhoneInput', 'Touch', 'ReceiverUsability', 'CameraFeed', 'ActivationControl', 'FunctionIntent']]
 files += [root / n for n in [
     'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/HidBindings.kt',
     'directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost/hid/PhoneHidBindings.kt',
-    'protocol/src/test/kotlin/com/code2hack/eyeprojector/protocol/BackHomeGestureRecognizerTest.kt',
+    'protocol/src/test/kotlin/com/code2hack/eyeprojector/protocol/HidNavigationGestureRecognizerTest.kt',
     'directrg/src/test/kotlin/com/code2hack/eyeprojector/directrg/HidBindingsTest.kt',
     'directhost/src/test/kotlin/com/code2hack/eyeprojector/directhost/hid/PhoneHidBindingsTest.kt',
     'directhost/src/main/kotlin/com/code2hack/eyeprojector/directhost/hid/PhoneHidPanel.kt',
@@ -65,7 +65,7 @@ commands = {
                 '-no-stdlib', '-no-reflect', '-jvm-target', '17', '-classpath', cp, '-d', str(jar)] +
                [str(out / f['snapshot']) for f in inputs],
     'run': [java, '-Xmx256m', '-cp', str(jar) + os.pathsep + cp, 'org.junit.runner.JUnitCore',
-            'com.code2hack.eyeprojector.protocol.BackHomeGestureRecognizerTest',
+            'com.code2hack.eyeprojector.protocol.HidNavigationGestureRecognizerTest',
             'com.code2hack.eyeprojector.directrg.HidBindingsTest',
             'com.code2hack.eyeprojector.directhost.hid.PhoneHidBindingsTest',
             'com.code2hack.eyeprojector.directhost.hid.PhoneHidPanelTest',

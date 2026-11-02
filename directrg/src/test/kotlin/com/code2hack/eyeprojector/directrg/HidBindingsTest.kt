@@ -30,45 +30,20 @@ class HidBindingsTest {
         assertEquals(0, storage.writes)
     }
 
-    @Test fun legacyFourRoleRecordKeepsFunctionAndMatchesPhoneRolesWithoutWriting() {
-        assertEquals(listOf("TAP", "SCROLL_DOWN", "SCROLL_UP", "FUNCTION", "BACK_HOME", "LOCK"), HidAction.entries.map { it.name })
-        assertEquals(PhoneHidAction.entries.map { it.name }, HidAction.entries.map { it.name })
-        val legacy = listOf("TAP", "SCROLL_DOWN", "SCROLL_UP", "FUNCTION").mapIndexed { id, name ->
-            name to binding(20 + id, 80 + id)
-        }
-        val record = wireRecord(legacy)
-        val storage = Storage(record)
-        val loaded = storage.open()
-        legacy.forEachIndexed { id, (name, value) ->
-            val action = HidAction.valueOf(name)
-            assertEquals(id, action.ordinal)
-            assertEquals(value, loaded.binding(action))
-            assertEquals(action, loaded.action(value.button))
-        }
-        assertNull(loaded.binding(HidAction.BACK_HOME))
-        assertNull(loaded.binding(HidAction.LOCK))
-        assertEquals(0, storage.writes)
-        assertEquals(record, storage.record)
-        assertNull(loaded.error)
-    }
-
-    @Test fun explicitlyLearningNavigationAfterLegacyReloadRetainsAllUnrelatedAssignments() {
-        val legacy = HidAction.entries.take(4).mapIndexed { id, action ->
-            action.name to binding(20 + id, 80 + id)
-        }
-        val storage = Storage(wireRecord(legacy))
+    @Test fun semanticRolesMatchBothConsumersAndResetStoreNeverRepopulatesOldAssignments() {
+        assertEquals(listOf("TAP", "SCROLL_DOWN", "SCROLL_UP", "ANCHOR", "NAVIGATION"), HidAction.entries.map { it.name })
+        val storage = Storage()
         val first = storage.open()
-        assertEquals(0, storage.writes)
-        val backHome = binding(30, 90)
-        val lock = binding(31, 91)
-        assertTrue(first.assign(HidAction.BACK_HOME, backHome))
-        val reconnect = storage.open()
-        assertTrue(reconnect.assign(HidAction.LOCK, lock))
+        assertTrue(first.assign(HidAction.ANCHOR, binding(30, 90)))
+        assertTrue(first.assign(HidAction.NAVIGATION, binding(31, 91)))
         val reopened = storage.open()
-        legacy.forEach { (name, value) -> assertEquals(value, reopened.binding(HidAction.valueOf(name))) }
-        assertEquals(backHome, reopened.binding(HidAction.BACK_HOME))
-        assertEquals(lock, reopened.binding(HidAction.LOCK))
-        assertEquals(2, storage.writes)
+        assertEquals(binding(30, 90), reopened.binding(HidAction.ANCHOR))
+        assertEquals(binding(31, 91), reopened.binding(HidAction.NAVIGATION))
+        assertTrue(reopened.resetAll())
+        val writes = storage.writes
+        val empty = storage.open()
+        HidAction.entries.forEach { assertNull(empty.binding(it)) }
+        assertEquals(writes, storage.writes)
     }
 
     @Test fun everyActionAndActualMetadataSurviveRestartInOneRecord() {
@@ -96,13 +71,13 @@ class HidBindingsTest {
         val first = binding()
         val second = binding(24, 29)
         assertTrue(model.assign(HidAction.TAP, first))
-        assertTrue(model.assign(HidAction.FUNCTION, second))
-        assertTrue(model.assign(HidAction.FUNCTION, first.copy(deviceName = "Renamed peripheral")))
+        assertTrue(model.assign(HidAction.ANCHOR, second))
+        assertTrue(model.assign(HidAction.ANCHOR, first.copy(deviceName = "Renamed peripheral")))
         val loaded = storage.open()
         assertNull(loaded.binding(HidAction.TAP))
-        assertEquals(HidAction.FUNCTION, loaded.action(first.button))
+        assertEquals(HidAction.ANCHOR, loaded.action(first.button))
         assertNull(loaded.action(second.button))
-        assertEquals("Renamed peripheral", loaded.binding(HidAction.FUNCTION)?.deviceName)
+        assertEquals("Renamed peripheral", loaded.binding(HidAction.ANCHOR)?.deviceName)
     }
 
     @Test fun identicalKeyCodesOnDifferentDevicesAndDifferentScanCodesStaySeparate() {
@@ -143,20 +118,20 @@ class HidBindingsTest {
         val first = binding()
         val second = binding(24, 29)
         assertTrue(model.assign(HidAction.TAP, first))
-        assertTrue(model.assign(HidAction.FUNCTION, second))
+        assertTrue(model.assign(HidAction.ANCHOR, second))
         val saved = storage.record
         storage.writable = false
-        assertFalse(model.assign(HidAction.FUNCTION, first))
+        assertFalse(model.assign(HidAction.ANCHOR, first))
         assertNotNull(model.error)
         assertEquals(saved, storage.record)
         assertEquals(first, model.binding(HidAction.TAP))
-        assertEquals(second, model.binding(HidAction.FUNCTION))
+        assertEquals(second, model.binding(HidAction.ANCHOR))
         assertEquals(first, storage.open().binding(HidAction.TAP))
         storage.writable = true
-        assertTrue(model.assign(HidAction.FUNCTION, first))
+        assertTrue(model.assign(HidAction.ANCHOR, first))
         assertNull(model.error)
         assertNull(storage.open().binding(HidAction.TAP))
-        assertEquals(first, storage.open().binding(HidAction.FUNCTION))
+        assertEquals(first, storage.open().binding(HidAction.ANCHOR))
     }
 
     @Test fun aThrowingPersistenceOperationAlsoRetainsEffectiveAssignments() {
@@ -164,16 +139,16 @@ class HidBindingsTest {
         val model = HidBindings({ null }) { if (throws) error("Storage unavailable") else true }
         assertTrue(model.assign(HidAction.TAP, binding()))
         throws = true
-        assertFalse(model.assign(HidAction.FUNCTION, binding()))
+        assertFalse(model.assign(HidAction.ANCHOR, binding()))
         assertEquals(binding(), model.binding(HidAction.TAP))
-        assertNull(model.binding(HidAction.FUNCTION))
+        assertNull(model.binding(HidAction.ANCHOR))
         assertNotNull(model.error)
     }
 
     @Test fun corruptRecordsLoadNoPartialAssignmentsAndAreNotSilentlyOverwritten() {
         val valid = wireRecord(listOf("TAP" to binding()))
         val duplicateAction = wireRecord(listOf("TAP" to binding(), "TAP" to binding(24)))
-        val duplicateButton = wireRecord(listOf("TAP" to binding(), "FUNCTION" to binding()))
+        val duplicateButton = wireRecord(listOf("TAP" to binding(), "ANCHOR" to binding()))
         val payload = Base64.getDecoder().decode(valid.substringAfter(':'))
         val records = listOf(
             "",
@@ -236,12 +211,12 @@ class HidBindingsTest {
         val cleared = storage.open()
         HidAction.entries.forEach { assertNull(cleared.binding(it)) }
         assertNull(cleared.error)
-        assertTrue(cleared.assign(HidAction.FUNCTION, physical))
+        assertTrue(cleared.assign(HidAction.ANCHOR, physical))
         assertNotEquals(empty, storage.record)
         val reassigned = storage.open()
         assertNull(reassigned.binding(HidAction.TAP))
-        assertEquals(physical, reassigned.binding(HidAction.FUNCTION))
-        assertEquals(HidAction.FUNCTION, reassigned.action(physical.button))
+        assertEquals(physical, reassigned.binding(HidAction.ANCHOR))
+        assertEquals(HidAction.ANCHOR, reassigned.action(physical.button))
     }
 
     @Test fun failedResetAllRetainsEveryEffectiveAndPersistedAssignmentUntilSuccessfulRetry() {
@@ -250,13 +225,13 @@ class HidBindingsTest {
         val tap = binding()
         val function = binding(24, 29)
         assertTrue(model.assign(HidAction.TAP, tap))
-        assertTrue(model.assign(HidAction.FUNCTION, function))
+        assertTrue(model.assign(HidAction.ANCHOR, function))
         val saved = storage.record
         storage.writable = false
         assertFalse(model.resetAll())
         assertEquals(3, storage.writes)
         assertEquals(tap, model.binding(HidAction.TAP))
-        assertEquals(function, model.binding(HidAction.FUNCTION))
+        assertEquals(function, model.binding(HidAction.ANCHOR))
         assertEquals(saved, storage.record)
         assertEquals(tap, storage.open().binding(HidAction.TAP))
         assertNotNull(model.error)
@@ -283,14 +258,14 @@ class HidBindingsTest {
                 "Nintendo Switch Right Joy-Con", "KEYCODE_BUTTON_X"),
         )
         val legacy = HidBinding(HidButton(native, 83, 204), "ROKID,PSOC-TP-R", "KEYCODE_NOTIFICATION")
-        val storage = Storage(wireRecord(retained.map { it.key.name to it.value } + ("FUNCTION" to legacy)))
+        val storage = Storage(wireRecord(retained.map { it.key.name to it.value } + ("ANCHOR" to legacy)))
         val model = storage.open()
-        assertEquals(legacy, model.binding(HidAction.FUNCTION))
+        assertEquals(legacy, model.binding(HidAction.ANCHOR))
         assertTrue(model.clearDevices(setOf(native)))
         assertEquals(1, storage.writes)
         val loaded = storage.open()
-        assertNull(model.binding(HidAction.FUNCTION))
-        assertNull(loaded.binding(HidAction.FUNCTION))
+        assertNull(model.binding(HidAction.ANCHOR))
+        assertNull(loaded.binding(HidAction.ANCHOR))
         assertNull(loaded.action(legacy.button))
         retained.forEach { (action, value) ->
             assertEquals(value, model.binding(action))
@@ -310,7 +285,7 @@ class HidBindingsTest {
         val second = binding(24, 29, secondDevice)
         val retained = binding(25, 30, retainedDevice)
         assertTrue(model.assign(HidAction.TAP, first))
-        assertTrue(model.assign(HidAction.FUNCTION, second))
+        assertTrue(model.assign(HidAction.ANCHOR, second))
         assertTrue(model.assign(HidAction.SCROLL_UP, retained))
         val saved = storage.record
         assertTrue(model.clearDevices(setOf(device.copy(descriptor = "other descriptor"),
@@ -322,7 +297,7 @@ class HidBindingsTest {
         assertEquals(4, storage.writes)
         val loaded = storage.open()
         assertNull(loaded.binding(HidAction.TAP))
-        assertNull(loaded.binding(HidAction.FUNCTION))
+        assertNull(loaded.binding(HidAction.ANCHOR))
         assertEquals(retained, loaded.binding(HidAction.SCROLL_UP))
     }
 
@@ -332,7 +307,7 @@ class HidBindingsTest {
         val first = binding()
         val second = binding(24, 29)
         assertTrue(model.assign(HidAction.TAP, first))
-        assertTrue(model.assign(HidAction.FUNCTION, second))
+        assertTrue(model.assign(HidAction.ANCHOR, second))
         val saved = storage.record
         storage.writable = false
         assertFalse(model.clearDevices(setOf(device)))
@@ -344,9 +319,9 @@ class HidBindingsTest {
         assertEquals(saved, storage.record)
         val loaded = storage.open()
         assertEquals(first, model.binding(HidAction.TAP))
-        assertEquals(second, model.binding(HidAction.FUNCTION))
+        assertEquals(second, model.binding(HidAction.ANCHOR))
         assertEquals(first, loaded.binding(HidAction.TAP))
-        assertEquals(second, loaded.binding(HidAction.FUNCTION))
+        assertEquals(second, loaded.binding(HidAction.ANCHOR))
         storage.writable = true
         assertTrue(model.clearDevices(setOf(device)))
         assertEquals(4, storage.writes)

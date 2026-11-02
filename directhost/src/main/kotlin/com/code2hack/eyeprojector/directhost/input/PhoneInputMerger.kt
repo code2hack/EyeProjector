@@ -24,6 +24,7 @@ internal class PhoneInputMerger(
     private val originalFunctionIntent: ((FunctionIntent, AnchorControlAdmission) -> Unit)? = null,
     private val receiveControl: (AnchorControlAdmission, Boolean) -> Unit = { _, _ -> },
     private val passiveAllowed: () -> Boolean = { true },
+    private val registrationRelease: (FunctionIntent, Boolean) -> Unit = { _, _ -> },
 ) {
     /** Process/source identity survives Session replacement; the original Session token stays local. */
     class FunctionIdentity {
@@ -53,24 +54,28 @@ internal class PhoneInputMerger(
     private var contactSequence = 0L
     private var generation = 0L
     private var function: FunctionPress? = null
+    @Volatile private var registrationHold: Pair<FunctionPress, FunctionIntent>? = null
     private var cancelFunctionTimer: (() -> Unit)? = null
     private var functionTimerGeneration = 0L
-    private val backHome = BackHomeGestureRecognizer<Press>(now, ::currentNavigation,
+    private val backHome = HidNavigationGestureRecognizer<Press>(now, ::currentNavigation,
         { at, action -> schedule(at) { transaction { action() } } },
         { action, press -> transaction { out -> finishNavigation(press, when (action) {
-            BackHomeGestureRecognizer.Action.BACK -> ReceiverInputKind.BACK
-            BackHomeGestureRecognizer.Action.HOME -> ReceiverInputKind.HOME
+            HidNavigationGestureRecognizer.Action.BACK -> ReceiverInputKind.BACK
+            HidNavigationGestureRecognizer.Action.HOME -> ReceiverInputKind.HOME
+            HidNavigationGestureRecognizer.Action.LOCK -> ReceiverInputKind.LOCK
         }, out) } })
-    private val backHomeReceipts = BackHomeGestureRecognizer.Receipts<AnchorControlAdmission>(backHome.doublePressMs)
+    private val backHomeReceipts = HidNavigationGestureRecognizer.Receipts<AnchorControlAdmission>(backHome.doublePressMs)
     private var completionSequence = 0L // Under the existing control lock.
     private val emission = Object()
     private var nextEmission = 0L
     private sealed interface Emission {
         data class Receiver(val event: ReceiverInput) : Emission
         data class Function(val intent: FunctionIntent, val original: AnchorControlAdmission) : Emission
+        data class Release(val intent: FunctionIntent, val canceled: Boolean) : Emission
     }
     private class Output {
         val values = mutableListOf<Emission>()
+        fun release(intent: FunctionIntent, canceled: Boolean) { values.add(Emission.Release(intent, canceled)) }
         fun add(event: ReceiverInput) { values.add(Emission.Receiver(event)) }
         fun add(intent: FunctionIntent, original: AnchorControlAdmission) { values.add(Emission.Function(intent, original)) }
     }
@@ -111,6 +116,7 @@ internal class PhoneInputMerger(
             try { value.output.forEach { when (it) {
                 is Emission.Receiver -> receiver(it.event)
                 is Emission.Function -> originalFunctionIntent?.invoke(it.intent, it.original) ?: functionIntent(it.intent)
+                is Emission.Release -> registrationRelease(it.intent, it.canceled)
             } } }
             catch (error: Throwable) { if (failure == null) failure = error else failure!!.addSuppressed(error) }
             finally {
@@ -136,7 +142,11 @@ internal class PhoneInputMerger(
         val old = point
         if (old != null && next.sequence <= old.sequence) return@transaction
         if (old != null && (old.revision != next.revision || old.projected != next.projected || old.geometry != next.geometry))
-            retire(out, false)
+            retire(out, false, preserveRegistration = registrationHold?.second?.context?.let { original ->
+                source != null && source.ownerEpoch == original.usability.ownerEpoch &&
+                    source.incarnation == original.usability.incarnation && source.mode == ReceiverUsabilityMode.LOCAL_PANEL &&
+                    !next.projected && next.available && next.geometry == original.pointer.geometry
+            } == true)
         else if (!next.available) retire(out, false, preserveNavigation = true, passive = true)
         if (!active() || !accepts()) return@transaction // Retirement may contain an old stock write.
         if (point?.let { it.sequence >= next.sequence } == true) return@transaction
@@ -160,10 +170,24 @@ internal class PhoneInputMerger(
     fun stampedEdgeOriginal(routeId: Long, edge: PhoneHidEdge, originalReceipt: AnchorControlAdmission?,
         qualifiesContext: (HeadPointerState, ReceiverUsability?) -> Boolean,
         qualifies: (HeadPointerState, ReceiverUsability?) -> Boolean) {
+        // The terminal of the original held Anchor is not a fresh command in chooser mode.
+        val registered = registrationHold
+        if (registered != null && registered.first.press.id == routeId &&
+            registered.first.press.edge.samePress(edge) && edge.phase != PhoneHidPhase.DOWN) {
+            transaction { out ->
+                if (registrationHold === registered) {
+                    registrationHold = null
+                    presses.remove(routeId, registered.first.press)
+                    receivedPresses[routeId]?.takeIf { it.edge.samePress(edge) }?.let { receivedPresses.remove(routeId, it) }
+                    out.release(registered.second, edge.phase != PhoneHidPhase.UP)
+                }
+            }
+            return
+        }
         // Correlate the represented physical press before stamping/removing any current receipt.
         // Reads are lock-free; a fresh receipt observes CANCELING before its first map/merger wait.
         val existing = receivedPresses[routeId]
-        if (existing == null && edge.phase == PhoneHidPhase.CANCEL && edge.action == PhoneHidAction.BACK_HOME) {
+        if (existing == null && edge.phase == PhoneHidPhase.CANCEL && edge.action == PhoneHidAction.NAVIGATION) {
             // Physical UP disposed its raw record; this captured route still owns pending grammar cleanup.
             val token = navigationToken(routeId, edge)
             backHomeReceipts.cancel(token)
@@ -176,13 +200,13 @@ internal class PhoneInputMerger(
         }
         val received = if (existing != null) {
             if (!existing.edge.samePress(edge)) return
-            receiveControl(existing.control, edge.action == PhoneHidAction.FUNCTION)
+            receiveControl(existing.control, edge.action == PhoneHidAction.ANCHOR)
             existing
         } else {
             if (edge.phase != PhoneHidPhase.DOWN || edge.repeatCount != 0) return
             val fresh = ReceivedPress(edge, originalReceipt ?: AnchorControlAdmission())
-            receiveControl(fresh.control, edge.action == PhoneHidAction.FUNCTION)
-            if (edge.action == PhoneHidAction.BACK_HOME) {
+            receiveControl(fresh.control, edge.action == PhoneHidAction.ANCHOR)
+            if (edge.action == PhoneHidAction.NAVIGATION) {
                 val prior = backHomeReceipts.down(navigationToken(routeId, edge),
                     Triple(edge.attachmentId, edge.keyCode, edge.scanCode), fresh.control, now())
                 fresh.control.inherit(prior)
@@ -195,13 +219,13 @@ internal class PhoneInputMerger(
             }
         }
         val original=received.control
-        if (edge.action == PhoneHidAction.BACK_HOME) when(edge.phase) {
+        if (edge.action == PhoneHidAction.NAVIGATION) when(edge.phase) {
             PhoneHidPhase.UP -> backHomeReceipts.up(navigationToken(routeId, edge), edge.eventTimeMs)
             PhoneHidPhase.CANCEL -> backHomeReceipts.cancel(navigationToken(routeId, edge))
             else -> Unit
         }
         if (edge.phase != PhoneHidPhase.DOWN) receivedPresses.remove(routeId, received)
-        if (original.terminal && (edge.action != PhoneHidAction.BACK_HOME || original.receivedDuringRetirement)) {
+        if (original.terminal && (edge.action != PhoneHidAction.NAVIGATION || original.receivedDuringRetirement)) {
             if (edge.phase != PhoneHidPhase.DOWN) {
                 val old = presses[routeId]
                 if (old != null && old.control === original && old.edge.samePress(edge)) presses.remove(routeId, old)
@@ -213,18 +237,18 @@ internal class PhoneInputMerger(
         val old = presses[routeId]
         if (edge.phase == PhoneHidPhase.DOWN) {
             if (old != null || edge.repeatCount != 0) return@transaction
-            val dedicated = edge.action == PhoneHidAction.BACK_HOME || edge.action == PhoneHidAction.LOCK
+            val dedicated = edge.action == PhoneHidAction.NAVIGATION
             val position = point?.takeIf { (!it.projected || it.geometry == geometry()) } ?: return@transaction
             // This check happens only AFTER acquiring the real control lock, never before its wait.
             if (!qualifiesContext(position, pointerSource)) return@transaction
             val press = Press(routeId, edge, position, ++contactSequence,
                 if (dedicated) qualifiesContext else qualifies, pointerSource, qualifiesContext, original)
             presses[routeId] = press
-            if (edge.action == PhoneHidAction.FUNCTION) {
+            if (edge.action == PhoneHidAction.ANCHOR) {
                 captureHeldControl(press.control)
                 if (press.control.terminal) return@transaction
             }
-            if (edge.action == PhoneHidAction.BACK_HOME) {
+            if (edge.action == PhoneHidAction.NAVIGATION) {
                 val token = navigationToken(routeId, edge)
                 backHome.down(token, Triple(edge.attachmentId, edge.keyCode, edge.scanCode), press)
                 val original = backHome.capturedSequence(token) ?: return@transaction
@@ -233,7 +257,7 @@ internal class PhoneInputMerger(
                 finally { press.control.inherit(original.control) }
                 return@transaction
             }
-            if (edge.action != PhoneHidAction.FUNCTION &&
+            if (edge.action != PhoneHidAction.ANCHOR &&
                 anchorControl(press.control) != AnchorControlDisposition.NORMAL) return@transaction
             if (!dedicated && !allowsNew(press, position)) { presses.remove(routeId); return@transaction }
             when (edge.action) {
@@ -249,8 +273,8 @@ internal class PhoneInputMerger(
                     held = press
                     contact(press, Touch.Phase.DOWN, position, edge.eventTimeMs, out)
                 }
-                PhoneHidAction.FUNCTION -> functionDown(press)
-                PhoneHidAction.BACK_HOME -> Unit
+                PhoneHidAction.ANCHOR -> functionDown(press, out)
+                PhoneHidAction.NAVIGATION -> Unit
                 else -> Unit
             }
             return@transaction
@@ -259,23 +283,22 @@ internal class PhoneInputMerger(
             if (edge.phase == PhoneHidPhase.CANCEL) {
                 val latest = function?.press
                 if (latest?.id == routeId && latest.edge.samePress(edge)) cancelFunction()
-                if (edge.action == PhoneHidAction.BACK_HOME) backHome.cancel(navigationToken(routeId, edge))
+                if (edge.action == PhoneHidAction.NAVIGATION) backHome.cancel(navigationToken(routeId, edge))
             }
             return@transaction
         }
         if (!old.edge.samePress(edge)) return@transaction
         presses.remove(routeId)
-        if (old.control.terminal && old.edge.action != PhoneHidAction.BACK_HOME) return@transaction
+        if (old.control.terminal && old.edge.action != PhoneHidAction.NAVIGATION) return@transaction
         if (edge.phase == PhoneHidPhase.CANCEL) {
             if (held === old) retireContact(out)
             if (function?.press === old) cancelFunction()
-            if (old.edge.action == PhoneHidAction.BACK_HOME) backHome.cancel(navigationToken(routeId, edge))
+            if (old.edge.action == PhoneHidAction.NAVIGATION) backHome.cancel(navigationToken(routeId, edge))
             return@transaction
         }
-        if (old.edge.action == PhoneHidAction.BACK_HOME || old.edge.action == PhoneHidAction.LOCK) {
+        if (old.edge.action == PhoneHidAction.NAVIGATION) {
             if (!currentNavigation(old)) backHome.cancel(navigationToken(routeId, edge))
-            else if (old.edge.action == PhoneHidAction.BACK_HOME) backHome.up(navigationToken(routeId, edge), edge.eventTimeMs)
-            else finishNavigation(old, ReceiverInputKind.LOCK, out)
+            else if (old.edge.action == PhoneHidAction.NAVIGATION) backHome.up(navigationToken(routeId, edge), edge.eventTimeMs)
             return@transaction
         }
         val position = point
@@ -295,8 +318,8 @@ internal class PhoneInputMerger(
                 if (position.projected) position.target()?.let { scroll(Scroll(it, pixels)) }
                 else out.add(ReceiverInput(ReceiverInputKind.SCROLL, position.revision, x = position.x, y = position.y, pixels = pixels))
             }
-            PhoneHidAction.FUNCTION -> functionUp(old, edge.eventTimeMs, out)
-            PhoneHidAction.BACK_HOME, PhoneHidAction.LOCK -> Unit // Completed above without spatial input.
+            PhoneHidAction.ANCHOR -> functionUp(old, edge.eventTimeMs, out)
+            PhoneHidAction.NAVIGATION -> Unit // Completed above without spatial input.
         }
         }
     }
@@ -376,18 +399,19 @@ internal class PhoneInputMerger(
     fun invalidate() = transaction { out -> retire(out, false) }
 
     private fun retire(out: Output, emit: Boolean, clearPoint: Boolean = true, preserveNavigation: Boolean = false,
-        passive: Boolean = false) {
+        passive: Boolean = false, preserveRegistration: Boolean = false) {
         generation++
         val old = held
         held = null
         presses.entries.removeAll { !it.value.control.terminal && (!preserveNavigation ||
-            it.value.edge.action != PhoneHidAction.BACK_HOME && it.value.edge.action != PhoneHidAction.LOCK) }
+            it.value.edge.action != PhoneHidAction.NAVIGATION) }
         if (!preserveNavigation && navigationOriginal?.control?.terminal != true) {
             backHome.cancel(); navigationOriginal = null
         }
         nativeContact = null
         if (clearPoint) { point = null; pointerSource = null }
         cancelFunction()
+        if (!preserveRegistration) cancelRegistration(out)
         if (old != null && !old.point.projected && emit) out.add(ReceiverInput(ReceiverInputKind.CANCEL, old.point.revision, old.contact))
         if (passive) cancelPassiveControl() else cancelControl()
     }
@@ -399,7 +423,19 @@ internal class PhoneInputMerger(
         cancel?.invoke()
     }
 
-    private fun functionDown(press: Press) {
+    private fun cancelRegistration(out: Output) {
+        val old = registrationHold ?: return
+        registrationHold = null
+        out.release(old.second, true)
+    }
+
+    private fun functionDown(press: Press, out: Output) {
+        if (registrationHold != null) {
+            cancelRegistration(out)
+            press.control.disposition = AnchorControlDisposition.RETIRED
+            presses.remove(press.id, press)
+            return
+        }
         if (!allowsNew(press, press.point)) { presses.remove(press.id); return }
         cancelFunction()
         val source = pointerSource ?: return
@@ -421,11 +457,11 @@ internal class PhoneInputMerger(
             if (!active()) { cancelFunction(); return@transaction }
             if (function !== current || timerGeneration != functionTimerGeneration) return@transaction
             if (now() < deadline) armFunction(current, deadline)
-            else finishFunction(current, FunctionIntentKind.REGISTER, out)
+            else finishFunction(current, FunctionIntentKind.REGISTER, out, physicalHeld = true)
         } }
     }
 
-    private fun finishFunction(current: FunctionPress, kind: FunctionIntentKind, out: Output) {
+    private fun finishFunction(current: FunctionPress, kind: FunctionIntentKind, out: Output, physicalHeld: Boolean = false) {
         if (function !== current) return
         cancelFunction() // A long's eventual physical UP cannot become an activation.
         if (kind == FunctionIntentKind.REGISTER) current.press.control.ordinary()
@@ -433,7 +469,10 @@ internal class PhoneInputMerger(
             anchorControl(current.press.control) != AnchorControlDisposition.NORMAL) return
         val position = point?.takeIf { it.available && it.revision == current.context.pointer.revision } ?: return
         if (!allowsNew(current.press, position)) return
-        out.add(FunctionIntent(kind, FunctionSource.PHONE_HID, current.gestureId, functionIdentity.delivery(), current.context), current.press.control)
+        val intent = FunctionIntent(kind, FunctionSource.PHONE_HID, current.gestureId, functionIdentity.delivery(), current.context)
+        if (kind == FunctionIntentKind.REGISTER && physicalHeld) registrationHold = current to intent
+        out.add(intent, current.press.control)
+        if (kind == FunctionIntentKind.REGISTER && !physicalHeld) out.release(intent, true)
     }
 
     private fun allowsNew(press: Press, position: HeadPointerState): Boolean = active() && position.available &&

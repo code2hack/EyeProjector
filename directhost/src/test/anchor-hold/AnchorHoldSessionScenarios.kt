@@ -96,7 +96,7 @@ fun main() {
             setup(f); val events = f.holdEvents(); f.checkTransportLock()
             val at = android.os.SystemClock.uptimeMillis()
             fun press(id: Long, n: Long) {
-                val down = PhoneHidEdge(PhoneHidAction.FUNCTION, PhoneHidPhase.DOWN, 1, 67, 90, at + n * 50, at + n * 50)
+                val down = PhoneHidEdge(PhoneHidAction.ANCHOR, PhoneHidPhase.DOWN, 1, 67, 90, at + n * 50, at + n * 50)
                 f.hid(id, down); f.holdFlush(runtime)
                 if (n == 0L) check(events.isEmpty())
                 f.hid(id, down.copy(phase = PhoneHidPhase.UP, eventTimeMs = down.eventTimeMs + 20)); f.holdFlush(runtime)
@@ -146,7 +146,7 @@ fun main() {
                 "scroll" -> f.receive(Frame(Wire.SCROLL, payload = Scroll(Tap(10, 20, holdGeometry), 160).bytes()))
                 "hid-tap", "lock" -> {
                     val at = android.os.SystemClock.uptimeMillis()
-                    val down = PhoneHidEdge(if (cause == "lock") PhoneHidAction.LOCK else PhoneHidAction.TAP,
+                    val down = PhoneHidEdge(if (cause == "lock") PhoneHidAction.NAVIGATION else PhoneHidAction.TAP,
                         PhoneHidPhase.DOWN, 1, 66, 88, at, at)
                     f.hid(8, down); f.hid(8, down.copy(phase = PhoneHidPhase.UP, eventTimeMs = at + 20))
                 }

@@ -40,7 +40,7 @@ else:
 cp = os.pathsep.join(map(str, jars))
 java = str(Path(os.environ['JAVA_HOME']) / 'bin/java') if os.environ.get('JAVA_HOME') else shutil.which('java')
 sources = [protocol / (n + '.kt') for n in ['Wire', 'Touch', 'PhoneInput', 'ReceiverUsability', 'CameraFeed',
-           'ActivationControl', 'FunctionIntent', 'AnchorMessage', 'BackHomeGestureRecognizer', 'ReceiverControlIntent']]
+           'ActivationControl', 'FunctionIntent', 'AnchorMessage', 'HidNavigationGestureRecognizer', 'ReceiverControlIntent']]
 sources += [root / 'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/InputRetirement.kt',
             root / 'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/AnchorHeldIndicator.kt',
             root / 'directrg/src/test/anchor-hold/AnchorHeldIndicatorTest.kt']
@@ -48,7 +48,8 @@ tests = ['com.code2hack.eyeprojector.directrg.AnchorHeldIndicatorTest']
 if not a.indicator_only:
     sources += sorted((host / 'anchor/target').glob('*.kt'))
     sources += [host / 'anchor/execution' / (n + '.kt') for n in
-                ['AnchorControlAdmission', 'AnchorContactOwner', 'AnchorAppCoordinator', 'AnchorSessionInput', 'AnchorExecutionCodec']]
+                ['AnchorControlAdmission', 'AnchorContactOwner', 'AnchorAppCoordinator', 'AnchorSessionInput', 'AnchorExecutionCodec', 'AnchorRegistrationDiagnostic']]
+    sources += [host / 'anchor/registration' / (n + '.kt') for n in ['AnchorRegistrationTarget', 'AnchorRegistrationCoordinator']]
     sources += [host / 'anchor/preferences' / (n + '.kt') for n in ['AppAnchor', 'AppAnchorStore']]
     sources += [host / 'uiaccess' / (n + '.kt') for n in
                 ['UiTargetSnapshot', 'UiSourceGeometry', 'UiTargetReader', 'UiTargetSnapshotProvider']]
@@ -60,15 +61,19 @@ if not a.indicator_only:
     tests += ['com.code2hack.eyeprojector.directhost.anchor.execution.AnchorHoldTest',
               'com.code2hack.eyeprojector.directhost.anchor.execution.AnchorHoldWireTest',
               'com.code2hack.eyeprojector.directhost.anchor.execution.AnchorExecutionTest']
+    for name in ['registration/AnchorRegistrationTest', 'target/AnchorTargetResolverTest']:
+        sources.append(suite.parent / 'kotlin/com/code2hack/eyeprojector/directhost/anchor' / (name + '.kt'))
+        tests.append('com.code2hack.eyeprojector.directhost.anchor.' + name.replace('/', '.'))
 rgmain=root/'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg'
 rgtests=root/'directrg/src/test/kotlin/com/code2hack/eyeprojector/directrg'
-sources += [rgmain/(name+'.kt') for name in ['PadGestureRecognizer','FunctionGestureRecognizer','HeadPointerModel','HeadOrientation']]
-for name in ['PadGestureRecognizerTest','ContinuousContactRecognizerTest','FunctionGestureRecognizerTest']:
+sources += [rgmain/(name+'.kt') for name in ['PadGestureRecognizer','FunctionGestureRecognizer','HeadPointerModel','HeadOrientation','AnchorRegistrationController','HidKeyInput','HidBindings','HidDecisionTrace','ContextualNavigation']]
+for name in ['PadGestureRecognizerTest','ContinuousContactRecognizerTest','FunctionGestureRecognizerTest','RegistrationReleaseTest','AnchorRegistrationControllerTest','HidKeyInputTest','HidBindingsTest']:
     sources.append(rgtests/(name+'.kt'));tests.append('com.code2hack.eyeprojector.directrg.'+name)
-for name in ['AnchorMessageTest','FunctionIntentTest','PhoneInputTest','TouchTest','WireTest']:
+for name in ['AnchorMessageTest','FunctionIntentTest','PhoneInputTest','TouchTest','WireTest','HidNavigationGestureRecognizerTest']:
     sources.append(root/'protocol/src/test/kotlin/com/code2hack/eyeprojector/protocol'/(name+'.kt'))
     tests.append('com.code2hack.eyeprojector.protocol.'+name)
 sources += [protocol/'LayoutScale.kt',protocol/'OriginalContact.kt']
+sources += [root/'directrg/src/test/hidframework/doubles'/(n+'.kt') for n in ['Point','Rect','Log']]
 out = a.output_dir.resolve()
 if (out/'result.json').exists(): p.error('Refusing to overwrite frozen regression result')
 out.mkdir(parents=True, exist_ok=True)

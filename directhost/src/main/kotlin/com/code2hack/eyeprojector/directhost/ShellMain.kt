@@ -798,7 +798,11 @@ private class Session(
         captureHeldControl = inputControls.anchor::captureHeldControl,
         originalFunctionIntent = { intent, original -> acceptFunction(intent, original) },
         receiveControl = inputControls.anchor::receiveControl,
-        passiveAllowed = { !inputControls.anchor.holding })
+        passiveAllowed = { !inputControls.anchor.holding },
+        registrationRelease = { intent, canceled -> functionWork.submit {
+            try { if (running.get()) anchorSession.release(intent, canceled) }
+            catch (error: Exception) { closeSafely(sessionFailureReason(error, control = true), error) }
+        } })
     private var server: java.lang.Process? = null
     private var inputThread: Thread? = null
     @Volatile private var streamThread: Thread? = null
@@ -976,7 +980,7 @@ private class Session(
             try {
                 if (running.get()) phoneInput.stampedEdge(routeId, edge,
                     { point, source -> receiverUsability.acceptsContext(regionId, word, point, source) }) { point, source ->
-                    if (edge.action == PhoneHidAction.BACK_HOME || edge.action == PhoneHidAction.LOCK)
+                    if (edge.action == PhoneHidAction.NAVIGATION)
                         receiverUsability.acceptsContext(regionId, word, point, source)
                     else receiverUsability.accepts(regionId, word, point, source)
                 }
@@ -993,7 +997,7 @@ private class Session(
         try {
             if (running.get()) phoneInput.stampedEdgeOriginal(routeId, edge, original,
                 { point, source -> receiverUsability.acceptsContext(region, word, point, source) },
-                { point, source -> if (edge.action == PhoneHidAction.BACK_HOME || edge.action == PhoneHidAction.LOCK)
+                { point, source -> if (edge.action == PhoneHidAction.NAVIGATION)
                     receiverUsability.acceptsContext(region, word, point, source) else receiverUsability.accepts(region, word, point, source) })
         } catch (error: Exception) { closeSafely(sessionFailureReason(error, control = true), error) }
     }

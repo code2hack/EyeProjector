@@ -40,7 +40,7 @@ internal class HidBindingsPanel(
         addView(message)
         addView(receivedLine, LayoutParams(-1, (32 * resources.displayMetrics.density).toInt()))
         for (action in listOf(HidAction.TAP, HidAction.SCROLL_DOWN, HidAction.SCROLL_UP,
-            HidAction.BACK_HOME, HidAction.LOCK, HidAction.FUNCTION)) {
+            HidAction.NAVIGATION, HidAction.ANCHOR)) {
             entries[action] = button()
         }
         for (assignmentButton in entries.values) {
@@ -116,8 +116,7 @@ internal class HidBindingsPanel(
         HidAction.TAP -> "Tap"
         HidAction.SCROLL_DOWN -> "Scroll down"
         HidAction.SCROLL_UP -> "Scroll up"
-        HidAction.FUNCTION -> "Function button"
-        HidAction.BACK_HOME -> "Back/Home"
-        HidAction.LOCK -> "Lock"
+        HidAction.ANCHOR -> "Anchor"
+        HidAction.NAVIGATION -> "Back / Lock / Home"
     }
 }

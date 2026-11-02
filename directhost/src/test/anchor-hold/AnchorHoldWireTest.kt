@@ -26,7 +26,7 @@ class AnchorHoldWireTest {
         }
         val input = DataInputStream(bytes.toByteArray().inputStream())
         Wire.readWelcome(input)
-        assertEquals(12, Wire.VERSION)
+        assertEquals(13, Wire.VERSION)
         assertEquals(messages, messages.map { AnchorMessage.from(Wire.readFrame(input).payload) })
         assertEquals(0, input.available())
     }

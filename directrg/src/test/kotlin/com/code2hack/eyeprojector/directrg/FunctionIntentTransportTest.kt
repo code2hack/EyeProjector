@@ -73,7 +73,7 @@ class FunctionIntentTransportTest {
             report(FunctionGestureRecognizer.Report.DOWN, 1700); advance(2500)
             report(FunctionGestureRecognizer.Report.LONG, 2501); report(FunctionGestureRecognizer.Report.UP, 2600)
             val binding = HidBinding(HidButton(HidDeviceIdentity("function-host-fixture", 1, 2), 30, 40), "Fixture", "Function")
-            val bindings = HidBindings({ null }, { true }).also { assertTrue(it.assign(HidAction.FUNCTION, binding)) }
+            val bindings = HidBindings({ null }, { true }).also { assertTrue(it.assign(HidAction.ANCHOR, binding)) }
             val hid = HidKeyInput(bindings, { now }, { s }, schedule, { PointerPosition(300f, 240f, true) },
                 { _, _ -> fail("Function must not own a contact") }, { _, _ -> fail("unexpected contact cancel") },
                 { _, _, _ -> fail("unexpected scroll") }, { deliver(FunctionSource.GLASSES_HID, it) },

@@ -2,8 +2,8 @@ package com.code2hack.eyeprojector.protocol
 
 import java.io.DataInputStream
 
-/** Append roles: the first four IDs and persisted names belong to existing assignments. */
-enum class PhoneHidAction { TAP, SCROLL_DOWN, SCROLL_UP, FUNCTION, BACK_HOME, LOCK }
+/** Semantic HID operations; native physical Function is a separate source. */
+enum class PhoneHidAction { TAP, SCROLL_DOWN, SCROLL_UP, ANCHOR, NAVIGATION }
 enum class PhoneHidPhase { DOWN, UP, CANCEL }
 
 /** Actual Phone-local facts. This record is Binder-local, never forwarded over LAN. */

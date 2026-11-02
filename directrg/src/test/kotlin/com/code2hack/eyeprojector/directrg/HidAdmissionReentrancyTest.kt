@@ -48,7 +48,7 @@ class HidAdmissionReentrancyTest {
 
         init {
             assertTrue(bindings.assign(HidAction.TAP, tap))
-            assertTrue(bindings.assign(HidAction.FUNCTION, function))
+            assertTrue(bindings.assign(HidAction.ANCHOR, function))
         }
 
         // Keep constructor callbacks independent of property initialization inference.
@@ -121,7 +121,7 @@ class HidAdmissionReentrancyTest {
                 if (it.phase == Touch.Phase.CANCEL && it.contactId == 1_000L) {
                     // Even a changed saved mapping cannot turn this pending TAP release into
                     // the Function recognizer's native orphan-UP fallback.
-                    assertTrue(r.bindings.assign(HidAction.FUNCTION, r.tap))
+                    assertTrue(r.bindings.assign(HidAction.ANCHOR, r.tap))
                     assertTrue(r.edge(Phase.UP, if (matchingRelease) 1_100 else 1_099, 1_150))
                 }
             }

@@ -72,7 +72,7 @@ internal fun centralGateScenarios(run:(String,(Joined)->Unit)->Unit) {
                 "Home"->j.phone.receive(Frame(Wire.NAVIGATE,payload=Navigate(Navigation.CONTEXTUAL_HOME,geometry).bytes()))
                 "App"->(j.phone.session as CapturedProjection).launchApp(130,"app")
                 else->{val at=android.os.SystemClock.uptimeMillis();(j.phone.session as CapturedProjection).phoneHidEdge(130,
-                    PhoneHidEdge(if(kind=="HID")PhoneHidAction.TAP else PhoneHidAction.FUNCTION,PhoneHidPhase.DOWN,7,195,700,at,at))}
+                    PhoneHidEdge(if(kind=="HID")PhoneHidAction.TAP else PhoneHidAction.ANCHOR,PhoneHidPhase.DOWN,7,195,700,at,at))}
             }
         }
         var paused=false
@@ -146,7 +146,7 @@ internal fun centralGateScenarios(run:(String,(Joined)->Unit)->Unit) {
                         j.phone.receive(Frame(Wire.FUNCTION_INTENT,payload=intent.bytes()))
                     }
                     else->{val at=android.os.SystemClock.uptimeMillis();(j.phone.session as CapturedProjection).phoneHidEdge(119,
-                        PhoneHidEdge(PhoneHidAction.FUNCTION,PhoneHidPhase.DOWN,7,195,700,at,at))}
+                        PhoneHidEdge(PhoneHidAction.ANCHOR,PhoneHidPhase.DOWN,7,195,700,at,at))}
                 }
             }catch(t:Throwable){failures.add(t)}finally{returned.countDown()}
         }.also{it.start()} }

@@ -53,7 +53,14 @@ internal class AnchorAppRuntime(context: Context, registrationProviderName: Stri
     private val lane = Executors.newSingleThreadExecutor { Thread(it, "eyeprojector-app-anchor").apply { isDaemon = true } }
     val coordinator = AnchorAppCoordinator(store, UiTargetAccess::reader,
         SystemClock::uptimeMillis) { lane.execute(it) }
-    init { UiTargetAccess.observe { change ->
+    init {
+        coordinator.registrationDiagnostic = { observation ->
+            registrationLogs.execute {
+                try { android.util.Log.i("AnchorRegistration", observation.render()) }
+                catch (_: Exception) { /* Logging cannot change the original operation. */ }
+            }
+        }
+        UiTargetAccess.observe { change ->
         if (change == null) coordinator.contextRetired()
         else coordinator.windowChanged(change.displayId, change.windowId, change.currentChanged)
     } }
@@ -130,5 +137,12 @@ internal class AnchorAppRuntime(context: Context, registrationProviderName: Stri
         override fun send(message: AnchorMessage) = original.send(message.bytes())
         override fun feedback(status: AnchorExecutionStatus) = send(AnchorMessage.Feedback(transactionId, intent,
             AnchorFeedback.valueOf(status.name)))
+    }
+
+    companion object {
+        // One app-process logger, never a worker or retained Binder per Session/transaction.
+        private val registrationLogs = Executors.newSingleThreadExecutor {
+            Thread(it, "eyeprojector-registration-log").apply { isDaemon = true }
+        }
     }
 }

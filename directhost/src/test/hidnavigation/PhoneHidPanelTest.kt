@@ -7,23 +7,23 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PhoneHidPanelTest {
-    @Test fun sixRowsSelectTheirExactRolesWithoutChangingThePinOrSavedFunction() {
+    @Test fun fiveSemanticRowsPreservePinAndSavedAnchor() {
         var record: String? = null
         var writes = 0
         val bindings = PhoneHidBindings({ record }) { record = it; writes++; true }
-        val original = PhoneHidBinding(PhoneHidButton(PhoneHidDeviceIdentity("original pin", 1, 2), 100, 200), "Remote", "Original Function")
-        bindings.assign(PhoneHidAction.FUNCTION, original)
+        val original = PhoneHidBinding(PhoneHidButton(PhoneHidDeviceIdentity("original pin", 1, 2), 100, 200), "Remote", "Original Anchor")
+        bindings.assign(PhoneHidAction.ANCHOR, original)
         val originalRecord = record
         val input = PanelController(bindings)
         val pin = PhoneHidPinRuntime()
         val runtime = PhoneHidRuntime(input, pin)
         val panel = PhoneHidPanel(Context(), runtime) {}
         val roles = listOf(PhoneHidAction.TAP, PhoneHidAction.SCROLL_DOWN, PhoneHidAction.SCROLL_UP,
-            PhoneHidAction.BACK_HOME, PhoneHidAction.LOCK, PhoneHidAction.FUNCTION)
+            PhoneHidAction.NAVIGATION, PhoneHidAction.ANCHOR)
         val rows = panel.children.filterIsInstance<Button>().filter { it.text?.contains(':') == true }
         assertEquals(listOf("Tap: Unassigned for this device", "Scroll down: Unassigned for this device",
-            "Scroll up: Unassigned for this device", "Back/Home: Unassigned for this device",
-            "Lock: Unassigned for this device", "Function button: Remote: Original Function"), rows.map { it.text.toString() })
+            "Scroll up: Unassigned for this device", "Back / Lock / Home: Unassigned for this device",
+            "Anchor: Remote: Original Anchor"), rows.map { it.text.toString() })
         panel.open()
         roles.forEachIndexed { index, role ->
             assertTrue(rows[index].isEnabled)
@@ -43,8 +43,7 @@ class PhoneHidPanelTest {
         assertEquals("original pin", pin.state.savedKey)
         assertEquals(originalRecord, record)
         assertEquals(1, writes)
-        assertEquals(original, bindings.binding(PhoneHidAction.FUNCTION))
-        assertNull(bindings.binding(PhoneHidAction.BACK_HOME))
-        assertNull(bindings.binding(PhoneHidAction.LOCK))
+        assertEquals(original, bindings.binding(PhoneHidAction.ANCHOR))
+        assertNull(bindings.binding(PhoneHidAction.NAVIGATION))
     }
 }

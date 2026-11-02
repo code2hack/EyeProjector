@@ -3,7 +3,7 @@ package com.code2hack.eyeprojector.protocol
 import org.junit.Assert.*
 import org.junit.Test
 
-class BackHomeGestureRecognizerTest {
+class HidNavigationGestureRecognizerTest {
     private class Clock {
         var at = 0L
         data class Timer(val at: Long, val callback: () -> Unit, var canceled: Boolean = false)
@@ -24,9 +24,9 @@ class BackHomeGestureRecognizerTest {
     private class Rig {
         val clock = Clock()
         var context: Any? = Any()
-        val actions = mutableListOf<Pair<BackHomeGestureRecognizer.Action, Any>>()
+        val actions = mutableListOf<Pair<HidNavigationGestureRecognizer.Action, Any>>()
         var onAction: () -> Unit = {}
-        val input = BackHomeGestureRecognizer<Any>(clock::at, { it === context }, clock::schedule,
+        val input = HidNavigationGestureRecognizer<Any>(clock::at, { it === context }, clock::schedule,
             { action, captured -> actions.add(action to captured); onAction() })
         fun down(press: Any, source: Any = "learned key") = input.down(press, source, checkNotNull(context))
         fun up(press: Any, at: Long) { clock.at = at; input.up(press, at) }
@@ -38,17 +38,21 @@ class BackHomeGestureRecognizerTest {
         r.click(1, 0)
         r.clock.advance(509); assertTrue(r.actions.isEmpty())
         r.clock.advance(510)
-        assertEquals(listOf(BackHomeGestureRecognizer.Action.BACK to original), r.actions)
+        assertEquals(listOf(HidNavigationGestureRecognizer.Action.BACK to original), r.actions)
     }
 
-    @Test fun completedPairProducesOnlyHomeAndHasNoLongOrTripleAction() {
-        val r = Rig()
-        r.click(1, 0); r.clock.at = 200; r.down(2)
-        r.clock.advance(5000); assertTrue(r.actions.isEmpty()) // Holding has no long action.
-        r.up(2, 5010)
-        assertEquals(listOf(BackHomeGestureRecognizer.Action.HOME), r.actions.map { it.first })
-        r.click(3, 5100); r.clock.advance(5610)
-        assertEquals(listOf(BackHomeGestureRecognizer.Action.HOME, BackHomeGestureRecognizer.Action.BACK), r.actions.map { it.first })
+    @Test fun singleDoubleTripleCommitExactlyOneActionAfterCompletion() {
+        for (count in 1..3) {
+            val r = Rig()
+            repeat(count) { i ->
+                r.click(i + 1, i * 100L)
+                if (i < 2) assertTrue(r.actions.isEmpty())
+            }
+            if (count < 3) { r.clock.advance((count - 1) * 100L + 509); assertTrue(r.actions.isEmpty()) }
+            r.clock.advance(2000)
+            assertEquals(listOf(when (count) { 1 -> HidNavigationGestureRecognizer.Action.BACK
+                2 -> HidNavigationGestureRecognizer.Action.LOCK; else -> HidNavigationGestureRecognizer.Action.HOME }), r.actions.map { it.first })
+        }
     }
 
     @Test fun repeatDownAndDuplicateOrUnmatchedUpNeverMultiplyPresses() {
@@ -56,7 +60,7 @@ class BackHomeGestureRecognizerTest {
         r.down(1); repeat(4) { r.down(1) }; r.up(99, 10); r.up(1, 20)
         repeat(4) { r.down(1); r.up(1, 30) }
         r.clock.advance(520)
-        assertEquals(listOf(BackHomeGestureRecognizer.Action.BACK), r.actions.map { it.first })
+        assertEquals(listOf(HidNavigationGestureRecognizer.Action.BACK), r.actions.map { it.first })
         r.up(1, 600); r.clock.advance(1200)
         assertEquals(1, r.actions.size)
     }
@@ -78,7 +82,7 @@ class BackHomeGestureRecognizerTest {
         val r = Rig(); val old = r.context
         r.click(1, 0); r.context = Any(); val next = r.context
         r.click(2, 100); r.clock.advance(610)
-        assertEquals(listOf(BackHomeGestureRecognizer.Action.BACK to next), r.actions)
+        assertEquals(listOf(HidNavigationGestureRecognizer.Action.BACK to next), r.actions)
         assertNotSame(old, r.actions.single().second)
     }
 
@@ -94,25 +98,25 @@ class BackHomeGestureRecognizerTest {
     @Test fun differentPhysicalSourceDoesNotBecomeADouble() {
         val r = Rig(); r.click(1, 0)
         r.clock.at = 100; r.down(2, "reattached key"); r.up(2, 110); r.clock.advance(610)
-        assertEquals(listOf(BackHomeGestureRecognizer.Action.BACK), r.actions.map { it.first })
+        assertEquals(listOf(HidNavigationGestureRecognizer.Action.BACK), r.actions.map { it.first })
     }
 
     @Test fun cancelOldRouteCannotCancelIndependentSuccessorSequence() {
         val r = Rig(); r.click(1, 0); r.input.cancel(1)
         r.click(2, 100); r.input.cancel(1); r.clock.advance(610)
-        assertEquals(listOf(BackHomeGestureRecognizer.Action.BACK), r.actions.map { it.first })
+        assertEquals(listOf(HidNavigationGestureRecognizer.Action.BACK), r.actions.map { it.first })
     }
 
     @Test fun overlappingIncompletePressDoesNotBecomeHome() {
         val r = Rig(); r.down(1); r.clock.at = 100; r.down(2)
         r.up(1, 110); r.up(2, 120); r.clock.advance(620)
-        assertEquals(listOf(BackHomeGestureRecognizer.Action.BACK), r.actions.map { it.first })
+        assertEquals(listOf(HidNavigationGestureRecognizer.Action.BACK), r.actions.map { it.first })
     }
 
     @Test fun intervalBoundarySeparatesPressesEvenWhenTimerHasNotRun() {
         val r = Rig(); r.click(1, 0)
         r.clock.at = 510; r.down(2); r.up(2, 520); r.clock.advance(1020)
-        assertEquals(listOf(BackHomeGestureRecognizer.Action.BACK, BackHomeGestureRecognizer.Action.BACK), r.actions.map { it.first })
+        assertEquals(listOf(HidNavigationGestureRecognizer.Action.BACK, HidNavigationGestureRecognizer.Action.BACK), r.actions.map { it.first })
     }
 
     @Test fun dispatchRetiresBeforeSynchronousCancellationAndSuccessorInput() {

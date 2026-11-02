@@ -22,6 +22,7 @@ internal class NativeFunctionInput(
     capture: (Any) -> Any? = { it },
     captureOriginal: ((Any, Long, Long?) -> Any?)? = null,
     retireOriginal: ((Long, Any) -> Unit)? = null,
+    registrationRelease: (FunctionGestureRecognizer.Gesture, Boolean) -> Unit = { _, _ -> },
 ) {
     private var registered = false
     private var retiring: MutableList<() -> Unit>? = null
@@ -34,7 +35,10 @@ internal class NativeFunctionInput(
         retireOriginal = retireOriginal?.let { retire -> { id, original ->
             val effect: () -> Unit = {retire(id,original)}
             retiring?.add(effect) ?: effect()
-        } })
+        } }, registrationRelease = { gesture, canceled ->
+            val effect: () -> Unit = { registrationRelease(gesture, canceled) }
+            retiring?.add(effect) ?: effect()
+        })
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (!registered) return
@@ -59,10 +63,10 @@ internal class NativeFunctionInput(
         registered = true
     }
 
-    fun prepareCancel(): InputRetirement {
+    fun prepareCancel(preserveRegistration: Boolean = false): InputRetirement {
         val effects = mutableListOf<() -> Unit>()
         retiring = effects
-        try { recognizer.cancel() } finally { retiring = null }
+        try { recognizer.cancel(preserveRegistration) } finally { retiring = null }
         val original = recognizer.retirementState()
         return InputRetirement({ InputRetirement.finishAll(effects) }, { recognizer.retirementState() != original })
     }

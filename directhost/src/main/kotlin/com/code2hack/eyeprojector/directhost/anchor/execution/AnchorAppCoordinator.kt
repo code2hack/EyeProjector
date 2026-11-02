@@ -58,6 +58,23 @@ internal class AnchorAppCoordinator(
     @Volatile private var closed = false
     @Volatile var lastFailure: Exception? = null
         private set
+    @Volatile var lastRegistrationDiagnostic: AnchorRegistrationDiagnostic? = null
+        private set
+    var registrationDiagnostic: ((AnchorRegistrationDiagnostic) -> Unit)? = null
+
+    /** Called on this FIFO with captured values only; observer failure cannot change input results. */
+    fun reportRegistration(original: AnchorOriginalRoute, stage: AnchorRegistrationDiagnostic.Stage,
+        source: ManagedUiSource? = null, snapshot: UiTargetSnapshot? = null,
+        inspection: com.code2hack.eyeprojector.directhost.anchor.registration.AnchorRegistrationInspection? = null,
+        detail: String? = null, failure: Exception? = null) {
+        if (original.intent.kind != FunctionIntentKind.REGISTER) return
+        val copied = snapshot?.copy(windows = snapshot.windows.map { window ->
+            window.copy(targets = window.targets.map { it.copy(actionIds = it.actionIds.toList()) }) })
+        val observation = AnchorRegistrationDiagnostic(original.transactionId, original.intent, stage,
+            source, copied, inspection, detail, failure)
+        lastRegistrationDiagnostic = observation
+        try { registrationDiagnostic?.invoke(observation) } catch (_: Exception) { /* Diagnostic only. */ }
+    }
 
     fun accept(original: AnchorOriginalRoute) = submit {
         if (closed) return@submit
@@ -79,6 +96,9 @@ internal class AnchorAppCoordinator(
         try { action() }
         catch (error: Exception) {
             lastFailure = error
+            val pending = registrationRequest?.takeIf { it.original.identity == original.identity }
+            reportRegistration(original, AnchorRegistrationDiagnostic.Stage.EXCEPTION,
+                pending?.source, pending?.snapshot, failure = error)
             if (registrationRequest?.original?.identity == original.identity) registrationRequest = null
             try { original.retire() } catch (cleanup: Exception) { error.addSuppressed(cleanup) }
             if (original.intent.kind == FunctionIntentKind.REGISTER) {
@@ -92,8 +112,13 @@ internal class AnchorAppCoordinator(
     }
 
     private fun execute(original: AnchorOriginalRoute) {
-        if (original.intent.kind == FunctionIntentKind.REGISTER &&
-            original.consumeHeldControl() != AnchorControlDisposition.NORMAL) return
+        if (original.intent.kind == FunctionIntentKind.REGISTER) {
+            val disposition = original.consumeHeldControl()
+            if (disposition != AnchorControlDisposition.NORMAL) {
+                reportRegistration(original, AnchorRegistrationDiagnostic.Stage.CONTROL_DISPOSITION, detail = disposition.name)
+                return
+            }
+        }
         if (original.intent.kind == FunctionIntentKind.ACTIVATE) {
             // Original metadata + in-memory revision check; no saved record/source/target lookup.
             val held = original.heldSetting()
@@ -104,27 +129,56 @@ internal class AnchorAppCoordinator(
                 AnchorReleaseResult.NOT_HELD -> Unit
             }
         }
-        val source = original.source() ?: return original.feedback(AnchorExecutionStatus.RETIRED)
+        val source = original.source() ?: run {
+            reportRegistration(original, AnchorRegistrationDiagnostic.Stage.SOURCE_RETIRED)
+            return original.feedback(AnchorExecutionStatus.RETIRED)
+        }
         val access = accessRevision.get()
         val display = displayRevisions.computeIfAbsent(source.displayId) { AtomicLong() }
         val displayRevision = display.get()
-        val packageName = source.foregroundPackage ?: return original.feedback(AnchorExecutionStatus.UNAVAILABLE)
+        val packageName = source.foregroundPackage ?: run {
+            reportRegistration(original, AnchorRegistrationDiagnostic.Stage.FOREGROUND_UNAVAILABLE, source)
+            return original.feedback(AnchorExecutionStatus.UNAVAILABLE)
+        }
         // Keep one route per original Session, as supplied by the Binder adapter's stable route key.
         watch(original, source.context, source.displayId, packageName)
         val setting = store.snapshot(packageName)
-        if (!original.reconcile(setting.context)) return original.feedback(AnchorExecutionStatus.RETIRED)
+        if (!original.reconcile(setting.context)) {
+            reportRegistration(original, AnchorRegistrationDiagnostic.Stage.SETTING_RETIRED, source)
+            return original.feedback(AnchorExecutionStatus.RETIRED)
+        }
         val provider = UiTargetSnapshotProvider(ManagedUiSourceProvider { expected ->
             original.source()?.takeIf { it.context == expected }
         }, reader, uptime)
         if (original.intent.kind == FunctionIntentKind.REGISTER) {
-            if (original.consumeHeldControl() != AnchorControlDisposition.NORMAL) return
+            val beforeRead = original.consumeHeldControl()
+            if (beforeRead != AnchorControlDisposition.NORMAL) {
+                reportRegistration(original, AnchorRegistrationDiagnostic.Stage.CONTROL_DISPOSITION, source, detail = beforeRead.name)
+                return
+            }
             val snapshot = provider.read(source.context, packageName)
-            if (closed || accessRevision.get() != access || display.get() != displayRevision ||
-                original.source() != source) return original.feedback(AnchorExecutionStatus.RETIRED)
+            val retired = when {
+                closed -> "CLOSED"
+                accessRevision.get() != access -> "ACCESS_CHANGED"
+                display.get() != displayRevision -> "DISPLAY_CHANGED"
+                original.source() != source -> "SOURCE_CHANGED"
+                else -> null
+            }
+            if (retired != null) {
+                reportRegistration(original, AnchorRegistrationDiagnostic.Stage.SNAPSHOT_RETIRED, source, snapshot, detail = retired)
+                return original.feedback(AnchorExecutionStatus.RETIRED)
+            }
             val handler = registration
-            if (handler == null) original.feedback(AnchorExecutionStatus.UNAVAILABLE)
+            if (handler == null) {
+                reportRegistration(original, AnchorRegistrationDiagnostic.Stage.PROVIDER_UNAVAILABLE, source, snapshot)
+                original.feedback(AnchorExecutionStatus.UNAVAILABLE)
+            }
             else {
-                if (original.consumeHeldControl() != AnchorControlDisposition.NORMAL) return
+                val beforeCapture = original.consumeHeldControl()
+                if (beforeCapture != AnchorControlDisposition.NORMAL) {
+                    reportRegistration(original, AnchorRegistrationDiagnostic.Stage.CONTROL_DISPOSITION, source, snapshot, detail = beforeCapture.name)
+                    return
+                }
                 cancelRegistration(null)
                 val request = CapturedAnchorRequest(original, source, snapshot)
                 registrationRequest = request

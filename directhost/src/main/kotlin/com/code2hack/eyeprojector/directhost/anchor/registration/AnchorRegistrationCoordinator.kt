@@ -24,11 +24,19 @@ sealed interface AnchorRegistrationCompletion {
 class AnchorRegistrationCoordinator<T : Any>(private val store: AppAnchorStore) {
     private data class Pending<T>(val token: T, val target: AnchorRegistrationTarget)
     private var pending: Pending<T>? = null
+    var lastFailure: Exception? = null
+        private set
 
     fun begin(token: T, intent: FunctionIntent, snapshot: UiTargetSnapshot): AnchorRegistrationCapture {
+        return beginDetailed(token, intent, snapshot).capture
+    }
+
+    fun beginDetailed(token: T, intent: FunctionIntent, snapshot: UiTargetSnapshot): AnchorRegistrationInspection {
         pending = null
-        return AnchorRegistrationTargets.capture(intent, snapshot).also {
-            if (it is AnchorRegistrationCapture.Selected) pending = Pending(token, it.target)
+        lastFailure = null
+        return AnchorRegistrationTargets.inspect(intent, snapshot).also {
+            val capture = it.capture
+            if (capture is AnchorRegistrationCapture.Selected) pending = Pending(token, capture.target)
         }
     }
 
@@ -41,6 +49,7 @@ class AnchorRegistrationCoordinator<T : Any>(private val store: AppAnchorStore) 
 
     /** Called only after the bridge admits this original transaction, never by a raw Function UP. */
     fun choose(token: T, mode: AnchorMode, snapshot: UiTargetSnapshot): AnchorRegistrationCompletion {
+        lastFailure = null
         val original = pending?.takeIf { it.token == token } ?: return AnchorRegistrationCompletion.Canceled
         pending = null
         val selected = original.target
@@ -52,7 +61,8 @@ class AnchorRegistrationCoordinator<T : Any>(private val store: AppAnchorStore) 
         return try {
             store.replace(anchor)
             AnchorRegistrationCompletion.Saved(anchor)
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            lastFailure = error
             // The atomic store leaves its previous complete value in place on write failure.
             AnchorRegistrationCompletion.SaveFailed
         }

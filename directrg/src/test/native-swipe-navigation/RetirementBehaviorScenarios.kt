@@ -147,7 +147,7 @@ internal fun retirementBehaviorScenarios(run:(String,()->Unit)->Unit) {
             val a=baseline();val old=a.session!!;var admitted=false;var expectedPublications=-1;val actions=mutableListOf<Int>()
             val follow=HidBinding(HidButton(HidDeviceIdentity("other",3,4),67,31),"Host","Other")
             if(kind=="HID-SCROLL-COMPLETE")check(a.hidBindings.assign(HidAction.SCROLL_DOWN,follow))
-            if(kind=="HID-FUNCTION-COMPLETE")check(a.hidBindings.assign(HidAction.FUNCTION,follow))
+            if(kind=="HID-FUNCTION-COMPLETE")check(a.hidBindings.assign(HidAction.ANCHOR,follow))
             if(kind=="NATIVE-FUNCTION-COMPLETE")a.functionInput.start()
             a.root.onMotion={event->
                 actions.add(event.action)

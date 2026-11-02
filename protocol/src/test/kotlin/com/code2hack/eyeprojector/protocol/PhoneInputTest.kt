@@ -25,8 +25,8 @@ class PhoneInputTest {
         assertEquals(listOf(4, 3, -1), Navigation.entries.take(3).map { it.keycode })
     }
 
-    @Test fun appendedNavigationRolesPreserveExistingPhoneEdgeIdsAndPayloadSize() {
-        val roles = listOf("TAP", "SCROLL_DOWN", "SCROLL_UP", "FUNCTION", "BACK_HOME", "LOCK")
+    @Test fun semanticAnchorAndSingleNavigationRolesRetainTypedEdgeFacts() {
+        val roles = listOf("TAP", "SCROLL_DOWN", "SCROLL_UP", "ANCHOR", "NAVIGATION")
         assertEquals(roles, PhoneHidAction.entries.map { it.name })
         for ((id, name) in roles.withIndex()) {
             // Existing Binder consumers encode the first byte as these exact historical IDs.
@@ -68,7 +68,7 @@ class PhoneInputTest {
     private fun stateBytesWithTrailingData() = HeadPointerState(0, 0, false, false, 0f, 0f, null, null).bytes() + 0.toByte()
 
     @Test fun wireTwelveMatchesBothNewDirectionsAndRejectsThePriorHandshakes() {
-        assertEquals(12, Wire.VERSION); assertEquals(15, Wire.HEAD_POINTER); assertEquals(16, Wire.RECEIVER_INPUT)
+        assertEquals(13, Wire.VERSION); assertEquals(15, Wire.HEAD_POINTER); assertEquals(16, Wire.RECEIVER_INPUT)
         assertEquals(14, Wire.TOUCH); assertEquals(3, Wire.TAP); assertEquals(8, Wire.SCROLL)
         val frames = listOf(Frame(Wire.HEAD_POINTER, payload = HeadPointerState(1, 2, false, false, 0f, 0f, null, null).bytes()),
             Frame(Wire.RECEIVER_INPUT, payload = ReceiverInput(ReceiverInputKind.PANEL, 1).bytes()))

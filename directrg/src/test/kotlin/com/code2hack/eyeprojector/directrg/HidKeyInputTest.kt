@@ -71,10 +71,10 @@ class HidKeyInputTest {
         }
 
         fun clickFunction(attachment: Int = 7) {
-            assertTrue(edge(HidAction.FUNCTION, Phase.DOWN, attachment = attachment))
+            assertTrue(edge(HidAction.ANCHOR, Phase.DOWN, attachment = attachment))
             val down = now
             advance(20)
-            assertTrue(edge(HidAction.FUNCTION, Phase.UP, down = down, attachment = attachment))
+            assertTrue(edge(HidAction.ANCHOR, Phase.UP, down = down, attachment = attachment))
         }
 
         fun assertNoOutput() {
@@ -92,7 +92,7 @@ class HidKeyInputTest {
 
     @Test fun captureOwnsItsEdgesAndMovesTheBindingOnlyAfterACompleteRelease() {
         val r = Rig()
-        val captured = r.buttons.getValue(HidAction.FUNCTION)
+        val captured = r.buttons.getValue(HidAction.ANCHOR)
         val oldTap = r.bindings.binding(HidAction.TAP)
         r.target = HidAction.TAP
         assertNull(r.input.selected)
@@ -101,10 +101,10 @@ class HidKeyInputTest {
         assertTrue(r.edge(captured, Phase.DOWN, at = 1010, down = 1000, repeat = 1))
         r.assertNoOutput()
         assertEquals(oldTap, r.bindings.binding(HidAction.TAP))
-        assertEquals(captured, r.bindings.binding(HidAction.FUNCTION))
+        assertEquals(captured, r.bindings.binding(HidAction.ANCHOR))
         assertTrue(r.edge(captured.copy(deviceName = "Release metadata"), Phase.UP, at = 1030, down = 1000))
         assertEquals(captured, r.bindings.binding(HidAction.TAP))
-        assertNull(r.bindings.binding(HidAction.FUNCTION))
+        assertNull(r.bindings.binding(HidAction.ANCHOR))
         assertNull(r.input.selected)
         assertTrue(r.timers.isEmpty())
         r.advance(5000)
@@ -114,15 +114,15 @@ class HidKeyInputTest {
     @Test fun keysOutsideTheOwnedCaptureKeepTheirOrdinaryDispatch() {
         val r = Rig()
         val captured = r.unbound()
-        r.target = HidAction.FUNCTION
+        r.target = HidAction.ANCHOR
         assertTrue(r.edge(captured, Phase.DOWN))
         r.target = null
         assertTrue(r.edge(HidAction.TAP, Phase.DOWN, at = 1010))
         assertTrue(r.edge(HidAction.TAP, Phase.UP, at = 1020, down = 1010))
         assertEquals(listOf(PadGestureRecognizer.Phase.DOWN, PadGestureRecognizer.Phase.UP), r.contacts.map { it.event.phase })
-        assertEquals(HidAction.FUNCTION, r.input.selected)
+        assertEquals(HidAction.ANCHOR, r.input.selected)
         assertTrue(r.edge(captured, Phase.UP, at = 1030, down = 1000))
-        assertEquals(captured, r.bindings.binding(HidAction.FUNCTION))
+        assertEquals(captured, r.bindings.binding(HidAction.ANCHOR))
         assertTrue(r.actions.isEmpty())
     }
 
@@ -235,20 +235,20 @@ class HidKeyInputTest {
     @Test fun targetProviderIsOnlyReadForAFreshDownAndMatchingCaptureEdgesKeepTheDownTarget() {
         val r = Rig()
         val captured = r.unbound()
-        r.target = HidAction.FUNCTION
+        r.target = HidAction.ANCHOR
         assertNull(r.input.selected)
         assertFalse(r.edge(captured, Phase.UP, down = 900))
         assertFalse(r.edge(captured, Phase.DOWN, down = 900, repeat = 1))
         assertEquals(0, r.captureReads)
         assertTrue(r.edge(captured, Phase.DOWN))
         assertEquals(1, r.captureReads)
-        assertEquals(HidAction.FUNCTION, r.input.selected)
+        assertEquals(HidAction.ANCHOR, r.input.selected)
         r.target = HidAction.SCROLL_DOWN
         assertTrue(r.edge(captured, Phase.DOWN, at = 1010, down = 1000, repeat = 1))
         assertTrue(r.edge(captured, Phase.DOWN, at = 1020, down = 1000))
         assertTrue(r.edge(captured, Phase.UP, at = 1030, down = 1000))
         assertEquals(1, r.captureReads)
-        assertEquals(captured, r.bindings.binding(HidAction.FUNCTION))
+        assertEquals(captured, r.bindings.binding(HidAction.ANCHOR))
         assertNull(r.input.selected)
         r.assertNoOutput()
     }
@@ -279,14 +279,14 @@ class HidKeyInputTest {
         assertTrue(r.edge(captured, Phase.DOWN))
         r.target = HidAction.SCROLL_DOWN
         assertTrue(r.edge(captured, Phase.DOWN, at = 1100))
-        r.target = HidAction.FUNCTION
+        r.target = HidAction.ANCHOR
         assertTrue(r.edge(captured, Phase.DOWN, at = 1200))
         assertTrue(r.edge(captured, Phase.UP, at = 1210, down = 1000))
         assertTrue(r.edge(captured, Phase.UP, at = 1220, down = 1100))
-        assertEquals(HidAction.FUNCTION, r.input.selected)
+        assertEquals(HidAction.ANCHOR, r.input.selected)
         assertEquals(3, r.captureReads)
         assertTrue(r.edge(captured, Phase.UP, at = 1230, down = 1200))
-        assertEquals(captured, r.bindings.binding(HidAction.FUNCTION))
+        assertEquals(captured, r.bindings.binding(HidAction.ANCHOR))
         assertNull(r.input.selected)
         r.assertNoOutput()
     }
@@ -372,12 +372,12 @@ class HidKeyInputTest {
         val r = Rig()
         r.onCaptureTarget = {
             r.onCaptureTarget = {}
-            assertTrue(r.edge(HidAction.FUNCTION, Phase.DOWN, at = 1010))
+            assertTrue(r.edge(HidAction.ANCHOR, Phase.DOWN, at = 1010))
         }
         assertTrue(r.edge(HidAction.TAP, Phase.DOWN))
         assertEquals(listOf(PadGestureRecognizer.Phase.DOWN), r.contacts.map { it.event.phase })
         assertEquals(1000L, r.contacts.single().event.downTimeMs)
-        assertTrue(r.edge(HidAction.FUNCTION, Phase.UP, at = 1030, down = 1010))
+        assertTrue(r.edge(HidAction.ANCHOR, Phase.UP, at = 1030, down = 1010))
         assertTrue(r.edge(HidAction.TAP, Phase.UP, at = 1040, down = 1000))
         assertEquals(listOf(PadGestureRecognizer.Phase.DOWN, PadGestureRecognizer.Phase.UP),
             r.contacts.map { it.event.phase })
@@ -445,7 +445,7 @@ class HidKeyInputTest {
     @Test fun freshCaptureRetiresHeldAndPendingFunctionWorkWithoutProducingConstituentActions() {
         val r = Rig()
         assertTrue(r.edge(HidAction.TAP, Phase.DOWN))
-        assertTrue(r.edge(HidAction.FUNCTION, Phase.DOWN))
+        assertTrue(r.edge(HidAction.ANCHOR, Phase.DOWN))
         val stale = r.timers.toList()
         val captured = r.unbound()
         r.target = HidAction.SCROLL_UP
@@ -491,12 +491,12 @@ class HidKeyInputTest {
             val outer = r.unbound()
             val newer = outer.copy(button = outer.button.copy(keyCode = 24, scanCode = 42))
             val oldScroll = r.bindings.binding(HidAction.SCROLL_UP)
-            val oldFunction = r.bindings.binding(HidAction.FUNCTION)
+            val oldFunction = r.bindings.binding(HidAction.ANCHOR)
             r.target = HidAction.SCROLL_UP
             r.onCancelContact = {
                 r.onCancelContact = {}
                 assertEquals(HidAction.SCROLL_UP, r.input.selected)
-                r.target = HidAction.FUNCTION
+                r.target = HidAction.ANCHOR
                 assertTrue(r.edge(newer, Phase.DOWN, at = 1200, attachment = 8))
                 assertTrue(r.edge(newer, terminal, at = 1220, down = 1200, attachment = 8))
             }
@@ -505,7 +505,7 @@ class HidKeyInputTest {
             assertTrue(r.edge(outer, Phase.UP, at = 1230, down = 1100))
             assertEquals(oldScroll, r.bindings.binding(HidAction.SCROLL_UP))
             assertEquals(if (terminal == Phase.UP) newer else oldFunction,
-                r.bindings.binding(HidAction.FUNCTION))
+                r.bindings.binding(HidAction.ANCHOR))
             assertEquals(1, r.contacts.size)
             assertEquals(1, r.cancellations.size)
             assertTrue(r.scrolls.isEmpty())
@@ -516,19 +516,19 @@ class HidKeyInputTest {
     @Test fun oldFunctionRetirementCannotCancelANewerFunctionAdmittedByTheHeldCancellationCallback() {
         val r = Rig()
         assertTrue(r.edge(HidAction.TAP, Phase.DOWN))
-        assertTrue(r.edge(HidAction.FUNCTION, Phase.DOWN, at = 1010))
+        assertTrue(r.edge(HidAction.ANCHOR, Phase.DOWN, at = 1010))
         val captured = r.unbound()
         r.target = HidAction.SCROLL_UP
         r.onCancelContact = {
             r.onCancelContact = {}
             r.target = null
-            assertTrue(r.edge(HidAction.FUNCTION, Phase.DOWN, at = 1110))
+            assertTrue(r.edge(HidAction.ANCHOR, Phase.DOWN, at = 1110))
         }
         assertTrue(r.edge(captured, Phase.DOWN, at = 1100))
         assertEquals(HidAction.SCROLL_UP, r.input.selected)
-        assertTrue(r.edge(HidAction.FUNCTION, Phase.UP, at = 1130, down = 1110))
+        assertTrue(r.edge(HidAction.ANCHOR, Phase.UP, at = 1130, down = 1110))
         assertTrue(r.edge(captured, Phase.UP, at = 1140, down = 1100))
-        assertTrue(r.edge(HidAction.FUNCTION, Phase.UP, at = 1150, down = 1010))
+        assertTrue(r.edge(HidAction.ANCHOR, Phase.UP, at = 1150, down = 1010))
         assertEquals(listOf(FunctionIntentKind.ACTIVATE), r.actions)
         assertEquals(captured, r.bindings.binding(HidAction.SCROLL_UP))
         assertNull(r.input.selected)
@@ -616,7 +616,7 @@ class HidKeyInputTest {
     @Test fun functionDurationUsesOriginalEdgeTimesWhenReceiptIsDelayed() {
         val r = Rig()
         r.now = 3000
-        val binding = r.buttons.getValue(HidAction.FUNCTION)
+        val binding = r.buttons.getValue(HidAction.ANCHOR)
         assertTrue(r.input.accept(HidKeyInput.Event(7, binding, Phase.DOWN, 1000, 1000)))
         assertTrue(r.input.accept(HidKeyInput.Event(7, binding, Phase.UP, 1000, 1800)))
         assertEquals(listOf(FunctionIntentKind.REGISTER), r.actions)
@@ -626,15 +626,15 @@ class HidKeyInputTest {
 
     @Test fun functionHeldLongUsesTheAbsoluteDeadlineAndReleaseCannotBecomeASingle() {
         val r = Rig()
-        assertTrue(r.edge(HidAction.FUNCTION, Phase.DOWN))
+        assertTrue(r.edge(HidAction.ANCHOR, Phase.DOWN))
         assertEquals(1800L, r.timers.single().at)
-        assertTrue(r.edge(HidAction.FUNCTION, Phase.DOWN, at = 1250, down = 1000, repeat = 1))
+        assertTrue(r.edge(HidAction.ANCHOR, Phase.DOWN, at = 1250, down = 1000, repeat = 1))
         r.advance(549)
         assertTrue(r.actions.isEmpty())
         r.advance(1)
         assertEquals(listOf(FunctionIntentKind.REGISTER), r.actions)
-        assertTrue(r.edge(HidAction.FUNCTION, Phase.UP, at = 1900, down = 1000))
-        assertTrue(r.edge(HidAction.FUNCTION, Phase.UP, at = 1910, down = 1000))
+        assertTrue(r.edge(HidAction.ANCHOR, Phase.UP, at = 1900, down = 1000))
+        assertTrue(r.edge(HidAction.ANCHOR, Phase.UP, at = 1910, down = 1000))
         r.advance(1000)
         assertEquals(listOf(FunctionIntentKind.REGISTER), r.actions)
         r.clickFunction()
@@ -645,13 +645,13 @@ class HidKeyInputTest {
     @Test fun canceledDeviceOrFocusCannotDispatchEvenWhenCanceledSchedulerCallbacksArriveLate() {
         for (deviceLoss in listOf(false, true)) {
             val r = Rig()
-            assertTrue(r.edge(HidAction.FUNCTION, Phase.DOWN))
+            assertTrue(r.edge(HidAction.ANCHOR, Phase.DOWN))
             val stale = r.timers.toList()
             if (deviceLoss) r.input.cancelDevice(7) else r.input.cancel()
             stale.forEach { it.run() }
             r.advance(1000)
             assertTrue(r.actions.isEmpty())
-            assertTrue(r.edge(HidAction.FUNCTION, Phase.UP, down = 1000))
+            assertTrue(r.edge(HidAction.ANCHOR, Phase.UP, down = 1000))
             r.clickFunction()
             r.advance(500)
             assertEquals(listOf(FunctionIntentKind.ACTIVATE), r.actions)
@@ -660,22 +660,22 @@ class HidKeyInputTest {
 
     @Test fun newRuntimeAttachmentCannotCompleteThePreviousAttachmentsPendingFunctionSequence() {
         val r = Rig()
-        assertTrue(r.edge(HidAction.FUNCTION, Phase.DOWN, attachment = 7))
+        assertTrue(r.edge(HidAction.ANCHOR, Phase.DOWN, attachment = 7))
         val stale = r.timers.toList()
-        assertTrue(r.edge(HidAction.FUNCTION, Phase.DOWN, attachment = 8))
+        assertTrue(r.edge(HidAction.ANCHOR, Phase.DOWN, attachment = 8))
         stale.forEach { it.run() }
-        assertTrue(r.edge(HidAction.FUNCTION, Phase.UP, at = 1040, down = 1000, attachment = 7))
-        assertTrue(r.edge(HidAction.FUNCTION, Phase.UP, at = 1040, down = 1000, attachment = 8))
+        assertTrue(r.edge(HidAction.ANCHOR, Phase.UP, at = 1040, down = 1000, attachment = 7))
+        assertTrue(r.edge(HidAction.ANCHOR, Phase.UP, at = 1040, down = 1000, attachment = 8))
         r.advance(500)
         assertEquals(listOf(FunctionIntentKind.ACTIVATE), r.actions)
     }
 
     @Test fun canceledOldAttachmentCannotCancelTheNewAttachmentsHeldFunctionSequence() {
         val r = Rig()
-        assertTrue(r.edge(HidAction.FUNCTION, Phase.DOWN, attachment = 7))
-        assertTrue(r.edge(HidAction.FUNCTION, Phase.DOWN, at = 1010, attachment = 8))
-        assertTrue(r.edge(HidAction.FUNCTION, Phase.CANCEL, at = 1020, down = 1000, attachment = 7))
-        assertTrue(r.edge(HidAction.FUNCTION, Phase.UP, at = 1030, down = 1010, attachment = 8))
+        assertTrue(r.edge(HidAction.ANCHOR, Phase.DOWN, attachment = 7))
+        assertTrue(r.edge(HidAction.ANCHOR, Phase.DOWN, at = 1010, attachment = 8))
+        assertTrue(r.edge(HidAction.ANCHOR, Phase.CANCEL, at = 1020, down = 1000, attachment = 7))
+        assertTrue(r.edge(HidAction.ANCHOR, Phase.UP, at = 1030, down = 1010, attachment = 8))
         assertEquals(listOf(FunctionIntentKind.ACTIVATE), r.actions)
         r.advance(1000)
         assertEquals(listOf(FunctionIntentKind.ACTIVATE), r.actions)
@@ -684,7 +684,7 @@ class HidKeyInputTest {
     @Test fun contextChangesCancelPendingFunctionAndHeldTapInsteadOfReleasingIntoTheNewContext() {
         for (nextContext in listOf("projection-2", "settings", null)) {
             val r = Rig()
-            assertTrue(r.edge(HidAction.FUNCTION, Phase.DOWN))
+            assertTrue(r.edge(HidAction.ANCHOR, Phase.DOWN))
             r.context = nextContext
             r.advance(500)
             assertTrue(r.actions.isEmpty())
@@ -731,7 +731,7 @@ class HidKeyInputTest {
         val r = Rig()
         val held = r.buttons.getValue(HidAction.TAP)
         assertTrue(r.edge(held, Phase.DOWN))
-        assertTrue(r.bindings.assign(HidAction.FUNCTION, held))
+        assertTrue(r.bindings.assign(HidAction.ANCHOR, held))
         assertTrue(r.edge(held, Phase.UP, at = 1020, down = 1000))
         assertEquals(listOf(PadGestureRecognizer.Phase.DOWN, PadGestureRecognizer.Phase.UP), r.contacts.map { it.event.phase })
         assertSame(r.contacts[0].owner, r.contacts[1].owner)

@@ -38,10 +38,10 @@ internal class AndroidUiAccess(private val service: AccessibilityService) : UiAc
             val actions = node.actionList.map { it.id }
             val clickable = node.isClickable
             val longClickable = node.isLongClickable
-            if (!clickable && !longClickable && actions.none { it == AccessibilityNodeInfo.ACTION_CLICK ||
-                    it == AccessibilityNodeInfo.ACTION_LONG_CLICK ||
-                    it == AccessibilityNodeInfo.AccessibilityAction.ACTION_PRESS_AND_HOLD.id }) return null
-            return UiTargetObservation(ordinal, windowId, packageName.orEmpty(), node.viewIdResourceName,
+            val resourceId = node.viewIdResourceName
+            // Flags/actions are copied metadata. User-directed selection uses actual hierarchy
+            // and persistent identity, including custom touch regions with no advertised action.
+            return UiTargetObservation(ordinal, windowId, packageName.orEmpty(), resourceId,
                 node.className?.toString(), Rect().also(node::getBoundsInScreen).bounds(), actions,
                 clickable, longClickable, node.isVisibleToUser, node.isEnabled)
         }

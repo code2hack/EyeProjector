@@ -106,7 +106,11 @@ internal class Joined(val runtime: AnchorAppRuntime) : AutoCloseable {
         error("Original cross-feature queues did not quiesce")
     }
     fun press() { wiring.short(time); time += 1000; pump() }
-    fun register() { wiring.move(320f, 420f); pump(); wiring.register(time); wiring.releaseRegister(time); time += 1000; pump() }
+    fun register() {
+        wiring.move(320f, 420f); pump()
+        val at=time; wiring.register(at); time+=1000; pump()
+        if(!wiring.active()) { wiring.releaseRegister(at); pump() }
+    }
     fun hold() {
         press(); check(input.anchor.holding && wiring.heldVisible)
         check(events.single().phase == Touch.Phase.DOWN)

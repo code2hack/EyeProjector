@@ -26,7 +26,7 @@ class UiTargetSnapshotProvider(
                 UiTargetReadStatus.SOURCE_CHANGED, start, uptime())
             snapshot
         } catch (error: Exception) {
-            UiTargetSnapshot(request, UiTargetReadStatus.FAILED, start, uptime(), failureClass = error.javaClass.name)
+            UiTargetSnapshot(request, UiTargetReadStatus.FAILED, start, uptime(), failureClass = error.javaClass.name, failure = error)
         }
     }
 }

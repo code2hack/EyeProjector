@@ -14,12 +14,12 @@ private class Glasses(val activity: ActivityNavigationWiring) {
     private val adapter = AndroidHidInput(Context(), activity.hidInput)
     private val device = InputDevice(41, "original peripheral", 1, 2, "Remote")
     init {
-        for (role in listOf(HidAction.BACK_HOME, HidAction.LOCK)) {
+        for (role in listOf(HidAction.NAVIGATION, HidAction.LOCK)) {
             activity.hidBindings.assign(role, HidBinding(HidButton(HidDeviceIdentity(device.descriptor, 1, 2),
                 100 + role.ordinal, 200 + role.ordinal), "Remote", role.name))
         }
     }
-    fun press(role: HidAction = HidAction.BACK_HOME) {
+    fun press(role: HidAction = HidAction.NAVIGATION) {
         val down = android.os.SystemClock.time
         val key = 100 + role.ordinal
         val scan = 200 + role.ordinal
@@ -74,7 +74,7 @@ private class Phone(private val activity: ActivityNavigationWiring) {
             Fit(0, 0, 480, 640), size), fact)
         controller.connection(true)
     }
-    fun press(role: PhoneHidAction = PhoneHidAction.BACK_HOME) {
+    fun press(role: PhoneHidAction = PhoneHidAction.NAVIGATION) {
         val down = android.os.SystemClock.time
         check(controller.accept(PhoneHidController.Event(7, bindings.getValue(role), PhoneHidPhase.DOWN, down, down)))
         android.os.SystemClock.time += 10

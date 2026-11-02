@@ -44,7 +44,7 @@ fun functionIntentSessionScenarios() {
         f.pointer()
         val at = android.os.SystemClock.uptimeMillis()
         repeat(3) { n ->
-            val down = PhoneHidEdge(PhoneHidAction.FUNCTION, PhoneHidPhase.DOWN, 1, 67, 90, at + n * 100, at + n * 100)
+            val down = PhoneHidEdge(PhoneHidAction.ANCHOR, PhoneHidPhase.DOWN, 1, 67, 90, at + n * 100, at + n * 100)
             f.hid(n.toLong(), down)
             f.hid(n.toLong(), down.copy(phase = PhoneHidPhase.UP, eventTimeMs = down.eventTimeMs + if (n == 2) 800 else 20))
         }

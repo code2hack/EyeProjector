@@ -18,7 +18,7 @@ if out.exists() and any(out.iterdir()):
     p.error('Choose a new empty evidence directory')
 out.mkdir(parents=True, exist_ok=True)
 protocol = root / 'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
-sources = [protocol / n for n in ('Wire.kt', 'Touch.kt', 'PhoneInput.kt', 'ReceiverUsability.kt', 'ActivationControl.kt', 'CameraFeed.kt', 'FunctionIntent.kt', 'BackHomeGestureRecognizer.kt')]
+sources = [protocol / n for n in ('Wire.kt', 'Touch.kt', 'PhoneInput.kt', 'ReceiverUsability.kt', 'ActivationControl.kt', 'CameraFeed.kt', 'FunctionIntent.kt', 'HidNavigationGestureRecognizer.kt')]
 sources += [root / 'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/FunctionGestureRecognizer.kt',
             root / 'directrg/src/test/kotlin/com/code2hack/eyeprojector/directrg/FunctionGestureRecognizerTest.kt']
 sources += [root / 'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg' / n
