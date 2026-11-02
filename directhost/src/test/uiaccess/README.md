@@ -82,3 +82,11 @@ branch with leaf order1 retain their parent orders for the selector's first-dive
 Child index and ordinal do not establish a Z-order tie breaker. See the
 [Android API](https://developer.android.com/reference/android/view/accessibility/AccessibilityNodeInfo#getDrawingOrder())
 and [CTS drawing-order cases](https://android.googlesource.com/platform/cts/+/4080d986eb09d4c07e3f12be8537e1fd9839dbd2/tests/accessibilityservice/src/android/accessibilityservice/cts/AccessibilityViewTreeReportingTest.java).
+
+A root with no children, class or positive bounds receives one public `refresh()` on that same
+handle before traversal. The existing summary retains its initial metadata and refresh outcome;
+the traversal supplies the resulting root/counts. Adapter checks model recovered live children,
+persistently empty provider output, an obsolete result and an exception, with one root acquisition
+and cleanup. False/exception adds no rejection rule. `--android-adapter-ref <exact-sha>` freezes the
+old adapter for the same reproduction. These checks do not establish a WeChat cache bug: reference
+AOSP `getRoot()` already bypasses its cache, and a refresh success may still return an empty node.

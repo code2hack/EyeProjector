@@ -11,6 +11,7 @@ internal interface UiAccessNode : AutoCloseable {
 
 internal interface UiAccessWindow : AutoCloseable {
     val metadata: UiWindowMetadata
+    val rootRefresh: UiRootRefresh? get() = null
     fun root(): UiAccessNode?
 }
 
@@ -48,10 +49,10 @@ class UiTargetReader internal constructor(private val access: UiAccess, private 
             val root = window.root() ?: return UiWindowSnapshot(metadata, UiWindowReadStatus.NO_ROOT)
             val targets = ArrayList<UiTargetObservation>()
             val status = collect(root, request.selectedPackage, metadata.windowId, targets, counts)
-            UiWindowSnapshot(metadata, status, targets.toList(), traversal = counts.snapshot())
+            UiWindowSnapshot(metadata, status, targets.toList(), traversal = counts.snapshot(window.rootRefresh))
         } catch (error: Exception) {
             UiWindowSnapshot(metadata, UiWindowReadStatus.FAILED, failureClass = error.javaClass.name,
-                failure = error, traversal = counts.snapshot())
+                failure = error, traversal = counts.snapshot(window.rootRefresh))
         }
     }
 
@@ -60,8 +61,8 @@ class UiTargetReader internal constructor(private val access: UiAccess, private 
         var rootPackageName: String? = null
         var root: UiTargetObservation? = null
         var rootChildCount: Int? = null
-        fun snapshot() = UiWindowTraversal(visited, selected, invisible, disabled, nonPositiveBounds,
-            rootPackageName, root, rootChildCount)
+        fun snapshot(refresh: UiRootRefresh?) = UiWindowTraversal(visited, selected, invisible, disabled, nonPositiveBounds,
+            rootPackageName, root, rootChildCount, refresh)
     }
 
     /** Immutable shared ancestry links keep even very deep snapshots linear in storage. */

@@ -22,10 +22,30 @@ internal class AndroidUiAccess(private val service: AccessibilityService) : UiAc
     }
 
     private class Window(private val window: AccessibilityWindowInfo) : UiAccessWindow {
+        override var rootRefresh: UiRootRefresh? = null
+            private set
         override val metadata: UiWindowMetadata get() = UiWindowMetadata(window.displayId, window.id,
             window.type, window.layer, window.isActive, window.isFocused,
             Rect().also(window::getBoundsInScreen).bounds())
-        override fun root(): UiAccessNode? = window.root?.let { Node(it) }
+        override fun root(): UiAccessNode? {
+            val root = window.root ?: return null
+            val node = Node(root)
+            try {
+                // An empty metadata shell is not evidence of an absent UI. Refresh the SAME
+                // returned node once; never replace the original window or walk a second tree.
+                if (root.childCount == 0 && root.className == null) {
+                    val before = node.observation(0)
+                    if (!before.bounds.hasArea) {
+                        rootRefresh = try { UiRootRefresh(before, 0, root.refresh()) }
+                        catch (error: Exception) { UiRootRefresh(before, 0, null, error.javaClass.name) }
+                    }
+                }
+                return node
+            } catch (error: Exception) {
+                node.close()
+                throw error
+            }
+        }
         @Suppress("DEPRECATION") override fun close() = window.recycle()
     }
 
@@ -34,7 +54,7 @@ internal class AndroidUiAccess(private val service: AccessibilityService) : UiAc
         override val windowId get() = node.windowId
         override val childCount get() = node.childCount
         override fun child(index: Int): UiAccessNode? = node.getChild(index)?.let { Node(it) }
-        override fun observation(ordinal: Int): UiTargetObservation? {
+        override fun observation(ordinal: Int): UiTargetObservation {
             val actions = node.actionList.map { it.id }
             val clickable = node.isClickable
             val longClickable = node.isLongClickable

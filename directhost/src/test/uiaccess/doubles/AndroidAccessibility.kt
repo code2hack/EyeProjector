@@ -5,22 +5,25 @@ import android.graphics.Rect
 class AccessibilityEvent(val eventType: Int = 0, val windowChanges: Int = 0, val displayId: Int = 0, val windowId: Int = 0) { companion object { const val TYPE_WINDOW_STATE_CHANGED = 32; const val TYPE_WINDOWS_CHANGED = 4194304; const val WINDOWS_CHANGE_ACTIVE = 32; const val WINDOWS_CHANGE_FOCUSED = 64; const val WINDOWS_CHANGE_REMOVED = 2; const val WINDOWS_CHANGE_BOUNDS = 8 } }
 
 class AccessibilityNodeInfo(
-    val packageName: CharSequence? = "selected.app",
-    val windowId: Int = 7,
-    val viewIdResourceName: String? = null,
-    val className: CharSequence? = "android.widget.Button",
-    val screen: Rect = Rect(24, 95, 1224, 221),
+    var packageName: CharSequence? = "selected.app",
+    var windowId: Int = 7,
+    var viewIdResourceName: String? = null,
+    var className: CharSequence? = "android.widget.Button",
+    var screen: Rect = Rect(24, 95, 1224, 221),
     val isClickable: Boolean = true,
     val isLongClickable: Boolean = false,
-    val isVisibleToUser: Boolean = true,
-    val isEnabled: Boolean = true,
+    var isVisibleToUser: Boolean = true,
+    var isEnabled: Boolean = true,
     val actionList: List<AccessibilityAction> = emptyList(),
-    val children: List<AccessibilityNodeInfo?> = emptyList(),
+    var children: List<AccessibilityNodeInfo?> = emptyList(),
     val failBounds: Boolean = false,
     val drawingOrder: Int = 0,
+    val onRefresh: ((AccessibilityNodeInfo) -> Boolean)? = null,
 ) {
     var closed = 0
     var childrenRead = 0
+    var refreshes = 0
+    fun refresh(): Boolean { refreshes++; return onRefresh?.invoke(this) ?: true }
     val childCount get() = children.size
     fun getChild(index: Int): AccessibilityNodeInfo? { childrenRead++; return children[index] }
     fun getBoundsInScreen(out: Rect) {
