@@ -163,6 +163,16 @@ internal class AnchorContactOwner(
         }
     }
 
+    /** A raw press starts unclassified so Anchor Short can keep its FIFO lifetime. Once its
+     * actual role is ordinary, validate that birth before replacing the Function-only lifetime.
+     * Its own ordinary output retirement must not invalidate this same contact/sequence. */
+    fun classifyOrdinaryControl(control: AnchorControlAdmission): AnchorControlDisposition = synchronized(lock) {
+        control.ordinary()
+        val result = consumeHeldControl(control)
+        if (result == AnchorControlDisposition.NORMAL) control.functionGeneration = null
+        result
+    }
+
     /** NORMAL is only current in this critical section; it is not a durable effect grant. */
     fun consumeHeldControl(control: AnchorControlAdmission, captureNormal: Boolean = true): AnchorControlDisposition = synchronized(lock) {
         val observedContact = contact ?: cancellation

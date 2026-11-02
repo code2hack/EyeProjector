@@ -37,7 +37,7 @@ internal class AnchorShellSession(
                 override fun edge(routeId: Long, typedEdge: ByteArray, regionId: String, word: Long) {
                     val edge = runCatching { PhoneHidEdge.from(typedEdge) }.getOrNull() ?: return
                     if (closed) return
-                    if (edge.action != PhoneHidAction.ANCHOR) original.ordinary()
+                    if (edge.action != PhoneHidAction.ANCHOR) input.anchor.classifyOrdinaryControl(original)
                     rawEdge(original, routeId, edge, regionId, word)
                 }
             }
