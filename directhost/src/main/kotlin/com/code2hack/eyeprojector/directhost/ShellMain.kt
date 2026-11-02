@@ -1300,9 +1300,7 @@ private class Session(
                         } } catch (error: Exception) { closeSafely(sessionFailureReason(error, control = true), error) }
                     }
                 }
-                if (intent.source == ReceiverControlSource.RESERVED_GLASSES_HID)
-                    reply(com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.RETIRED)
-                else if (original.terminal) reply(original.disposition)
+                if (original.terminal) reply(original.disposition)
                 else if (!current()) reply(com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.RETIRED)
                 else {
                     val disposition = inputControls.consumeHeldControl(original)

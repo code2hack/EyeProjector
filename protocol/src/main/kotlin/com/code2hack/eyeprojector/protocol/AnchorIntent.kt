@@ -5,11 +5,7 @@ import java.io.DataInputStream
 /** Semantic Anchor operations are independent of hardware recognition. Registration always asks
  * the user to choose Click or Hold; input capabilities never choose the mode. */
 enum class AnchorIntentKind { ACTIVATE, REGISTER }
-enum class AnchorSource {
-    PHONE_HID,
-    RESERVED_GLASSES_HID, // Keep former ordinal1 reserved; no producer or semantic dispatch.
-    GLASSES_NATIVE,
-}
+enum class AnchorSource { PHONE_HID, GLASSES_NATIVE }
 
 /** Receiver-owned context captured at the original operation, including its original hover position. */
 data class AnchorIntentContext(val usability: ReceiverUsability, val pointer: HeadPointerState)
@@ -42,7 +38,7 @@ data class AnchorOriginal(val source: AnchorSource, val gestureId: Long, val con
  * Consumers retain every intention in order, including two successive ACTIVATE intentions.
  * No raw HID identity or cross-device uptime is transported here.
  *
- * ANCHOR_INTENT retains the historical FUNCTION_INTENT channel and payload bytes. A receiver must not refresh [context]
+ * Wire14 carries the current source IDs. A receiver must not refresh [context]
  * at dequeue or use a replacement local Session to reconstruct its original route.
  */
 data class AnchorIntent(
@@ -89,7 +85,6 @@ class AnchorIntentConsumers<C : Any> {
     @Volatile var activate: ((CapturedAnchorIntent<C>) -> Unit)? = null
 
     fun dispatch(captured: CapturedAnchorIntent<C>): Boolean {
-        if (captured.intent.source == AnchorSource.RESERVED_GLASSES_HID) return false
         val consumer = when (captured.intent.kind) {
             AnchorIntentKind.REGISTER -> register
             AnchorIntentKind.ACTIVATE -> activate

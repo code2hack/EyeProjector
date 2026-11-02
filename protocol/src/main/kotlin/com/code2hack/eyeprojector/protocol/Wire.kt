@@ -77,7 +77,8 @@ data class Frame(val channel: Int, val stamp: Long = 0, val payload: ByteArray =
 
 object Wire {
     const val MAGIC = 0x50415631
-    const val VERSION = 13
+    // Source IDs were compacted after removing Glasses HID; both peers must use this revision.
+    const val VERSION = 14
     const val SCRCPY_VERSION = "5.0.1"
     const val H264 = 0x68323634
     const val MAX_PAYLOAD = 1024 * 1024
@@ -103,13 +104,11 @@ object Wire {
     const val CAMERA_PROGRESS = 21 // Either peer's own observations, projection socket.
     const val CAMERA_END = 22 // Either peer's own observations, camera socket.
     const val ANCHOR_INTENT = 23 // Semantic Anchor operation; no native gesture codes or raw HID.
-    const val FUNCTION_INTENT = ANCHOR_INTENT // Historical channel name; byte-compatible.
     const val ANCHOR = 24 // Typed Anchor feedback and original registration transaction.
     const val CONTROL_INTENT = 25 // Receiver local operation before any cleanup or local effect.
     const val CONTROL_RESULT = 26 // Original Phone's fixed central-gate disposition.
     const val PASSIVE_SCROLL = 27 // Head-derived motion, distinct from a user wheel action.
     const val ANCHOR_ORIGINAL = 28 // Original semantic Anchor lifetime before classification/queues.
-    const val FUNCTION_ORIGINAL = ANCHOR_ORIGINAL // Historical channel name; byte-compatible.
     const val STREAM = 1
     const val STOP_HOST = 2
     const val CAMERA = 3
@@ -131,7 +130,7 @@ object Wire {
         require(input.readUTF() == SCRCPY_VERSION && input.readInt() == H264)
     }
     private fun validate(channel: Int, length: Int) {
-        require(channel in GEOMETRY..FUNCTION_ORIGINAL && length in 0..MAX_PAYLOAD)
+        require(channel in GEOMETRY..ANCHOR_ORIGINAL && length in 0..MAX_PAYLOAD)
         when (channel) {
             GEOMETRY -> require(length == 8)
             TAP -> require(length == 16)
@@ -139,8 +138,8 @@ object Wire {
             HEAD_POINTER -> require(length == HeadPointerState.MIN_PAYLOAD_SIZE || length == HeadPointerState.MAX_PAYLOAD_SIZE)
             RECEIVER_INPUT -> require(length == ReceiverInput.PAYLOAD_SIZE)
             RECEIVER_USABILITY -> require(length in ReceiverUsability.MIN_PAYLOAD_SIZE..ReceiverUsability.MAX_PAYLOAD_SIZE)
-            FUNCTION_INTENT -> require(length in AnchorIntent.MIN_PAYLOAD_SIZE..AnchorIntent.MAX_PAYLOAD_SIZE)
-            FUNCTION_ORIGINAL -> require(length in AnchorOriginal.MIN_PAYLOAD_SIZE..AnchorOriginal.MAX_PAYLOAD_SIZE)
+            ANCHOR_INTENT -> require(length in AnchorIntent.MIN_PAYLOAD_SIZE..AnchorIntent.MAX_PAYLOAD_SIZE)
+            ANCHOR_ORIGINAL -> require(length in AnchorOriginal.MIN_PAYLOAD_SIZE..AnchorOriginal.MAX_PAYLOAD_SIZE)
             ANCHOR -> require(length in AnchorMessage.MIN_PAYLOAD_SIZE..AnchorMessage.MAX_PAYLOAD_SIZE)
             CONTROL_INTENT -> require(length in (9 + ReceiverUsability.MIN_PAYLOAD_SIZE)..(9 + ReceiverUsability.MAX_PAYLOAD_SIZE))
             CONTROL_RESULT -> require(length == 9)

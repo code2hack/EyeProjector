@@ -3,11 +3,7 @@ package com.code2hack.eyeprojector.protocol
 import java.io.DataInputStream
 
 /** One represented local operation, before its UI/power/navigation effects or input retirement. */
-enum class ReceiverControlSource {
-    LOCAL_UI, NATIVE_SWIPE,
-    RESERVED_GLASSES_HID, // Former ordinal2 is reserved; never a live binding route.
-    PAD,
-}
+enum class ReceiverControlSource { LOCAL_UI, NATIVE_SWIPE, PAD }
 enum class ReceiverControlDisposition { NORMAL, CONSUMED, RETIRED }
 
 data class ReceiverControlIntent(val id: Long, val source: ReceiverControlSource, val context: ReceiverUsability) {
