@@ -86,6 +86,27 @@ class AnchorRegistrationTest {
             AnchorRegistrationTargets.capture(intent(), snapshot(targets = listOf(target, repeated))))
     }
 
+    @Test fun ambiguousHoverCopiesActualHitBranchesAndAncestryWithoutChangingSelection() {
+        val root = target.copy(ordinal = 10, resourceId = "$app:id/root")
+        val container = target.copy(ordinal = 100, resourceId = "$app:id/container", ancestorOrdinals = listOf(10))
+        val path = mutableListOf(10, 100)
+        val leaf = target.copy(ordinal = 3, resourceId = null, ancestorOrdinals = path)
+        val competitor = target.copy(ordinal = 400, resourceId = "$app:id/other", ancestorOrdinals = listOf(10))
+        val elsewhere = target.copy(ordinal = 2, resourceId = "$app:id/elsewhere", bounds = UiBounds(200, 300, 240, 340))
+        val result = AnchorRegistrationTargets.inspect(intent(), snapshot(targets = listOf(root, leaf, container, competitor, elsewhere)))
+        assertEquals(AnchorRegistrationCapture.Rejected(AnchorRegistrationFailure.HOVER_AMBIGUOUS), result.capture)
+        assertEquals(4, result.hoverTargetCount)
+        assertEquals(listOf(3, 400), result.hoverTargets.filter { it.leaf }.map { it.ordinal })
+        assertEquals(listOf(10, 3, 100, 400), result.hoverTargets.map { it.ordinal })
+        assertEquals(listOf(10, 100), result.hoverTargets.single { it.ordinal == 3 }.ancestorOrdinals)
+        assertEquals(target.bounds, result.hoverTargets.single { it.ordinal == 3 }.bounds)
+        assertNull(result.hoverTargets.single { it.ordinal == 3 }.resourceId)
+        assertNull(result.selected)
+        assertNull(result.resolution)
+        path.clear()
+        assertEquals(listOf(10, 100), result.hoverTargets.single { it.ordinal == 3 }.ancestorOrdinals)
+    }
+
     @Test fun noDefaultDisplayMissingIdentityOrUnavailableReaderFallback() {
         for (s in listOf(snapshot(metadata = window.copy(displayId = 0)),
             snapshot(current = source.copy(foregroundPackage = "other.app")),

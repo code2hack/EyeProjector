@@ -11,6 +11,7 @@ import subprocess
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--output-dir', type=Path, required=True)
 parser.add_argument('--provider-api-checks', action='store_true', help='Actual provider/shared DTO with explicitly modeled runtime API')
+parser.add_argument('--uiaccess-ref', help='Exact committed reader/DTO dependency for isolated frontmost composition')
 args = parser.parse_args()
 suite = Path(__file__).resolve().parent
 root = suite.parents[3]
@@ -40,7 +41,8 @@ sources += [protocol / (name + '.kt') for name in
              'ReceiverControlIntent', 'LayoutScale', 'SessionState']]
 # Only unused CapturedProjection return types are doubled; all snapshot/geometry/identity models are real.
 sources += [suite.parent / 'uiaccess/doubles/ProjectionDependencies.kt', suite.parent / 'uiaccess/doubles/SnapshotDescriptor.kt']
-sources += [suite.parent / 'kotlin/com/code2hack/eyeprojector/directhost/anchor/registration/AnchorRegistrationTest.kt']
+sources += [suite.parent / 'kotlin/com/code2hack/eyeprojector/directhost/anchor/registration/AnchorRegistrationTest.kt',
+            suite / 'FrontmostRegistrationTest.kt']
 sources += [root / 'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg/AnchorRegistrationController.kt',
             root / 'directrg/src/test/kotlin/com/code2hack/eyeprojector/directrg/AnchorRegistrationControllerTest.kt']
 if args.provider_api_checks:
@@ -48,14 +50,51 @@ if args.provider_api_checks:
                 suite / 'AnchorRegistrationProviderTest.kt']
 out = args.output_dir.resolve()
 out.mkdir(parents=True, exist_ok=True)
+inputs = []
+records = []
+for source in sources:
+    dependency = args.uiaccess_ref if source in [actual / 'uiaccess/UiTargetSnapshot.kt', actual / 'uiaccess/UiTargetReader.kt'] else None
+    data = subprocess.check_output(['git', 'show', dependency + ':' + str(source.relative_to(root))], cwd=root) if dependency else source.read_bytes()
+    frozen = out / 'inputs' / source.relative_to(root)
+    frozen.parent.mkdir(parents=True, exist_ok=True)
+    frozen.write_bytes(data)
+    inputs.append(str(frozen))
+    records.append({'path': str(source), 'snapshot': str(frozen), 'sha256': hashlib.sha256(data).hexdigest(), 'gitRef': dependency})
+# Historical raw306 has no drawing-order field. Model explicit sibling order for the test,
+# using its captured child positions as test input, never as a production fallback.
+fixture = suite.parent / 'uiaccess/fixtures/doubao-voice306.json'
+nodes = json.loads(fixture.read_text())['nodes']
+by_ordinal = {node['ordinal']: node for node in nodes}
+def kotlin(value):
+    if value is None: return 'null'
+    if isinstance(value, bool): return str(value).lower()
+    if isinstance(value, str): return json.dumps(value)
+    return str(value)
+def drawing_path(node):
+    parents = drawing_path(by_ordinal[node['parentOrdinal']]) if node['parentOrdinal'] is not None else []
+    index = node['childIndex'] if node['childIndex'] is not None else -1
+    return parents + [(node['ordinal'], index + 1, index)]
+rows = []
+for node in nodes:
+    path = drawing_path(node)
+    fields = [kotlin(node[k]) for k in ['ordinal', 'windowId', 'packageName', 'resourceId', 'className']]
+    fields += ['UiBounds(' + ','.join(map(str, node['bounds'])) + ')', 'listOf(' + ','.join(map(str, node['actionIds'])) + ')']
+    fields += [kotlin(node[k]) for k in ['clickable', 'longClickable', 'visible', 'enabled']]
+    fields += ['listOf(' + ','.join(str(step[0]) for step in path[:-1]) + ')', str(path[-1][1]),
+               'listOf(' + ','.join('UiDrawingOrderStep(' + ','.join(map(str, step)) + ')' for step in path) + ')']
+    rows.append('UiTargetObservation(' + ','.join(fields) + ')')
+generated = out / 'HistoricalDoubaoNodes.kt'
+generated.write_text('package com.code2hack.eyeprojector.directhost.anchor.registration\nimport com.code2hack.eyeprojector.directhost.uiaccess.*\ninternal fun historicalDoubaoNodes() = listOf(\n' + ',\n'.join(rows) + '\n)\n')
+inputs.append(str(generated))
 jar = out / 'anchor-registration-checks.jar'
 command = [java, '-cp', classpath, 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', '-jvm-target', '17', '-no-stdlib', '-no-reflect',
-           '-classpath', classpath, '-d', str(jar)] + list(map(str, sources))
+           '-classpath', classpath, '-d', str(jar)] + inputs
 with (out / 'compile.log').open('w') as log:
     compiled = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=120)
 ran = None
 run_command = [java, '-cp', str(jar) + os.pathsep + classpath, 'org.junit.runner.JUnitCore',
                'com.code2hack.eyeprojector.directhost.anchor.registration.AnchorRegistrationTest',
+               'com.code2hack.eyeprojector.directhost.anchor.registration.FrontmostRegistrationTest',
                'com.code2hack.eyeprojector.directrg.AnchorRegistrationControllerTest']
 if args.provider_api_checks:
     run_command += ['com.code2hack.eyeprojector.directhost.anchor.registration.AnchorRegistrationProviderTest']
@@ -66,7 +105,10 @@ result = {'compileExit': compiled.returncode, 'junitExit': ran.returncode if ran
           'modeledProviderApi': args.provider_api_checks,
           'scope': 'Actual production registration capture/coordinator, target resolver, atomic store and snapshot/geometry models; host values only, no device proof',
           'compilerCommand': command, 'testCommand': run_command,
-          'sources': [{'path': str(p), 'sha256': hashlib.sha256(p.read_bytes()).hexdigest()} for p in sources],
+          'uiaccessRef': args.uiaccess_ref, 'sources': records,
+          'historicalFixture': {'path': str(fixture), 'sha256': hashlib.sha256(fixture.read_bytes()).hexdigest(),
+                                'drawingOrder': 'modeled from captured child positions; not observed current device order'},
+          'generatedFixture': {'path': str(generated), 'sha256': hashlib.sha256(generated.read_bytes()).hexdigest()},
           'dependencies': [{'path': p, 'sha256': hashlib.sha256(Path(p).read_bytes()).hexdigest()} for p in jars]}
 if jar.exists():
     result['artifact'] = {'path': str(jar), 'sha256': hashlib.sha256(jar.read_bytes()).hexdigest()}
