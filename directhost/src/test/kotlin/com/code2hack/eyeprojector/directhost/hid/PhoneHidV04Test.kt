@@ -131,6 +131,7 @@ class PhoneHidV04Test {
             for (gesture in listOf(PhoneHidGesture.SINGLE, PhoneHidGesture.LONG, PhoneHidGesture.clicks(3))) {
                 val f = Fixture(); f.assign(action, gesture)
                 if (gesture == PhoneHidGesture.LONG) f.up(f.down(), 850) else f.clicks(gesture.clicks)
+                assertEquals("$action $gesture completes on its final UP", 1, f.outputs())
                 f.advance(f.now + 500)
                 assertEquals("$action $gesture", 1, f.outputs())
                 assertEquals(if (action == PhoneHidAction.MODE) 1 else 0, f.modes)
@@ -142,23 +143,23 @@ class PhoneHidV04Test {
         }
     }
 
-    @Test fun singleModeBindingDoesNotDispatchAnyPrefixOfMultiOrLong() {
+    @Test fun eachShortReleaseCompletesASavedSingleWithoutWaitingForQuiet() {
         for (count in 2..4) {
             val f = Fixture(); f.assign(PhoneHidAction.MODE); f.clicks(count)
-            assertEquals(0, f.outputs()); f.advance(f.now + 500); assertEquals(0, f.outputs())
+            assertEquals(count, f.outputs()); f.advance(f.now + 500); assertEquals(count, f.outputs())
         }
         val f = Fixture(); f.assign(PhoneHidAction.MODE); f.up(f.down(), 900)
         f.advance(3000); assertEquals(0, f.outputs())
     }
 
-    @Test fun multiModeWaitsForWholeSequenceAndDuplicateEdgesNeverDispatchAgain() {
+    @Test fun multiModeCompletesOnNthReleaseAndDuplicateEdgesNeverDispatchAgain() {
         val f = Fixture(); f.assign(PhoneHidAction.MODE, PhoneHidGesture.clicks(2))
         val first = f.down(); f.up(first)
         val stale = f.jobs.single().action
         f.advance(1100); val second = f.down()
         assertTrue(f.controller.accept(second.copy(repeatCount = 1, eventTimeMs = 1110)))
-        f.up(second); assertEquals(0, f.modes)
-        stale(); assertEquals(0, f.modes)
+        f.up(second); assertEquals(1, f.modes)
+        stale(); assertEquals(1, f.modes)
         f.advance(1620); assertEquals(1, f.modes)
         f.controller.accept(second.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1630))
         stale(); f.advance(3000); assertEquals(1, f.modes)
@@ -170,6 +171,108 @@ class PhoneHidV04Test {
         f.up(press, 0); assertEquals(1, f.modes)
         f.controller.accept(press.copy(phase = PhoneHidPhase.UP, eventTimeMs = 5010))
         f.advance(6000); assertEquals(1, f.modes)
+    }
+
+    @Test fun completedDoubleBurstsRetireBeforeTheNextRapidClick() {
+        for (action in listOf(PhoneHidAction.BACK, PhoneHidAction.HOME, PhoneHidAction.LOCK, PhoneHidAction.MODE)) {
+            val f = Fixture(); f.assign(action, PhoneHidGesture.clicks(2))
+            repeat(4) { index ->
+                f.up(f.down())
+                assertEquals("$action click ${index + 1}", (index + 1) / 2, f.outputs())
+                f.advance(f.now + 30)
+            }
+            f.jobs.toList().forEach { it.action() }
+            f.advance(4000); assertEquals(2, f.outputs())
+        }
+    }
+
+    @Test fun incompleteMultiExpiresWithoutActionAndBoundaryDownBeginsFresh() {
+        for (gap in listOf(499L, 500L, 501L)) {
+            val f = Fixture(); f.assign(PhoneHidAction.MODE, PhoneHidGesture.clicks(2))
+            f.clicks(1); val firstUp = f.now
+            // Deliver the next DOWN before running due callbacks: source event time defines the gap.
+            f.now = firstUp + gap
+            val second = f.down(); f.up(second, 0)
+            assertEquals(if (gap < 500) 1 else 0, f.modes)
+            f.advance(f.now + 500)
+            assertEquals(if (gap < 500) 1 else 0, f.modes)
+            f.clicks(2); assertEquals(if (gap < 500) 2 else 1, f.modes)
+        }
+        val f = Fixture(); f.assign(PhoneHidAction.MODE, PhoneHidGesture.clicks(3))
+        f.clicks(2); f.advance(f.now + 500); assertEquals(0, f.modes)
+        f.clicks(3); assertEquals(1, f.modes)
+    }
+
+    @Test fun multiGapOnlyBoundsTimeUntilNextDownAndNeverCutsOffAHeldPress() {
+        val f = Fixture(); f.assign(PhoneHidAction.MODE, PhoneHidGesture.clicks(2))
+        f.clicks(1); f.advance(f.now + 499)
+        val next = f.down(); val stale = f.jobs.first().action
+        f.advance(f.now + 799); stale(); assertEquals(0, f.modes)
+        f.up(next, 0); assertEquals(1, f.modes)
+    }
+
+    @Test fun longThresholdAndShortPrefixBehaviorStayOnOriginalRelease() {
+        for (duration in listOf(799L, 800L, 5000L)) {
+            val f = Fixture(); f.assign(PhoneHidAction.MODE, PhoneHidGesture.LONG)
+            val press = f.down(); f.advance(f.now + duration); assertEquals(0, f.modes)
+            f.up(press, 0); assertEquals(if (duration >= 800) 1 else 0, f.modes)
+            f.advance(f.now + 500); assertEquals(if (duration >= 800) 1 else 0, f.modes)
+        }
+        for (gesture in listOf(PhoneHidGesture.LONG, PhoneHidGesture.clicks(2))) {
+            val f = Fixture(); f.assign(PhoneHidAction.MODE, gesture)
+            f.clicks(1); f.advance(f.now + 100); f.up(f.down(), 800)
+            f.advance(f.now + 500); assertEquals(0, f.modes)
+            f.up(f.down(), 800); assertEquals(if (gesture == PhoneHidGesture.LONG) 1 else 0, f.modes)
+        }
+    }
+
+    @Test fun learningDiscoversMultiAfterQuietEvenWhenASingleBindingAlreadyExists() {
+        val f = Fixture(); f.assign(PhoneHidAction.MODE)
+        val saved = f.record
+        f.controller.openPage(); f.controller.select(PhoneHidAction.MODE)
+        f.clicks(4)
+        assertEquals(saved, f.record); assertEquals(0, f.outputs()); assertTrue(f.captured.isEmpty())
+        f.advance(f.now + 499); assertEquals(saved, f.record)
+        f.advance(f.now + 1)
+        assertEquals(PhoneHidGesture.clicks(4), f.store.binding(PhoneHidAction.MODE)?.gesture)
+        assertEquals(0, f.outputs()); assertTrue(f.captured.isEmpty())
+    }
+
+    @Test fun originalDownCapturesSavedGestureDespitePublicationBeforeItsUp() {
+        val f = Fixture(); f.assign(PhoneHidAction.MODE)
+        val press = f.down()
+        f.assign(PhoneHidAction.BACK, PhoneHidGesture.clicks(2))
+        f.up(press); assertEquals(1, f.modes); assertTrue(f.navigation.isEmpty())
+        f.clicks(1); assertTrue(f.navigation.isEmpty())
+        f.advance(f.now + 100); f.clicks(1); assertEquals(listOf(Navigation.BACK), f.navigation)
+        f.advance(4000); assertEquals(1, f.modes); assertEquals(1, f.navigation.size)
+    }
+
+    @Test fun oldIncompleteTimerAndTerminalsCannotFinishAReplacementSequence() {
+        val f = Fixture(); f.assign(PhoneHidAction.MODE, PhoneHidGesture.clicks(2))
+        val old = f.down(); f.up(old); val stale = f.jobs.last().action
+        f.controller.cancelInput(); f.advance(f.now + 100)
+        f.clicks(1)
+        f.controller.accept(old.copy(phase = PhoneHidPhase.UP, eventTimeMs = f.now))
+        stale(); assertEquals(0, f.modes)
+        f.advance(f.now + 100); f.clicks(1); assertEquals(1, f.modes)
+        stale(); f.advance(4000); assertEquals(1, f.modes)
+    }
+
+    @Test fun heldSingleAndIncompleteMultiAreCanceledByLaunchAndLossWithoutReplay() {
+        val stops: List<(Fixture) -> Unit> = listOf(
+            { it.merger.invalidateForLaunch() }, { it.merger.invalidate() },
+            { it.controller.connection(false) }, { it.controller.cancelInput() },
+            { it.controller.deviceRemoved(7) }, { it.merger.sourceLost() },
+            { it.pointer(revision = 2) }, { it.ownerEpoch++ })
+        for (stop in stops) for (multi in listOf(false, true)) {
+            val f = Fixture(); f.assign(PhoneHidAction.MODE,
+                if (multi) PhoneHidGesture.clicks(2) else PhoneHidGesture.SINGLE)
+            if (multi) { f.clicks(1); f.advance(f.now + 100) }
+            val held = f.down(); val callbacks = f.jobs.map { it.action }
+            stop(f); f.up(held); callbacks.forEach { it() }
+            f.advance(4000); assertEquals(0, f.modes)
+        }
     }
 
     @Test fun scrollActsOnDownAndRepeatsUntilOriginalUpWithoutReleaseAction() {
@@ -236,7 +339,7 @@ class PhoneHidV04Test {
             { it.controller.deviceRemoved(7) }, { it.controller.resetAll() },
             { it.pointer(revision = 2) }, { it.merger.sourceLost() })
         for (stop in stops) {
-            val f = Fixture(); f.assign(PhoneHidAction.MODE); f.clicks(1)
+            val f = Fixture(); f.assign(PhoneHidAction.MODE, PhoneHidGesture.clicks(2)); f.clicks(1)
             val oldTimer = f.jobs.last().action
             stop(f); f.advance(3000); oldTimer(); assertEquals(0, f.modes)
         }
@@ -285,10 +388,10 @@ class PhoneHidV04Test {
     }
 
     @Test fun delayedDiscreteGestureKeepsOriginalStampedOwnerAndCannotAdoptSuccessor() {
-        val f = Fixture(); f.assign(PhoneHidAction.MODE); f.clicks(1)
+        val f = Fixture(); f.assign(PhoneHidAction.MODE, PhoneHidGesture.clicks(2)); f.clicks(1)
         val stale = f.jobs.last().action
         f.ownerEpoch++; f.advance(3000); stale(); assertEquals(0, f.modes)
-        f.clicks(1); f.advance(f.now + 500); assertEquals(1, f.modes)
+        f.clicks(2); assertEquals(1, f.modes)
     }
 
     @Test fun navigationAndModeRemainNonspatialThroughTrackingLossAndLocalPanel() {
@@ -301,7 +404,7 @@ class PhoneHidV04Test {
     }
 
     @Test fun upDuringCaptureStillOwnsPendingGrammarAndStopCancelsIt() {
-        val f = Fixture(); f.assign(PhoneHidAction.MODE)
+        val f = Fixture(); f.assign(PhoneHidAction.MODE, PhoneHidGesture.clicks(2))
         f.onCaptured = { edge ->
             f.onCaptured = null
             f.controller.accept(PhoneHidController.Event(edge.attachmentId, f.binding(), PhoneHidPhase.UP,
