@@ -17,6 +17,7 @@ class ModeRoutingTest {
         val lock=Any()
         var app: String?="app.one"
         var now=1000L
+        var discreteGesture=PhoneHidGesture.LONG
         val saved=mutableMapOf<String,List<AnchorPosition>>()
         var failWrite=false
         var writes=0
@@ -76,9 +77,10 @@ class ModeRoutingTest {
             })
             merger.pointer(HeadPointerState(1,1,true,true,120f,230f,Fit(0,0,480,640),size)) }
         fun edge(action: PhoneHidAction,phase: PhoneHidPhase,at: Long=now)=PhoneHidEdge(action,phase,1,
-            action.ordinal+10,action.ordinal+10,1000,at,gesture=PhoneHidGesture.LONG)
+            action.ordinal+10,action.ordinal+10,1000,at,gesture=discreteGesture)
         fun modeDown()=merger.edge(100,edge(PhoneHidAction.MODE,PhoneHidPhase.DOWN))
-        fun modeUp()=merger.edge(100,edge(PhoneHidAction.MODE,PhoneHidPhase.UP,1800))
+        fun releaseAt()=if(discreteGesture==PhoneHidGesture.LONG) 1800L else 1020L
+        fun modeUp()=merger.edge(100,edge(PhoneHidAction.MODE,PhoneHidPhase.UP,releaseAt()))
         fun committed(): Long=synchronized(lock) {
             merger.javaClass.getDeclaredField("completionSequence").apply { isAccessible=true }.getLong(merger)
         }
@@ -88,21 +90,22 @@ class ModeRoutingTest {
             assertTrue("later operation admitted while Mode delivery blocked",committed()>=count)
         }
     }
-    private fun blockedModeThen(action: PhoneHidAction) {
-        val f=Fixture();val entered=CountDownLatch(1);val release=CountDownLatch(1)
+    private fun blockedModeThen(action: PhoneHidAction,gesture: PhoneHidGesture=PhoneHidGesture.LONG) {
+        val f=Fixture();f.discreteGesture=gesture
+        val entered=CountDownLatch(1);val release=CountDownLatch(1)
         f.blockedMode={entered.countDown();check(release.await(4,TimeUnit.SECONDS))}
         f.modeDown()
         val mode=Thread { f.modeUp() }
         val later=Thread {
             f.merger.edge(200,f.edge(action,PhoneHidPhase.DOWN))
-            if(action==PhoneHidAction.BACK) f.merger.edge(200,f.edge(action,PhoneHidPhase.UP,1800))
+            if(action==PhoneHidAction.BACK) f.merger.edge(200,f.edge(action,PhoneHidPhase.UP,f.releaseAt()))
         }
         val tapUp=Thread { f.merger.edge(200,f.edge(action,PhoneHidPhase.UP,1850)) }
         try {
             mode.start();assertTrue(entered.await(2,TimeUnit.SECONDS))
             val before=f.committed();later.start()
             if(action==PhoneHidAction.BACK) {
-                // DOWN has no emission; UP completes the learned long gesture.
+                // DOWN has no emission; UP completes the captured saved gesture.
                 f.awaitCommitted(before+1)
             } else f.awaitCommitted(before+1)
             if(action==PhoneHidAction.TAP) { tapUp.start();f.awaitCommitted(before+2) }
@@ -118,6 +121,9 @@ class ModeRoutingTest {
     @Test(timeout=7000) fun blockedModePrecedesWholeTapContact()=blockedModeThen(PhoneHidAction.TAP)
     @Test(timeout=7000) fun blockedModePrecedesBackDecision()=blockedModeThen(PhoneHidAction.BACK)
     @Test(timeout=7000) fun blockedModePrecedesScrollDecision()=blockedModeThen(PhoneHidAction.SCROLL_DOWN)
+    @Test(timeout=7000) fun immediateSingleModePrecedesWholeTapContact()=blockedModeThen(PhoneHidAction.TAP,PhoneHidGesture.SINGLE)
+    @Test(timeout=7000) fun immediateSingleModePrecedesBackDecision()=blockedModeThen(PhoneHidAction.BACK,PhoneHidGesture.SINGLE)
+    @Test(timeout=7000) fun immediateSingleModePrecedesScrollDecision()=blockedModeThen(PhoneHidAction.SCROLL_DOWN,PhoneHidGesture.SINGLE)
     @Test fun settingsNativeContactFailureAndLifoNeverInjectAppInput() {
         val f=Fixture();f.decide(CoordinateOperation.CYCLE)
         val down=Touch(Touch.Phase.DOWN,99,Tap(40,50,f.size))
@@ -240,4 +246,36 @@ class ModeRoutingTest {
         nativeContactThenConsumedScroll(true,settings=true)
         nativeContactThenConsumedScroll(false,settings=true)
     }
+
+    private fun contactThenImmediateMode(hid: Boolean) {
+        val f=Fixture();f.discreteGesture=PhoneHidGesture.SINGLE
+        val native=Touch(Touch.Phase.DOWN,900,Tap(130,230,f.size))
+        val tap=f.edge(PhoneHidAction.TAP,PhoneHidPhase.DOWN)
+        if(hid) f.merger.edge(200,tap) else assertTrue(f.merger.nativeTouch(native))
+        val original=f.touches.single()
+        assertTrue(f.dispatcher.holding)
+        f.beforeDecision={ operation -> if(operation==CoordinateOperation.CYCLE) {
+            assertFalse("Original contact ends before immediate Mode",f.dispatcher.holding)
+            assertEquals(listOf(original,original.copy(phase=Touch.Phase.CANCEL)),f.touches)
+        } }
+        f.modeDown();f.modeUp()
+        assertEquals(AnchorInteractionMode.ANCHOR_SETTINGS,f.states.last().state.mode)
+        assertFalse(f.dispatcher.holding)
+        for(phase in listOf(PhoneHidPhase.UP,PhoneHidPhase.CANCEL)) {
+            if(hid) f.merger.edge(200,tap.copy(phase=phase,eventTimeMs=1030))
+            else assertFalse(f.merger.nativeTouch(native.copy(phase=Touch.Phase.valueOf(phase.name))))
+        }
+        assertEquals(2,f.touches.size)
+        // A fresh ordinary contact still owns its terminal; stale tails cannot release it.
+        f.beforeDecision=null;f.decide(CoordinateOperation.CYCLE)
+        val fresh=native.copy(contactId=901)
+        assertTrue(f.merger.nativeTouch(fresh))
+        if(hid) f.merger.edge(200,tap.copy(phase=PhoneHidPhase.UP,eventTimeMs=1040))
+        else assertFalse(f.merger.nativeTouch(native.copy(phase=Touch.Phase.UP)))
+        assertTrue(f.dispatcher.holding)
+        assertTrue(f.merger.nativeTouch(fresh.copy(phase=Touch.Phase.UP)))
+        assertEquals(listOf(original,original.copy(phase=Touch.Phase.CANCEL),fresh,fresh.copy(phase=Touch.Phase.UP)),f.touches)
+    }
+    @Test fun nativeContactIsCanceledBeforeImmediateModeAndOldTerminalCannotReleaseSuccessor()=contactThenImmediateMode(false)
+    @Test fun hidContactIsCanceledBeforeImmediateModeAndOldTerminalCannotReleaseSuccessor()=contactThenImmediateMode(true)
 }
