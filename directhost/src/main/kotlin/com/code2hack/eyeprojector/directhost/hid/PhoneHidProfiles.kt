@@ -56,6 +56,10 @@ internal class PhoneHidProfiles(
         }
     }
 
+    /** Existing Android identities remain selectable without claiming a native physical key. */
+    fun androidProfiles(): List<Pair<String, String>> = values.filterKeys { it.startsWith("android:") }
+        .map { (key, entries) -> key to (entries.values.firstOrNull()?.deviceName ?: "Saved Android device") }
+
     private fun store(next: Map<String, Map<PhoneHidAction, PhoneHidBinding>>) =
         try { write(encode(next)) } catch (_: Exception) { false }
 

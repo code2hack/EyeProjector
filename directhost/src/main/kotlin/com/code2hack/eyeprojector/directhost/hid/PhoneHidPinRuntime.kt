@@ -36,6 +36,7 @@ internal class PhoneHidPinRuntime(
     private val userControl: () -> Boolean = { true },
     private val recognizeInput: () -> Boolean = { true },
     private val captureOriginal: () -> com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal? = { null },
+    private val selectProfile: (String?) -> Unit = controller::selectProfile,
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val lane = Executors.newSingleThreadExecutor()
@@ -141,7 +142,7 @@ internal class PhoneHidPinRuntime(
         if (!userControl()) return
         if (!canSelectDevice || state.devices.none { it.key == key }) return
         selectedKey = key
-        controller.selectProfile(profileForPin(key))
+        selectProfile(profileForPin(key))
         changed()
     }
 
@@ -158,7 +159,7 @@ internal class PhoneHidPinRuntime(
         desiredKey = key; desiredName = name
         controller.cancelInput()
         retireDelivered()
-        controller.selectProfile(profileForPin(key))
+        selectProfile(profileForPin(key))
         state = state.copy(savedKey = key, savedName = name, phase = "PINNING", intercepted = false, error = null)
         changed()
         ensureOwner()
@@ -432,7 +433,7 @@ internal class PhoneHidPinRuntime(
             val pinned = pinnedKey
             if (pinned != null) selectedKey = pinned
             else if (next.devices.none { it.key == selectedKey }) selectedKey = next.devices.firstOrNull()?.key
-            controller.selectProfile(selectedKey?.let(::profileForPin))
+            selectProfile(selectedKey?.let(::profileForPin))
             connectionChanged(next.intercepted)
             service?.show(notificationText())
             if (stop) {
