@@ -167,9 +167,11 @@ The assignment rows are **Tap, Scroll down, Scroll up, Back, Home, Lock and Mode
 | Scroll down / Scroll up | Capture a single click only | One direction action on press; holding repeats according to the active mode |
 | Back / Home / Lock / Mode | Capture and distinguish short press, long press and multi-click | Resolve the key's assigned gesture set and perform exactly one matching action |
 
-**Same-key gesture coexistence and timing:** accepted requirements below are pending implementation in [#165](https://github.com/code2hack/EyeProjector/issues/165); the completed v0.4.1 checkpoint still has button-wide assignment exclusivity.
+**Same-key gesture coexistence and timing (v0.4.2):** implemented by [#165](https://github.com/code2hack/EyeProjector/issues/165). Historical v0.4.1 checkpoints retain button-wide assignment exclusivity.
 
-Within a device profile, different gestures of the same physical key may be assigned to different actions. For example, short A → Back, long A → Home and double A → Mode coexist. A conflict is the same key plus the same gesture kind and multi-click count. Moving that exact key/gesture to another action replaces only the collided assignment; learning another gesture on A must leave its other assignments intact and visible. Each action row retains one learned binding.
+Within a device profile, **Back, Home, Lock and Mode** may assign different gestures of the same physical key to different actions. For example, short A → Back, long A → Home and double A → Mode coexist. A conflict is the same key plus the same gesture kind and multi-click count. Moving that exact key/gesture to another action replaces only the collided assignment; learning another gesture on A must leave its other assignments intact and visible. Each action row retains one learned binding.
+
+**Tap, Scroll down and Scroll up keys are exclusive.** A physical key assigned to any of those actions cannot also serve another action or gesture. Assigning Tap/Scroll to a key moves that key from all previous assignments to the raw action. Assigning a discrete action on a raw-owned key replaces that raw assignment; subsequent distinct Back/Home/Lock/Mode gestures may coexist. Keep the existing move-on-conflict behavior and show the resulting rows accurately; no new confirmation flow is required.
 
 Learning consumes its gesture without invoking the app or mode action, and still waits for the final quiet period to discover the complete gesture. Runtime evaluates all gestures assigned to the original key together. Waiting depends only on unresolved alternatives on that key:
 

@@ -37,12 +37,17 @@ internal class PhoneInputMerger(
     private val receivedPresses = java.util.concurrent.ConcurrentHashMap<Long, ReceivedPress>()
     private var contactSequence = 0L
     private var generation = 0L
-    private val gestures = PhoneHidAction.entries.filter { !it.learnsSingleOnly }.associateWith {
+    private data class GestureKey(val attachment: Int, val key: Int, val scan: Int)
+    private fun gestureKey(edge: PhoneHidEdge) = GestureKey(edge.attachmentId, edge.keyCode, edge.scanCode)
+    private val gestures = mutableMapOf<GestureKey, PhoneHidGestureRecognizer<Press>>()
+    private fun recognizer(edge: PhoneHidEdge) = gestures.getOrPut(gestureKey(edge)) {
         PhoneHidGestureRecognizer<Press>(now, ::currentNavigation,
             { at, action -> navigationSchedule(at) { transaction { action() } } },
             { gesture, press -> transaction { out ->
-                if (gesture == press.edge.gesture) finishGesture(press, out)
-            } }, match = { it.edge.gesture })
+                press.edge.candidates().entries.singleOrNull { it.value == gesture }?.let {
+                    finishGesture(press, it.key, out)
+                }
+            } }, matches = { it.edge.candidates().values.toSet() })
     }
     private var completionSequence = 0L // Under the existing control lock.
     private val emission = Object()
@@ -154,7 +159,7 @@ internal class PhoneInputMerger(
         val existing = receivedPresses[routeId]
         val token = navigationToken(routeId, edge)
         if (existing == null && edge.phase == PhoneHidPhase.CANCEL && !edge.action.learnsSingleOnly) {
-            transaction { gestures[edge.action]?.cancel(token) }
+            transaction { gestures[gestureKey(edge)]?.cancel(token) }
             return
         }
         val received = if (existing != null) {
@@ -177,7 +182,7 @@ internal class PhoneInputMerger(
                     presses.remove(routeId, old); stopRepeat(old)
                     if (held === old) retireContact(out)
                 }
-                gestures[edge.action]?.cancel(token)
+                gestures[gestureKey(edge)]?.cancel(token)
                 return@transaction
             }
             if (edge.phase == PhoneHidPhase.DOWN) {
@@ -185,11 +190,11 @@ internal class PhoneInputMerger(
                 val position = point?.takeIf { !it.projected || it.geometry == geometry() } ?: return@transaction
                 if (!qualifiesContext(position, pointerSource)) return@transaction
                 val dedicated = !edge.action.learnsSingleOnly
-                val press = Press(routeId, edge, position, ++contactSequence,
+                val press = Press(routeId, edge.copy(bindings = edge.bindings.toMap()), position, ++contactSequence,
                     if (dedicated) qualifiesContext else qualifies, pointerSource, qualifiesContext)
                 presses[routeId] = press
                 if (dedicated) {
-                    gestures.getValue(edge.action).down(token, listOf(edge.attachmentId, edge.keyCode, edge.scanCode, edge.action, edge.gesture),
+                    recognizer(edge).down(token, listOf(edge.attachmentId, edge.keyCode, edge.scanCode),
                         press, edge.eventTimeMs)
                     return@transaction
                 }
@@ -224,12 +229,12 @@ internal class PhoneInputMerger(
             stopRepeat(old)
             if (edge.phase == PhoneHidPhase.CANCEL) {
                 if (held === old) retireContact(out)
-                gestures[edge.action]?.cancel(token)
+                gestures[gestureKey(edge)]?.cancel(token)
                 return@transaction
             }
             if (!old.edge.action.learnsSingleOnly) {
-                if (!currentNavigation(old)) gestures[edge.action]?.cancel(token)
-                else gestures.getValue(edge.action).up(token, edge.eventTimeMs)
+                if (!currentNavigation(old)) gestures[gestureKey(edge)]?.cancel(token)
+                else gestures[gestureKey(edge)]?.up(token, edge.eventTimeMs)
                 return@transaction
             }
             // Scroll is completed by its original DOWN/repeat sequence, never by release.
@@ -353,7 +358,7 @@ internal class PhoneInputMerger(
         held = null; nativeContact = null; point = null; pointerSource = null
         presses.values.forEach(::stopRepeat)
         presses.clear(); receivedPresses.clear()
-        gestures.values.forEach { it.cancel() }
+        gestures.values.forEach { it.cancel() }; gestures.clear()
     }
 
     private fun retire(out: Output, emit: Boolean, clearPoint: Boolean = true, preserveNavigation: Boolean = false,
@@ -368,7 +373,7 @@ internal class PhoneInputMerger(
             if (remove) stopRepeat(it.value)
             remove
         }
-        if (!preserveNavigation) { gestures.values.forEach { it.cancel() } }
+        if (!preserveNavigation) { gestures.values.forEach { it.cancel() }; gestures.clear() }
         nativeContact = null
         if (clearPoint) { point = null; pointerSource = null }
         if (old != null && !old.point.projected && emit) out.add(ReceiverInput(ReceiverInputKind.CANCEL, old.point.revision, old.contact))
@@ -392,16 +397,16 @@ internal class PhoneInputMerger(
             press.qualifiesContext(position, current)
     }
 
-    private fun finishGesture(press: Press, out: Output) {
+    private fun finishGesture(press: Press, action: PhoneHidAction, out: Output) {
         if (!currentNavigation(press)) return
         val admitted = generation + 1
         retire(out, true, clearPoint = false, preserveNavigation = true, preserveScroll = true)
         if (generation != admitted || !currentNavigation(press)) return
         val position = point ?: return
-        if (press.edge.action == PhoneHidAction.MODE) { out.mode(); return }
+        if (action == PhoneHidAction.MODE) { out.mode(); return }
         out.effect {
-            if (!hidAction(press.edge.action, position)) {
-                val kind = when (press.edge.action) {
+            if (!hidAction(action, position)) {
+                val kind = when (action) {
                     PhoneHidAction.BACK -> ReceiverInputKind.BACK
                     PhoneHidAction.HOME -> ReceiverInputKind.HOME
                     PhoneHidAction.LOCK -> ReceiverInputKind.LOCK

@@ -72,6 +72,7 @@ class ModeRoutingTest {
             })
         init {
             owner.onSession("owner","projection",object: IPhoneInputSession {
+                override fun asBinder(): android.os.IBinder? = null
                 override fun active()=true
                 override fun edge(routeId:Long,typedEdge:ByteArray,regionId:String,word:Long) { error("No transport in owner test") }
             })

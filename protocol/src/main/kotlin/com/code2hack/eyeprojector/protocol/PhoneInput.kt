@@ -25,23 +25,48 @@ data class PhoneHidEdge(
     val keyCode: Int, val scanCode: Int, val downTimeMs: Long, val eventTimeMs: Long,
     val repeatCount: Int = 0,
     val gesture: PhoneHidGesture = PhoneHidGesture.SINGLE,
+    val bindings: Map<PhoneHidAction, PhoneHidGesture> = emptyMap(),
 ) {
-    init { require(downTimeMs >= 0 && eventTimeMs >= downTimeMs && repeatCount >= 0) }
+    init {
+        require(downTimeMs >= 0 && eventTimeMs >= downTimeMs && repeatCount >= 0)
+        if (bindings.isNotEmpty()) {
+            require(bindings[action] == gesture)
+            require(bindings.values.toSet().size == bindings.size)
+            require(bindings.size == 1 || bindings.keys.none { it.learnsSingleOnly })
+            require(bindings.all { (role, value) -> !role.learnsSingleOnly || value == PhoneHidGesture.SINGLE })
+        }
+    }
+    fun candidates(): Map<PhoneHidAction, PhoneHidGesture> = bindings.ifEmpty { mapOf(action to gesture) }
     fun samePress(other: PhoneHidEdge) = attachmentId == other.attachmentId && keyCode == other.keyCode &&
-        scanCode == other.scanCode && downTimeMs == other.downTimeMs && action == other.action && gesture == other.gesture
+        scanCode == other.scanCode && downTimeMs == other.downTimeMs && action == other.action && gesture == other.gesture && bindings == other.bindings
     fun bytes(): ByteArray = bytes {
         writeByte(action.ordinal); writeByte(phase.ordinal); writeInt(attachmentId); writeInt(keyCode); writeInt(scanCode)
         writeLong(downTimeMs); writeLong(eventTimeMs); writeInt(repeatCount)
         writeByte(gesture.kind.ordinal); writeInt(gesture.clicks)
+        if (bindings.isNotEmpty()) {
+            writeInt(bindings.size)
+            bindings.forEach { (role, value) -> writeByte(role.ordinal); writeByte(value.kind.ordinal); writeInt(value.clicks) }
+        }
     }
     companion object {
         const val PAYLOAD_SIZE = 39
         fun from(payload: ByteArray): PhoneHidEdge {
-            require(payload.size == PAYLOAD_SIZE)
+            require(payload.size >= PAYLOAD_SIZE)
             val input = DataInputStream(payload.inputStream())
-            return PhoneHidEdge(PhoneHidAction.entries[input.readUnsignedByte()], PhoneHidPhase.entries[input.readUnsignedByte()],
+            val edge = PhoneHidEdge(PhoneHidAction.entries[input.readUnsignedByte()], PhoneHidPhase.entries[input.readUnsignedByte()],
                 input.readInt(), input.readInt(), input.readInt(), input.readLong(), input.readLong(), input.readInt(),
                 PhoneHidGesture(PhoneHidGesture.Kind.entries[input.readUnsignedByte()], input.readInt()))
+            if (input.available() == 0) return edge
+            require(input.available() >= 4)
+            val count = input.readInt()
+            require(count > 0 && input.available().toLong() == count.toLong() * 6)
+            val bindings = linkedMapOf<PhoneHidAction, PhoneHidGesture>()
+            repeat(count) {
+                val role = PhoneHidAction.entries[input.readUnsignedByte()]
+                val gesture = PhoneHidGesture(PhoneHidGesture.Kind.entries[input.readUnsignedByte()], input.readInt())
+                require(bindings.put(role, gesture) == null)
+            }
+            return edge.copy(bindings = bindings)
         }
     }
 }

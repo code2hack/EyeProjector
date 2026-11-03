@@ -9,6 +9,7 @@ data class ProjectionContext(val ownerEpoch: String="",val projectionToken: Stri
     }
 }
 interface IPhoneInputSession {
+    fun asBinder(): android.os.IBinder?
     fun active(): Boolean
     fun edge(routeId: Long,typedEdge: ByteArray,regionId: String,word: Long)
 }
