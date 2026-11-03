@@ -42,7 +42,7 @@ internal class PhoneInputMerger(
             { at, action -> navigationSchedule(at) { transaction { action() } } },
             { gesture, press -> transaction { out ->
                 if (gesture == press.edge.gesture) finishGesture(press, out)
-            } })
+            } }, match = { it.edge.gesture })
     }
     private var completionSequence = 0L // Under the existing control lock.
     private val emission = Object()

@@ -19,7 +19,10 @@ combined Navigation to single Back, leaves Home/Lock unassigned, and touches onl
 record. Pin intent and unrelated preferences are separate. One physical button still has one
 exclusive role; learning another role on it moves the assignment in one write, as before.
 
-Short and multi-click resolve after 500 ms from the final UP, preventing prefix dispatch.
+Runtime recognition captures the saved gesture at the original DOWN. SINGLE completes on short
+UP; MULTI N completes on the Nth short UP. The 500 ms interval only expires incomplete runtime
+sequences, so four rapid clicks of a double binding perform two actions. Learning still discovers
+the complete generic click count after 500 ms from the final UP and consumes input without effects.
 Long means at least 800 ms held and resolves on its UP. A held press is not terminated by an
 elapsed-time cutoff. A long press after earlier clicks is not a valid single/long/multi gesture.
 Tap/Scroll learn only SINGLE but retain their runtime raw contact/press behavior. Scroll emits on

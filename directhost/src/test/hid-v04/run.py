@@ -23,6 +23,7 @@ files += [host / n for n in [
     'input/PhoneInputMerger.kt', 'PhoneTouchDispatcher.kt', 'activation/PhoneHidActivation.kt', 'activation/PhoneHidDisposition.kt']]
 files += [root / 'directhost/src/test/hidnavigation/ActivationBoundary.kt',
           root / 'directhost/src/test/kotlin/com/code2hack/eyeprojector/directhost/PhoneInputMergerTest.kt',
+          root / 'protocol/src/test/kotlin/com/code2hack/eyeprojector/protocol/PhoneHidGestureRecognizerTest.kt',
           root / 'protocol/src/test/kotlin/com/code2hack/eyeprojector/protocol/PhoneInputTest.kt']
 files += [host / n for n in [
     'input/PhoneHidOriginal.kt','input/PhoneModeOwner.kt','input/CoordinateInputRouter.kt','input/InputWork.kt',
@@ -71,6 +72,7 @@ commands = {
             'com.code2hack.eyeprojector.directhost.hid.PhoneHidV04Test',
             'com.code2hack.eyeprojector.directhost.PhoneInputMergerTest',
             'com.code2hack.eyeprojector.protocol.PhoneInputTest',
+            'com.code2hack.eyeprojector.protocol.PhoneHidGestureRecognizerTest',
             'com.code2hack.eyeprojector.directhost.input.ModeRoutingTest',
             'com.code2hack.eyeprojector.directhost.input.InputWorkTest',
             'com.code2hack.eyeprojector.directhost.PhoneTouchDispatcherTest'],
