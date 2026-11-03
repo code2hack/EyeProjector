@@ -69,7 +69,7 @@ class ProjectionInstrumentation : Instrumentation() {
     @Volatile private var fixtureTeardownRecorder: FixtureTeardownRecorder? = null
 
     private fun captureFixtureTeardown(activity: Activity?, acceptedStatus: JSONObject, fixture: FixtureSetupPhase?, operation: String) {
-        if (fixture == null || operation !in listOf("input-observation", "static-content")) return
+        if (fixture == null || operation !in listOf("input-observation", "static-content", "coordinate-mode")) return
         try {
             fixtureTeardownRecorder = FixtureTeardownRecorder.capture(this, activity, acceptedStatus, fixture.setupDeadlineElapsedMs)
         } catch (error: Throwable) {
@@ -475,7 +475,7 @@ class ProjectionInstrumentation : Instrumentation() {
             } else if (operation == "unauthenticated") {
                 require(unauthenticated()); report.put("unauthenticatedRefused", true).put("mediaWelcomeReceived", false)
             } else {
-                require(operation in listOf("stream", "static-content", "scale", "connected-panel", "pause", "reconnect", "local-stop", "host-stop", "surface-diagnostic", "input-observation", "audio-focus", "audio-volume"))
+                require(operation in listOf("stream", "static-content", "scale", "coordinate-mode", "connected-panel", "pause", "reconnect", "local-stop", "host-stop", "surface-diagnostic", "input-observation", "audio-focus", "audio-volume"))
                 val seconds = args.getString("seconds")?.toInt() ?: 10
                 require(seconds in 1..660)
                 val waitForFixture = args.getString("waitForGo") == "true"
@@ -532,7 +532,12 @@ class ProjectionInstrumentation : Instrumentation() {
                     report.put("fixtureSetupBeforeMeasurement", true)
                     waitStreaming(fixtureSetup)
                 }
-                if (operation == "scale") {
+                if (operation == "coordinate-mode") {
+                    report.put("first", status())
+                    captureFixtureTeardown(activity, report.getJSONObject("first"), fixtureSetup, operation)
+                    val detail = JSONObject().also { report.put("coordinateMode", it) }
+                    CoordinateModeChecks.run(this, activity as ReceiverActivity, args, seconds, detail)
+                } else if (operation == "scale") {
                     runLiveScaleProbe(this, activity, args, report, id)
                 } else if (operation == "surface-diagnostic") {
                     require(waitForFixture && (args.getString("tapAtSeconds") ?: "-1") == "-1")

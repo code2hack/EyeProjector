@@ -9,25 +9,19 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class InputWorkTest {
-    private fun intent(gesture: Long, sequence: Long) = AnchorIntent(
-        AnchorIntentKind.ACTIVATE, AnchorSource.PHONE_HID, gesture, sequence,
-        AnchorIntentContext(
-            ReceiverUsability("owner", ReceiverIncarnation("original", 1), 2, 3, ReceiverUsabilityMode.PROJECTED),
-            HeadPointerState(3, 4, true, true, 50f, 50f, Fit(0, 0, 100, 100), Geometry(100, 100)),
-        ),
-    )
+    private data class Operation(val gestureId: Long,val sequence: Long,val original: Any)
 
     @Test(timeout = 7000) fun blockedWorkerRetainsBothActivationsAndTheirCapturedOriginalContextInOrder() {
         val work = InputWork()
         val entered = CountDownLatch(1); val release = CountDownLatch(1); val delivered = CountDownLatch(2)
-        val observed = mutableListOf<CapturedAnchorIntent<Any>>()
+        val observed = mutableListOf<Operation>()
         val original = Any()
         var current = original
         try {
             work.submit { entered.countDown(); check(release.await(4, TimeUnit.SECONDS)) }
             assertTrue(entered.await(2, TimeUnit.SECONDS))
-            val first = CapturedAnchorIntent(intent(10, 0), current)
-            val second = CapturedAnchorIntent(intent(11, 1), current)
+            val first = Operation(10,0,current)
+            val second = Operation(11,1,current)
             for (captured in listOf(first, second)) work.submit {
                 observed.add(captured); delivered.countDown()
             }
@@ -35,8 +29,8 @@ class InputWorkTest {
             release.countDown()
             assertTrue("Both activations must survive pending work", delivered.await(2, TimeUnit.SECONDS))
             assertEquals(listOf(first, second), observed)
-            assertEquals(listOf(10L, 11L), observed.map { it.intent.gestureId })
-            assertEquals(listOf(0L, 1L), observed.map { it.intent.sequence })
+            assertEquals(listOf(10L, 11L), observed.map { it.gestureId })
+            assertEquals(listOf(0L, 1L), observed.map { it.sequence })
             observed.forEach { assertSame(original, it.original); assertNotSame(current, it.original) }
         } finally { release.countDown(); work.close() }
     }

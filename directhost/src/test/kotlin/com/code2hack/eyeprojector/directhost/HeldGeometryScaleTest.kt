@@ -15,10 +15,10 @@ class HeldGeometryScaleTest {
         val controls = mutableListOf<ByteArray>()
         val wire = ByteArrayOutputStream()
         val output = DataOutputStream(wire)
-        val touch = PhoneTouchDispatcher(controlLock) { controls.add(it) }
+        val touch = PhoneTouchDispatcher(controlLock) { assertFalse(Thread.holdsLock(controlLock));controls.add(it) }
         val resizes = mutableListOf<Geometry>()
         val scale = LiveScale(
-            resize = { size -> synchronized(controlLock) { touch.cancel(); resizes.add(size) } },
+            resize = { size -> touch.cancel();resizes.add(size) },
             publish = { state -> Wire.writeFrame(output, Frame(Wire.SCALE_STATE, state.requestId, state.bytes())) },
         )
         val portrait = Geometry(480, 640)

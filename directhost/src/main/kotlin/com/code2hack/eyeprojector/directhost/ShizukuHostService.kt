@@ -17,10 +17,10 @@ class ShizukuHostService internal constructor(
 ) : IHostBootstrap.Stub() {
     @Keep constructor(context: Context) : this(context,
         OwnedShellSessions(File("/data/local/tmp", "eyeprojector-${context.packageName}-${context.applicationInfo.uid}")), null)
-    @Volatile private var anchorBridge: com.code2hack.eyeprojector.directhost.anchor.execution.IAnchorAppBridge? = null
-    override fun setAnchorBridge(bridge: com.code2hack.eyeprojector.directhost.anchor.execution.IAnchorAppBridge?) {
-        anchorBridge = bridge
-        projectionBridge?.installAnchorBridge(bridge)
+    @Volatile private var modeOwner: IPhoneModeOwner? = null
+    override fun setModeOwner(bridge: IPhoneModeOwner?) {
+        modeOwner = bridge
+        projectionBridge?.installModeOwner(bridge)
     }
     private val lifecycle = OwnedHostLifecycle()
     @Volatile private var projectionBridge: Bridge? = null
@@ -73,7 +73,7 @@ class ShizukuHostService internal constructor(
             }
             val files = BootstrapSessionFiles(identity, password, legacyPeer, endpoint, pairedPeer)
             val bridge = prepareBridge?.invoke(files, sessionEpoch, report) ?: prepareOwnedBridge(files, sessionEpoch, report)
-            bridge.installAnchorBridge(anchorBridge)
+            bridge.installModeOwner(modeOwner)
             projectionBridge = bridge
             panelRoutes.publish(panelOwner, bridge)
             object : OwnedHostLifecycle.Backend {
@@ -129,16 +129,16 @@ class ShizukuHostService internal constructor(
     }
 
     override fun userControl(kind: Int, expectedOwnerEpoch: String, expectedProjectionToken: String): Int {
-        val route = panelRoutes.current() ?: return com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.NORMAL.ordinal
+        val route = panelRoutes.current() ?: return 0
         val expected = ProjectionContext(expectedOwnerEpoch, expectedProjectionToken)
         if (expected.available && route.target.projectionContext() != expected)
-            return com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.RETIRED.ordinal
+            return 2
         val normal = if (kind == UserControls.RECOGNITION) route.target.recognizeUserInput()
             else if (kind == UserControls.STOP) route.target.stopFromUser()
             else route.target.consumeUserControl(if (expected.available) expected else route.target.projectionContext())
-        if (!normal) return com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.CONSUMED.ordinal
+        if (!normal) return 1
         if (kind == UserControls.STOP) stop() // The same original Bridge has already claimed its user Stop.
-        return com.code2hack.eyeprojector.directhost.anchor.execution.AnchorControlDisposition.NORMAL.ordinal
+        return 0
     }
 
     override fun requestScale(requestId: Long, scale: Double, expectedOwnerEpoch: String, expectedProjectionToken: String): ByteArray =
@@ -159,12 +159,6 @@ class ShizukuHostService internal constructor(
     override fun projectionDisplayState(expectedOwnerEpoch: String, expectedProjectionToken: String): ByteArray {
         val expected = ProjectionContext(expectedOwnerEpoch, expectedProjectionToken)
         return (captureLaunchTarget(expected)?.projectionDisplayState() ?: ProjectionDisplayState(context = expected)).bytes()
-    }
-
-    override fun uiTargetContext(expectedOwnerEpoch: String, expectedProjectionToken: String): ByteArray? {
-        val expected = ProjectionContext(expectedOwnerEpoch, expectedProjectionToken)
-        val original = captureLaunchTarget(expected) ?: return null
-        return original.uiTargetContext()?.takeIf { it.context == expected }?.bytes()
     }
 
     override fun phoneHidEdge(routeId: Long, typedEdge: ByteArray, expectedOwnerEpoch: String, expectedProjectionToken: String) {

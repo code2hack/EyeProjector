@@ -17,6 +17,182 @@ import java.util.concurrent.LinkedBlockingQueue
 
 /** Real client executor/cancellation with modeled network admission; TLS is tested in protocol. */
 class PairedSessionClientTest {
+    @Test fun periodicPollBeforeQueuedDirectStopDoesNotRetireItsOriginalSource() = controlLogs { logs ->
+        val directory = java.nio.file.Files.createTempDirectory("direct-periodic-stop-").toFile()
+        val feature = ReceiverActivationStore(directory.resolve("feature")); feature.startIncarnation()
+        val old = ReceiverLaunchScope("old-scope", "old-T", 7)
+        feature.launch(old, "old-admission"); feature.cancel(old, null)
+        feature.accept(com.code2hack.eyeprojector.protocol.ActivationReply(trigger =
+            com.code2hack.eyeprojector.protocol.TriggerReceipt(old.trigger, null,
+                com.code2hack.eyeprojector.protocol.TriggerDisposition.CANCELED)))
+        val initial = CountDownLatch(1); val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        val requests = Collections.synchronizedList(mutableListOf<SessionControl.Request>())
+        val client = PairedSessionClient(directory, { initial.countDown() }, {}, { request, opened ->
+            requests.add(request)
+            if (request.operation == SessionControl.Operation.RENDERED) {
+                opened(Socket()); entered.countDown(); check(release.await(3, TimeUnit.SECONDS))
+            }
+            SessionState("S1", SessionPhase.AVAILABLE,
+                receipt = AttemptReceipt(request.startEpoch, "S1", AttemptDisposition.OBSERVED))
+        }, feature = feature)
+        try {
+            client.start(); assertTrue(initial.await(2, TimeUnit.SECONDS))
+            client.command(SessionControl.Operation.RENDERED, "S1")
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            // The actual one-second periodic task is due before Disconnect queues its Stop.
+            Thread.sleep(1100)
+            client.disconnect("S1", scope = old, activationId = null)
+            release.countDown()
+            val executor = client.javaClass.getDeclaredField("executor").apply { isAccessible = true }.get(client) as java.util.concurrent.ScheduledExecutorService
+            executor.submit {}.get(2, TimeUnit.SECONDS)
+            val sent = requests.toList()
+            val stops = sent.filter { it.operation == SessionControl.Operation.STOP }
+            assertEquals("passive polling must not discard the captured S1 Stop", listOf("S1"), stops.map { it.epoch })
+            val polls = sent.filter { it.operation == SessionControl.Operation.STATUS }
+            assertTrue(polls.size >= 2)
+            assertNotEquals(polls[0].startEpoch, polls[1].startEpoch)
+            assertTrue(sent.indexOf(polls[1]) < sent.indexOf(stops.single()))
+            assertTrue(feature.state.triggers.getValue(old.trigger).acknowledged)
+            assertNull(feature.currentScope())
+        } finally { release.countDown(); closeObserved(client, logs); directory.deleteRecursively() }
+    }
+
+    @Test fun periodicPollStillRetiresOldStopForSuccessorEpochNewLaunchOrClose() = controlLogs { logs ->
+        for (replacement in listOf("epoch", "launch", "close")) {
+            val directory = java.nio.file.Files.createTempDirectory("direct-periodic-replacement-").toFile()
+            val feature = ReceiverActivationStore(directory.resolve("feature")); feature.startIncarnation()
+            val old = ReceiverLaunchScope("old-scope", "old-T", 7)
+            val next = ReceiverLaunchScope("new-scope", "new-T", 8)
+            feature.launch(old, "old-admission"); feature.cancel(old, null)
+            feature.accept(com.code2hack.eyeprojector.protocol.ActivationReply(trigger =
+                com.code2hack.eyeprojector.protocol.TriggerReceipt(old.trigger, null,
+                    com.code2hack.eyeprojector.protocol.TriggerDisposition.CANCELED)))
+            val initial = CountDownLatch(1); val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            val changed = CountDownLatch(1); val fresh = CountDownLatch(1)
+            val polls = java.util.concurrent.atomic.AtomicInteger()
+            val queuedStops = Collections.synchronizedList(mutableListOf<SessionControl.Request>())
+            lateinit var client: PairedSessionClient
+            client = PairedSessionClient(directory, { state ->
+                initial.countDown(); if (state.epoch == "S2") fresh.countDown()
+            }, {}, { request, opened ->
+                if (request.operation == SessionControl.Operation.STOP && Thread.currentThread().name != "eyeprojector-session-stop")
+                    queuedStops.add(request)
+                if (request.operation == SessionControl.Operation.RENDERED) {
+                    opened(Socket()); entered.countDown(); check(release.await(3, TimeUnit.SECONDS))
+                }
+                val poll = if (request.operation == SessionControl.Operation.STATUS) polls.incrementAndGet() else 0
+                if (poll == 2) {
+                    if (replacement == "launch") client.launch(next)
+                    if (replacement == "close") client.close("S1")
+                    changed.countDown()
+                }
+                val epoch = if (replacement == "epoch" && poll >= 2 || request.intent?.triggerId == next.trigger) "S2" else "S1"
+                SessionState(epoch, SessionPhase.AVAILABLE,
+                    receipt = AttemptReceipt(request.startEpoch, epoch, AttemptDisposition.OBSERVED))
+            }, feature = feature)
+            try {
+                client.start(); assertTrue(initial.await(2, TimeUnit.SECONDS))
+                client.command(SessionControl.Operation.RENDERED, "S1")
+                assertTrue(entered.await(2, TimeUnit.SECONDS)); Thread.sleep(1100)
+                client.disconnect("S1", scope = old, activationId = null); release.countDown()
+                assertTrue(changed.await(2, TimeUnit.SECONDS))
+                if (replacement == "close") {
+                    awaitControlLog(logs) { it.contains("event=RESULT") && it.contains("eligibility=FINAL_STOP_NO_UI") }
+                } else {
+                    assertTrue(fresh.await(2, TimeUnit.SECONDS))
+                    val executor = client.javaClass.getDeclaredField("executor").apply { isAccessible = true }.get(client) as java.util.concurrent.ScheduledExecutorService
+                    executor.submit {}.get(2, TimeUnit.SECONDS)
+                }
+                assertTrue("$replacement must retire queued original Stop", queuedStops.isEmpty())
+            } finally {
+                release.countDown()
+                if (replacement != "close") closeObserved(client, logs) else client.close()
+                directory.deleteRecursively()
+            }
+        }
+    }
+
+    @Test fun queuedDirectStopAndOldReplyCannotBorrowReplacementAdmission() = controlLogs { logs ->
+        val directory = java.nio.file.Files.createTempDirectory("direct-disconnect-client-").toFile()
+        val feature = ReceiverActivationStore(directory.resolve("feature"))
+        feature.startIncarnation()
+        val first = ReceiverLaunchScope("S1-scope", "T1", 7)
+        val second = ReceiverLaunchScope("S2-scope", "T2", 8)
+        val delivery = LinkedBlockingQueue<() -> Unit>()
+        val states = mutableListOf<SessionState>()
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        val fresh = CountDownLatch(1)
+        val stops = Collections.synchronizedList(mutableListOf<SessionControl.Request>())
+        val client = PairedSessionClient(directory, states::add, {}, { request, opened ->
+            val cancelTrigger = request.cancelTrigger
+            when {
+                request.operation == SessionControl.Operation.STOP -> {
+                    stops.add(request); SessionState("retired", SessionPhase.INACTIVE)
+                }
+                cancelTrigger != null -> SessionState("retired", SessionPhase.INACTIVE,
+                    activation = com.code2hack.eyeprojector.protocol.ActivationReply(trigger =
+                        com.code2hack.eyeprojector.protocol.TriggerReceipt(cancelTrigger.triggerId, null,
+                            com.code2hack.eyeprojector.protocol.TriggerDisposition.CANCELED)))
+                request.operation == SessionControl.Operation.RENDERED -> {
+                    opened(Socket()); entered.countDown(); check(release.await(3, TimeUnit.SECONDS))
+                    SessionState("S1", SessionPhase.AVAILABLE,
+                        receipt = AttemptReceipt(request.startEpoch, "S1", AttemptDisposition.OBSERVED))
+                }
+                else -> {
+                    val epoch = if (request.intent?.triggerId == second.trigger) "S2" else "S1"
+                    if (epoch == "S2") fresh.countDown()
+                    SessionState(epoch, SessionPhase.AVAILABLE,
+                        receipt = AttemptReceipt(request.startEpoch, epoch, AttemptDisposition.OBSERVED))
+                }
+            }
+        }, { delivery.put(it) }, feature)
+        try {
+            client.launch(first)
+            val oldDelivery = delivery.poll(2, TimeUnit.SECONDS) ?: error("Original reply not queued")
+            client.command(SessionControl.Operation.RENDERED, "S1")
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            client.disconnect("S1", scope = first, activationId = null)
+            client.launch(second)
+            release.countDown(); assertTrue(fresh.await(2, TimeUnit.SECONDS))
+            oldDelivery()
+            val nextDelivery = delivery.poll(2, TimeUnit.SECONDS) ?: error("Replacement reply not queued")
+            nextDelivery()
+            assertEquals(listOf("S2"), states.map { it.epoch })
+            // The queued old Stop became obsolete before opening, and never resolves S2.
+            assertTrue(stops.isEmpty())
+            assertEquals(second, feature.currentScope())
+        } finally { release.countDown(); closeObserved(client, logs); directory.deleteRecursively() }
+    }
+
+    @Test fun oldTriggerCancellationKeepsObservedDirectSuccessorAndItsQueuedDelivery() = controlLogs { logs ->
+        val directory = java.nio.file.Files.createTempDirectory("direct-trigger-client-").toFile()
+        val feature = ReceiverActivationStore(directory.resolve("feature")); feature.startIncarnation()
+        val old = ReceiverLaunchScope("old-scope", "old-T", 7)
+        feature.launch(old, "old-admission")
+        val delivery = LinkedBlockingQueue<() -> Unit>()
+        val states = mutableListOf<SessionState>()
+        val requests = Collections.synchronizedList(mutableListOf<SessionControl.Request>())
+        val settled = CountDownLatch(1)
+        val client = PairedSessionClient(directory, states::add, {}, { request, _ ->
+            requests.add(request)
+            if (request.cancelTrigger != null) SessionState("S2", SessionPhase.AVAILABLE,
+                activation = com.code2hack.eyeprojector.protocol.ActivationReply(trigger =
+                    com.code2hack.eyeprojector.protocol.TriggerReceipt(old.trigger, null,
+                        com.code2hack.eyeprojector.protocol.TriggerDisposition.CANCELED)))
+            else SessionState("S2", SessionPhase.AVAILABLE,
+                receipt = AttemptReceipt(request.startEpoch, "S2", AttemptDisposition.OBSERVED))
+        }, { delivery.put(it) }, feature)
+        try {
+            client.command(SessionControl.Operation.STATUS, "")
+            val successor = delivery.poll(2, TimeUnit.SECONDS) ?: error("Successor delivery missing")
+            client.disconnect(null, scope = old, activationId = null, complete = { settled.countDown() })
+            assertTrue(settled.await(2, TimeUnit.SECONDS))
+            successor()
+            assertEquals(listOf("S2"), states.map { it.epoch })
+            assertTrue(requests.none { it.operation == SessionControl.Operation.STOP })
+        } finally { closeObserved(client, logs); directory.deleteRecursively() }
+    }
+
     @Test fun renderedAcknowledgmentsCoalesceWhileOriginalTransportIsInflight() = controlLogs { logs ->
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)

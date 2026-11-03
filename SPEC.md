@@ -4,7 +4,9 @@ EyeProjector runs supported Android apps on a Phone-owned workspace and projects
 
 **v0.2 is Owner-accepted.** On 2026-10-28 the Owner accepted the managed-display experiment and v0.2 and authorized publication, merge and cleanup. The [v0.2 record](docs/runs/v0.2.md) distinguishes accepted device observations, implementation checks and remaining limits. [v0.1](https://github.com/code2hack/EyeProjector/releases/tag/v0.1) remains historical; its earlier limitations are not descriptions of the current managed path.
 
-**v0.3 requirements are published for development.** The [v0.3 specification](docs/versions/v0.3/SPEC.md) defines explicit Back/Home/Lock controls and the per-app Anchor feature, including the Owner's Home sequence and mandatory Click/Hold choice. The [small-issue implementation plan](docs/versions/v0.3/README.md) is now Owner-authorized and implementation is starting; release acceptance remains pending. The input behavior below describes the accepted v0.2 implementation and is superseded by the version-specific requirements for v0.3 development.
+**v0.3 is an archival development checkpoint.** The Owner authorized its consolidation into main and the v0.4 redesign on 2026-11-03 (Asia/Singapore). The [v0.3 checkpoint](docs/versions/v0.3/CHECKPOINT.md) records its source, actual observations and remaining limits; it is not a claim that every old acceptance case passed.
+
+**v0.4 implementation is Owner-authorized.** Its current requirements replace control-identity/Click/Hold Anchors with per-app lists of absolute screen positions and Normal, Anchor and Anchor Settings modes. The [v0.4 plan](docs/versions/v0.4/README.md) defines the issue boundaries and verification. This is the required behavior, not a statement of completed implementation or device acceptance.
 
 This document defines the current product contract. The [v0.2 plan](docs/versions/v0.2/README.md) records scope, [managed-display setup](docs/versions/v0.2/managed-display.md) describes the current bootstrap, [RUNBOOK.md](RUNBOOK.md) covers engineering procedures, and [AGENTS.md](AGENTS.md) governs agent coordination.
 
@@ -67,9 +69,9 @@ Pairing remembers an EyeProjector peer for video, control and camera forwarding.
 | Phone, paired | Start, Stop, Forget and actual setup/connection status. |
 | Phone camera choice | Persisted Use Glasses camera switch. |
 | Phone app selection | Chosen-app icons, with + first; tap to open, hold for the app menu. |
-| Phone HID setup | Select device, Pin, assign the four controls, Unpin and reset Phone bindings. |
+| Phone HID setup | Select device, Pin, assign Tap / Scroll down / Scroll up / Back / Home / Lock / Mode, Unpin and reset Phone bindings. |
 | Glasses, paired | Connect or Disconnect, Forget and actual connection status. |
-| Glasses local settings | Separate X/Y pointer sensitivity, scroll speed, head-motion scrolling and retained Glasses-side HID settings. |
+| Glasses local settings | Separate X/Y pointer sensitivity, scroll speed and head-motion scrolling. Bluetooth HID bindings are Phone-only. |
 
 Host availability, remembered pairing, authenticated connection and usable projection are distinct states. The UI must not present a queued request as a completed connection or native operation.
 
@@ -123,56 +125,53 @@ The Owner confirmed automatic Glasses-microphone input for the exercised dictati
 
 ## Input
 
-### Pointer, touchpad and Function
+### Pointer, native controls and Mode
 
-One local head pointer uses independent X/Y sensitivity. Taps and scrolling target the visible pointer. App widgets decide the usual Android effects of taps, multi-taps, holds and drags.
+The Phone hosts one authoritative per-app mode and Anchor list. The Glasses render that state and capture native input; Phone-connected HID controls use the same semantic operations. Mode is independent of the physical Rokid Function button.
 
-| Input | Behavior |
-| --- | --- |
-| Head movement | Move the local pointer. |
-| Touchpad single/double/multiple tap | Send corresponding ordinary Android touches, preserving the sequence. |
-| Tap hold | Ordinary long press; moving the head while held drags. |
-| Forward touchpad swipe | Scroll down at the pointer. |
-| Backward touchpad swipe | Scroll up at the pointer. |
-| Function single press in a projected app | Android Back, unchanged. |
-| Function single press locally | Contextual Android Back, unchanged. |
-| Function double press in a projected app | Return to EyeProjector Home. |
-| Function double press at EyeProjector Home | Open the Glasses control panel, retaining projection. |
-| Function double press in local settings | Return to the main control panel. |
-| Function double press in the main control panel | Exit to Rokid Home using the app-exit path. |
-| Function triple press | Request Glasses sleep; do not substitute Disconnect or app exit. |
-| Function long press | Consume it and perform no action. |
-| Aim beyond a video edge | If head-motion scrolling is enabled, scroll until aim returns or ownership ends. |
+The physical Function button's short press performs **Mode**. Its long press performs no action. Other Rokid bindings retain the v0.3 native behavior, including ordinary touchpad Tap/hold/drag, scrolling, contextual two-finger Back/Home and the existing native Lock behavior. Firmware brightness coexistence and shell-helper limitations remain documented. Long Function no longer opens a registration chooser; completed duplicate OEM reports must not advance Mode twice.
 
-Native and bound HID Function inputs share this navigation contract. Each click sequence resolves once to its final single/double/triple action; firmware duplicates must not execute additional actions. Context loss, pause, geometry replacement and Disconnect cancel pending/held input. Reconnect begins with fresh input ownership.
+The mode cycle in an ordinary projected app is **Normal → Anchor → Anchor Settings → Normal**. If that app has no Anchors, skip Anchor: **Normal → Anchor Settings → Normal**. A learned HID Mode gesture advances the cycle exactly once, whether assigned to a short press, long press or multi-click.
 
-The accepted stock Rokid native stream can report its held-key UP after approximately **three seconds** even if the finger remains down. Native hold/head-drag operates within that limit; HID Tap is the confirmed longer-hold route. This is an accepted input-stream limitation, not a measured network or camera latency.
+Each app remembers its mode during the running EyeProjector instance. Switching to another app applies that app's current mode. EyeProjector Home always uses Normal and does not acquire its own Anchor mode. Restart initializes every app to Normal; only saved Anchor positions survive restart.
 
-The current native sustained-contact and requested power-sleep capability uses a **Glasses-local shell helper**, manually bootstrapped from the installed APK. It reads the actual pad edges without an input grab and owns a fixed local sleep command. Its power owner can survive Activity exit/reopen; the raw pad connection has its own cleanup. Reboot/helper loss and raw-pad reconnection still require bootstrap. It is not a computer relay, and fully autonomous helper recovery is not claimed.
+| Mode | Head pointer | Scroll up/down | Tap | Back |
+| --- | --- | --- | --- | --- |
+| Normal | Follows head motion using normal X/Y sensitivity | Ordinary page scrolling; held Scroll keys repeat | Existing ordinary Tap behavior | Ordinary contextual Back |
+| Anchor | Fixed at selected saved Anchor, independent of head motion | Previous/next Anchor in creation order, with wrap; held Scroll keys repeat selection | Existing ordinary Tap at selected Anchor | Ordinary contextual Back |
+| Anchor Settings | Follows head motion as in Normal | No action | Append current pointer position and save immediately, without app input | Remove newest Anchor and save immediately, without app Back; empty list does nothing |
 
-### Phone HID: pin, intercept, assign
+In Anchor mode, entering selects the first Anchor by creation order. Scroll Down chooses the next and Scroll Up the previous. Head-motion page scrolling is disabled in Anchor mode regardless of its Normal-mode setting. In Normal, that saved head-motion scrolling setting retains its usual effect. Anchor Settings Scroll controls do nothing. Home and Lock retain their ordinary behavior; after navigation, apply the destination app's mode, and use Normal at EyeProjector Home.
 
-The primary HID remains paired with the Phone. The Phone combines its actual button/gesture edges with the Glasses' current pointer/context. Native Rokid controls retain their native route; existing Glasses-side bindings are not migrated or deleted.
+### Coordinate Anchors and editing
 
-1. Select a connected physical HID device.
-2. **Pin selected device** and wait for actual interception.
-3. Select an action and press/release its desired button or complete its gesture. Learning records the assignment without performing it.
-4. Use **Unpin and reset Phone bindings** to release the device, clear Phone assignments or select a different device.
+An Anchor is only an **absolute screen position** on the projected app canvas. It does not identify an accessibility node or follow a control as the app layout changes. The same saved position is used through the existing projection/input coordinate mapping; no UI-tree matching, ancestor substitution, resource/label identity, clickable/action eligibility or automatic target relocation participates.
 
-The pinned physical group includes its input collections. It is dedicated to EyeProjector, including unassigned inputs, rather than simultaneously operating Android normally. The UI distinguishes saved pin intent from actual interception and permits retry of that same saved device after loss. Device switching requires explicit Unpin/reset.
+Each ordinary app has its own ordered list. Anchor Settings displays all saved positions, numbered by creation order. Tap appends to the end; Back removes from the end, giving last-in-first-out removal. Every successful add/remove is persisted immediately. A failed write must report failure rather than show an unsaved change as saved. Leaving Settings requires no additional save confirmation or chooser.
 
-| Binding | Meaning |
-| --- | --- |
-| Tap | Android tap/multi-tap, real hold/long press and held head-drag. |
-| Scroll down | Pointer-targeted down scroll. |
-| Scroll up | Pointer-targeted up scroll. |
-| Function button | The shared single/double/triple/long behavior above. |
+There are no Click/Hold Anchor types, held-Anchor contact toggle, registration long press or Click/Hold/Cancel menu. Tap uses its normal touch behavior at the current pointer. Ordinary user-held Tap/drag still owns its normal contact and terminal; removing the old Anchor Hold implementation must not break it.
 
-Keys, complete touch gestures and observed hat directions can be learned directly. There are no default action assignments, Ring-specific product actions or extra Left/Right controls. Held-key repeat remains part of the same press. A physical direction is assigned according to the desired control even if the peripheral reports a differently named stroke.
+There is no global keyboard-Anchor category. Keyboard visibility, current key labels and the IME package do not alter a coordinate Anchor. If a keyboard is shown at a saved point, an ordinary Tap affects whatever currently occupies that point; hidden keyboard controls are not invoked by identity and the keyboard is not opened automatically.
 
-The independent pinned owner survives projection Stop and closing the Phone control Activity. Disconnect/service loss cancels the old held routes and shows actual availability; saved intent is not proof of an active grab. Saved bindings persist across restart/reconnection, and older Phone mappings remain stored until explicit replacement/reset. There is no separate HID-enable toggle.
+Old v0.3 descriptors do not contain the new coordinate lists. Do not guess positions by resolving old controls. New lists begin empty; historical preference data can remain inactive while source/evidence is archived. Preserve pairing, pin intent, permission choice and unrelated settings.
 
-Phone HID wake-policy suppression was explicitly deferred. The release does not promise that every native HID/OS path leaves the physical Phone asleep.
+### Phone HID: pin, learn and operate
+
+Bluetooth controllers connect to the Phone only. The pinned physical group and its input collections are dedicated to EyeProjector; unassigned inputs do not operate Android independently. Keep actual interception, saved pin intent, retry, explicit Unpin/reset and wake/reconnection behavior distinct.
+
+The assignment rows are **Tap, Scroll down, Scroll up, Back, Home, Lock and Mode**. Remove the Anchor row and combined Back/Lock/Home role. Back, Home and Lock are separate semantic actions rather than a built-in one/two/three-click navigation sequence.
+
+| Assignment | Learning | Runtime |
+| --- | --- | --- |
+| Tap | Capture a single click only | Retain existing Tap/multi-tap/real hold/drag behavior |
+| Scroll down / Scroll up | Capture a single click only | One direction action on press; holding repeats according to the active mode |
+| Back / Home / Lock / Mode | Capture and distinguish short press, long press and multi-click | Match the learned gesture and perform its assigned action once |
+
+Learning consumes its gesture without invoking the app or mode action. A multi-click binding resolves as one complete gesture, with no earlier short-click action. Repeats and release tails belong to the original press. Stop, connection/device loss and explicit reset end that original repeating action; a later distinct input is handled normally. No invented action, default physical assignment or new hardware input grab is introduced.
+
+Existing compatible Tap/Scroll bindings and pin intent are retained. Where a legacy single-button Anchor assignment is migrated, its short gesture becomes Mode. A legacy combined navigation assignment can preserve its single-click Back as Back; Home/Lock need explicit assignments and must not silently inherit multiple actions from one binding. The persistence migration must be explicit and tested, without resetting unrelated settings.
+
+The native shell reader remains a Glasses-local product component where needed for actual raw input and fixed sleep; no Glasses HID learning/storage/dispatch is reintroduced. ADB automation is a development test route and is not a production media/input relay.
 
 ### Per-app native layout scale
 

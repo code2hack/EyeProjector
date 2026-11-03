@@ -24,18 +24,22 @@ class RetainedReceiverSessionTest {
         override fun state(snapshot: ReceiverSessionOwner.Snapshot) { states.add(snapshot) }
         override fun input(source: ProjectionSession, event: ReceiverInput) { inputs.add(event) }
     }
-    internal inner class Fixture(withFeature: Boolean = false) : AutoCloseable {
-        val feature = if (withFeature) ReceiverActivationStore(temporary.newFolder().resolve("feature.properties")).also {
+    internal inner class Fixture(withFeature: Boolean = false, directFeature: Boolean = false) : AutoCloseable {
+        val feature = if (withFeature || directFeature) ReceiverActivationStore(temporary.newFolder().resolve("feature.properties")).also {
             it.startIncarnation()
-            val first = ReceiverLaunchScope("old-scope", "old-trigger", 7)
-            it.launch(first, "old-admission")
-            it.accept(ActivationReply(ActivationDirective("H1", true, 1, "old-owner"), TriggerReceipt("old-trigger", "H1", TriggerDisposition.MAPPED)))
-            val current = ReceiverLaunchScope("current-scope", "current-trigger", 8)
-            it.launch(current, "current-admission")
-            it.accept(ActivationReply(ActivationDirective("H2", true, 1, "retained-phone-owner"), TriggerReceipt("current-trigger", "H2", TriggerDisposition.MAPPED)))
+            if (withFeature) {
+                val first = ReceiverLaunchScope("old-scope", "old-trigger", 7)
+                it.launch(first, "old-admission")
+                it.accept(ActivationReply(ActivationDirective("H1", true, 1, "old-owner"), TriggerReceipt("old-trigger", "H1", TriggerDisposition.MAPPED)))
+                val current = ReceiverLaunchScope("current-scope", "current-trigger", 8)
+                it.launch(current, "current-admission")
+                it.accept(ActivationReply(ActivationDirective("H2", true, 1, "retained-phone-owner"), TriggerReceipt("current-trigger", "H2", TriggerDisposition.MAPPED)))
+            }
         } else null
         val queue = LinkedBlockingQueue<() -> Unit>()
         val commands = LinkedBlockingQueue<SessionControl.Request>()
+        @Volatile var transport: (SessionControl.Request) -> SessionState? = { null }
+        lateinit var client: PairedSessionClient
         val resources = mutableListOf<Boolean>()
         val background = mutableListOf<ReceiverInput>()
         lateinit var observation: (SessionState) -> Unit
@@ -68,7 +72,7 @@ class RetainedReceiverSessionTest {
                 }, feature = feature, clientFactory = { state, unavailable ->
                     observation = state
                     PairedSessionClient(temporary.newFolder(), state, unavailable,
-                        { request, _ -> commands.add(request); null }, { queue.add(it) }, feature = feature)
+                        { request, _ -> commands.add(request); transport(request) }, { queue.add(it) }, feature = feature).also { client = it }
                 })
             owner.attach(view, first)
             observation(SessionState("retained-phone-owner", SessionPhase.AVAILABLE))
@@ -99,94 +103,94 @@ class RetainedReceiverSessionTest {
         buildList{while(input.available()>0)add(Wire.readFrame(input))}
     }
 
-    @Test fun publishedNativeCaptureSurvivesQueuedWriterDetachAndNewViewHover() {
-        Fixture(withFeature=true).use { f ->
-            f.streaming();f.owner.presentation(f.view,true,false)
-            val session=f.owner.session!!;val fact=mode(session)
-            val point=HeadPointerState(fact.inputRevision,1,true,true,120f,230f,Fit(0,0,480,640),size)
-            f.owner.nativeAnchorObservation(session,point)
-            val capture=f.owner.javaClass.getDeclaredMethod("captureNativeOriginal",Any::class.java,
-                Long::class.javaPrimitiveType,java.lang.Long::class.java).apply{isAccessible=true}
-            val outputLock=session.javaClass.getDeclaredField("outputLock").apply{isAccessible=true}.get(session)
-            val original: ReceiverAnchorOriginal
-            synchronized(outputLock) {
-                original=capture.invoke(f.owner,f.owner.nativeAnchorContext(),88L,null) as ReceiverAnchorOriginal
-                f.owner.detach(f.view)
-                f.owner.advanceInputRevision()
-                val next=View();f.owner.attach(next,Surface());f.owner.presentation(next,true,true)
-                val latest=mode(session)
-                f.owner.nativeAnchorObservation(session,point.copy(revision=latest.inputRevision,projected=false,x=350f))
-                session.receive(Frame(Wire.GEOMETRY,payload=Geometry(640,480).bytes()))
-                assertTrue(session.anchorIntent(CapturedAnchorIntent(AnchorIntent(AnchorIntentKind.REGISTER,
-                    AnchorSource.GLASSES_NATIVE,88,0,original.context),session)))
+    @Test fun directAndDemandOwnersWriteModeThenTapThroughActualSessionWriter() {
+        for (source in listOf("legacy", "direct", "demand")) Fixture(withFeature=source=="demand", directFeature=source=="direct").use { f ->
+            val session=f.owner.session!!
+            f.owner.presentation(f.view,true,false)
+            if (source!="legacy") assertEquals(ReceiverUsabilityMode.NONE,mode(session).mode)
+            f.streaming()
+            if (source=="legacy") assertNull(session.observationUsability())
+            else assertEquals(ReceiverUsabilityMode.PROJECTED,mode(session).mode)
+            if (source=="direct") {
+                assertNull(f.owner.currentDemand())
+                assertNull(f.feature!!.presentation) // Direct readiness does not invent an activation report.
             }
+            assertTrue(session.cycleMode())
+            assertTrue(session.tap(Tap(20,30,size)))
             drainControls(session)
-            val frames=outputFrames(f.bytes)
-            val sent=frames.filter{it.channel==Wire.ANCHOR_INTENT}.map{AnchorIntent.from(it.payload)}.single()
-            assertEquals(point,sent.context.pointer);assertSame(session,original.source)
-            assertEquals(88L,sent.gestureId)
-            assertTrue(frames.indexOfFirst{it.channel==Wire.ANCHOR_ORIGINAL}<frames.indexOfFirst{it.channel==Wire.ANCHOR_INTENT})
+            assertEquals(listOf(Wire.MODE_CYCLE,Wire.TAP),outputFrames(f.bytes).filter { it.channel in listOf(Wire.MODE_CYCLE,Wire.TAP) }.map { it.channel })
+            assertEquals(2L,controls(session).snapshot().written)
+            assertEquals(0L,controls(session).snapshot().canceled)
         }
     }
 
-    @Test fun nativeSecondShortKeepsReportedHoldContextWhenPresentationAndMappingChange() {
-        Fixture(withFeature=true).use { f ->
-            f.streaming();f.owner.presentation(f.view,true,false)
-            val session=f.owner.session!!;val fact=mode(session)
-            val context=AnchorIntentContext(fact,HeadPointerState(fact.inputRevision,1,true,true,120f,230f,
-                Fit(0,0,480,640),size))
-            val first=AnchorIntent(AnchorIntentKind.ACTIVATE,AnchorSource.PHONE_HID,1,1,context)
-            session.receive(Frame(Wire.ANCHOR,payload=AnchorMessage.HeldState(5,first,1,AnchorHoldState.HELD).bytes()));f.pump()
-            f.owner.detach(f.view);session.receive(Frame(Wire.GEOMETRY,payload=Geometry(640,480).bytes()))
-            val capture=f.owner.javaClass.getDeclaredMethod("captureNativeOriginal",Any::class.java,
-                Long::class.javaPrimitiveType,java.lang.Long::class.java).apply{isAccessible=true}
-            val original=capture.invoke(f.owner,f.owner.nativeAnchorContext(),92L,null) as ReceiverAnchorOriginal
-            assertEquals(context,original.context)
-            val second=AnchorIntent(AnchorIntentKind.ACTIVATE,AnchorSource.GLASSES_NATIVE,92,2,original.context)
-            assertTrue(session.anchorIntent(CapturedAnchorIntent(second,session)));drainControls(session)
-            assertEquals(listOf(second),outputFrames(f.bytes).filter{it.channel==Wire.ANCHOR_INTENT}.map{AnchorIntent.from(it.payload)})
-            session.receive(Frame(Wire.ANCHOR,payload=AnchorMessage.HeldState(6,second,2,AnchorHoldState.RELEASED).bytes()));f.pump()
-            assertNull(capture.invoke(f.owner,f.owner.nativeAnchorContext(),93L,null))
+    @Test fun directOwnerNoneAndLocalPanelNeverDeliverModeOrBypassExplicitNone() {
+        Fixture(directFeature=true).use { f ->
+            val session=f.owner.session!!
+            assertEquals(ReceiverUsabilityMode.NONE,mode(session).mode)
+            session.presentation(true) // A legacy Boolean cannot override original explicit NONE.
+            assertTrue(session.cycleMode());drainControls(session)
+            f.owner.presentation(f.view,true,true)
+            assertEquals(ReceiverUsabilityMode.LOCAL_PANEL,mode(session).mode)
+            assertTrue(session.cycleMode());drainControls(session)
+            assertEquals(2L,controls(session).snapshot().canceled)
+            assertTrue(outputFrames(f.bytes).none { it.channel==Wire.MODE_CYCLE })
+            f.owner.presentation(f.view,true,false);f.streaming()
+            assertEquals(ReceiverUsabilityMode.PROJECTED,mode(session).mode)
+            assertTrue(session.cycleMode());drainControls(session)
+            assertEquals(1,outputFrames(f.bytes).count { it.channel==Wire.MODE_CYCLE })
         }
     }
 
-    @Test fun nativeReleaseUsesLocalRetainedChooserAcrossViewDetachWithoutPhoneWireRelease() {
-        for(detach in listOf(false,true)) Fixture(withFeature=true).use { f ->
-            f.streaming();val session=f.owner.session!!
-            lateinit var original: AnchorIntent
-            var localReleases=0
-            val view=object:ReceiverSessionOwner.View {
-                override fun state(snapshot:ReceiverSessionOwner.Snapshot)=Unit
-                override fun input(source:ProjectionSession,event:ReceiverInput)=Unit
-                override fun anchor(source:ProjectionSession,message:AnchorMessage):Boolean {
-                    if(message is AnchorMessage.Offer){
-                        f.owner.anchorRegistration.registration(source,message.intent,true)
-                        assertTrue(f.owner.anchorRegistration.show(source,message.transactionId,message.intent.context,
-                            AnchorRegistrationHighlight(message.highlight.left,message.highlight.top,message.highlight.right,message.highlight.bottom),message.intent))
-                        f.owner.anchorRegistration.presented();f.owner.anchorRegistration.highlight(AnchorRegistrationAction.HOLD)
+    private fun controls(session: ProjectionSession) = session.javaClass.getDeclaredField("controls").apply { isAccessible=true }.get(session) as OrderedControlDispatcher
+
+    @Test fun queuedModeRetiresWithOriginalDetachDecoderReplacementAndCloseWithoutReplay() {
+        for (source in listOf("legacy", "direct", "demand")) for (loss in listOf("detach", "decoder", "close", "owner", "panel")) {
+            if(source=="legacy" && loss=="panel") continue // Legacy Boolean sources have no explicit panel fact.
+            Fixture(withFeature=source=="demand", directFeature=source=="direct").use { f ->
+                f.owner.presentation(f.view,true,false);f.streaming()
+                val original=f.owner.session!!;val lane=controls(original)
+                val entered=java.util.concurrent.CountDownLatch(1);val release=java.util.concurrent.CountDownLatch(1)
+                assertTrue(lane.submit(0,{true},"test-blocker",false) {
+                    entered.countDown()
+                    var interrupted=false
+                    while(true) try { release.await();break } catch (_:InterruptedException) { interrupted=true }
+                    if(interrupted) Thread.currentThread().interrupt()
+                })
+                assertTrue(entered.await(2,TimeUnit.SECONDS))
+                try {
+                    assertTrue(original.cycleMode())
+                    when(loss) {
+                        "detach" -> f.owner.detach(f.view)
+                        "decoder" -> original.receive(Frame(Wire.GEOMETRY,payload=Geometry(640,480).bytes()))
+                        "close" -> original.close()
+                        "owner" -> f.observation(SessionState("replacement-phone-owner",SessionPhase.AVAILABLE))
+                        "panel" -> f.owner.presentation(f.view,true,true)
                     }
-                    return true
-                }
-                override fun anchorReleased(source:ProjectionSession,intent:AnchorIntent,canceled:Boolean):Boolean {
-                    localReleases++;return f.owner.anchorRegistration.released(source,intent,canceled)
+                    if(loss=="owner") assertNotSame(original,f.owner.session)
+                } finally { release.countDown() }
+                drainControls(original)
+                assertEquals("$source/$loss",1L,lane.snapshot().canceled)
+                assertTrue(outputFrames(f.bytes).none { it.channel==Wire.MODE_CYCLE })
+                if(loss=="close" || loss=="owner") assertFalse("closed original cannot admit later Mode",original.cycleMode())
+                if(loss=="detach") {
+                    f.owner.presentation(f.view,true,false) // Retired view cannot restore readiness.
+                    val recreated=View();f.owner.attach(recreated,Surface());f.owner.presentation(recreated,true,false)
+                    f.pumpUntil("current original presents again") { f.owner.snapshot().state=="STREAMING" }
+                    drainControls(original)
+                    assertTrue("canceled Mode never replays after attachment",outputFrames(f.bytes).none { it.channel==Wire.MODE_CYCLE })
+                    assertTrue(original.cycleMode());drainControls(original)
+                    assertEquals(1,outputFrames(f.bytes).count { it.channel==Wire.MODE_CYCLE })
                 }
             }
-            f.owner.attach(view,Surface());f.owner.presentation(view,true,true)
-            val fact=mode(session)
-            val context=AnchorIntentContext(fact,HeadPointerState(fact.inputRevision,1,true,false,100f,200f,
-                Fit(0,0,480,640),size))
-            original=AnchorIntent(AnchorIntentKind.REGISTER,AnchorSource.GLASSES_NATIVE,33,4,context)
-            session.receive(Frame(Wire.ANCHOR,payload=AnchorMessage.Offer(7,original,AnchorHighlight(90.0,190.0,130.0,230.0)).bytes()))
-            f.pump();assertTrue(f.owner.anchorRegistration.active)
-            if(detach)f.owner.detach(view)
-            f.owner.nativeRegistrationReleased(session,original,false)
-            f.owner.nativeRegistrationReleased(session,original,false)
-            drainControls(session)
-            val choices=outputFrames(f.bytes).filter{it.channel==Wire.ANCHOR}.map{AnchorMessage.from(it.payload)}.filterIsInstance<AnchorMessage.Choice>()
-            assertEquals(listOf(AnchorMessage.Choice(7,original,AnchorChoice.HOLD)),choices)
-            if(detach)assertEquals(0,localReleases)else assertEquals(2,localReleases)
         }
     }
+
+
+
+
+
+
 
     @Test fun revisionOnlyPublicationDoesNotRecursivelyRedeliverUiSnapshot() {
         Fixture(withFeature=true).use { f ->
@@ -301,6 +305,159 @@ class RetainedReceiverSessionTest {
             f.frame(33_333);f.pumpUntil("current replacement frame restores actual projected mode") {
                 mode(session).mode==ReceiverUsabilityMode.PROJECTED
             }
+        }
+    }
+
+    @Test fun capturedCurrentDirectSessionReleasesMediaAndStopsItsOriginalPeer() {
+        for (oldTrigger in listOf(false, true)) Fixture(directFeature = true).use { f ->
+            f.streaming()
+            val scope = ReceiverLaunchScope("direct-scope", "direct-T", 7)
+            f.feature!!.launch(scope, "original-admission")
+            if (oldTrigger) {
+                f.feature.cancel(scope, null)
+                f.feature.accept(ActivationReply(trigger = TriggerReceipt(scope.trigger, null, TriggerDisposition.CANCELED)))
+            }
+            val original = f.owner.snapshot()
+            val video = f.output
+            val stopped = java.util.concurrent.CountDownLatch(1)
+            val allowStop = java.util.concurrent.CountDownLatch(1)
+            var complete = 0
+            f.transport = { request ->
+                if (request.operation == SessionControl.Operation.STOP) {
+                    stopped.countDown(); check(allowStop.await(3, TimeUnit.SECONDS))
+                }
+                SessionState("retired", SessionPhase.INACTIVE, activation = request.cancelTrigger?.let {
+                    ActivationReply(trigger = TriggerReceipt(it.triggerId, null, TriggerDisposition.CANCELED))
+                })
+            }
+            try {
+                f.owner.disconnect(scope = scope, activationId = null, originalSession = original.session,
+                    originalEpoch = original.epoch, complete = { complete++ })
+                // These are actual close effects, independent of the client completion callback.
+                assertNull(f.owner.session); assertEquals(1, f.codec.releases.get())
+                assertTrue(video.surface.texture!!.released)
+                assertFalse(f.owner.hasRetainedResources()); assertEquals(listOf(true, false), f.resources)
+                assertFalse(original.session!!.navigate(Navigation.HOME))
+                assertTrue(stopped.await(2, TimeUnit.SECONDS)); f.pump(); assertEquals(0, complete)
+                assertEquals(listOf(original.epoch), f.commands.filter { it.operation == SessionControl.Operation.STOP }.map { it.epoch })
+            } finally { allowStop.countDown() }
+            f.pumpUntil("original T completion after Stop attempt") { complete == 1 }
+            assertTrue(f.feature.state.triggers.getValue(scope.trigger).acknowledged)
+            assertNull(f.feature.currentScope())
+            f.observation(SessionState(original.epoch!!, SessionPhase.AVAILABLE)); f.pump()
+            assertNull(f.owner.session)
+        }
+    }
+
+    @Test fun oldTriggerAcknowledgmentAloneCannotRetireAnUnrelatedDirectSession() {
+        Fixture(directFeature = true).use { f ->
+            f.streaming()
+            val scope = ReceiverLaunchScope("old-scope", "old-T", 7)
+            f.feature!!.launch(scope, "old-admission"); f.feature.cancel(scope, null)
+            f.feature.accept(ActivationReply(trigger = TriggerReceipt(scope.trigger, null, TriggerDisposition.CANCELED)))
+            val original = f.owner.session
+            var complete = 0
+            f.owner.disconnect(scope = scope, activationId = null, complete = { complete++ })
+            f.pumpUntil("old trigger acknowledged") { complete == 1 }
+            assertSame(original, f.owner.session); assertEquals(0, f.codec.releases.get())
+            assertTrue(f.commands.none { it.operation == SessionControl.Operation.STOP })
+        }
+    }
+
+    @Test fun staleOriginalSessionAndLateCallbacksCannotReleaseReplacementDirectMedia() {
+        Fixture(directFeature = true).use { f ->
+            f.streaming()
+            val original = f.owner.snapshot()
+            val oldVideo = f.output
+            val oldCodec = f.codec
+            val nextCodec = MediaCodec(); MediaCodec.created = nextCodec
+            oldVideo.redraw(); oldVideo.invalidate() // Old presentation callbacks are already queued.
+            f.observation(SessionState("S2-owner", SessionPhase.AVAILABLE))
+            val replacement = f.owner.session!!
+            assertNotSame(original.session, replacement)
+            f.owner.presentation(f.view, true, true)
+            f.owner.disconnect(scope = ReceiverLaunchScope("old-scope", "old-T", 7), activationId = "old-H",
+                originalSession = original.session, originalEpoch = original.epoch)
+            f.pump()
+            assertSame(replacement, f.owner.session); assertEquals(0, nextCodec.releases.get())
+            assertEquals(1, oldCodec.releases.get()); assertTrue(oldVideo.surface.texture!!.released)
+            assertTrue(f.owner.hasRetainedResources()); assertTrue(f.commands.none { it.operation == SessionControl.Operation.STOP })
+            assertEquals(ReceiverUsabilityMode.LOCAL_PANEL, mode(replacement).mode)
+        }
+    }
+
+    @Test fun capturedActivationSessionKeepsDurableTriggerAndActivationCancellation() {
+        Fixture(withFeature = true).use { f ->
+            f.streaming()
+            val original = f.owner.snapshot()
+            val scope = f.feature!!.currentScope()!!
+            f.transport = { request -> SessionState("retired", SessionPhase.INACTIVE,
+                activation = ActivationReply(trigger = request.cancelTrigger?.let {
+                    TriggerReceipt(it.triggerId, "H2", TriggerDisposition.CANCELED)
+                }, cancelAcknowledged = request.cancelActivation?.activationId)) }
+            var complete = 0
+            f.owner.disconnect(scope = scope, activationId = "H2", originalSession = original.session,
+                originalEpoch = original.epoch, complete = { complete++ })
+            assertNull(f.owner.session); assertEquals(1, f.codec.releases.get())
+            assertTrue("H2" in f.feature.state.canceled)
+            f.pumpUntil("original H settlement") { complete == 1 }
+            assertTrue(f.feature.state.pendingCancel.isEmpty())
+            assertTrue(f.commands.any { it.cancelActivation?.activationId == "H2" })
+            assertTrue(f.commands.any { it.operation == SessionControl.Operation.STOP && it.epoch == original.epoch })
+        }
+    }
+
+    @Test fun durableCancellationRetryKeepsOriginalSessionAfterReplacement() {
+        Fixture(directFeature = true).use { f ->
+            f.streaming()
+            val scope = ReceiverLaunchScope("original-scope", "original-T", 7)
+            f.feature!!.launch(scope, "original-admission")
+            val original = f.owner.snapshot()
+            val journal = f.feature.javaClass.getDeclaredField("file").apply { isAccessible = true }.get(f.feature) as java.io.File
+            val directory = journal.parentFile
+            val saved = java.io.File(directory.parentFile, directory.name + "-saved")
+            assertTrue(directory.renameTo(saved)); directory.writeText("journal storage unavailable")
+            try {
+                f.owner.disconnect(scope = scope, activationId = null,
+                    originalSession = original.session, originalEpoch = original.epoch)
+                assertSame(original.session, f.owner.session)
+                assertEquals("CANCEL_PENDING", f.owner.snapshot().state)
+                val nextCodec = MediaCodec(); MediaCodec.created = nextCodec
+                f.observation(SessionState("S2-owner", SessionPhase.AVAILABLE))
+                val next = f.owner.session!!
+                assertTrue(directory.delete()); assertTrue(saved.renameTo(directory))
+                f.owner.retryCancellation(); f.pump()
+                assertSame(next, f.owner.session); assertEquals(0, nextCodec.releases.get())
+                assertTrue(f.feature.state.triggers.getValue(scope.trigger).canceled)
+                assertTrue(f.commands.none { it.operation == SessionControl.Operation.STOP })
+            } finally {
+                if (saved.exists()) { directory.delete(); check(saved.renameTo(directory)) }
+            }
+        }
+    }
+
+    @Test fun lateOriginalCompletionCannotReleaseSuccessorAndEpochMustMatch() {
+        Fixture(directFeature = true).use { f ->
+            f.streaming()
+            val scope = ReceiverLaunchScope("scope", "T", 7)
+            f.feature!!.launch(scope, "admission"); f.feature.cancel(scope, null)
+            f.feature.accept(ActivationReply(trigger = TriggerReceipt(scope.trigger, null, TriggerDisposition.CANCELED)))
+            val original = f.owner.snapshot()
+            f.owner.disconnect(scope = scope, activationId = null, originalSession = original.session, originalEpoch = "other-epoch")
+            assertSame(original.session, f.owner.session); assertEquals(0, f.codec.releases.get())
+            var completed = 0
+            f.owner.disconnect(scope = scope, activationId = null, originalSession = original.session,
+                originalEpoch = original.epoch, complete = { completed++ })
+            val executor = f.client.javaClass.getDeclaredField("executor").apply { isAccessible = true }.get(f.client) as java.util.concurrent.ScheduledExecutorService
+            executor.submit {}.get(2, TimeUnit.SECONDS) // Completion is queued on the owner lane, not delivered yet.
+            assertEquals(0, completed)
+            val nextCodec = MediaCodec(); MediaCodec.created = nextCodec
+            f.observation(SessionState("S2-owner", SessionPhase.AVAILABLE))
+            val next = f.owner.session!!
+            f.pump()
+            assertEquals(1, completed); assertSame(next, f.owner.session)
+            assertEquals(0, nextCodec.releases.get())
+            assertEquals(listOf(original.epoch), f.commands.filter { it.operation == SessionControl.Operation.STOP }.map { it.epoch })
         }
     }
 

@@ -108,20 +108,6 @@ internal class PhoneInputTrace private constructor(
 
     private fun decoded(frame: Frame): Map<String, Any?> = try {
         when (frame.channel) {
-            Wire.CONTROL_INTENT -> ReceiverControlIntent.from(frame.payload).let {
-                mapOf("frameControlId" to it.id, "frameControlSource" to it.source.name,
-                    "frameIncarnation" to it.context.incarnation.id, "frameInputRevision" to it.context.inputRevision)
-            }
-            Wire.ANCHOR_INTENT -> AnchorIntent.from(frame.payload).let {
-                mapOf("frameGestureId" to it.gestureId, "frameFunctionSource" to it.source.name,
-                    "frameFunctionKind" to it.kind.name, "frameFunctionSequence" to it.sequence,
-                    "frameIncarnation" to it.context.usability.incarnation.id)
-            }
-            Wire.ANCHOR_ORIGINAL -> AnchorOriginal.from(frame.payload).let {
-                mapOf("frameGestureId" to it.gestureId, "frameFunctionSource" to it.source.name,
-                    "frameOriginalRetired" to it.retired, "frameSummaryOriginal" to it.parentOriginal,
-                    "frameIncarnation" to it.context.usability.incarnation.id)
-            }
             Wire.TOUCH -> Touch.from(frame.payload).let { mapOf("frameTouchContactId" to it.contactId, "frameTouchPhase" to it.phase.name) }
             else -> emptyMap()
         }

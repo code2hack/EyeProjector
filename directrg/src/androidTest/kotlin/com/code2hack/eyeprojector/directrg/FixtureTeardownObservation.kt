@@ -254,7 +254,7 @@ internal class FixtureTeardownRecorder private constructor(
                     .put("destroyFailureClass", destroyFailureClass.get() ?: JSONObject.NULL)
                     .put("destroyEntryCount", destroyEntryCount.get()).put("destroyReturnCount", destroyReturnCount.get())
                     .put("destroyFailureCount", destroyFailureCount.get())
-                    .put("lifecycleScope", "Exact captured Activity dispatch entry/actual return/throw; its existing mutable-field onDestroy cancellation is unchanged, not newly pinned")
+                    .put("lifecycleScope", "Exact captured Activity dispatch entry/actual return/throw; recorded callbacks alone do not establish product original-resource targeting or release; installed source determines cleanup semantics")
                     .put("originalObservationDeadlineElapsedMs", deadlineElapsedMs ?: JSONObject.NULL)
                     .put("waitStartElapsedMs", waitStartElapsedMs ?: JSONObject.NULL)
                     .put("remainingOriginalCeilingMs", remainingMs ?: JSONObject.NULL)
