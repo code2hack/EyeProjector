@@ -37,7 +37,7 @@ The Owner is asleep and authorized the Manager to operate, trace and debug both 
 
 ## Completion boundary
 
-Integrate independently assessed exact candidates, then verify the assembled version branch and real-device effects. Report unsupported physical/camera/audio/firmware cases honestly. A software pass or scripted input submission does not establish universal app compatibility. Release/Owner usability acceptance stays distinct from the Owner's current implementation and unattended-testing authorization. Retain carried issue #103 and native input limitations in the verification record if they survive the redesign.
+Integrate independently assessed exact candidates, then verify the assembled version branch and real-device effects. Report unsupported physical/camera/audio/firmware cases honestly. A software pass or scripted input submission does not establish universal app compatibility or physical Owner usability acceptance. That qualification does not impose an additional approval gate on already authorized publication. Retain carried issue #103 and native input limitations in the verification record if they survive the redesign.
 
 ## Device-test follow-up
 
@@ -47,4 +47,4 @@ The first assembled device trials exposed a supported direct-session path withou
 
 #147, #148 and #149 are accepted. #154's reviewed original-session correction is accepted and merged through PR155 at `2c2f2fb`; its superseded failures remain in the run record. PR156 integrates the reviewed #150 fixture/test source at `376fb17`. That production/test tree matches the tested `883a1adb` composition except for run documentation. The latest affected build passes 253 fresh Glasses tests and Main/AndroidTest assembly; Phone315/protocol93 results are retained from unchanged inputs.
 
-The [run record](../../runs/v0.4.md) distinguishes actual mode, app/Home/restart, keyboard, native adapter, Stop, static-session and reconnect cases from physical input and media limitations. The camera smoke still rejects the registered virtual ID in the ordinary consumer context; #103 stays open. Final assembled evidence review and cleanup are recorded under #150. Integration into the version branch does not publish v0.4 to main or establish Owner usability acceptance.
+The [run record](../../runs/v0.4.md) distinguishes actual mode, app/Home/restart, keyboard, native adapter, Stop, static-session and reconnect cases from physical input and media limitations. The camera smoke still rejects the registered virtual ID in the ordinary consumer context; #103 stays open. Final assembled evidence review and cleanup are accepted under #150. PR157 publishes the exact reviewed candidate to main at `d0761f2`; the `v0.4` checkpoint includes documentation-only completion records. Workers and issue workspaces are archived with source/evidence preserved, and the completed Manager's watchdog registration is removed. This publication does not establish physical Owner usability acceptance.
