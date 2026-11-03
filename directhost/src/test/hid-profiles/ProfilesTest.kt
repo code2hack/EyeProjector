@@ -315,6 +315,29 @@ class ProfilesTest {
         } finally { executor(restarted).shutdownNow() }
     }
 
+    @Test fun panelShowsEverySharedGestureAndOnlyMovesActualConflicts() {
+        val context = Context(); val store = Disk().open(); val r = Rig(store)
+        r.controller.selectProfile(profile("A"))
+        val a = store.bindings(profile("A"))
+        a.assign(PhoneHidAction.BACK, binding("A"))
+        a.assign(PhoneHidAction.HOME, binding("A", gesture = PhoneHidGesture.LONG))
+        a.assign(PhoneHidAction.MODE, binding("A", gesture = PhoneHidGesture.clicks(2)))
+        val pin = newPin(context, r)
+        try {
+            val panel = PhoneHidPanel(context, PhoneHidRuntime(r.controller, pin, store)) {}
+            fun row(label: String) = panel.children.filterIsInstance<Button>().single { it.text.toString().startsWith("$label:") }.text.toString()
+            assertEquals("Back: Remote A: Key 30 · Short press", row("Back"))
+            assertEquals("Home: Remote A: Key 30 · Long press", row("Home"))
+            assertEquals("Mode: Remote A: Key 30 · 2 clicks", row("Mode"))
+            a.assign(PhoneHidAction.LOCK, binding("A", gesture = PhoneHidGesture.LONG)); panel.refresh()
+            assertEquals("Home: Unassigned", row("Home")); assertTrue(row("Back").endsWith("Short press"))
+            assertTrue(row("Mode").endsWith("2 clicks")); assertTrue(row("Lock").endsWith("Long press"))
+            a.assign(PhoneHidAction.TAP, binding("A")); panel.refresh()
+            for (label in listOf("Back", "Home", "Mode", "Lock")) assertEquals("$label: Unassigned", row(label))
+            assertEquals("Tap: Remote A: Key 30 · Short press", row("Tap"))
+        } finally { executor(pin).shutdownNow() }
+    }
+
     @Test fun actualPinFailuresKeepSavedIntentAndProfilesAndPanelSeparatesActions() {
         for (throws in listOf(false, true)) {
             val context = Context(); val store = Disk().open(); val r = Rig(store)

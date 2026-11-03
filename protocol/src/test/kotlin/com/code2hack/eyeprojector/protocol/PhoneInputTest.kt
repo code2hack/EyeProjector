@@ -66,6 +66,27 @@ class PhoneInputTest {
         assertThrows(IllegalArgumentException::class.java) { ReceiverInput.from(ui.bytes() + 0.toByte()) }
     }
 
+    @Test fun sharedCandidateCodecRetainsOriginalMapAndRejectsConflictingOrPartialRecords() {
+        val base = PhoneHidEdge(PhoneHidAction.BACK, PhoneHidPhase.DOWN, 7, 66, 23, 1234, 1237)
+        val candidates = linkedMapOf(PhoneHidAction.BACK to PhoneHidGesture.SINGLE,
+            PhoneHidAction.HOME to PhoneHidGesture.LONG, PhoneHidAction.MODE to PhoneHidGesture.clicks(2))
+        val edge = base.copy(bindings = candidates)
+        assertEquals(edge, PhoneHidEdge.from(edge.bytes()))
+        assertEquals(base, PhoneHidEdge.from(base.bytes()))
+        assertFalse(edge.samePress(base)); assertTrue(edge.samePress(edge.copy(phase = PhoneHidPhase.UP)))
+        for (length in 1 until edge.bytes().size - base.bytes().size) {
+            assertThrows(IllegalArgumentException::class.java) { PhoneHidEdge.from(edge.bytes().copyOf(base.bytes().size + length)) }
+        }
+        assertThrows(IllegalArgumentException::class.java) { base.copy(bindings = candidates + (PhoneHidAction.LOCK to PhoneHidGesture.SINGLE)) }
+        assertThrows(IllegalArgumentException::class.java) { base.copy(bindings = candidates + (PhoneHidAction.TAP to PhoneHidGesture.SINGLE)) }
+        assertThrows(IllegalArgumentException::class.java) { base.copy(bindings = mapOf(PhoneHidAction.HOME to PhoneHidGesture.LONG)) }
+        val duplicatedRole = base.bytes() + bytes {
+            writeInt(2)
+            repeat(2) { writeByte(PhoneHidAction.BACK.ordinal); writeByte(PhoneHidGesture.Kind.SINGLE.ordinal); writeInt(1) }
+        }
+        assertThrows(IllegalArgumentException::class.java) { PhoneHidEdge.from(duplicatedRole) }
+    }
+
     private fun stateBytesWithTrailingData() = HeadPointerState(0, 0, false, false, 0f, 0f, null, null).bytes() + 0.toByte()
 
     @Test fun wireFifteenMatchesBothNewDirectionsAndRejectsThePriorHandshakes() {

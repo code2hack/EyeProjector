@@ -50,14 +50,17 @@ internal class PhoneHidBindings(read: () -> String?, private val write: (String)
 
     fun binding(action: PhoneHidAction): PhoneHidBinding? = bindings[action]
 
+    fun assignments(button: PhoneHidButton): Map<PhoneHidAction, PhoneHidBinding> =
+        bindings.filterValues { it.button == button }
+
     fun assignment(button: PhoneHidButton): Pair<PhoneHidAction, PhoneHidBinding>? =
-        bindings.entries.firstOrNull { it.value.button == button }?.let { it.key to it.value }
+        assignments(button).entries.singleOrNull()?.let { it.key to it.value }
 
     fun action(button: PhoneHidButton): PhoneHidAction? = assignment(button)?.first
 
     fun assign(action: PhoneHidAction, binding: PhoneHidBinding): Boolean {
         require(!action.learnsSingleOnly || binding.gesture == PhoneHidGesture.SINGLE)
-        val next = bindings.filterValues { it.button != binding.button }.toMutableMap()
+        val next = bindings.filter { (other, value) -> !conflicts(action, binding, other, value) }.toMutableMap()
         next[action] = binding
         return save(next)
     }
@@ -82,7 +85,15 @@ internal class PhoneHidBindings(read: () -> String?, private val write: (String)
     internal companion object {
         const val LEGACY_PREFIX = "eyeprojector.hid-bindings.1:"
         const val PREFIX = "eyeprojector.hid-bindings.2:"
+        private fun conflicts(a: PhoneHidAction, first: PhoneHidBinding, b: PhoneHidAction, second: PhoneHidBinding) =
+            first.button == second.button && (a.learnsSingleOnly || b.learnsSingleOnly || first.gesture == second.gesture)
+
         internal fun encode(values: Map<PhoneHidAction, PhoneHidBinding>): String {
+            val entries = values.entries.toList()
+            entries.forEachIndexed { index, (action, binding) ->
+                require(!action.learnsSingleOnly || binding.gesture == PhoneHidGesture.SINGLE)
+                require(entries.take(index).none { conflicts(action, binding, it.key, it.value) })
+            }
             val bytes = ByteArrayOutputStream()
             DataOutputStream(bytes).use { output ->
                 output.writeInt(values.size)
@@ -128,9 +139,9 @@ internal class PhoneHidBindings(read: () -> String?, private val write: (String)
                     val binding = PhoneHidBinding(button, input.readString(), input.readString(),
                         if (legacy) PhoneHidGesture.SINGLE else PhoneHidGesture(
                             PhoneHidGesture.Kind.valueOf(input.readString()), input.readInt()))
-                    require(result.values.none { it.button == button })
                     if (action != null) {
                         require(action !in result && (!action.learnsSingleOnly || binding.gesture == PhoneHidGesture.SINGLE))
+                        require(result.none { (other, value) -> conflicts(action, binding, other, value) })
                         result[action] = binding
                     }
                 }
