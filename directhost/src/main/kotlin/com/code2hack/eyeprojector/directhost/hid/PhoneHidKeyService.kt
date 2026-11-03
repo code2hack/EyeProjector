@@ -36,7 +36,6 @@ class PhoneHidKeyService : AccessibilityService(), InputManager.InputDeviceListe
         val source = runtime ?: return false
         // No Android ID/name/vendor guess may impersonate the raw pinned physical group.
         // Its collections are intercepted below Android; unrelated keys keep their normal route.
-        if (source.pin.ownsRoute) return false
         val input = source.controller
         val phase = when {
             event.isCanceled -> PhoneHidPhase.CANCEL
@@ -44,6 +43,9 @@ class PhoneHidKeyService : AccessibilityService(), InputManager.InputDeviceListe
             event.action == KeyEvent.ACTION_UP -> PhoneHidPhase.UP
             else -> return false
         }
+        if (source.pin.ownsRoute)
+            return input.consumeRetired(event.deviceId, event.keyCode, event.scanCode, event.downTime, phase) ||
+                input.consumeWake(event.deviceId, event.keyCode, event.scanCode, event.downTime, phase)
         if (!source.recognizeInput()) return input.discardRaw(event.deviceId,event.keyCode,event.scanCode,event.downTime,phase)
         if (input.consumeRetired(event.deviceId, event.keyCode, event.scanCode, event.downTime, phase)) return true
         if (input.consumeWake(event.deviceId, event.keyCode, event.scanCode, event.downTime, phase)) return true
@@ -55,6 +57,8 @@ class PhoneHidKeyService : AccessibilityService(), InputManager.InputDeviceListe
         // These native Rokid names are observed canonical exclusions, not a guessed Phone descriptor.
         if (!eligible(device))
             return input.consumeUnavailable(event.deviceId, event.keyCode, event.scanCode, event.downTime, phase, event.repeatCount)
+        if (!source.acceptsAndroid(identity))
+            return input.consumeUnavailable(event.deviceId, event.keyCode, event.scanCode, event.downTime, phase, event.repeatCount)
         val binding = PhoneHidBinding(PhoneHidButton(identity, event.keyCode, event.scanCode),
             device.name, KeyEvent.keyCodeToString(event.keyCode))
         return input.accept(PhoneHidController.Event(event.deviceId, binding, phase,
@@ -63,7 +67,9 @@ class PhoneHidKeyService : AccessibilityService(), InputManager.InputDeviceListe
 
     override fun onInputDeviceAdded(deviceId: Int) {
         val device = manager?.getInputDevice(deviceId) ?: return
-        if (eligible(device) && runtime?.pin?.ownsRoute == false) runtime?.controller?.externalAttached()
+        val source = runtime ?: return
+        if (eligible(device) && source.acceptsAndroid(PhoneHidDeviceIdentity(device.descriptor, device.vendorId, device.productId)))
+            source.controller.externalAttached()
     }
     private fun eligible(device: InputDevice) = device.isExternal && !device.isVirtual &&
         device.name != "ROKID,PSOC-TP-R" && device.name != "qpnp_pon"

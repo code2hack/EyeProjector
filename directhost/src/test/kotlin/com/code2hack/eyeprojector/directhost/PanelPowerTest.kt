@@ -61,19 +61,20 @@ class PanelPowerTest {
     }
 
     @Test fun offSerializesBehindWholeInputAndCloseThenRejectsLaterOff() {
-        val lock = Any()
+        val controlLock = Any()
+        val outputLock = Any()
         val entered = CountDownLatch(1)
         val finishTap = CountDownLatch(1)
         val output = ByteArrayOutputStream()
         val target = Tap(10, 20, Geometry(480, 640))
-        val touch = PhoneTouchDispatcher(lock) { payload ->
+        val touch = PhoneTouchDispatcher(controlLock, outputLock) { payload ->
             output.write(payload, 0, 1)
             entered.countDown()
             check(finishTap.await(2, TimeUnit.SECONDS))
             output.write(payload, 1, payload.size - 1)
         }
         touch.geometry(target.geometry)
-        val panel = SessionPanelPower(lock, { true }) { output.write(it) }
+        val panel = SessionPanelPower(outputLock, { true }) { output.write(it) }
         val tap = thread { touch.tap(target) }
         assertTrue(entered.await(2, TimeUnit.SECONDS))
         val off = thread { panel.requestOff(11) }

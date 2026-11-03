@@ -69,7 +69,7 @@ Pairing remembers an EyeProjector peer for video, control and camera forwarding.
 | Phone, paired | Start, Stop, Forget and actual setup/connection status. |
 | Phone camera choice | Persisted Use Glasses camera switch. |
 | Phone app selection | Chosen-app icons, with + first; tap to open, hold for the app menu. |
-| Phone HID setup | Select device, Pin, assign Tap / Scroll down / Scroll up / Back / Home / Lock / Mode, Unpin and reset Phone bindings. |
+| Phone HID setup | Select device/profile, Pin, assign Tap / Scroll down / Scroll up / Back / Home / Lock / Mode, Unpin, Reset selected profile. |
 | Glasses, paired | Connect or Disconnect, Forget and actual connection status. |
 | Glasses local settings | Separate X/Y pointer sensitivity, scroll speed and head-motion scrolling. Bluetooth HID bindings are Phone-only. |
 
@@ -157,7 +157,7 @@ Old v0.3 descriptors do not contain the new coordinate lists. Do not guess posit
 
 ### Phone HID: pin, learn and operate
 
-Bluetooth controllers connect to the Phone only. The pinned physical group and its input collections are dedicated to EyeProjector; unassigned inputs do not operate Android independently. Keep actual interception, saved pin intent, retry, explicit Unpin/reset and wake/reconnection behavior distinct.
+Bluetooth controllers connect to the Phone only. The pinned physical group and its input collections are dedicated to EyeProjector; unassigned inputs do not operate Android independently. Keep actual interception, saved pin intent, retry, explicit Unpin and profile reset, and wake/reconnection behavior distinct.
 
 The assignment rows are **Tap, Scroll down, Scroll up, Back, Home, Lock and Mode**. Remove the Anchor row and combined Back/Lock/Home role. Back, Home and Lock are separate semantic actions rather than a built-in one/two/three-click navigation sequence.
 
@@ -167,9 +167,13 @@ The assignment rows are **Tap, Scroll down, Scroll up, Back, Home, Lock and Mode
 | Scroll down / Scroll up | Capture a single click only | One direction action on press; holding repeats according to the active mode |
 | Back / Home / Lock / Mode | Capture and distinguish short press, long press and multi-click | Match the learned gesture and perform its assigned action once |
 
-Learning consumes its gesture without invoking the app or mode action. A multi-click binding resolves as one complete gesture, with no earlier short-click action. Repeats and release tails belong to the original press. Stop, connection/device loss and explicit reset end that original repeating action; a later distinct input is handled normally. No invented action, default physical assignment or new hardware input grab is introduced.
+Learning consumes its gesture without invoking the app or mode action. Learning still waits for the final quiet period to discover the complete short/long/multi-click gesture. Runtime uses the saved gesture instead: a short SINGLE acts immediately on release, without a final multi-click wait; MULTI N acts on the Nth short release, with 500 ms as the maximum gap between incomplete clicks. No short action fires while a saved multi-click is incomplete. A completed gesture retires, so the next press begins a new gesture: four rapid clicks of a double-click binding produce two actions. LONG retains its 800 ms threshold and acts on release. Tap and Scroll retain the behaviors in the table.
 
-Existing compatible Tap/Scroll bindings and pin intent are retained. Where a legacy single-button Anchor assignment is migrated, its short gesture becomes Mode. A legacy combined navigation assignment can preserve its single-click Back as Back; Home/Lock need explicit assignments and must not silently inherit multiple actions from one binding. The persistence migration must be explicit and tested, without resetting unrelated settings.
+Each physical HID device has its own persistent binding profile, including its learned gestures. Configuring one device does not overwrite another. Only one pinned device is active at a time; simultaneous HID operation is outside the current design. The existing device selection and Pin flow selects the corresponding profile. Unpinning or switching preserves saved profiles. Reset clears only the selected profile. Reconnect and restart restore the saved pin/profile intent. Profiles use actual stable device identity rather than transient Android input IDs; migration must retain recorded identities rather than guess them from whichever device is currently pinned.
+
+Repeats, pending gestures and release tails belong to the original device, binding and press. Stop, connection/device loss, profile reset and device replacement retire that original input before another device/profile takes over; stale release/timer/learning callbacks must not operate the replacement. A later distinct input is handled normally. No invented action, default physical assignment or new hardware input grab is introduced.
+
+Existing compatible Tap/Scroll bindings and pin intent are retained. Where a legacy single-button Anchor assignment is migrated, its short gesture becomes Mode. A legacy combined navigation assignment can preserve its single-click Back as Back; Home/Lock need explicit assignments and must not silently inherit multiple actions from one binding. The persistence migration must be explicit and tested, without resetting unrelated settings. Migration from the v0.4 global map retains each recorded device's bindings in its own profile, including mixed-device records, and keeps legacy data recoverable. Unpinning must not erase those records.
 
 The native shell reader remains a Glasses-local product component where needed for actual raw input and fixed sleep; no Glasses HID learning/storage/dispatch is reintroduced. ADB automation is a development test route and is not a production media/input relay.
 

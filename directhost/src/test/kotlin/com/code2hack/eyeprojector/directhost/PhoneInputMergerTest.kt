@@ -19,6 +19,7 @@ class PhoneInputMergerTest {
         val nav = mutableListOf<Navigation>()
         var onCancel: (() -> Unit)? = null
         var onUi: ((ReceiverInput) -> Unit)? = null
+        var onMode: (() -> Unit)? = null
         data class Job(val at: Long, val action: () -> Unit, var canceled: Boolean = false)
         val jobs = mutableListOf<Job>()
         val dispatcher = PhoneTouchDispatcher(lock) { data ->
@@ -27,7 +28,8 @@ class PhoneInputMergerTest {
         val merger = PhoneInputMerger(lock, { now }, { at, action ->
             val j = Job(at, action); jobs.add(j); val cancel: () -> Unit = { j.canceled = true }; cancel
         }, { size }, { records.add(it); dispatcher.touch(it) }, { scrolls.add(it); dispatcher.scroll(it) },
-            { action, _ -> nav.add(action) }, { dispatcher.cancel() }, { assertFalse(Thread.holdsLock(lock)); ui.add(it); onUi?.invoke(it) })
+            { action, _ -> nav.add(action) }, { dispatcher.cancel() }, { assertFalse(Thread.holdsLock(lock)); ui.add(it); onUi?.invoke(it) },
+            hidMode = { assertFalse(Thread.holdsLock(lock)); onMode?.invoke() })
         init { dispatcher.geometry(size); pointer() }
         fun pointer(revision: Long = 1, available: Boolean = true, projected: Boolean = true, x: Float = 200f, y: Float = 300f) =
             merger.pointer(HeadPointerState(revision, ++sequence, available, projected, x, y, Fit(100, 100, 480, 640), size),
@@ -116,5 +118,29 @@ class PhoneInputMergerTest {
         f.onUi = { if (it.kind == ReceiverInputKind.DOWN) f.pointer(projected = false, x = 240f) }
         f.merger.edge(1, f.down())
         assertEquals(listOf(ReceiverInputKind.DOWN, ReceiverInputKind.MOVE), f.ui.map { it.kind })
+    }
+
+    @Test fun localContactCancelPrecedesImmediateModeAndStaleTerminalCannotEndNextContact() {
+        val f = Fixture(); f.pointer(projected = false)
+        val tap = f.down(); f.merger.edge(1, tap)
+        val original = f.ui.single()
+        var modes = 0
+        f.onMode = {
+            modes++
+            assertEquals(listOf(ReceiverInputKind.DOWN, ReceiverInputKind.CANCEL), f.ui.map { it.kind })
+            assertEquals(original.contactId, f.ui.last().contactId)
+        }
+        val mode = f.down(PhoneHidAction.MODE, key = 67)
+        f.merger.edge(2, mode)
+        f.merger.edge(2, mode.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1020))
+        assertEquals(1, modes)
+        f.now = 1030; val next = f.down(); f.merger.edge(3, next)
+        for (phase in listOf(PhoneHidPhase.UP, PhoneHidPhase.CANCEL))
+            f.merger.edge(1, tap.copy(phase = phase, eventTimeMs = 1040))
+        assertEquals(3, f.ui.size)
+        f.merger.edge(3, next.copy(phase = PhoneHidPhase.UP, eventTimeMs = 1050))
+        assertEquals(listOf(ReceiverInputKind.DOWN, ReceiverInputKind.CANCEL, ReceiverInputKind.DOWN, ReceiverInputKind.UP), f.ui.map { it.kind })
+        assertNotEquals(original.contactId, f.ui.last().contactId)
+        assertTrue(f.records.isEmpty())
     }
 }
