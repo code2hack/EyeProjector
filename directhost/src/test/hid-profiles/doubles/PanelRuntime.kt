@@ -6,6 +6,13 @@ import java.io.Closeable
 internal class PhoneHidRuntime(val controller: PhoneHidController, val pin: PhoneHidPinRuntime,
     private val profiles: PhoneHidProfiles) {
     val profileError get() = profiles.error
+    val androidProfiles = emptyList<Pair<String, String>>()
+    val androidProfileKey: String? = null
+    val androidControlsActive = false
+    val selectedProfileName get() = pin.selectedName
+    fun selectAndroidProfile(key: String) = Unit
+    fun resetSelectedProfile() = pin.resetSelectedProfile()
+    fun openSettings() = true
     fun userControl() = true
     fun observe(callback: () -> Unit) = Closeable {}
     fun refresh() = pin.refresh()

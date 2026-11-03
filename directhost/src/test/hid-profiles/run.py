@@ -10,6 +10,7 @@ import subprocess
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--output-dir', type=Path, required=True)
 p.add_argument('--json-jar', type=Path, required=True, help='org.json:json:20240303 host JSON implementation')
+p.add_argument('--callers', action='store_true', help='Compile actual Runtime and KeyService caller composition')
 a = p.parse_args()
 root = Path(__file__).resolve().parents[4]
 out = a.output_dir.resolve()
@@ -24,10 +25,17 @@ files += [host / 'hid' / (n + '.kt') for n in [
     'PhoneHidBindings', 'PhoneHidProfiles', 'PhoneHidController', 'PhoneHidPinRuntime', 'PhoneHidPinService', 'PhoneHidPanel']]
 files += [host / 'activation' / (n + '.kt') for n in ['PhoneHidActivation', 'PhoneHidDisposition']]
 files += [root / 'directhost/src/test/hidnavigation/ActivationBoundary.kt']
-files += [root / 'directhost/src/test/hid/doubles' / (n + '.kt') for n in ['Os', 'Color', 'Resources']]
+files += [root / 'directhost/src/test/hid/doubles' / (n + '.kt') for n in ['Os', 'Color', 'Resources', 'InputManager', 'KeyEvent', 'Accessibility', 'AccessibilityEvent', 'Settings', 'Annotation']]
 files += [root / 'directhost/src/test/hidnavigation' / (n + '.kt') for n in ['Widgets']]
 files += sorted((suite / 'doubles').glob('*.kt'))
 files += [suite / 'ProfilesTest.kt', root / 'directhost/src/test/kotlin/com/code2hack/eyeprojector/directhost/hid/PhoneHidBindingsTest.kt']
+if a.callers:
+    files.remove(suite / 'ProfilesTest.kt')
+    files.remove(suite / 'doubles/PanelRuntime.kt')
+    files.remove(root / 'directhost/src/test/hidnavigation/ActivationBoundary.kt')
+    files += [host / 'hid' / (n + '.kt') for n in ['PhoneHidRuntime', 'PhoneHidKeyService']]
+    files += [host / 'activation/HidWakeRequest.kt', suite / 'CallerTest.kt']
+    files += sorted((suite / 'caller-doubles').glob('*.kt'))
 cache = Path(os.environ.get('GRADLE_USER_HOME', Path.home() / '.gradle')) / 'caches/modules-2/files-2.1'
 coordinates = [
     ('org.jetbrains.kotlin', 'kotlin-compiler-embeddable', '2.2.21'),
@@ -63,9 +71,12 @@ commands = {
                [str(out / f['snapshot']) for f in inputs],
     'run': [java, '-Xmx256m', '-cp', str(jar) + os.pathsep + cp, 'org.junit.runner.JUnitCore',
             'com.code2hack.eyeprojector.directhost.hid.PhoneHidBindingsTest',
+            'com.code2hack.eyeprojector.directhost.hid.CallerTest' if a.callers else
             'com.code2hack.eyeprojector.directhost.hid.ProfilesTest'],
 }
-result = {'scope': 'Actual HID profiles/bindings codec, controller, PinRuntime, panel, protocol value types and learning recognizer. In-memory Android preferences, queued main Handler, Shizuku/Binder/service and opaque target routes; panel Runtime composition is a test boundary. No Android/OS/native-grab/physical HID acceptance.',
+scope = ('Actual full PhoneHidRuntime and KeyService + profiles/bindings/controller/pin/notification/panel/learning callers. Session/snapshot availability and target routes are explicit doubles; no extraction of Runtime/KeyService source.' if a.callers else
+         'Actual profiles/bindings/controller/pin/notification/panel/learning components. Panel Runtime composition is an explicit test boundary.')
+result = {'actualRuntimeKeyServiceCallers': a.callers, 'scope': scope + ' In-memory Android preferences, queued main Handler, Shizuku/Binder/service boundaries. No Android/OS/native-grab/physical HID acceptance.',
           'inputs': inputs, 'runnerSha256': sha(Path(__file__)),
           'dependencies': [{'path': str(f), 'sha256': sha(f)} for f in jars],
           'commands': commands, 'compileExit': None, 'runExit': None}

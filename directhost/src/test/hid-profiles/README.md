@@ -40,3 +40,24 @@ descriptor/vendor/product identities separately. There is no inferred translatio
 from an Android descriptor to a native physical key or to the current pin. Native
 identity with missing/unreadable physical-key encoding reports migration failure
 and retains the source bytes.
+
+
+For the real Android fallback caller composition, add `--callers` with another new
+evidence directory. This compiles the complete production `PhoneHidRuntime` and
+`PhoneHidKeyService` with the actual profile/controller/pin/panel/notification
+sources. It runs seven caller regressions plus the same 14 bindings checks. The
+session facade, snapshot availability/target routes and Android framework remain
+explicit doubles; Runtime and KeyService are neither extracted nor substituted.
+It verifies actual migrated-key dispatch, mixed-profile explicit UI selection,
+persisted selection/restart, transient attachment IDs, disconnect/identity loss,
+native pin/release preemption and original fallback restoration, stale terminals,
+selection read/write failure, selected-profile reset, canceled learning callbacks and
+original-profile queued writes. Executors are bounded and shut down after tests.
+
+One Android fallback intent is restored from `phone_hid_bindings/android_profile`,
+or from the sole actual saved Android identity when no choice exists. Multiple
+saved identities require the explicit legacy-only selector. Key callbacks never
+select a profile. Native loading, pin intent and release preempt the fallback;
+completed Unpin restores the same fallback intent. The selector labels this as
+Android key fallback without native interception. Legacy binding bytes remain
+untouched and exact Android identities are never translated into native keys.
