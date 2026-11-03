@@ -1,6 +1,8 @@
 package com.code2hack.eyeprojector.directhost.hid
 
 import com.code2hack.eyeprojector.directhost.activation.*
+import com.code2hack.eyeprojector.directhost.IPhoneInputSession
+import com.code2hack.eyeprojector.directhost.ProjectionContext
 import com.code2hack.eyeprojector.directhost.input.*
 import com.code2hack.eyeprojector.protocol.*
 import java.io.ByteArrayOutputStream
@@ -54,8 +56,15 @@ class PhoneHidV04Test {
                 captured.add(down)
                 val id = ++routeSequence
                 val owner = ownerEpoch
-                return PhoneHidRoute(down, 1) { merger.stampedEdge(id, it) { _, _ -> ownerEpoch == owner } }
-                    .also { it.submit(down); onCaptured?.invoke(down) }
+                val original = PhoneHidOriginal(object : IPhoneInputSession {
+                    override fun active() = sourceActive
+                    override fun edge(routeId: Long, typedEdge: ByteArray, regionId: String, word: Long) {
+                        assertEquals("original-fixture", regionId); assertEquals(1L, word)
+                        merger.stampedEdge(routeId, PhoneHidEdge.from(typedEdge)) { _, _ -> ownerEpoch == owner }
+                    }
+                }, ProjectionContext()) { ownerEpoch == owner }
+                return checkNotNull(original.route(down, "original-fixture", 1, 1, id))
+                    .also { onCaptured?.invoke(down) }
             }
             override fun submit(route: PhoneHidRoute, edge: PhoneHidEdge) = route.submit(edge)
             override fun cancel(route: PhoneHidRoute, eventTimeMs: Long) = route.cancel(eventTimeMs)
@@ -80,6 +89,105 @@ class PhoneHidV04Test {
             repeat(count) { up(down(key)); if (it + 1 < count) advance(now + 100) }
         }
         fun outputs() = touches.size + scrolls.size + navigation.size + receiver.size + modes
+    }
+
+    @Test fun sharedShortLongAndDoubleResolveTogetherAndSingleOnlyOtherKeyStaysImmediate() {
+        val f = Fixture(); f.assign(PhoneHidAction.BACK); f.assign(PhoneHidAction.HOME, PhoneHidGesture.LONG)
+        f.clicks(1); assertEquals(listOf(Navigation.BACK), f.navigation)
+        val held = f.down(); f.advance(f.now + 800); assertEquals(1, f.outputs())
+        f.up(held, 0); assertEquals(listOf(Navigation.BACK, Navigation.CONTEXTUAL_HOME), f.navigation)
+        f.assign(PhoneHidAction.MODE, PhoneHidGesture.clicks(2))
+        f.assign(PhoneHidAction.LOCK, key = 21)
+        f.clicks(1); assertEquals(2, f.outputs())
+        f.advance(f.now + 100); f.clicks(1, 21)
+        assertEquals(listOf(ReceiverInputKind.LOCK), f.receiver.map { it.kind })
+        f.advance(f.now + 100); f.clicks(1); assertEquals(1, f.modes)
+        assertEquals(2, f.navigation.size)
+        f.advance(f.now + 50); f.clicks(1); val at = f.now
+        f.advance(at + 499); assertEquals(2, f.navigation.size)
+        f.advance(at + 500); assertEquals(listOf(Navigation.BACK, Navigation.CONTEXTUAL_HOME, Navigation.BACK), f.navigation)
+        assertTrue(f.captured.filter { it.keyCode == 20 }.takeLast(3).all { it.bindings.size == 3 })
+    }
+
+    @Test fun sharedDoubleTripleWaitsForLargerCountAndUnboundCountExpiresWithoutAction() {
+        val f = Fixture(); f.assign(PhoneHidAction.BACK, PhoneHidGesture.clicks(2))
+        f.assign(PhoneHidAction.MODE, PhoneHidGesture.clicks(3))
+        f.clicks(2); assertEquals(0, f.outputs()); val two = f.now
+        f.advance(two + 499); assertEquals(0, f.outputs())
+        f.clicks(1); assertEquals(1, f.modes); assertTrue(f.navigation.isEmpty())
+        f.advance(f.now + 50); f.clicks(2); assertEquals(1, f.outputs())
+        f.advance(f.now + 500); assertEquals(listOf(Navigation.BACK), f.navigation)
+        f.clicks(1); f.advance(f.now + 500); assertEquals(2, f.outputs())
+        f.clicks(3); assertEquals(2, f.modes)
+    }
+
+    @Test fun sharedSingleDoubleKeepsBoundaryAndCancelsMixedClickThenHold() {
+        for (gap in listOf(499L, 500L, 501L)) {
+            val f = Fixture(); f.assign(PhoneHidAction.BACK); f.assign(PhoneHidAction.MODE, PhoneHidGesture.clicks(2))
+            f.assign(PhoneHidAction.HOME, PhoneHidGesture.LONG)
+            f.clicks(1); val firstUp = f.now
+            f.now = firstUp + gap; f.up(f.down(), 0)
+            assertEquals(if (gap < 500) 1 else 0, f.modes)
+            assertEquals(if (gap < 500) 0 else 1, f.navigation.size)
+            f.advance(f.now + 500)
+            assertEquals(if (gap < 500) 0 else 2, f.navigation.size)
+        }
+        val f = Fixture(); f.assign(PhoneHidAction.BACK); f.assign(PhoneHidAction.MODE, PhoneHidGesture.clicks(2))
+        f.assign(PhoneHidAction.HOME, PhoneHidGesture.LONG)
+        f.clicks(1); f.advance(f.now + 100); f.up(f.down(), 800)
+        f.advance(f.now + 500); assertEquals(0, f.outputs())
+        f.up(f.down(), 800); assertEquals(listOf(Navigation.CONTEXTUAL_HOME), f.navigation)
+    }
+
+    @Test fun originalCandidateSetAndOwnerSurviveDeferredCompletionWithoutRecapture() {
+        val f = Fixture(); f.assign(PhoneHidAction.BACK); f.assign(PhoneHidAction.MODE, PhoneHidGesture.clicks(2))
+        f.clicks(1); val stale = f.jobs.last().action
+        f.assign(PhoneHidAction.HOME, PhoneHidGesture.SINGLE)
+        f.advance(f.now + 500)
+        assertEquals(listOf(Navigation.BACK), f.navigation); assertEquals(1, f.captured.size)
+        stale(); assertEquals(1, f.outputs())
+        f.clicks(1); val oldTimer = f.jobs.last().action
+        f.ownerEpoch++; f.advance(f.now + 500); oldTimer()
+        assertEquals(1, f.outputs()); assertEquals(2, f.captured.size)
+        f.clicks(1); f.advance(f.now + 500)
+        assertEquals(listOf(Navigation.BACK, Navigation.CONTEXTUAL_HOME), f.navigation)
+    }
+
+    @Test fun sharedPendingGestureRetiresForEveryOriginalCancellationRoute() {
+        val stops: List<(Fixture) -> Unit> = listOf({ it.controller.cancelInput() },
+            { it.controller.deviceRemoved(7) }, { it.controller.connection(false) }, { it.controller.resetAll() },
+            { it.pointer(revision = 2) }, { it.merger.sourceLost() }, { it.merger.invalidate() }, { it.ownerEpoch++ })
+        for (stop in stops) {
+            val f = Fixture(); f.assign(PhoneHidAction.BACK); f.assign(PhoneHidAction.MODE, PhoneHidGesture.clicks(2))
+            val down = f.down(); f.up(down); val stale = f.jobs.map { it.action }
+            stop(f); f.advance(f.now + 1000); stale.forEach { it() }
+            f.controller.accept(down.copy(phase = PhoneHidPhase.UP, eventTimeMs = f.now))
+            assertEquals(0, f.outputs())
+        }
+    }
+
+    @Test fun learningDistinctRowsPersistsTogetherAndRawLearningMovesEveryVariant() {
+        val f = Fixture(); f.controller.openPage()
+        f.controller.select(PhoneHidAction.BACK); f.clicks(1); f.advance(f.now + 500)
+        f.controller.select(PhoneHidAction.HOME); f.up(f.down(), 800)
+        f.controller.select(PhoneHidAction.MODE); f.clicks(2); f.advance(f.now + 500)
+        val key = f.binding().button
+        val expected = mapOf(PhoneHidAction.BACK to PhoneHidGesture.SINGLE,
+            PhoneHidAction.HOME to PhoneHidGesture.LONG, PhoneHidAction.MODE to PhoneHidGesture.clicks(2))
+        assertEquals(expected, f.store.assignments(key).mapValues { it.value.gesture })
+        val reload = PhoneHidBindings({ f.record }) { error("Reload must not write") }
+        assertEquals(expected, reload.assignments(key).mapValues { it.value.gesture })
+        f.controller.select(PhoneHidAction.LOCK); f.up(f.down(), 800)
+        assertNull(f.store.binding(PhoneHidAction.HOME)); assertEquals(3, f.store.assignments(key).size)
+        assertEquals(0, f.outputs()); assertTrue(f.captured.isEmpty())
+        f.controller.closePage(); f.clicks(2); assertEquals(1, f.modes)
+        f.controller.openPage(); f.controller.select(PhoneHidAction.TAP); f.clicks(1); f.advance(f.now + 500)
+        assertEquals(setOf(PhoneHidAction.TAP), f.store.assignments(key).keys)
+        f.controller.select(PhoneHidAction.BACK); f.clicks(1); f.advance(f.now + 500)
+        assertNull(f.store.binding(PhoneHidAction.TAP))
+        f.controller.select(PhoneHidAction.HOME); f.up(f.down(), 800)
+        assertEquals(setOf(PhoneHidAction.BACK, PhoneHidAction.HOME), f.store.assignments(key).keys)
+        f.controller.closePage(); f.clicks(1); assertEquals(listOf(Navigation.BACK), f.navigation)
     }
 
     @Test fun allSevenRolesAndGestureIdentitiesRoundTripThroughActualLocalCodec() {

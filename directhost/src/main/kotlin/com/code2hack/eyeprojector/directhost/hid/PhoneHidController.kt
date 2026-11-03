@@ -51,7 +51,8 @@ internal class PhoneHidController(
     private data class Key(val attachment: Int, val button: PhoneHidButton)
     private class Capture(val event: Event, val action: PhoneHidAction, val bindings: PhoneHidBindings)
     private class WakeAdmission(val event: Event) { var canceled = false }
-    private class Press(val event: Event, val action: PhoneHidAction, val admission: Long) {
+    private class Press(val event: Event, val action: PhoneHidAction, val admission: Long,
+        val candidates: Map<PhoneHidAction, PhoneHidGesture>) {
         var route: PhoneHidRoute? = null
         var terminal: Event? = null
         var canceled = false
@@ -320,13 +321,16 @@ internal class PhoneHidController(
             received(event); publish()
             return true
         }
-        val assignment = bindings.assignment(event.binding.button)
+        val assignments = bindings.assignments(event.binding.button)
+        // A stable envelope identifies the press; the merger resolves the complete candidate map.
+        val assignment = assignments.entries.minByOrNull { it.key.ordinal }?.let { it.key to it.value }
         val action = assignment?.first
         remember(raw, action != null)
         if (action == null) { received(event); publish(); return false }
         // Replace this same physical key's old incomplete press, preserving every old release.
         val previous = presses.filter { (_, p) -> sameButton(p.event, event) }.values.toList()
-        val press = Press(event.copy(binding = assignment.second), action, ++nextAdmission)
+        val press = Press(event.copy(binding = assignment.second), action, ++nextAdmission,
+            assignments.mapValues { it.value.gesture })
         previous.forEach { presses.remove(raw(it.event)); retired.add(raw(it.event)) }
         presses[raw] = press
         admissions[key] = press
@@ -436,5 +440,6 @@ internal class PhoneHidController(
     private fun raw(event: Event) = Raw(event.attachmentId, event.binding.button.keyCode, event.binding.button.scanCode, event.downTimeMs, event.pressId)
     private fun sameButton(a: Event, b: Event) = a.attachmentId == b.attachmentId && a.binding.button == b.binding.button
     private fun edge(press: Press, event: Event) = PhoneHidEdge(press.action, event.phase, event.attachmentId,
-        event.binding.button.keyCode, event.binding.button.scanCode, event.downTimeMs, event.eventTimeMs, event.repeatCount, press.event.binding.gesture)
+        event.binding.button.keyCode, event.binding.button.scanCode, event.downTimeMs, event.eventTimeMs, event.repeatCount,
+        press.event.binding.gesture, press.candidates.takeIf { it.size > 1 }.orEmpty())
 }

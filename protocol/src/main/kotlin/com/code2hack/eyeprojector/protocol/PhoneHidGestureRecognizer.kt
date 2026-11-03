@@ -2,7 +2,7 @@ package com.code2hack.eyeprojector.protocol
 
 /** Serialized gesture grammar shared by Phone learning and runtime matching.
  * Learning discovers short/multi after 500 ms of silence following UP. A captured saved gesture
- * completes on its matching release; the quiet period only expires incomplete runtime sequences.
+ * completes on its matching release unless a larger configured click count remains possible.
  * Long resolves on UP at >=800 ms.
  * Every sequence retains its first context. Cancellation and stale timers cannot finish a successor.
  */
@@ -14,8 +14,9 @@ class PhoneHidGestureRecognizer<C : Any>(
     val multiClickMs: Long = 500,
     val longPressMs: Long = 800,
     private val match: (C) -> PhoneHidGesture? = { null },
+    private val matches: (C) -> Set<PhoneHidGesture>? = { match(it)?.let(::setOf) },
 ) {
-    private class Sequence<C>(val source: Any, val captured: C, val first: Any, val expected: PhoneHidGesture?) {
+    private class Sequence<C>(val source: Any, val captured: C, val first: Any, val expected: Set<PhoneHidGesture>?) {
         val members = mutableSetOf(first)
         var held: Any? = first
         var downAt = 0L
@@ -42,7 +43,7 @@ class PhoneHidGestureRecognizer<C : Any>(
         }
         if (!current(captured)) return
         clearTimer()
-        if (old == null) sequence = Sequence(source, captured, press, match(captured)).also { it.downAt = at }
+        if (old == null) sequence = Sequence(source, captured, press, matches(captured)?.toSet()).also { it.downAt = at }
         else { old.members.add(press); old.held = press; old.downAt = at }
     }
 
@@ -58,8 +59,9 @@ class PhoneHidGestureRecognizer<C : Any>(
             old.clicks++
             old.releasedAt = at
             val expected = old.expected
-            if (expected != null && expected.kind != PhoneHidGesture.Kind.LONG && old.clicks == expected.clicks)
-                finish(old, expected)
+            if (expected != null && expected.any { it.kind != PhoneHidGesture.Kind.LONG } &&
+                expected.none { it.kind != PhoneHidGesture.Kind.LONG && it.clicks > old.clicks })
+                finish(old, PhoneHidGesture.clicks(old.clicks))
             else arm(old)
         }
     }
@@ -91,14 +93,13 @@ class PhoneHidGestureRecognizer<C : Any>(
     }
 
     private fun expire(old: Sequence<C>) {
-        if (old.expected == null) finish(old, PhoneHidGesture.clicks(old.clicks))
-        else cancel()
+        finish(old, PhoneHidGesture.clicks(old.clicks))
     }
 
     private fun finish(old: Sequence<C>, gesture: PhoneHidGesture) {
         if (sequence !== old) return
         sequence = null
         clearTimer()
-        if (current(old.captured) && (old.expected == null || old.expected == gesture)) dispatch(gesture, old.captured)
+        if (current(old.captured) && (old.expected == null || gesture in old.expected)) dispatch(gesture, old.captured)
     }
 }

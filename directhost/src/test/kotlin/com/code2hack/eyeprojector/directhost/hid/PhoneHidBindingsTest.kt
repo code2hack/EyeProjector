@@ -1,5 +1,6 @@
 package com.code2hack.eyeprojector.directhost.hid
 
+import com.code2hack.eyeprojector.protocol.PhoneHidGesture
 import com.code2hack.eyeprojector.protocol.PhoneHidAction
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
@@ -294,6 +295,61 @@ class PhoneHidBindingsTest {
         val loaded = PhoneHidBindings({ record }) { error("Reload must not write") }
         assertNull(loaded.error)
         PhoneHidAction.entries.forEach { assertNull(loaded.binding(it)) }
+    }
+
+    @Test fun distinctVariantsCoexistAndExactConflictMovesOnlyItsGesture() {
+        val storage = Storage(); val store = storage.open()
+        val short = binding(); val long = short.copy(gesture = PhoneHidGesture.LONG)
+        val double = short.copy(gesture = PhoneHidGesture.clicks(2))
+        assertTrue(store.assign(PhoneHidAction.BACK, short))
+        assertTrue(store.assign(PhoneHidAction.HOME, long))
+        assertTrue(store.assign(PhoneHidAction.MODE, double))
+        assertEquals(setOf(PhoneHidAction.BACK, PhoneHidAction.HOME, PhoneHidAction.MODE), store.assignments(short.button).keys)
+        assertNull(store.assignment(short.button)) // A shared key has no unambiguous single action.
+        assertTrue(store.assign(PhoneHidAction.LOCK, long))
+        val expected = mapOf(PhoneHidAction.BACK to short, PhoneHidAction.LOCK to long, PhoneHidAction.MODE to double)
+        assertEquals(expected, storage.open().assignments(short.button))
+        assertEquals(wireRecord(expected.map { it.key.name to it.value }.sortedBy { PhoneHidAction.valueOf(it.first).ordinal }), storage.record)
+        assertNull(store.binding(PhoneHidAction.HOME))
+    }
+
+    @Test fun rawRolesExclusivelyReplaceAllVariantsAndDiscreteReplacesRawWithoutConfirmation() {
+        for (raw in PhoneHidAction.entries.filter { it.learnsSingleOnly }) {
+            val storage = Storage(); val store = storage.open(); val short = binding()
+            store.assign(PhoneHidAction.BACK, short)
+            store.assign(PhoneHidAction.HOME, short.copy(gesture = PhoneHidGesture.LONG))
+            store.assign(PhoneHidAction.MODE, short.copy(gesture = PhoneHidGesture.clicks(2)))
+            assertTrue(store.assign(raw, short))
+            assertEquals(mapOf(raw to short), storage.open().assignments(short.button))
+            assertTrue(store.assign(PhoneHidAction.HOME, short.copy(gesture = PhoneHidGesture.LONG)))
+            assertNull(store.binding(raw))
+            assertTrue(store.assign(PhoneHidAction.BACK, short))
+            assertEquals(2, storage.open().assignments(short.button).size)
+        }
+    }
+
+    @Test fun encoderAndDecoderRejectTrueGestureOrRawConflictsButAcceptDistinctVariants() {
+        val short = binding(); val long = short.copy(gesture = PhoneHidGesture.LONG)
+        val valid = mapOf(PhoneHidAction.BACK to short, PhoneHidAction.HOME to long)
+        assertEquals(valid, PhoneHidBindings.decode(PhoneHidBindings.encode(valid)))
+        for (bad in listOf(mapOf(PhoneHidAction.BACK to short, PhoneHidAction.HOME to short),
+            mapOf(PhoneHidAction.TAP to short, PhoneHidAction.HOME to long),
+            mapOf(PhoneHidAction.SCROLL_DOWN to short, PhoneHidAction.MODE to long))) {
+            assertThrows(IllegalArgumentException::class.java) { PhoneHidBindings.encode(bad) }
+            assertThrows(IllegalArgumentException::class.java) { PhoneHidBindings.decode(wireRecord(bad.map { it.key.name to it.value })) }
+        }
+    }
+
+    @Test fun failedSharedMapMoveKeepsAllOriginalVariantsForFalseAndThrowingWrites() {
+        for (throws in listOf(false, true)) {
+            val storage = Storage(); val store = storage.open(); val short = binding()
+            store.assign(PhoneHidAction.BACK, short); store.assign(PhoneHidAction.HOME, short.copy(gesture = PhoneHidGesture.LONG))
+            val before = store.assignments(short.button); val bytes = storage.record
+            storage.writable = false; storage.throwing = throws
+            assertFalse(store.assign(PhoneHidAction.MODE, short))
+            assertEquals(bytes, storage.record); assertEquals(before, store.assignments(short.button))
+            assertEquals(before, storage.open().assignments(short.button))
+        }
     }
 
     private fun wireRecord(entries: List<Pair<String, PhoneHidBinding>>): String {

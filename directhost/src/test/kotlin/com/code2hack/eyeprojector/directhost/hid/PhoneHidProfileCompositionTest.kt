@@ -7,9 +7,9 @@ import org.junit.Test
 
 /** Real profile/controller/route/merger join. Identities, time, persistence and outputs are host fixtures. */
 class PhoneHidProfileCompositionTest {
-    private class Fixture {
+    private class Fixture(initial: String? = null) {
         var now = 1000L
-        var record: String? = null
+        var record: String? = initial
         // Synthetic stable keys only; Android checks separately use the production native identity mapper.
         fun profile(device: String) = "recorded-fixture:$device"
         fun binding(device: String, gesture: PhoneHidGesture = PhoneHidGesture.SINGLE) = PhoneHidBinding(
@@ -34,12 +34,13 @@ class PhoneHidProfileCompositionTest {
         val geometry = Geometry(480, 640)
         val touches = mutableListOf<Touch>()
         val scrolls = mutableListOf<Scroll>()
+        val navigations = mutableListOf<Navigation>()
         var contactCancels = 0
         var modes = 0
         var duringUp = false
         val modeDeliveredDuringUp = mutableListOf<Boolean>()
         val merger = PhoneInputMerger(Any(), { now }, schedule, { geometry },
-            { touches.add(it); true }, { scrolls.add(it); true }, { _, _ -> error("Unexpected navigation") },
+            { touches.add(it); true }, { scrolls.add(it); true }, { kind, _ -> navigations.add(kind) },
             { contactCancels++ }, { error("Unexpected receiver output") },
             hidMode = { modes++; modeDeliveredDuringUp.add(duringUp) })
         var routeId = 0L
@@ -79,6 +80,30 @@ class PhoneHidProfileCompositionTest {
             controller.accept(down.copy(repeatCount = 1, eventTimeMs = now))
             controller.accept(down.copy(phase = PhoneHidPhase.UP, eventTimeMs = now))
         }
+    }
+
+    @Test fun sharedMapsRemainIndependentThroughSwitchReopenAndOriginalQueuedLearning() {
+        val f = Fixture()
+        f.assign("A", PhoneHidAction.BACK); f.assign("A", PhoneHidAction.HOME, PhoneHidGesture.LONG)
+        f.assign("A", PhoneHidAction.MODE, PhoneHidGesture.clicks(2))
+        f.assign("B", PhoneHidAction.HOME); f.assign("B", PhoneHidAction.MODE, PhoneHidGesture.LONG)
+        f.select("A"); val a = f.down("A"); f.up(a); val stale = f.jobs.map { it.action }
+        f.select("B"); f.advance(f.now + 50); f.click("B")
+        assertEquals(listOf(Navigation.CONTEXTUAL_HOME), f.navigations)
+        stale.forEach { it() }; f.oldTail(a); f.advance(f.now + 500)
+        assertEquals(1, f.navigations.size); assertEquals(0, f.modes)
+        f.select("A"); f.controller.openPage(); f.controller.select(PhoneHidAction.LOCK)
+        f.click("A"); f.advance(f.now + 500); f.select("B"); f.flush()
+        val aSaved = f.reopen().bindings(f.profile("A"))
+        assertNull(aSaved.binding(PhoneHidAction.BACK)) // Exact SINGLE moved to Lock only.
+        assertEquals(PhoneHidGesture.SINGLE, aSaved.binding(PhoneHidAction.LOCK)?.gesture)
+        assertEquals(PhoneHidGesture.LONG, aSaved.binding(PhoneHidAction.HOME)?.gesture)
+        assertEquals(PhoneHidGesture.clicks(2), aSaved.binding(PhoneHidAction.MODE)?.gesture)
+        assertEquals(PhoneHidGesture.SINGLE, f.controller.bindings.binding(PhoneHidAction.HOME)?.gesture)
+        val restarted = Fixture(f.record); restarted.select("A"); restarted.click("A"); restarted.advance(restarted.now + 50)
+        restarted.click("A"); assertEquals(1, restarted.modes)
+        restarted.select("B"); restarted.advance(restarted.now + 50); restarted.click("B")
+        assertEquals(listOf(Navigation.CONTEXTUAL_HOME), restarted.navigations)
     }
 
     @Test fun selectedProfilesDeliverTheirOwnSavedSingleAndNthMultiDuringUp() {
