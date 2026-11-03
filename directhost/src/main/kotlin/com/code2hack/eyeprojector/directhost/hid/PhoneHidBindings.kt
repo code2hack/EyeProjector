@@ -79,82 +79,82 @@ internal class PhoneHidBindings(read: () -> String?, private val write: (String)
         return true
     }
 
-    private fun encode(values: Map<PhoneHidAction, PhoneHidBinding>): String {
-        val bytes = ByteArrayOutputStream()
-        DataOutputStream(bytes).use { output ->
-            output.writeInt(values.size)
-            for (action in PhoneHidAction.entries) {
-                val binding = values[action] ?: continue
-                output.writeString(action.name)
-                output.writeString(binding.button.device.descriptor)
-                output.writeInt(binding.button.device.vendorId)
-                output.writeInt(binding.button.device.productId)
-                output.writeInt(binding.button.keyCode)
-                output.writeInt(binding.button.scanCode)
-                output.writeString(binding.deviceName)
-                output.writeString(binding.keyLabel)
-                output.writeString(binding.gesture.kind.name)
-                output.writeInt(binding.gesture.clicks)
-            }
-        }
-        return PREFIX + Base64.getEncoder().encodeToString(bytes.toByteArray())
-    }
-
-    private fun decode(record: String): Map<PhoneHidAction, PhoneHidBinding> {
-        val legacy = record.startsWith(LEGACY_PREFIX)
-        require(legacy || record.startsWith(PREFIX))
-        val bytes = Base64.getDecoder().decode(record.substring(if (legacy) LEGACY_PREFIX.length else PREFIX.length))
-        return DataInputStream(ByteArrayInputStream(bytes)).use { input ->
-            val count = input.readInt()
-            require(count in 0..PhoneHidAction.entries.size)
-            val result = mutableMapOf<PhoneHidAction, PhoneHidBinding>()
-            repeat(count) {
-                val name = input.readString()
-                val action = if (legacy) when (name) {
-                    "TAP" -> PhoneHidAction.TAP
-                    "SCROLL_DOWN" -> PhoneHidAction.SCROLL_DOWN
-                    "SCROLL_UP" -> PhoneHidAction.SCROLL_UP
-                    "ANCHOR", "FUNCTION" -> PhoneHidAction.MODE
-                    "NAVIGATION", "BACK" -> PhoneHidAction.BACK
-                    // Earlier v0.2 Home/Lock records do not become implicit v0.4 assignments.
-                    "HOME", "LOCK" -> null
-                    else -> error("Unknown legacy HID role")
-                } else PhoneHidAction.valueOf(name)
-                val device = PhoneHidDeviceIdentity(input.readString(), input.readInt(), input.readInt())
-                val button = PhoneHidButton(device, input.readInt(), input.readInt())
-                val binding = PhoneHidBinding(button, input.readString(), input.readString(),
-                    if (legacy) PhoneHidGesture.SINGLE else PhoneHidGesture(
-                        PhoneHidGesture.Kind.valueOf(input.readString()), input.readInt()))
-                require(result.values.none { it.button == button })
-                if (action != null) {
-                    require(action !in result && (!action.learnsSingleOnly || binding.gesture == PhoneHidGesture.SINGLE))
-                    result[action] = binding
-                }
-            }
-            require(input.available() == 0)
-            result
-        }
-    }
-
-    private fun DataOutputStream.writeString(value: String) {
-        val bytes = value.toByteArray(Charsets.UTF_8)
-        writeInt(bytes.size)
-        write(bytes)
-    }
-
-    private fun DataInputStream.readString(): String {
-        val size = readInt()
-        require(size >= 0 && size <= available())
-        val bytes = ByteArray(size)
-        readFully(bytes)
-        return Charsets.UTF_8.newDecoder()
-            .onMalformedInput(CodingErrorAction.REPORT)
-            .onUnmappableCharacter(CodingErrorAction.REPORT)
-            .decode(ByteBuffer.wrap(bytes)).toString()
-    }
-
-    private companion object {
+    internal companion object {
         const val LEGACY_PREFIX = "eyeprojector.hid-bindings.1:"
         const val PREFIX = "eyeprojector.hid-bindings.2:"
+        internal fun encode(values: Map<PhoneHidAction, PhoneHidBinding>): String {
+            val bytes = ByteArrayOutputStream()
+            DataOutputStream(bytes).use { output ->
+                output.writeInt(values.size)
+                for (action in PhoneHidAction.entries) {
+                    val binding = values[action] ?: continue
+                    output.writeString(action.name)
+                    output.writeString(binding.button.device.descriptor)
+                    output.writeInt(binding.button.device.vendorId)
+                    output.writeInt(binding.button.device.productId)
+                    output.writeInt(binding.button.keyCode)
+                    output.writeInt(binding.button.scanCode)
+                    output.writeString(binding.deviceName)
+                    output.writeString(binding.keyLabel)
+                    output.writeString(binding.gesture.kind.name)
+                    output.writeInt(binding.gesture.clicks)
+                }
+            }
+            return PREFIX + Base64.getEncoder().encodeToString(bytes.toByteArray())
+        }
+
+        internal fun decode(record: String): Map<PhoneHidAction, PhoneHidBinding> {
+            val legacy = record.startsWith(LEGACY_PREFIX)
+            require(legacy || record.startsWith(PREFIX))
+            val bytes = Base64.getDecoder().decode(record.substring(if (legacy) LEGACY_PREFIX.length else PREFIX.length))
+            return DataInputStream(ByteArrayInputStream(bytes)).use { input ->
+                val count = input.readInt()
+                require(count in 0..PhoneHidAction.entries.size)
+                val result = mutableMapOf<PhoneHidAction, PhoneHidBinding>()
+                repeat(count) {
+                    val name = input.readString()
+                    val action = if (legacy) when (name) {
+                        "TAP" -> PhoneHidAction.TAP
+                        "SCROLL_DOWN" -> PhoneHidAction.SCROLL_DOWN
+                        "SCROLL_UP" -> PhoneHidAction.SCROLL_UP
+                        "ANCHOR", "FUNCTION" -> PhoneHidAction.MODE
+                        "NAVIGATION", "BACK" -> PhoneHidAction.BACK
+                        // Earlier v0.2 Home/Lock records do not become implicit v0.4 assignments.
+                        "HOME", "LOCK" -> null
+                        else -> error("Unknown legacy HID role")
+                    } else PhoneHidAction.valueOf(name)
+                    val device = PhoneHidDeviceIdentity(input.readString(), input.readInt(), input.readInt())
+                    val button = PhoneHidButton(device, input.readInt(), input.readInt())
+                    val binding = PhoneHidBinding(button, input.readString(), input.readString(),
+                        if (legacy) PhoneHidGesture.SINGLE else PhoneHidGesture(
+                            PhoneHidGesture.Kind.valueOf(input.readString()), input.readInt()))
+                    require(result.values.none { it.button == button })
+                    if (action != null) {
+                        require(action !in result && (!action.learnsSingleOnly || binding.gesture == PhoneHidGesture.SINGLE))
+                        result[action] = binding
+                    }
+                }
+                require(input.available() == 0)
+                result
+            }
+        }
+
+        private fun DataOutputStream.writeString(value: String) {
+            val bytes = value.toByteArray(Charsets.UTF_8)
+            writeInt(bytes.size)
+            write(bytes)
+        }
+
+        private fun DataInputStream.readString(): String {
+            val size = readInt()
+            require(size >= 0 && size <= available())
+            val bytes = ByteArray(size)
+            readFully(bytes)
+            return Charsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(bytes)).toString()
+        }
+
     }
 }

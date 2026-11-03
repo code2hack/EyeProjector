@@ -21,7 +21,7 @@ class PhoneHidPinService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val pin = PhoneHidRuntime.get(this).pin
-        if (intent?.action == UNPIN) pin.unpinAndReset() else pin.refresh()
+        if (intent?.action == UNPIN) pin.unpin() else pin.refresh()
         return START_STICKY
     }
 
@@ -40,7 +40,7 @@ class PhoneHidPinService : Service() {
             .setContentText(text)
             .setContentIntent(open)
             .setOngoing(true)
-            .addAction(Notification.Action.Builder(null, "Unpin and reset", release).build())
+            .addAction(Notification.Action.Builder(null, "Unpin", release).build())
             .build()
     }
 

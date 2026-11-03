@@ -36,6 +36,7 @@ internal class PhoneHidPinRuntime(
     private val userControl: () -> Boolean = { true },
     private val recognizeInput: () -> Boolean = { true },
     private val captureOriginal: () -> com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal? = { null },
+    private val selectProfile: (String?) -> Unit = controller::selectProfile,
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val lane = Executors.newSingleThreadExecutor()
@@ -55,6 +56,7 @@ internal class PhoneHidPinRuntime(
     val canSelectDevice: Boolean get() = !loading && pinnedKey == null && !releasePending
     val canPinSelected: Boolean get() = !loading && !releasePending && !state.intercepted &&
         (pinnedKey != null || state.devices.any { it.key == selectedKey })
+    val selectedName: String? get() = state.devices.firstOrNull { it.key == selectedKey }?.name ?: state.savedName
 
     // Everything below, except main delivery bookkeeping, belongs to lane.
     private var remote: IHidCapture? = null
@@ -140,13 +142,14 @@ internal class PhoneHidPinRuntime(
         if (!userControl()) return
         if (!canSelectDevice || state.devices.none { it.key == key }) return
         selectedKey = key
+        selectProfile(profileForPin(key))
         changed()
     }
 
     fun pinSelected() {
         if (!userControl()) return
         if (!canPinSelected) return
-        // A saved/desired pin can only be retried. Unpin/reset is the device-switch operation.
+        // A saved/desired pin can only be retried. Unpin releases it for device selection.
         val key = pinnedKey ?: selectedKey ?: return
         val device = state.devices.firstOrNull { it.key == key }
         val name = device?.name ?: desiredName ?: state.savedName ?: "Pinned device"
@@ -156,12 +159,15 @@ internal class PhoneHidPinRuntime(
         desiredKey = key; desiredName = name
         controller.cancelInput()
         retireDelivered()
+        selectProfile(profileForPin(key))
         state = state.copy(savedKey = key, savedName = name, phase = "PINNING", intercepted = false, error = null)
         changed()
         ensureOwner()
         lane.execute {
             if (token != command) return@execute
-            val saved = preferences.edit().putString("device_key", key).putString("device_name", name).commit()
+            val saved = runCatching {
+                preferences.edit().putString("device_key", key).putString("device_name", name).commit()
+            }.getOrDefault(false)
             if (saved) { storedKey = key; storedName = name; preferenceError = null }
             if (token != command) return@execute
             if (!saved) {
@@ -175,23 +181,25 @@ internal class PhoneHidPinRuntime(
         }
     }
 
-    fun unpinAndReset() {
+    fun unpin() {
         if (!userControl()) return
         val token = ++command
         originals.clear()
         val hadPin = desiredKey != null || state.intercepted || releasePending
-        desiredKey = null; desiredName = null; selectedKey = null
+        desiredKey = null; desiredName = null
         releasePending = true
-        controller.resetAll()
+        controller.connection(false)
         retireDelivered()
         state = state.copy(savedKey = null, savedName = null, phase = "RELEASING", error = null)
         changed()
         lane.execute {
             if (token != command) return@execute
             releasePending = true
-            val saved = preferences.edit().remove("device_key").remove("device_name").commit()
+            val saved = runCatching {
+                preferences.edit().remove("device_key").remove("device_name").commit()
+            }.getOrDefault(false)
             if (saved) { storedKey = null; storedName = null; preferenceError = null }
-            else preferenceError = "The saved pin could not be cleared. Tap Unpin and reset again."
+            else preferenceError = "The saved pin could not be cleared. Tap Unpin again."
             if (token != command) return@execute
             try {
                 val source = remote
@@ -201,6 +209,11 @@ internal class PhoneHidPinRuntime(
             } catch (_: Exception) { lost("Device release is awaiting capture service reconnection.") }
             if (!saved) publish("FAILED", false)
         }
+    }
+
+    fun resetSelectedProfile() {
+        if (!userControl() || loading || releasePending || selectedKey == null) return
+        controller.resetAll()
     }
 
     fun refresh() {
@@ -420,6 +433,7 @@ internal class PhoneHidPinRuntime(
             val pinned = pinnedKey
             if (pinned != null) selectedKey = pinned
             else if (next.devices.none { it.key == selectedKey }) selectedKey = next.devices.firstOrNull()?.key
+            selectProfile(selectedKey?.let(::profileForPin))
             connectionChanged(next.intercepted)
             service?.show(notificationText())
             if (stop) {
@@ -443,6 +457,23 @@ internal class PhoneHidPinRuntime(
 
     companion object {
         const val NATIVE_PREFIX = "\u0000eyeprojector.native-hid.1:"
+
+        fun profileForPin(deviceKey: String): String = "native:$deviceKey"
+
+        /** Native descriptors contain [physical group, collection]. Android descriptors do not. */
+        fun profileForDevice(identity: PhoneHidDeviceIdentity): String {
+            val descriptor = identity.descriptor
+            if (descriptor.startsWith(NATIVE_PREFIX)) {
+                val parts = JSONArray(descriptor.removePrefix(NATIVE_PREFIX))
+                require(parts.length() == 2)
+                val key = parts.get(0) as String
+                require(key.isNotEmpty())
+                require(parts.get(1) is String) // Retain the collection; never substitute sourceId.
+                return profileForPin(key)
+            }
+            return "android:${identity.vendorId}:${identity.productId}:" +
+                java.util.Base64.getEncoder().encodeToString(descriptor.toByteArray(Charsets.UTF_8))
+        }
 
         fun bindingMatchesDevice(binding: PhoneHidBinding, deviceKey: String): Boolean {
             val descriptor = binding.button.device.descriptor

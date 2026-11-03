@@ -16,17 +16,26 @@ import java.io.Closeable
 internal class PhoneHidPanel(context: Context, private val runtime: PhoneHidRuntime, back: () -> Unit) : LinearLayout(context) {
     private val input = runtime.controller
     private val availability = text()
+    private val profile = text()
     private val message = text()
     private val received = text().apply {
         maxLines = 1
         contentDescription = "Last received pinned HID input"
     }
     private val devices = Spinner(context)
+    private val androidLabel = text()
+    private val androidDevices = Spinner(context)
+    private val androidSettings = button("Android key fallback settings") { runtime.openSettings() }
     private val pin = button("Pin selected device") { runtime.pin.pinSelected() }
+    private val unpin = button("Unpin device") { runtime.pin.unpin() }
+    private val reset = button("Reset selected profile") { runtime.resetSelectedProfile() }
     private val rows = linkedMapOf<PhoneHidAction, Button>()
     private var deviceKeys = emptyList<String>()
     private var deviceLabels = emptyList<String>()
     private var updatingDevices = false
+    private var androidKeys = emptyList<String>()
+    private var androidLabels = emptyList<String>()
+    private var updatingAndroid = false
     private var subscription: Closeable? = null
 
     init {
@@ -43,12 +52,23 @@ internal class PhoneHidPanel(context: Context, private val runtime: PhoneHidRunt
         }
         addView(button("Refresh connected devices") { runtime.refresh() }, LayoutParams(-1, -2))
         addView(pin, LayoutParams(-1, -2))
+        addView(androidLabel.apply { text = "Saved Android key profiles · fallback without interception" })
+        addView(androidDevices, LayoutParams(-1, -2))
+        androidDevices.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (!updatingAndroid) androidKeys.getOrNull(position - 1)?.let(runtime::selectAndroidProfile)
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+        addView(androidSettings, LayoutParams(-1, -2))
+        addView(profile)
         addView(message)
         addView(received, LayoutParams(-1, (32 * resources.displayMetrics.density).toInt()))
         for (action in PhoneHidAction.entries) rows[action] = button("") { input.select(action) }.also {
             addView(it, LayoutParams(-1, -2))
         }
-        addView(button("Unpin and reset Phone bindings") { runtime.pin.unpinAndReset() }, LayoutParams(-1, -2))
+        addView(unpin, LayoutParams(-1, -2))
+        addView(reset, LayoutParams(-1, -2))
         addView(button("Back", back), LayoutParams(-1, -2))
         refresh()
     }
@@ -94,6 +114,24 @@ internal class PhoneHidPanel(context: Context, private val runtime: PhoneHidRunt
         }
         devices.isEnabled = runtime.pin.canSelectDevice && keys.isNotEmpty()
         pin.isEnabled = runtime.pin.canPinSelected
+        unpin.isEnabled = pinned != null || owner.intercepted || owner.phase == "RELEASING"
+        reset.isEnabled = input.profileKey != null && owner.phase != "RELEASING"
+        profile.text = runtime.selectedProfileName?.let { "Selected profile: $it" } ?: "No device profile selected"
+        val savedAndroid = runtime.androidProfiles
+        val androidNames = savedAndroid.map { it.second }
+        val savedKeys = savedAndroid.map { it.first }
+        updatingAndroid = true
+        if (androidKeys != savedKeys || androidLabels != androidNames) {
+            androidKeys = savedKeys; androidLabels = androidNames
+            androidDevices.adapter = ArrayAdapter(context, android.R.layout.simple_spinner_dropdown_item,
+                listOf("Choose an Android key profile") + androidNames)
+        }
+        val androidIndex = androidKeys.indexOf(runtime.androidProfileKey) + 1
+        if (androidDevices.selectedItemPosition != androidIndex) androidDevices.setSelection(androidIndex)
+        updatingAndroid = false
+        androidDevices.isEnabled = !runtime.pin.ownsRoute
+        for (view in listOf(androidLabel, androidDevices, androidSettings))
+            view.visibility = if (savedAndroid.isEmpty()) View.GONE else View.VISIBLE
         pin.text = when {
             owner.intercepted -> "Device pinned"
             pinned != null -> "Retry pin / interception"
@@ -102,14 +140,17 @@ internal class PhoneHidPanel(context: Context, private val runtime: PhoneHidRunt
         availability.text = when {
             owner.intercepted -> "${owner.savedName ?: "Pinned device"}: intercepted (${owner.collectionCount} collections). Dedicated until Unpin, including unassigned inputs."
             owner.savedKey != null -> "Saved pin: ${owner.savedName ?: "device"}. Interception unavailable · ${owner.phase.lowercase()}."
-            owner.phase == "RELEASING" -> "Releasing interception and clearing Phone assignments…"
+            owner.phase == "RELEASING" -> "Releasing interception. Saved device profiles are retained…"
+            runtime.androidControlsActive -> "Android key fallback: ${runtime.selectedProfileName}. Unassigned keys keep their normal Android route. Pin takes priority."
             else -> "Select a connected physical HID device, then Pin it. Projection Stop keeps a pin active."
         }
         message.text = when {
             owner.error != null -> owner.error
+            runtime.profileError != null -> runtime.profileError
             input.bindings.error != null -> input.bindings.error
             input.saving > 0 -> "Saving Phone bindings."
-            !owner.intercepted -> "Assignments become available after interception starts. Existing saved bindings are retained until Unpin and reset."
+            !owner.intercepted && !runtime.androidControlsActive ->
+                "Pin a physical device, or enable Accessibility and select a saved Android key profile. Unpin keeps every profile; Reset clears only the selected profile."
             input.capturing -> "Complete the gesture, then wait briefly to assign it."
             input.selected != null -> if (input.selected!!.learnsSingleOnly)
                 "Use one short click to assign ${label(input.selected!!)}."
@@ -126,7 +167,7 @@ internal class PhoneHidPanel(context: Context, private val runtime: PhoneHidRunt
                 ?: if (owner.savedKey == null) "Unassigned" else "Unassigned for this device"
             row.text = "${label(action)}: $assignment"
             row.isSelected = input.selected == action
-            row.isEnabled = owner.intercepted
+            row.isEnabled = owner.intercepted || runtime.androidControlsActive
         }
     }
 

@@ -23,7 +23,7 @@ internal interface PhoneHidRoutes {
 
 /** One serialized ingress; persistence runs on a separate single writer and publishes completion here. */
 internal class PhoneHidController(
-    val bindings: PhoneHidBindings,
+    bindings: PhoneHidBindings,
     private val routes: PhoneHidRoutes,
     private val persist: (operation: () -> Unit, complete: () -> Unit) -> Unit,
     private val now: () -> Long,
@@ -32,7 +32,12 @@ internal class PhoneHidController(
     private val userControl: () -> Boolean = { true },
     private val recognizeInput: () -> Boolean = { true },
     private val schedule: (Long, () -> Unit) -> (() -> Unit),
+    private val profileBindings: ((String?) -> PhoneHidBindings)? = null,
 ) {
+    var bindings = bindings; private set
+    var profileKey: String? = null; private set
+    private var profileRevision = 0L
+    private var replacingProfile = false
     data class Event(
         val attachmentId: Int, val binding: PhoneHidBinding, val phase: PhoneHidPhase,
         val downTimeMs: Long, val eventTimeMs: Long, val repeatCount: Int = 0,
@@ -44,7 +49,7 @@ internal class PhoneHidController(
     private data class RawKey(val attachment: Int, val key: Int, val scan: Int)
     private data class Decision(val down: Long, val pressId: Long, val handled: Boolean)
     private data class Key(val attachment: Int, val button: PhoneHidButton)
-    private class Capture(val event: Event, val action: PhoneHidAction)
+    private class Capture(val event: Event, val action: PhoneHidAction, val bindings: PhoneHidBindings)
     private class WakeAdmission(val event: Event) { var canceled = false }
     private class Press(val event: Event, val action: PhoneHidAction, val admission: Long) {
         var route: PhoneHidRoute? = null
@@ -69,7 +74,7 @@ internal class PhoneHidController(
                 val control = original.event.original
                 if (control == null || control.consumeUserControl()) save {
                     if (control == null || control.consumeUserControl())
-                        bindings.assign(original.action, original.event.binding.copy(gesture = gesture))
+                        original.bindings.assign(original.action, original.event.binding.copy(gesture = gesture))
                 }
             }
             publish()
@@ -133,9 +138,27 @@ internal class PhoneHidController(
         if (!userControl()) return
         selected = null
         val old = retireInput()
+        val original = bindings
         // Queue this reset before an old-route callback can complete a newer assignment.
-        save { bindings.resetAll() }
+        save { original.resetAll() }
         old.forEach(::cancel)
+    }
+
+    /** Retire the original routes before exposing a replacement map, including cancel reentry. */
+    fun selectProfile(key: String?) {
+        val resolve = profileBindings ?: return
+        if (profileKey == key) return
+        val revision = ++profileRevision
+        replacingProfile = true
+        selected = null
+        val old = retireInput()
+        old.forEach(::cancel)
+        if (revision != profileRevision) return
+        bindings = resolve(key)
+        profileKey = key
+        observedDowns.clear(); receivedKey = null; receivedCount = 0; receivedText = ""
+        replacingProfile = false
+        publish()
     }
 
     /** Raw correlation precedes device lookup, eligibility and persistent identity reconstruction. */
@@ -223,7 +246,7 @@ internal class PhoneHidController(
 
     fun accept(event: Event): Boolean {
         val raw = raw(event)
-        if (event.discarded || !recognizeInput())
+        if (replacingProfile || event.discarded || !recognizeInput())
             return discardRaw(raw.attachment, raw.key, raw.scan, raw.down, event.phase, raw.pressId)
         if (consumeRetired(raw.attachment, raw.key, raw.scan, raw.down, event.phase, raw.pressId)) return true
         if (consumeWake(raw.attachment, raw.key, raw.scan, raw.down, event.phase, raw.pressId)) return true
@@ -266,7 +289,7 @@ internal class PhoneHidController(
                     learning.cancel()
                     learningPresses.keys.forEach(retired::add)
                     learningPresses.clear()
-                    Capture(event, target)
+                    Capture(event, target, bindings)
                 }
             capture = next
             learningPresses[raw] = next
