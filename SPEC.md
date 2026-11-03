@@ -165,9 +165,23 @@ The assignment rows are **Tap, Scroll down, Scroll up, Back, Home, Lock and Mode
 | --- | --- | --- |
 | Tap | Capture a single click only | Retain existing Tap/multi-tap/real hold/drag behavior |
 | Scroll down / Scroll up | Capture a single click only | One direction action on press; holding repeats according to the active mode |
-| Back / Home / Lock / Mode | Capture and distinguish short press, long press and multi-click | Match the learned gesture and perform its assigned action once |
+| Back / Home / Lock / Mode | Capture and distinguish short press, long press and multi-click | Resolve the key's assigned gesture set and perform exactly one matching action |
 
-Learning consumes its gesture without invoking the app or mode action. Learning still waits for the final quiet period to discover the complete short/long/multi-click gesture. Runtime uses the saved gesture instead: a short SINGLE acts immediately on release, without a final multi-click wait; MULTI N acts on the Nth short release, with 500 ms as the maximum gap between incomplete clicks. No short action fires while a saved multi-click is incomplete. A completed gesture retires, so the next press begins a new gesture: four rapid clicks of a double-click binding produce two actions. LONG retains its 800 ms threshold and acts on release. Tap and Scroll retain the behaviors in the table.
+**Same-key gesture coexistence and timing:** accepted requirements below are pending implementation in [#165](https://github.com/code2hack/EyeProjector/issues/165); the completed v0.4.1 checkpoint still has button-wide assignment exclusivity.
+
+Within a device profile, different gestures of the same physical key may be assigned to different actions. For example, short A → Back, long A → Home and double A → Mode coexist. A conflict is the same key plus the same gesture kind and multi-click count. Moving that exact key/gesture to another action replaces only the collided assignment; learning another gesture on A must leave its other assignments intact and visible. Each action row retains one learned binding.
+
+Learning consumes its gesture without invoking the app or mode action, and still waits for the final quiet period to discover the complete gesture. Runtime evaluates all gestures assigned to the original key together. Waiting depends only on unresolved alternatives on that key:
+
+| Assigned gesture pattern on one key | Runtime completion |
+| --- | --- |
+| SINGLE, with no longer assigned click pattern | Immediately on short release; this also applies when LONG shares the key |
+| SINGLE and double-click | First short release waits through the 500 ms inter-click window; a qualifying second short release performs double only, while expiry after one performs single only |
+| MULTI N, with no longer assigned click count still possible | Immediately on the Nth short release |
+| MULTI N that is a prefix of a longer assigned click count | Wait only for that key's inter-click window; complete the longer gesture when resolved, or at expiry perform the binding for the exact completed count if assigned |
+| LONG | At least 800 ms held, with one action on release and no short-prefix action |
+
+An unbound completed click count performs no action. A single-only key remains immediate while another key has a pending ambiguity. A completed sequence retires before dispatch/reentry, so its next press begins a new sequence: four rapid clicks of a double-only binding produce two actions. One recognized long or multi-click sequence must not also invoke a shorter action. Tap and Scroll retain their existing learning/contact/repeat behaviors in the table; this change must not silently turn real Tap holds/drags or Scroll holds into deferred discrete commands.
 
 Each physical HID device has its own persistent binding profile, including its learned gestures. Configuring one device does not overwrite another. Only one pinned device is active at a time; simultaneous HID operation is outside the current design. The existing device selection and Pin flow selects the corresponding profile. Unpinning or switching preserves saved profiles. Reset clears only the selected profile. Reconnect and restart restore the saved pin/profile intent. Profiles use actual stable device identity rather than transient Android input IDs; migration must retain recorded identities rather than guess them from whichever device is currently pinned.
 
