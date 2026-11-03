@@ -35,9 +35,12 @@ internal class PhoneHidRuntime private constructor(context: Context) {
     // An admitted setup obligation survives the raw DOWN/UP frame. It grants no target action.
     private var pendingSetup: HidInputAuthority? = null
     private val preferences = app.getSharedPreferences("phone_hid_bindings", Context.MODE_PRIVATE)
+    private val profiles = PhoneHidProfiles(
+        { preferences.getString("profiles", null) }, { preferences.getString("bindings", null) },
+        { preferences.edit().putString("profiles", it).commit() }, PhoneHidPinRuntime::profileForDevice)
+    val profileError: String? get() = profiles.error
     val controller = PhoneHidController(
-        PhoneHidBindings({ preferences.getString("bindings", null) },
-            { preferences.edit().putString("bindings", it).commit() }),
+        profiles.bindings(null),
         object : PhoneHidRoutes {
             override fun capture(down: PhoneHidEdge): PhoneHidRoute? = null
             override fun capture(down: PhoneHidEdge, admission: PhoneHidCapture): PhoneHidRoute? {
@@ -88,6 +91,7 @@ internal class PhoneHidRuntime private constructor(context: Context) {
             val cancel: () -> Unit = { main.removeCallbacks(task) }
             cancel
         },
+        profileBindings = profiles::bindings,
     )
 
     val pin = PhoneHidPinRuntime(app, controller, { connected ->

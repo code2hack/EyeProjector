@@ -16,6 +16,7 @@ import java.io.Closeable
 internal class PhoneHidPanel(context: Context, private val runtime: PhoneHidRuntime, back: () -> Unit) : LinearLayout(context) {
     private val input = runtime.controller
     private val availability = text()
+    private val profile = text()
     private val message = text()
     private val received = text().apply {
         maxLines = 1
@@ -23,6 +24,8 @@ internal class PhoneHidPanel(context: Context, private val runtime: PhoneHidRunt
     }
     private val devices = Spinner(context)
     private val pin = button("Pin selected device") { runtime.pin.pinSelected() }
+    private val unpin = button("Unpin device") { runtime.pin.unpin() }
+    private val reset = button("Reset selected profile") { runtime.pin.resetSelectedProfile() }
     private val rows = linkedMapOf<PhoneHidAction, Button>()
     private var deviceKeys = emptyList<String>()
     private var deviceLabels = emptyList<String>()
@@ -43,12 +46,14 @@ internal class PhoneHidPanel(context: Context, private val runtime: PhoneHidRunt
         }
         addView(button("Refresh connected devices") { runtime.refresh() }, LayoutParams(-1, -2))
         addView(pin, LayoutParams(-1, -2))
+        addView(profile)
         addView(message)
         addView(received, LayoutParams(-1, (32 * resources.displayMetrics.density).toInt()))
         for (action in PhoneHidAction.entries) rows[action] = button("") { input.select(action) }.also {
             addView(it, LayoutParams(-1, -2))
         }
-        addView(button("Unpin and reset Phone bindings") { runtime.pin.unpinAndReset() }, LayoutParams(-1, -2))
+        addView(unpin, LayoutParams(-1, -2))
+        addView(reset, LayoutParams(-1, -2))
         addView(button("Back", back), LayoutParams(-1, -2))
         refresh()
     }
@@ -94,6 +99,9 @@ internal class PhoneHidPanel(context: Context, private val runtime: PhoneHidRunt
         }
         devices.isEnabled = runtime.pin.canSelectDevice && keys.isNotEmpty()
         pin.isEnabled = runtime.pin.canPinSelected
+        unpin.isEnabled = pinned != null || owner.intercepted || owner.phase == "RELEASING"
+        reset.isEnabled = runtime.pin.selectedKey != null && owner.phase != "RELEASING"
+        profile.text = runtime.pin.selectedName?.let { "Selected profile: $it" } ?: "No device profile selected"
         pin.text = when {
             owner.intercepted -> "Device pinned"
             pinned != null -> "Retry pin / interception"
@@ -102,14 +110,15 @@ internal class PhoneHidPanel(context: Context, private val runtime: PhoneHidRunt
         availability.text = when {
             owner.intercepted -> "${owner.savedName ?: "Pinned device"}: intercepted (${owner.collectionCount} collections). Dedicated until Unpin, including unassigned inputs."
             owner.savedKey != null -> "Saved pin: ${owner.savedName ?: "device"}. Interception unavailable · ${owner.phase.lowercase()}."
-            owner.phase == "RELEASING" -> "Releasing interception and clearing Phone assignments…"
+            owner.phase == "RELEASING" -> "Releasing interception. Saved device profiles are retained…"
             else -> "Select a connected physical HID device, then Pin it. Projection Stop keeps a pin active."
         }
         message.text = when {
             owner.error != null -> owner.error
+            runtime.profileError != null -> runtime.profileError
             input.bindings.error != null -> input.bindings.error
             input.saving > 0 -> "Saving Phone bindings."
-            !owner.intercepted -> "Assignments become available after interception starts. Existing saved bindings are retained until Unpin and reset."
+            !owner.intercepted -> "Pin the selected device to assign controls. Unpin and device switching keep every profile; Reset clears only the selected profile."
             input.capturing -> "Complete the gesture, then wait briefly to assign it."
             input.selected != null -> if (input.selected!!.learnsSingleOnly)
                 "Use one short click to assign ${label(input.selected!!)}."
