@@ -2,12 +2,14 @@
 
 Manager: Manager-EyeProjector-v0.4.2
 
-The Owner authorized implementation of [#165](https://github.com/code2hack/EyeProjector/issues/165), then explicitly required Tap/Scroll keys to be exclusive. Back/Home/Lock/Mode may share one key through distinct short/long/multi gestures. Preserve one binding per action row, per-device profiles, one active device and original input ownership.
+The Owner authorized [#165](https://github.com/code2hack/EyeProjector/issues/165) and explicitly required Tap/Scroll keys to remain exclusive. Back/Home/Lock/Mode now share one physical key through different short/long/multi gestures. Exact-gesture reassignment moves only that collision; one binding per action row, per-device profiles and one active device remain.
 
-One Worker owns the coupled codec/controller/recognizer/merger and meaningful tests; one independent Reviewer evaluates exact source/evidence. Both use fast mode off. The Manager owns SPEC/plan/issues, integration and SDK/devices. Preserve the existing Manager profile. No mutable peer imports, extra product guards or unrelated network/media work.
+Runtime waits only for unresolved click alternatives on that key. SINGLE alone or with LONG is immediate on short release. SINGLE+double and double+triple wait the existing 500 ms window only where needed. Expiry dispatches only an assigned exact count. LONG remains at least 800 ms and acts on release. Learning retains quiet-period discovery. Dedicated Tap hold/drag/multitap and Scroll 400/100 ms repeat behavior remain.
 
-Timing follows the configured alternatives per key: immediate short when no longer click count competes, including short+long; short+double waits only that key's existing500ms window; double+triple similarly defers double. LONG remains800ms on release. Learning consumes input. Tap/Scroll exclusivity applies across actions and preserves their original contact/repeat behavior.
+One Worker implemented the coupled store/controller/original route/typed local codec/recognizer/merger and tests; one independent Reviewer assessed every exact candidate. Both used default speed (FAST OFF). Manager owns SPEC, issue, integration, SDK and Phone-only verification. No new guard, simultaneous-device support, unrelated network/media work or Owner publication gate was added.
 
-Acceptance is issue165 plus the explicit Owner raw-role decision in SPEC. Test real learning/store/controller/original-route/merger composition, migration, timing/cancellation and dedicated Tap/Scroll regressions; run affected Android/JVM/Main checks and small Phone fixture checks where available. Distinguish fixtures from physical/radio timing. Do not spend this patch on the previously unavailable Glasses network or camera103.
+Issue165 is accepted for source, focused host, Android build/JVM, actual isolated Phone shared-profile persistence across app-process replacement, and named APK/private-state custody. Full checks and limits are in [the run record](../../runs/v0.4.2.md). Physical HID/radio timing remains unmeasured.
 
-Integrate the independently reviewed candidate, verify the assembled patch, publish to main/checkpoint, retire participants/workspace and remove the exact Manager watchdog registration. No additional Owner publication gate is imposed.
+Shared-key maps require this version. The older APK rejects them on load while preserving bytes; an explicit assignment/reset in that older APK can overwrite them. Single-binding local edges retain their 39-byte encoding. Shared candidate data is Phone Binder-local only; LAN Wire remains 15 and native Rokid inputs are unchanged.
+
+The Manager publishes the accepted assembled patch to main and tags v0.4.2, preserving source/evidence, retiring the issue participants/workspace, and removing only its watchdog registration. Existing explicit credential-retention decisions remain in force.

@@ -8,7 +8,7 @@ Manager: Manager-EyeProjector-v0.4.2
 
 The Owner confirmed that different gestures of the same physical HID key must coexist across actions, then explicitly requested: “update SPEC and create a new issue to implemnt it.” For example, short A → Back, long A → Home, double A → Mode. Assigning long/double A must leave short A assigned. This is a follow-up to completed #158/#159/#160 and v0.4.1, not a reopening of its historical checkpoint. The Owner subsequently authorized immediate implementation as patch v0.4.2. One coupled Worker and independent review; Manager owns targeted checks and publication.
 
-Normative requirements: [SPEC.md — Phone HID](https://github.com/code2hack/EyeProjector/blob/main/SPEC.md#phone-hid-pin-learn-and-operate). The new coexistence/timing contract is marked pending implementation; historical version snapshots remain unchanged.
+Normative requirements: [SPEC.md — Phone HID](https://github.com/code2hack/EyeProjector/blob/main/SPEC.md#phone-hid-pin-learn-and-operate). The coexistence/timing contract is implemented in v0.4.2; historical version snapshots remain unchanged.
 
 ## Confirmed current defect
 
@@ -54,3 +54,7 @@ UI must show coexisting rows accurately and keep a prior distinct gesture visibl
 
 Blocked by: None. Owner authorized immediate v0.4.2 implementation and resolved raw-role sharing: Tap/Scroll keys MUST remain exclusive. Start from current main with SPEC carrying this decision.
 
+
+## Accepted result
+
+Manager accepted PR167 at exact candidate `4e76507553b459bb71576a03336cc6917e0fc079` after independent source, focused host, Android compiler/JVM and qualified actual Phone profile/storage/cleanup reviews. The initial missing `asBinder()` test-interface build failure is preserved; the test-only successor passes. No product-source finding remains. See [the run record](../../runs/v0.4.2.md) for checks and physical/downgrade limits.
