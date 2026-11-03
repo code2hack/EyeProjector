@@ -13,6 +13,25 @@ physical devices remain outside the host runner's scope.
 Preserved ordinary Tap/contact/reentry/concurrent-emission tests run with the actual dispatcher.
 Results establish source/component behavior, not physical HID, radio, Android timing or app readiness.
 
+`PhoneHidProfileCompositionTest` joins the real profiles store and profile selection to the
+controller, original route and merger. Two recorded synthetic stable identities reuse the same
+attachment/key/scan numbers and retain independent SINGLE/MULTI maps. Assertions check delivery
+inside the matching UP call, original pending/held-input cancellation before replacement, stale
+timers/releases, and queued learning/reset writes staying with their original profile. Time,
+persistence, identity mapping and output ports are explicit host fixtures. The separate
+`hid-profiles` runner retains the actual pin/runtime/UI tests from issue 159; it is not duplicated here.
+
+The existing Phone `ChosenAppsInstrumentation` also accepts `operation=hid-profiles` with
+`phase=all` (default), `write`, or `read`. It uses actual Android SharedPreferences and the real
+`PhoneHidPinRuntime.profileForDevice` mapper with synthetic native descriptors. It checks mixed
+device v0.4 migration, independent same-role gestures, reset of B alone, reopen without remigration,
+and byte-identical legacy/unrelated/pin/pairing sentinels. Every preference name is prefixed
+`instrumentation_hid_profiles_`; no live HID/pin/pairing preferences or pin services are used.
+Root can run `write`, restart the app process, then run `read`, retaining the returned `fixturePid`
+and its own process-restart evidence. `all` alone proves reopening in one process. These operations
+do not activate fake devices, inject HID, prove physical reconnect or measure radio/physical timing.
+The check leaves its isolated fixtures for the read phase; Root owns their eventual cleanup.
+
 Binding records use `eyeprojector.hid-bindings.2:` and store the exact gesture kind/count.
 The explicit version 1 migration preserves Tap/Scroll, maps legacy Anchor to single Mode and
 combined Navigation to single Back, leaves Home/Lock unassigned, and touches only the bindings
