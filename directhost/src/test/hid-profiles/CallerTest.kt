@@ -67,6 +67,33 @@ class CallerTest {
             30, 90, down, at, deviceId = id))
     private val calls get() = PhoneSessionController.fixture.calls
 
+    @Test fun sharedSavedAndroidCandidatesSurviveRealRuntimeKeyServiceAndTypedCodec() {
+        Shizuku.binder = Backend()
+        val expected = mapOf(PhoneHidAction.BACK to PhoneHidGesture.SINGLE,
+            PhoneHidAction.HOME to PhoneHidGesture.LONG, PhoneHidAction.MODE to PhoneHidGesture.clicks(2))
+        val context = context(expected.mapValues { binding(a, it.value) })
+        val legacy = context.getSharedPreferences("phone_hid_bindings", 0).getString("bindings", null)
+        val runtime = PhoneHidRuntime.get(context); val service = PhoneHidKeyService()
+        try {
+            service.onServiceConnected(); pump(runtime)
+            assertTrue(runtime.androidControlsActive)
+            assertTrue(press(service, a, 1000)); assertTrue(press(service, a, 1020, 1000, true))
+            assertEquals(listOf("capture", "submit"), calls.map { it.first })
+            val down = calls.first().third!!; val up = calls.last().third!!
+            assertEquals(expected, down.candidates()); assertEquals(expected, up.candidates())
+            assertEquals(down, PhoneHidEdge.from(down.bytes()))
+            assertEquals(up, PhoneHidEdge.from(up.bytes())); assertTrue(down.samePress(up))
+            assertTrue(down.bytes().size > PhoneHidEdge.PAYLOAD_SIZE)
+            assertEquals(expected, runtime.controller.bindings.assignments(binding(a).button).mapValues { it.value.gesture })
+            val panel = PhoneHidPanel(context, runtime) {}
+            val rows = panel.children.filterIsInstance<Button>().map { it.text.toString() }
+            assertTrue(rows.any { it.startsWith("Back:") && it.endsWith("Short press") })
+            assertTrue(rows.any { it.startsWith("Home:") && it.endsWith("Long press") })
+            assertTrue(rows.any { it.startsWith("Mode:") && it.endsWith("2 clicks") })
+            assertEquals(legacy, context.getSharedPreferences("phone_hid_bindings", 0).getString("bindings", null))
+        } finally { close(runtime, service) }
+    }
+
     @Test fun soleMigratedAndroidProfileWorksThroughRealRuntimeAndKeyServiceWithoutKeyAutoSelection() {
         Shizuku.binder = Backend()
         val context = context(mapOf(PhoneHidAction.TAP to binding(a)))
