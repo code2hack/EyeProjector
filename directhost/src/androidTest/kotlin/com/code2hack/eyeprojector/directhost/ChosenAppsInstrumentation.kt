@@ -44,6 +44,7 @@ class ChosenAppsInstrumentation : Instrumentation() {
                     return
                 }
                 "snapshot-probe" -> com.code2hack.eyeprojector.directhost.activation.snapshot.NativeSnapshotChecks.run(targetContext, arguments, result)
+                "hid-profiles" -> com.code2hack.eyeprojector.directhost.hid.HidProfileChecks.run(targetContext, arguments, result)
                 "app-scale" -> AppScaleChecks.run(this, targetContext)
                 "app-scale-persist-write" -> AppScaleChecks.persistence(targetContext, true)
                 "app-scale-persist-read" -> AppScaleChecks.persistence(targetContext, false)

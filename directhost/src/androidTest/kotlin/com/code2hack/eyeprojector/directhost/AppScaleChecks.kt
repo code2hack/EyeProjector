@@ -63,7 +63,10 @@ object AppScaleChecks {
             check(apps.read().isEmpty())
             driver.runOnMainSync {
                 apps.add(app); menu.refresh()
-                menu.onAppScale = { chosen = it }
+                menu.onAppScale = {
+                    chosen = it
+                    AppScaleTarget("ui-fixture", it.packageName, ProjectionContext("owner", "token"))
+                }
                 menu.findViewWithTag<View>(app.packageName).performLongClick()
             }
             driver.waitForIdleSync()
@@ -82,7 +85,10 @@ object AppScaleChecks {
             }
             driver.waitForIdleSync(); check(!hasText(driver, "Scale"))
             driver.runOnMainSync {
-                menu.onAppScale = { chosen = it }; catalog.available = false; menu.refresh()
+                menu.onAppScale = {
+                    chosen = it
+                    AppScaleTarget("ui-fixture", it.packageName, ProjectionContext("owner", "token"))
+                }; catalog.available = false; menu.refresh()
                 menu.findViewWithTag<View>(app.packageName).performLongClick()
             }
             driver.waitForIdleSync(); check(!hasText(driver, "Scale"))
