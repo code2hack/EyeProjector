@@ -2,6 +2,8 @@ package com.code2hack.eyeprojector.directhost.input
 
 import com.code2hack.eyeprojector.directhost.ProjectionContext
 import com.code2hack.eyeprojector.directhost.IPhoneInputSession
+import com.code2hack.eyeprojector.protocol.ActivationDirective
+import com.code2hack.eyeprojector.protocol.StreamWake
 import com.code2hack.eyeprojector.protocol.PhoneHidEdge
 import com.code2hack.eyeprojector.protocol.PhoneHidPhase
 
@@ -11,6 +13,12 @@ internal class PhoneHidOriginal(private val remote: IPhoneInputSession?, val con
     val discarded: Boolean get() = !current()
     fun consumeUserControl(): Boolean = current() &&
         (remote?.let { runCatching { it.active() && current() }.getOrDefault(false) } ?: !context.available)
+    fun wake(directive: ActivationDirective) {
+        if (current() && context.available && context.ownerEpoch == directive.ownerEpoch) {
+            // STATUS remains the durable recovery path if this original Binder disappeared.
+            runCatching { remote?.wake(StreamWake.encode(directive)) }
+        }
+    }
     fun route(down: PhoneHidEdge, region: String, word: Long, binding: Long, routeId: Long): PhoneHidRoute? {
         val source = remote ?: return null
         if (!current()) return null

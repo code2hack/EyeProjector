@@ -3,4 +3,5 @@ package com.code2hack.eyeprojector.directhost;
 interface IPhoneInputSession {
     boolean active();
     oneway void edge(long routeId, in byte[] typedEdge, String regionId, long word);
+    oneway void wake(in byte[] directive);
 }

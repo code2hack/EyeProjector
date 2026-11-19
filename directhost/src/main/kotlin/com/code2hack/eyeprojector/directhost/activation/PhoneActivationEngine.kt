@@ -83,7 +83,7 @@ internal class PhoneActivationEngine(
     }
 
     /** Original observed native NONE, never pointer absence or setup UNKNOWN. Writer lane only. */
-    fun observeHidWake(wake: HidWakeRequest): Boolean {
+    fun observeHidWake(wake: HidWakeRequest, wakeAlreadyIssued: Boolean = false): Boolean {
         if (wake.disposition != PhoneHidDisposition.NONE) return false
         val original = wake.authority; val c = journal.current ?: return false
         if (!c.desired || c.id in journal.canceled || original.handle == null ||
@@ -92,7 +92,9 @@ internal class PhoneActivationEngine(
             wake.regionId == null || wake.word == null || (wake.word ushr 2) == 0L || (wake.word and 3L) != 0L) return false
         presentation = null; inputPresentation = null
         localAttempt?.let(local::invalidatePresentation)
-        if (!demandPending) save(journal.copy(current = c.copy(wakeRevision = c.wakeRevision + 1)))
+        // A fresh press on an unavailable receiver can retry an earlier unfulfilled wake.
+        // A request issued in this same actor turn already carries the fresh revision.
+        if (!wakeAlreadyIssued) save(journal.copy(current = c.copy(wakeRevision = c.wakeRevision + 1)))
         demandPending = true
         return true
     }

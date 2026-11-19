@@ -84,6 +84,23 @@ class WireTest {
         assertEquals(Wire.STOP_HOST, Wire.readRequest(stop))
     }
 
+    @Test fun streamWakeRoundTripsWithoutChangingTheUsabilityPayloadOrWireVersion() {
+        val fact = ReceiverUsability("owner", ReceiverIncarnation("receiver", 1), 1, 1, ReceiverUsabilityMode.NONE)
+        val capability = Wire.readFrame(input {
+            Wire.writeFrame(this, Frame(Wire.RECEIVER_USABILITY, Wire.STREAM_WAKE_CAPABILITY, fact.bytes()))
+        })
+        assertEquals(fact, ReceiverUsability.from(capability.payload))
+        assertEquals(Wire.STREAM_WAKE_CAPABILITY, capability.stamp)
+        val wake = ActivationDirective("activation", true, 42, "owner", ActivationGoal.PROJECTED)
+        val encoded = StreamWake.encode(wake)
+        val frame = Wire.readFrame(input { Wire.writeFrame(this, Frame(Wire.RECEIVER_WAKE, payload = encoded)) })
+        assertEquals(wake, StreamWake.decode(frame.payload))
+        assertThrows(IllegalArgumentException::class.java) { StreamWake.encode(wake.copy(desired = false)) }
+        assertThrows(IllegalArgumentException::class.java) { StreamWake.decode(encoded + 0.toByte()) }
+        assertThrows(IllegalArgumentException::class.java) { StreamWake.encode(wake.copy(ownerEpoch = "")) }
+        assertEquals(15, Wire.VERSION)
+    }
+
     @Test fun incompatibleVersionsAndVideoCodecsAreRejected() {
         for (revision in listOf(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 999)) {
             assertThrows(Exception::class.java) { Wire.readRequest(input {

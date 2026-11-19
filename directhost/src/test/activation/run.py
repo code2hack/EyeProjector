@@ -16,7 +16,7 @@ protocol=root/'protocol/src/main/kotlin/com/code2hack/eyeprojector/protocol'
 glass=root/'directrg/src/main/kotlin/com/code2hack/eyeprojector/directrg'
 files=list((host/'activation').glob('*.kt'))
 files += [host/n for n in ['SessionController.kt','SessionAttemptStore.kt','ProjectionContext.kt','ProjectionDisplayState.kt','SessionUsability.kt']]
-files += [protocol/n for n in ['SessionControl.kt','SessionState.kt','ActivationControl.kt','ReceiverUsability.kt','Wire.kt','PhoneInput.kt','Touch.kt','LayoutScale.kt']]
+files += [protocol/n for n in ['SessionControl.kt','SessionState.kt','ActivationControl.kt','ReceiverUsability.kt','Wire.kt','CameraFeed.kt','PhoneInput.kt','Touch.kt','LayoutScale.kt']]
 files += [glass/n for n in ['ReceiverActivationStore.kt','ReceiverTaskRegistry.kt','PairedSessionClient.kt']]
 if a.producer:
     files += [p for p in (host/'notifications').glob('*.kt') if p.name != 'NotificationAccessPanel.kt']
@@ -45,7 +45,8 @@ elif a.composed:
     files += sorted((suite/'composed').glob('*.kt'))+[suite/'doubles/Log.kt']
 else:
     files += sorted((suite/'doubles').glob('*.kt'))+[suite/'SharedScenarios.kt']
-if not a.producer and not a.composed: files += [host/'input/PhoneHidRoute.kt']
+if not a.producer and not a.composed:
+    files += [host/'input/PhoneHidRoute.kt', host/'input/PhoneHidOriginal.kt', suite.parent/'mode-routing/doubles/Binder.kt']
 files += [host/'activation/snapshot'/n for n in ['NativeSnapshotRegion.kt','SnapshotWord.kt','PhoneHidSnapshotLease.kt']]
 files += sorted((suite.parent/'snapshot/transport/doubles').glob('*.kt'))
 cache=Path.home()/'.gradle/caches/modules-2/files-2.1'

@@ -256,13 +256,19 @@ internal class ReceiverSessionOwner(
         requested = true; mediaState = "CONNECTING"; publish(); client.connect()
     }
 
+    private fun wakeIfPending() {
+        val store = feature ?: return
+        val directive = store.directive ?: return
+        val key = store.demand(directive) ?: return
+        if (store.permits(directive) && lastWake != key) {
+            lastWake = key
+            wake(directive)
+        }
+    }
+
     private fun observePeer(state: SessionState) {
         if (closed) return
-        val demand = feature?.directive
-        if (demand != null && feature.permits(demand)) {
-            val key = feature.demand()
-            if (lastWake != key) { lastWake = key; wake(demand) }
-        }
+        wakeIfPending()
         if (state.phase == SessionPhase.UNKNOWN) { peer = state; publish(); return }
         peer = state
         if (session != null && (attachment.epoch != state.epoch || !state.phase.active)) disconnect(false)
@@ -366,6 +372,12 @@ internal class ReceiverSessionOwner(
                     if (!closed && session === source) {
                         coordinateMode=result
                         listener?.mode(source,result)
+                    }
+                } }, onWake = { source, directive -> deliver {
+                    if (!closed && session === source && attachment.epoch == epoch &&
+                        feature?.acceptStreamWake(directive, epoch) == true) {
+                        wakeIfPending()
+                        publish()
                     }
                 } })
             // This source record exists even with the optional window observer disabled.

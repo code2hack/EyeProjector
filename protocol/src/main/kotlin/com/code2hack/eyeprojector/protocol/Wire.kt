@@ -106,6 +106,8 @@ object Wire {
     const val MODE_CYCLE = 23 // Receiver -> Phone: one semantic cycle.
     const val COORDINATE_STATE = 24 // Phone -> Receiver: authoritative app/mode/positions/result.
     const val PASSIVE_SCROLL = 27 // Head-derived motion, distinct from a user wheel action.
+    const val RECEIVER_WAKE = 28 // Phone -> Receiver, only after its usability advertisement.
+    const val STREAM_WAKE_CAPABILITY = 1L // Optional stamp on RECEIVER_USABILITY; older Phones ignore it.
     const val STREAM = 1
     const val STOP_HOST = 2
     const val CAMERA = 3
@@ -127,7 +129,7 @@ object Wire {
         require(input.readUTF() == SCRCPY_VERSION && input.readInt() == H264)
     }
     private fun validate(channel: Int, length: Int) {
-        require(channel in GEOMETRY..PASSIVE_SCROLL && length in 0..MAX_PAYLOAD)
+        require(channel in GEOMETRY..RECEIVER_WAKE && length in 0..MAX_PAYLOAD)
         when (channel) {
             GEOMETRY -> require(length == 8)
             TAP -> require(length == 16)
@@ -135,6 +137,7 @@ object Wire {
             HEAD_POINTER -> require(length == HeadPointerState.MIN_PAYLOAD_SIZE || length == HeadPointerState.MAX_PAYLOAD_SIZE)
             RECEIVER_INPUT -> require(length == ReceiverInput.PAYLOAD_SIZE)
             RECEIVER_USABILITY -> require(length in ReceiverUsability.MIN_PAYLOAD_SIZE..ReceiverUsability.MAX_PAYLOAD_SIZE)
+            RECEIVER_WAKE -> require(length in StreamWake.MIN_BYTES..StreamWake.MAX_BYTES)
             MODE_CYCLE -> require(length == 0)
             COORDINATE_STATE -> require(length >= 17)
             SCROLL, PASSIVE_SCROLL -> require(length == 20)

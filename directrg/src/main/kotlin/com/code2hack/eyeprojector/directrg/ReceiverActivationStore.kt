@@ -65,9 +65,23 @@ internal class ReceiverActivationStore(private val file: File) {
         reply.cancelAcknowledged?.let { next = next.copy(pendingCancel = next.pendingCancel - it) }
         if (next != state) save(next)
         val d = reply.directive
+        val current = directive
+        // A poll started before a push may complete after it. Its older revision is not a new wake.
+        if (d?.desired == true && current != null && permits(current) &&
+            d.activationId == current.activationId && d.ownerEpoch == current.ownerEpoch &&
+            d.wakeRevision < current.wakeRevision) return
         directive = d?.takeIf { it.desired && it.activationId !in state.canceled }
         if (directive?.activationId != presentation?.activationId || directive?.ownerEpoch != presentation?.ownerEpoch ||
             directive?.wakeRevision != presentation?.wakeRevision) presentation = null
+    }
+    @Synchronized fun acceptStreamWake(next: ActivationDirective, ownerEpoch: String): Boolean {
+        val current = directive ?: return false
+        if (!permits(current) || !next.desired || current.ownerEpoch != ownerEpoch || next.ownerEpoch != ownerEpoch ||
+            next.activationId != current.activationId || next.wakeRevision <= current.wakeRevision ||
+            next.goal.ordinal < current.goal.ordinal) return false
+        directive = next
+        presentation = null
+        return true
     }
     @Synchronized fun report(original: ReceiverDemand, revision: Long, mode: ReceiverUsabilityMode, detail: String) {
         if (demand() != original || original.activationId in state.canceled) return
@@ -77,7 +91,7 @@ internal class ReceiverActivationStore(private val file: File) {
     fun pendingTriggers() = state.triggers.values.filter { it.canceled && !it.acknowledged }
     fun intent(): ActivationIntent? = state.currentTrigger?.let { state.triggers[it] }?.takeIf { !it.canceled }?.let { ActivationIntent(it.scope.trigger) }
     fun currentScope(): ReceiverLaunchScope? = state.currentTrigger?.let { state.triggers[it]?.scope }
-    @Synchronized fun demand(): ReceiverDemand? = directive?.let { d -> incarnation?.let { ReceiverDemand(d.activationId,d.ownerEpoch,d.wakeRevision,it,d.goal) } }
+    @Synchronized fun demand(expected: ActivationDirective? = directive): ReceiverDemand? = directive?.takeIf { it == expected }?.let { d -> incarnation?.let { ReceiverDemand(d.activationId,d.ownerEpoch,d.wakeRevision,it,d.goal) } }
     fun permits(d: ActivationDirective) = directive == d && d.desired && d.activationId !in state.canceled
 
     private fun read(): ReceiverFeatureState {
