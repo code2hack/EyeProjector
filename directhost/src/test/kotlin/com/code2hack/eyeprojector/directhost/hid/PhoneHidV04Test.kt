@@ -57,6 +57,7 @@ class PhoneHidV04Test {
                 val id = ++routeSequence
                 val owner = ownerEpoch
                 val original = PhoneHidOriginal(object : IPhoneInputSession {
+                    override fun wake(directive: ByteArray) = Unit
                     override fun asBinder(): android.os.IBinder? = null
                     override fun active() = sourceActive
                     override fun edge(routeId: Long, typedEdge: ByteArray, regionId: String, word: Long) {

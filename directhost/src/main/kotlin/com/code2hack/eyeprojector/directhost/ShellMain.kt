@@ -699,6 +699,7 @@ private class Session(
     }
     private val inputControls = PhoneTouchDispatcher(controlLock,controlOutputLock) { control!!.outputStream.write(it) }
     @Volatile private var modeOwner: IPhoneModeOwner? = null
+    @Volatile private var streamWakeSupported = false
     private var publishedMode: CoordinateModeResult? = null
     private var modePackage: String?=null
     private var modeAppObserved=false
@@ -710,6 +711,15 @@ private class Session(
             override fun active() = running.get()
             override fun edge(routeId: Long, typedEdge: ByteArray, regionId: String, word: Long) {
                 phoneHidStampedEdge(routeId,PhoneHidEdge.from(typedEdge),regionId,word)
+            }
+            override fun wake(directive: ByteArray) {
+                val request = runCatching { StreamWake.decode(directive) }.getOrNull() ?: return
+                if (request.ownerEpoch != context.ownerEpoch) return
+                inputOperation {
+                    if (modeOwner === owner && streamWakeSupported &&
+                        receiverUsability.snapshot().fact?.mode == ReceiverUsabilityMode.NONE)
+                        send(Frame(Wire.RECEIVER_WAKE, payload = directive))
+                }
             }
         })
     }
@@ -1233,8 +1243,8 @@ private class Session(
             }
             Wire.RECEIVER_USABILITY -> {
                 val fact = ReceiverUsability.from(frame.payload)
-                if (receiverUsability.publish(fact)) {
-                }
+                if (receiverUsability.publish(fact) && frame.stamp == Wire.STREAM_WAKE_CAPABILITY)
+                    streamWakeSupported = true
                 if (receiverUsability.needsRegion()) prepareHidRegionAsync()
             }
             Wire.HEAD_POINTER -> {

@@ -33,6 +33,7 @@ class ProjectionSession(
     private val connectPeer: ((File) -> SSLSocket)? = null,
     private val tlsContextFactory: (File) -> SSLContext = Tls::context,
     private val onMode: (ProjectionSession, CoordinateModeResult) -> Unit = { _, _ -> },
+    private val onWake: (ProjectionSession, ActivationDirective) -> Unit = { _, _ -> },
 ) : Closeable {
     private val running = AtomicBoolean(true)
     // TLS initialization stays on the connection worker. Camera roles retain this projection's
@@ -211,7 +212,7 @@ class ProjectionSession(
     }
     private fun writeUsabilityLocked(fact: ReceiverUsability?) {
         if (controlReady && fact != null && fact != serializedUsability) {
-            writeFrameLocked(Frame(Wire.RECEIVER_USABILITY, payload = fact.bytes()))
+            writeFrameLocked(Frame(Wire.RECEIVER_USABILITY, Wire.STREAM_WAKE_CAPABILITY, fact.bytes()))
             serializedUsability = fact
         }
     }
@@ -332,6 +333,11 @@ class ProjectionSession(
             Wire.END -> closeWithState("DISCONNECTED")
             Wire.RECEIVER_INPUT -> onReceiverInput(this,ReceiverInput.from(frame.payload))
             Wire.COORDINATE_STATE -> onMode(this,CoordinateModeResult.from(frame.payload))
+            Wire.RECEIVER_WAKE -> {
+                require(frame.stamp == 0L)
+                val directive = StreamWake.decode(frame.payload)
+                if (directive.ownerEpoch == expectedPhoneOwnerEpoch) onWake(this, directive)
+            }
             Wire.CAMERA_USE -> { require(frame.stamp == 0L); cameraUses.observe(CameraFeed.readUseMessage(frame.payload)) }
             Wire.CAMERA_PROGRESS -> { require(frame.stamp == 0L); cameraUses.observeProgress(CameraFeed.readProgress(frame.payload)) }
             else -> error("Unnegotiated media")

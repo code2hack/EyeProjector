@@ -7,6 +7,7 @@ import android.os.Looper
 import com.code2hack.eyeprojector.directhost.widget.PhoneWidgetUpdates
 import com.code2hack.eyeprojector.protocol.*
 import com.code2hack.eyeprojector.directhost.scale.*
+import com.code2hack.eyeprojector.directhost.input.PhoneHidOriginal
 import com.code2hack.eyeprojector.directhost.input.PhoneHidRoute
 import java.io.File
 import java.util.concurrent.CopyOnWriteArraySet
@@ -31,7 +32,7 @@ class PhoneSessionController private constructor(context: Context) {
     private val featureLane = Executors.newSingleThreadScheduledExecutor()
     private val pendingBackend = AtomicReference<HostBootstrap.Status?>()
     private data class LocalRequest(val handle: ActivationHandle, val cause: ActivationCause, val expectedEpoch: String? = null,
-        val hidWake: HidWakeRequest? = null)
+        val hidWake: HidWakeRequest? = null, val wakeRoute: PhoneHidOriginal? = null)
     private val pendingRequest = AtomicReference<LocalRequest?>()
     private val pendingStops = linkedSetOf<String>()
     private val pendingReleased = AtomicReference<HostBootstrap.Status?>()
@@ -157,6 +158,8 @@ class PhoneSessionController private constructor(context: Context) {
     /** Original scope validation, pure identity and merge are one fast transition; effects follow it. */
     internal fun requestHidActivation(wake: HidWakeRequest, originalSetup: HidInputAuthority? = null): ActivationHandle? {
         if (!userControl()) return null
+        val route = if (wake.disposition == PhoneHidDisposition.NONE)
+            bootstrap.modeOwner.captureOriginal().takeIf { it.context == wake.authority.context } else null
         val handle = synchronized(fastLock) {
             if (originalSetup != null && !originalHidScopeCurrentLocked(originalSetup)) return@synchronized null
             if (!originalHidScopeCurrentLocked(wake.authority) || wake.disposition == PhoneHidDisposition.USABLE ||
@@ -166,7 +169,7 @@ class PhoneSessionController private constructor(context: Context) {
             if (wake.disposition == PhoneHidDisposition.NONE) {
                 clearReadyLocked(); usable = false; localRevision.incrementAndGet()
             }
-            enqueueLocalRequestLocked(LocalRequest(h, ActivationCause.HID_PRESS, hidWake = admitted))
+            enqueueLocalRequestLocked(LocalRequest(h, ActivationCause.HID_PRESS, hidWake = admitted, wakeRoute = route))
             h
         }
         if (handle != null) {
@@ -262,7 +265,12 @@ class PhoneSessionController private constructor(context: Context) {
             oldLoss?.disposition == PhoneHidDisposition.NONE -> oldLoss
             else -> incomingLoss ?: oldLoss
         }
-        pendingRequest.set(selected.copy(hidWake = loss))
+        val route = when {
+            loss == null -> null
+            loss === incomingLoss -> request.wakeRoute
+            else -> old?.wakeRoute
+        }
+        pendingRequest.set(selected.copy(hidWake = loss, wakeRoute = route))
     }
     private fun currentLocked(handle: ActivationHandle): Boolean {
         val current = currentHandle.get() ?: return false
@@ -423,12 +431,21 @@ class PhoneSessionController private constructor(context: Context) {
         try {
             val wake = synchronized(fastLock) { request.hidWake?.takeIf(::validHidWakeLocked) }
             val requestCurrent = synchronized(fastLock) { currentLocked(request.handle) }
+            val priorWakeRevision = activation.journal.current?.wakeRevision
             if (request.handle.id !in activation.journal.canceled && requestCurrent &&
                 (request.expectedEpoch == null || controller.acceptsStartCaller(request.expectedEpoch)) &&
                 (request.hidWake == null || wake != null || request.cause != ActivationCause.HID_PRESS))
                 activation.request(request.cause, request.handle.id, request.handle.demandId)
             // Superseding D alone cannot discard valid original H-scoped loss.
-            wake?.let(activation::observeHidWake)
+            wake?.let {
+                val applied = activation.observeHidWake(it,
+                    wakeAlreadyIssued = activation.journal.current?.wakeRevision != priorWakeRevision)
+                if (applied && synchronized(fastLock) { validHidWakeLocked(it) }) {
+                    val current = activation.journal.current!!
+                    request.wakeRoute?.wake(ActivationDirective(current.id, current.desired,
+                        current.wakeRevision, current.ownerEpoch, current.goal))
+                }
+            }
         } catch (error: Exception) {
             synchronized(fastLock) { enqueueLocalRequestLocked(request) }
             throw error

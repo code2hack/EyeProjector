@@ -39,6 +39,74 @@ private class Rig(val directory: File = Files.createTempDirectory("activation-so
 
 fun main() {
     val tests=linkedMapOf<String,()->Unit>(
+        "fresh HID press retries a pending wake on the same owner" to {
+            val r = Rig()
+            r.request()
+            val owner = r.owner()
+            r.core.backend(owner, "READY")
+            r.context = ProjectionContext(owner, "fixture-projection")
+            r.engine.tick()
+            r.present(1, true)
+            check(r.engine.ready)
+
+            val handle = r.engine.handle!!
+            val before = r.engine.journal.current!!
+            val authority = HidInputAuthority(handle, before.attempt, r.context, 1, 1, 1)
+            val first = HidWakeRequest(PhoneHidDisposition.NONE, authority, "fixture-region", 4L, admitted = true)
+            check(r.engine.observeHidWake(first))
+            val initialWake = r.store.read().current!!
+            check(initialWake.wakeRevision == before.wakeRevision + 1)
+
+            // The first wake was submitted but no matching projection presentation completed.
+            r.present(2, false)
+            val next = first.copy(authority = authority.copy(admissionRevision = 2))
+            check(r.engine.observeHidWake(next))
+            val retried = r.store.read().current!!
+            check(retried.wakeRevision == initialWake.wakeRevision + 1) { "Fresh press was absorbed by pending wake" }
+            check(retried.id == initialWake.id && retried.attempt == owner && retried.ownerEpoch == owner)
+            check(r.starts == listOf(owner) && r.stops.isEmpty())
+            r.presentMode(3, ReceiverUsabilityMode.PROJECTED, wake = initialWake.wakeRevision)
+            check(!r.engine.ready)
+            r.present(4, true)
+            check(r.engine.ready)
+
+            r.engine.request(ActivationCause.NOTIFICATION, handle.id, "fixture-notification-demand")
+            val sameTurnWake = r.store.read().current!!
+            check(sameTurnWake.wakeRevision == retried.wakeRevision + 1)
+            check(r.engine.observeHidWake(first.copy(authority = authority.copy(admissionRevision = 3)), wakeAlreadyIssued = true))
+            check(r.store.read().current == sameTurnWake)
+            check(r.starts == listOf(owner) && r.stops.isEmpty())
+        },
+        "retained stream wake keeps the original owner and survives an older STATUS reply" to {
+            val directory = Files.createTempDirectory("stream-wake-").toFile()
+            val store = ReceiverActivationStore(File(directory, "activation.properties"))
+            store.startIncarnation()
+            val original = ActivationDirective("H1", true, 3, "A1", ActivationGoal.PROJECTED)
+            val next = original.copy(wakeRevision = 4)
+            check(!store.acceptStreamWake(next, "A1")) // STATUS must establish the matching activation.
+            store.accept(ActivationReply(original))
+            val oldDemand = store.demand()!!
+            store.report(oldDemand, 1, ReceiverUsabilityMode.PROJECTED, "presented")
+            val encoded = bytes { Wire.writeFrame(this, Frame(Wire.RECEIVER_WAKE, payload = StreamWake.encode(next))) }
+            val arrived = StreamWake.decode(Wire.readFrame(DataInputStream(encoded.inputStream())).payload)
+            check(!store.acceptStreamWake(arrived, "A2"))
+            check(!store.acceptStreamWake(arrived.copy(activationId = "H2"), "A1"))
+            check(!store.acceptStreamWake(arrived.copy(goal = ActivationGoal.USABLE), "A1"))
+            check(store.acceptStreamWake(arrived, "A1"))
+            check(store.presentation == null && store.demand(original) == null)
+            store.accept(ActivationReply(original))
+            check(store.directive == next && store.demand()!!.wakeRevision == 4L)
+            check(!store.acceptStreamWake(arrived, "A1"))
+            store.report(oldDemand, 2, ReceiverUsabilityMode.PROJECTED, "stale")
+            check(store.presentation == null)
+            store.report(store.demand()!!, 3, ReceiverUsabilityMode.PROJECTED, "presented")
+            store.accept(ActivationReply(next))
+            check(store.presentation?.wakeRevision == 4L)
+            store.cancel(null, "H1")
+            check(!store.acceptStreamWake(next.copy(wakeRevision = 5), "A1"))
+            store.accept(ActivationReply(next.copy(desired = false)))
+            check(store.directive == null)
+        },
         "control3 both actual codecs retain feature and attempt scopes" to {
             val inc=ReceiverIncarnation("inc",7)
             val r=SessionControl.Request(SessionControl.Operation.STOP,"epoch","attempt",ActivationIntent("trigger"),
